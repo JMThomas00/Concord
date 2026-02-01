@@ -1,0 +1,56 @@
+# Dracula Theme for Concord
+# https://draculatheme.com
+
+[meta]
+name = "Dracula"
+author = "Zeno Rocha"
+variant = "dark"
+
+[colors]
+background = "#282A36"
+current_line = "#6272A4"
+selection = "#44475A"
+foreground = "#F8F8F2"
+comment = "#6272A4"
+
+# Accent colors
+red = "#FF5555"
+orange = "#FFB86C"
+yellow = "#F1FA8C"
+green = "#50FA7B"
+cyan = "#8BE9FD"
+purple = "#BD93F9"
+pink = "#FF79C6"
+
+[semantic]
+# UI element mappings
+sidebar_bg = "#282A36"
+sidebar_fg = "#F8F8F2"
+sidebar_selected = "#44475A"
+sidebar_hover = "#6272A4"
+
+chat_bg = "#282A36"
+chat_fg = "#F8F8F2"
+chat_timestamp = "#6272A4"
+chat_username_self = "#BD93F9"
+chat_username_other = "#8BE9FD"
+chat_mention = "#FF79C6"
+
+input_bg = "#44475A"
+input_fg = "#F8F8F2"
+input_border = "#6272A4"
+input_border_focus = "#BD93F9"
+
+status_online = "#50FA7B"
+status_idle = "#F1FA8C"
+status_dnd = "#FF5555"
+status_offline = "#6272A4"
+
+error = "#FF5555"
+warning = "#FFB86C"
+success = "#50FA7B"
+info = "#8BE9FD"
+
+scrollbar = "#44475A"
+scrollbar_hover = "#6272A4"
+border = "#6272A4"

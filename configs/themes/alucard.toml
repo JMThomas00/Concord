@@ -1,0 +1,56 @@
+# Alucard Theme for Concord (Light variant of Dracula)
+# https://draculatheme.com
+
+[meta]
+name = "Alucard"
+author = "Zeno Rocha"
+variant = "light"
+
+[colors]
+background = "#FFFBEB"
+current_line = "#6C664B"
+selection = "#CFCFDE"
+foreground = "#1F1F1F"
+comment = "#6C664B"
+
+# Accent colors
+red = "#CB3A2A"
+orange = "#A34D14"
+yellow = "#846E15"
+green = "#14710A"
+cyan = "#036A96"
+purple = "#644AC9"
+pink = "#A3144D"
+
+[semantic]
+# UI element mappings
+sidebar_bg = "#FFFBEB"
+sidebar_fg = "#1F1F1F"
+sidebar_selected = "#CFCFDE"
+sidebar_hover = "#6C664B"
+
+chat_bg = "#FFFBEB"
+chat_fg = "#1F1F1F"
+chat_timestamp = "#6C664B"
+chat_username_self = "#644AC9"
+chat_username_other = "#036A96"
+chat_mention = "#A3144D"
+
+input_bg = "#CFCFDE"
+input_fg = "#1F1F1F"
+input_border = "#6C664B"
+input_border_focus = "#644AC9"
+
+status_online = "#14710A"
+status_idle = "#846E15"
+status_dnd = "#CB3A2A"
+status_offline = "#6C664B"
+
+error = "#CB3A2A"
+warning = "#A34D14"
+success = "#14710A"
+info = "#036A96"
+
+scrollbar = "#CFCFDE"
+scrollbar_hover = "#6C664B"
+border = "#6C664B"

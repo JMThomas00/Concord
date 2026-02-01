@@ -1,0 +1,47 @@
+# Concord Server Configuration
+# Copy this file to server.toml and adjust as needed
+
+[server]
+# Address to bind to (0.0.0.0 for all interfaces)
+host = "0.0.0.0"
+
+# Port to listen on
+port = 8080
+
+# Path to SQLite database file
+database_path = "concord.db"
+
+# Maximum concurrent connections
+max_connections = 1000
+
+# Enable debug logging
+debug = false
+
+[security]
+# Minimum password length for user registration
+min_password_length = 8
+
+# Session token expiry in hours (default: 720 = 30 days)
+session_expiry_hours = 720
+
+# Enable rate limiting
+rate_limiting = true
+
+# Maximum messages per minute per user
+max_messages_per_minute = 30
+
+[limits]
+# Maximum message length in characters
+max_message_length = 2000
+
+# Maximum servers per user
+max_servers_per_user = 100
+
+# Maximum channels per server
+max_channels_per_server = 500
+
+# Maximum members per server
+max_members_per_server = 10000
+
+# Maximum roles per server
+max_roles_per_server = 250

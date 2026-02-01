@@ -1,0 +1,61 @@
+# Concord Client Configuration
+# Copy this file to client.toml or ~/.config/concord/client.toml
+
+[server]
+# Server address to connect to
+address = "ws://localhost:8080"
+
+# Authentication token (filled automatically after login)
+# token = ""
+
+[appearance]
+# Theme name (dracula, alucard, or custom theme name)
+theme = "dracula"
+
+# Path to themes directory
+themes_dir = "./themes"
+
+# Show timestamps in 24-hour format
+use_24h_time = true
+
+# Show seconds in timestamps
+show_seconds = false
+
+# Compact message display (no spacing between messages)
+compact_mode = false
+
+[notifications]
+# Enable desktop notifications (requires libnotify)
+desktop_notifications = true
+
+# Flash taskbar on new messages
+taskbar_flash = true
+
+# Play sound on new messages
+sound_enabled = false
+
+# Only notify for mentions
+mentions_only = false
+
+[behavior]
+# Send typing indicators
+send_typing = true
+
+# Auto-reconnect on disconnect
+auto_reconnect = true
+
+# Reconnect delay in seconds
+reconnect_delay = 5
+
+# Maximum reconnect attempts (0 = unlimited)
+max_reconnect_attempts = 0
+
+[keybindings]
+# Custom keybindings (optional)
+# Format: action = "key"
+# quit = "ctrl+q"
+# send_message = "enter"
+# switch_server = "ctrl+s"
+# switch_channel = "ctrl+k"
+# scroll_up = "pgup"
+# scroll_down = "pgdn"
