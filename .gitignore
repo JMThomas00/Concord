@@ -1,0 +1,32 @@
+# Binaries
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+vendor/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Server config (generated at runtime)
+concord-server.toml
+
+# Claude Code local settings
+.claude/
+
+# Downloaded / generated web assets
+Text to ASCII Art Generator*
+"Text to ASCII Art Generator*"
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

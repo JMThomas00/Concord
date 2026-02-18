@@ -189,6 +189,56 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleRequestGuild(c, msg)
 		})
 
+	case protocol.OpChannelCreate:
+		c.requireAuth(func() {
+			c.handlers.HandleCreateChannel(c, msg)
+		})
+
+	case protocol.OpChannelUpdate:
+		c.requireAuth(func() {
+			c.handlers.HandleUpdateChannel(c, msg)
+		})
+
+	case protocol.OpChannelDelete:
+		c.requireAuth(func() {
+			c.handlers.HandleDeleteChannel(c, msg)
+		})
+
+	case protocol.OpRequestMessages:
+		c.requireAuth(func() {
+			c.handlers.HandleRequestMessages(c, msg)
+		})
+
+	case protocol.OpRoleAssign:
+		c.requireAuth(func() {
+			c.handlers.HandleRoleAssign(c, msg)
+		})
+
+	case protocol.OpRoleRemove:
+		c.requireAuth(func() {
+			c.handlers.HandleRoleRemove(c, msg)
+		})
+
+	case protocol.OpKickMember:
+		c.requireAuth(func() {
+			c.handlers.HandleKickMember(c, msg)
+		})
+
+	case protocol.OpBanMember:
+		c.requireAuth(func() {
+			c.handlers.HandleBanMember(c, msg)
+		})
+
+	case protocol.OpMuteMember:
+		c.requireAuth(func() {
+			c.handlers.HandleMuteMember(c, msg)
+		})
+
+	case protocol.OpWhisper:
+		c.requireAuth(func() {
+			c.handlers.HandleWhisper(c, msg)
+		})
+
 	default:
 		log.Printf("Unknown opcode: %d", msg.Op)
 		c.sendError(protocol.ErrorCodeUnknown, "Unknown operation")
@@ -248,6 +298,46 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 	}
 
 	c.send <- readyMsg
+
+	// Send SERVER_CREATE for each server with full data (channels, members, roles, users)
+	for i, server := range servers {
+		channels, _ := c.handlers.db.GetServerChannels(server.ID)
+		members, _ := c.handlers.db.GetServerMembers(server.ID)
+		roles, _ := c.handlers.db.GetServerRoles(server.ID)
+
+		// Collect user IDs for all members so the client can display names/avatars
+		userIDs := make([]uuid.UUID, 0, len(members))
+		for _, m := range members {
+			userIDs = append(userIDs, m.UserID)
+		}
+		users, _ := c.handlers.db.GetUsersByIDs(userIDs)
+
+		// CRITICAL FIX: Auto-join all channels in this server
+		// This ensures the client receives MESSAGE_CREATE broadcasts
+		for _, channel := range channels {
+			c.hub.JoinChannel(c.UserID, channel.ID)
+		}
+
+		serverCreatePayload := &protocol.ServerCreatePayload{
+			Server:   server,
+			Channels: channels,
+			Members:  members,
+			Roles:    roles,
+			Users:    users,
+		}
+
+		// Use sequence number starting from 1
+		seq := int64(i + 1)
+		serverCreateMsg, err := protocol.NewDispatch(protocol.EventServerCreate, seq, serverCreatePayload)
+		if err != nil {
+			log.Printf("Failed to create SERVER_CREATE message: %v", err)
+			continue
+		}
+
+		c.send <- serverCreateMsg
+		log.Printf("Sent SERVER_CREATE for server %s with %d channels, %d members, %d roles, %d users (auto-joined %d channels)",
+			server.Name, len(channels), len(members), len(roles), len(users), len(channels))
+	}
 
 	// Broadcast presence update to all servers
 	c.hub.BroadcastPresenceUpdate(user, serverIDs)

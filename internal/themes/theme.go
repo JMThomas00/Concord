@@ -187,17 +187,21 @@ func (t *Theme) BuildStyles() *Styles {
 		Padding(0, 1)
 
 	s.MessageContent = lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Semantic.ChatBg)).
 		Foreground(lipgloss.Color(t.Semantic.ChatFg))
 
 	s.Timestamp = lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Semantic.ChatBg)).
 		Foreground(lipgloss.Color(t.Semantic.ChatTimestamp)).
 		Faint(true)
 
 	s.UsernameSelf = lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Semantic.ChatBg)).
 		Foreground(lipgloss.Color(t.Semantic.ChatUsernameSelf)).
 		Bold(true)
 
 	s.UsernameOther = lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Semantic.ChatBg)).
 		Foreground(lipgloss.Color(t.Semantic.ChatUsernameOther)).
 		Bold(true)
 
@@ -206,6 +210,7 @@ func (t *Theme) BuildStyles() *Styles {
 		Bold(true)
 
 	s.SystemMessage = lipgloss.NewStyle().
+		Background(lipgloss.Color(t.Semantic.ChatBg)).
 		Foreground(lipgloss.Color(t.Colors.Comment)).
 		Italic(true)
 

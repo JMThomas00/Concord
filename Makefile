@@ -40,13 +40,13 @@ build: build-server build-client
 build-server:
 	@echo "Building server..."
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY) ./cmd/server
+	CGO_ENABLED=0 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY) ./cmd/server
 
 # Build client
 build-client:
 	@echo "Building client..."
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
+	CGO_ENABLED=0 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
 
 # Clean build artifacts
 clean:
@@ -91,9 +91,9 @@ dist:
 	@echo "Building distribution packages..."
 	@mkdir -p $(DIST_DIR)
 	@for platform in $(PLATFORMS); do \
-		GOOS=$${platform%/*} GOARCH=$${platform#*/} \
+		CGO_ENABLED=0 GOOS=$${platform%/*} GOARCH=$${platform#*/} \
 		$(GOBUILD) $(LDFLAGS) -o $(DIST_DIR)/$(SERVER_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/server; \
-		GOOS=$${platform%/*} GOARCH=$${platform#*/} \
+		CGO_ENABLED=0 GOOS=$${platform%/*} GOARCH=$${platform#*/} \
 		$(GOBUILD) $(LDFLAGS) -o $(DIST_DIR)/$(CLIENT_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/client; \
 		echo "Built for $${platform}"; \
 	done
@@ -102,8 +102,8 @@ dist:
 build-windows:
 	@echo "Building for Windows..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
-	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
 
 # Development: watch for changes and rebuild
 dev-server:

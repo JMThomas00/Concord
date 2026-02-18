@@ -111,7 +111,12 @@ func NewEveryoneRole(serverID uuid.UUID) *Role {
 		ServerID:    serverID,
 		Name:        "everyone",
 		Color:       0,
-		Permissions: PermissionViewChannels | PermissionSendMessages | PermissionReadMessageHistory | PermissionAddReactions,
+		// Give everyone basic permissions including channel management for a friendly default experience
+		Permissions: PermissionViewChannels |
+			PermissionSendMessages |
+			PermissionReadMessageHistory |
+			PermissionAddReactions |
+			PermissionManageChannels,
 		Position:    0,
 		IsHoisted:   false,
 		IsMentionable: false,
@@ -191,7 +196,7 @@ func NewPermissionCalculator(ownerID uuid.UUID, everyoneRole *Role) *PermissionC
 func (pc *PermissionCalculator) ComputeBasePermissions(member *ServerMember, roles []*Role) Permission {
 	// Server owner has all permissions
 	if member.UserID == pc.ServerOwnerID {
-		return Permission(^0) // All bits set
+		return ^Permission(0) // All bits set
 	}
 
 	// Start with @everyone permissions
@@ -200,10 +205,10 @@ func (pc *PermissionCalculator) ComputeBasePermissions(member *ServerMember, rol
 	// Apply role permissions (OR them together)
 	for _, role := range roles {
 		permissions |= role.Permissions
-		
+
 		// If admin, grant all permissions
 		if role.HasPermission(PermissionAdministrator) {
-			return Permission(^0)
+			return ^Permission(0)
 		}
 	}
 

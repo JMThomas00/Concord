@@ -1,0 +1,50 @@
+[meta]
+name    = "Alucard Light"
+author  = "Concord"
+variant = "light"
+
+[colors]
+background   = "#F5F5FF"
+current_line = "#E8E8F8"
+selection    = "#D0D0E8"
+foreground   = "#1A1A2E"
+comment      = "#7878A0"
+red          = "#CC2222"
+orange       = "#CC6600"
+yellow       = "#AA8800"
+green        = "#226622"
+cyan         = "#006688"
+purple       = "#6622AA"
+pink         = "#AA2266"
+
+[semantic]
+sidebar_bg       = "#EAEAF8"
+sidebar_fg       = "#1A1A2E"
+sidebar_selected = "#D0D0E8"
+sidebar_hover    = "#DCDCF0"
+
+chat_bg             = "#F5F5FF"
+chat_fg             = "#1A1A2E"
+chat_timestamp      = "#7878A0"
+chat_username_self  = "#6622AA"
+chat_username_other = "#006688"
+chat_mention        = "#AA2266"
+
+input_bg           = "#EAEAF8"
+input_fg           = "#1A1A2E"
+input_border       = "#D0D0E8"
+input_border_focus = "#6622AA"
+
+status_online  = "#226622"
+status_idle    = "#AA8800"
+status_dnd     = "#CC2222"
+status_offline = "#7878A0"
+
+error   = "#CC2222"
+warning = "#CC6600"
+success = "#226622"
+info    = "#006688"
+
+scrollbar       = "#D0D0E8"
+scrollbar_hover = "#B8B8D8"
+border          = "#D0D0E8"

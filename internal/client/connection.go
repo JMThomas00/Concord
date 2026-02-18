@@ -1,9 +1,12 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -85,9 +88,15 @@ func (c *Connection) Connect() error {
 		u.Scheme = "wss"
 	}
 	u.Path = "/ws"
-	
-	// Connect
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+
+	// Configure dialer with timeout
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		Proxy:            http.ProxyFromEnvironment,
+	}
+
+	// Connect with timeout
+	conn, _, err := dialer.Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
@@ -451,4 +460,123 @@ func (c *Connection) GetLastSequence() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lastSeq
+}
+
+// LoginResponse represents the response from the login endpoint
+type LoginResponse struct {
+	User  *models.User `json:"user"`
+	Token string       `json:"token"`
+}
+
+// Login authenticates with the server using email and password
+func (c *Connection) Login(email, password string) (*models.User, string, error) {
+	// Parse server address to get HTTP URL
+	u, err := url.Parse(c.serverAddr)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid server address: %w", err)
+	}
+
+	// Convert to HTTP scheme
+	if u.Scheme == "ws" {
+		u.Scheme = "http"
+	} else if u.Scheme == "wss" {
+		u.Scheme = "https"
+	}
+	u.Path = "/api/login"
+
+	// Create request body
+	reqBody := map[string]string{
+		"email":    email,
+		"password": password,
+	}
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Make HTTP request with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Post(u.String(), "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to connect to server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check status code
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("login failed: %s", string(body))
+	}
+
+	// Parse response
+	var loginResp LoginResponse
+	if err := json.Unmarshal(body, &loginResp); err != nil {
+		return nil, "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return loginResp.User, loginResp.Token, nil
+}
+
+// Register creates a new account on the server
+func (c *Connection) Register(username, email, password string) (*models.User, string, error) {
+	// Parse server address to get HTTP URL
+	u, err := url.Parse(c.serverAddr)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid server address: %w", err)
+	}
+
+	// Convert to HTTP scheme
+	if u.Scheme == "ws" {
+		u.Scheme = "http"
+	} else if u.Scheme == "wss" {
+		u.Scheme = "https"
+	}
+	u.Path = "/api/register"
+
+	// Create request body
+	reqBody := map[string]string{
+		"username": username,
+		"email":    email,
+		"password": password,
+	}
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Make HTTP request with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Post(u.String(), "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to connect to server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check status code
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("registration failed: %s", string(body))
+	}
+
+	// Parse response
+	var loginResp LoginResponse
+	if err := json.Unmarshal(body, &loginResp); err != nil {
+		return nil, "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return loginResp.User, loginResp.Token, nil
 }

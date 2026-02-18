@@ -1,0 +1,50 @@
+[meta]
+name    = "Gruvbox"
+author  = "morhetz"
+variant = "dark"
+
+[colors]
+background   = "#282828"
+current_line = "#3C3836"
+selection    = "#504945"
+foreground   = "#EBDBB2"
+comment      = "#928374"
+red          = "#FB4934"
+orange       = "#FE8019"
+yellow       = "#FABD2F"
+green        = "#B8BB26"
+cyan         = "#8EC07C"
+purple       = "#D3869B"
+pink         = "#D3869B"
+
+[semantic]
+sidebar_bg       = "#282828"
+sidebar_fg       = "#EBDBB2"
+sidebar_selected = "#504945"
+sidebar_hover    = "#3C3836"
+
+chat_bg             = "#282828"
+chat_fg             = "#EBDBB2"
+chat_timestamp      = "#928374"
+chat_username_self  = "#FABD2F"
+chat_username_other = "#8EC07C"
+chat_mention        = "#FB4934"
+
+input_bg           = "#3C3836"
+input_fg           = "#EBDBB2"
+input_border       = "#504945"
+input_border_focus = "#FABD2F"
+
+status_online  = "#B8BB26"
+status_idle    = "#FABD2F"
+status_dnd     = "#FB4934"
+status_offline = "#928374"
+
+error   = "#FB4934"
+warning = "#FE8019"
+success = "#B8BB26"
+info    = "#83A598"
+
+scrollbar       = "#504945"
+scrollbar_hover = "#665C54"
+border          = "#504945"

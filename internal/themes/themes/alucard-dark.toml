@@ -1,0 +1,50 @@
+[meta]
+name    = "Alucard Dark"
+author  = "Concord"
+variant = "dark"
+
+[colors]
+background   = "#1A1A2E"
+current_line = "#2D2D44"
+selection    = "#3D3D5C"
+foreground   = "#E0E0F0"
+comment      = "#6B6B8A"
+red          = "#E05C5C"
+orange       = "#E09050"
+yellow       = "#E0D050"
+green        = "#50C878"
+cyan         = "#50C8C8"
+purple       = "#9B59B6"
+pink         = "#E050A0"
+
+[semantic]
+sidebar_bg       = "#1A1A2E"
+sidebar_fg       = "#E0E0F0"
+sidebar_selected = "#3D3D5C"
+sidebar_hover    = "#2D2D44"
+
+chat_bg             = "#1A1A2E"
+chat_fg             = "#E0E0F0"
+chat_timestamp      = "#6B6B8A"
+chat_username_self  = "#9B59B6"
+chat_username_other = "#50C8C8"
+chat_mention        = "#E050A0"
+
+input_bg           = "#2D2D44"
+input_fg           = "#E0E0F0"
+input_border       = "#3D3D5C"
+input_border_focus = "#9B59B6"
+
+status_online  = "#50C878"
+status_idle    = "#E0D050"
+status_dnd     = "#E05C5C"
+status_offline = "#6B6B8A"
+
+error   = "#E05C5C"
+warning = "#E09050"
+success = "#50C878"
+info    = "#50C8C8"
+
+scrollbar       = "#3D3D5C"
+scrollbar_hover = "#4D4D6C"
+border          = "#3D3D5C"

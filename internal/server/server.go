@@ -55,6 +55,14 @@ func New(config *Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Ensure default server exists
+	defaultServer, _, err := db.EnsureDefaultServer()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to ensure default server: %w", err)
+	}
+	log.Printf("Default server initialized: ID=%s, Name=%s", defaultServer.ID, defaultServer.Name)
+
 	// Create hub
 	hub := NewHub()
 
@@ -198,11 +206,64 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Create user
 	user := models.NewUser(req.Username, req.Email)
+	log.Printf("Creating user: ID=%s, Username=%s, Email=%s, Discriminator=%s",
+		user.ID, user.Username, user.Email, user.Discriminator)
 
 	if err := s.db.CreateUser(user, string(passwordHash)); err != nil {
 		log.Printf("Failed to create user: %v", err)
 		http.Error(w, "Failed to create user (email or username may already exist)", http.StatusConflict)
 		return
+	}
+
+	log.Printf("User created successfully: ID=%s, Username=%s#%s", user.ID, user.Username, user.Discriminator)
+
+	// Verify user was created by trying to retrieve it
+	retrievedUser, err := s.db.GetUserByID(user.ID)
+	if err != nil {
+		log.Printf("ERROR: User was created but cannot be retrieved: %v", err)
+		http.Error(w, "Internal server error: user created but not retrievable", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("User retrieval verified: ID=%s, Username=%s", retrievedUser.ID, retrievedUser.Username)
+
+	// Add user to default server
+	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer()
+	if err != nil {
+		log.Printf("Failed to get default server: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Create server member
+	member := &models.ServerMember{
+		UserID:    user.ID,
+		ServerID:  defaultServer.ID,
+		JoinedAt:  time.Now(),
+		IsMuted:   false,
+		IsDeafened: false,
+	}
+	if err := s.db.AddServerMember(member); err != nil {
+		log.Printf("Failed to add user to default server: %v", err)
+		// Don't fail registration, just log the error
+	} else {
+		log.Printf("User added to default server: ServerID=%s", defaultServer.ID)
+	}
+
+	// Assign @everyone role
+	if err := s.db.AddMemberRole(user.ID, defaultServer.ID, everyoneRole.ID); err != nil {
+		log.Printf("Failed to assign @everyone role: %v", err)
+		// Don't fail registration, just log the error
+	} else {
+		log.Printf("User assigned @everyone role: RoleID=%s", everyoneRole.ID)
+	}
+
+	// Auto-grant admin to the very first real user
+	if count, err := s.db.CountRealUsers(); err == nil && count == 1 {
+		if err := s.db.EnsureAdminRole(user.Email); err != nil {
+			log.Printf("Failed to auto-grant admin to first user: %v", err)
+		} else {
+			log.Printf("First registrant %s granted Admin role", user.Email)
+		}
 	}
 
 	// Generate auth token
@@ -212,6 +273,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	log.Printf("Auth token created for user ID=%s", user.ID)
 
 	// Return response
 	w.Header().Set("Content-Type", "application/json")
@@ -239,16 +302,51 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up user
+	log.Printf("Login attempt for email: %s", req.Email)
 	user, passwordHash, err := s.db.GetUserByEmail(req.Email)
 	if err != nil {
+		log.Printf("Login failed - user not found for email %s: %v", req.Email, err)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
+	log.Printf("User found for login: ID=%s, Username=%s#%s", user.ID, user.Username, user.Discriminator)
 
 	// Check password
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
+	}
+
+	// Ensure user is a member of the default server
+	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer()
+	if err != nil {
+		log.Printf("Failed to get default server: %v", err)
+		// Don't fail login, continue
+	} else {
+		// Check if user is already a member
+		_, err := s.db.GetServerMember(defaultServer.ID, user.ID)
+		if err != nil {
+			// User is not a member, add them
+			member := &models.ServerMember{
+				UserID:     user.ID,
+				ServerID:   defaultServer.ID,
+				JoinedAt:   time.Now(),
+				IsMuted:    false,
+				IsDeafened: false,
+			}
+			if err := s.db.AddServerMember(member); err != nil {
+				log.Printf("Failed to add user to default server on login: %v", err)
+			} else {
+				log.Printf("User added to default server on login: ServerID=%s", defaultServer.ID)
+
+				// Assign @everyone role
+				if err := s.db.AddMemberRole(user.ID, defaultServer.ID, everyoneRole.ID); err != nil {
+					log.Printf("Failed to assign @everyone role on login: %v", err)
+				} else {
+					log.Printf("User assigned @everyone role on login: RoleID=%s", everyoneRole.ID)
+				}
+			}
+		}
 	}
 
 	// Generate auth token

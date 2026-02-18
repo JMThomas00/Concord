@@ -1,0 +1,50 @@
+[meta]
+name    = "Nord"
+author  = "Arctic Ice Studio"
+variant = "dark"
+
+[colors]
+background   = "#2E3440"
+current_line = "#3B4252"
+selection    = "#434C5E"
+foreground   = "#ECEFF4"
+comment      = "#616E88"
+red          = "#BF616A"
+orange       = "#D08770"
+yellow       = "#EBCB8B"
+green        = "#A3BE8C"
+cyan         = "#88C0D0"
+purple       = "#B48EAD"
+pink         = "#D08770"
+
+[semantic]
+sidebar_bg       = "#2E3440"
+sidebar_fg       = "#D8DEE9"
+sidebar_selected = "#434C5E"
+sidebar_hover    = "#3B4252"
+
+chat_bg             = "#2E3440"
+chat_fg             = "#ECEFF4"
+chat_timestamp      = "#616E88"
+chat_username_self  = "#88C0D0"
+chat_username_other = "#81A1C1"
+chat_mention        = "#B48EAD"
+
+input_bg           = "#3B4252"
+input_fg           = "#ECEFF4"
+input_border       = "#434C5E"
+input_border_focus = "#88C0D0"
+
+status_online  = "#A3BE8C"
+status_idle    = "#EBCB8B"
+status_dnd     = "#BF616A"
+status_offline = "#616E88"
+
+error   = "#BF616A"
+warning = "#EBCB8B"
+success = "#A3BE8C"
+info    = "#88C0D0"
+
+scrollbar       = "#434C5E"
+scrollbar_hover = "#4C566A"
+border          = "#434C5E"

@@ -1,0 +1,50 @@
+[meta]
+name    = "Catppuccin Mocha"
+author  = "Catppuccin"
+variant = "dark"
+
+[colors]
+background   = "#1E1E2E"
+current_line = "#313244"
+selection    = "#45475A"
+foreground   = "#CDD6F4"
+comment      = "#6C7086"
+red          = "#F38BA8"
+orange       = "#FAB387"
+yellow       = "#F9E2AF"
+green        = "#A6E3A1"
+cyan         = "#89DCEB"
+purple       = "#CBA6F7"
+pink         = "#F5C2E7"
+
+[semantic]
+sidebar_bg       = "#1E1E2E"
+sidebar_fg       = "#CDD6F4"
+sidebar_selected = "#45475A"
+sidebar_hover    = "#313244"
+
+chat_bg             = "#1E1E2E"
+chat_fg             = "#CDD6F4"
+chat_timestamp      = "#6C7086"
+chat_username_self  = "#CBA6F7"
+chat_username_other = "#89B4FA"
+chat_mention        = "#F5C2E7"
+
+input_bg           = "#313244"
+input_fg           = "#CDD6F4"
+input_border       = "#45475A"
+input_border_focus = "#CBA6F7"
+
+status_online  = "#A6E3A1"
+status_idle    = "#F9E2AF"
+status_dnd     = "#F38BA8"
+status_offline = "#6C7086"
+
+error   = "#F38BA8"
+warning = "#FAB387"
+success = "#A6E3A1"
+info    = "#89B4FA"
+
+scrollbar       = "#45475A"
+scrollbar_hover = "#585B70"
+border          = "#45475A"

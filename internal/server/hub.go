@@ -165,6 +165,9 @@ func (h *Hub) broadcastMessage(msg *BroadcastMessage) {
 			for _, client := range clients {
 				targets = append(targets, client)
 			}
+			log.Printf("Broadcasting to channel %s: found %d clients", msg.ChannelID, len(targets))
+		} else {
+			log.Printf("Broadcasting to channel %s: no clients found in channelClients map", msg.ChannelID)
 		}
 	}
 
@@ -321,6 +324,14 @@ func (h *Hub) SendToUser(userID uuid.UUID, eventType protocol.EventType, data in
 	}
 
 	return nil
+}
+
+// IsUserOnline reports whether a user with the given ID has an active connection.
+func (h *Hub) IsUserOnline(userID uuid.UUID) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.clients[userID]
+	return ok
 }
 
 // BroadcastPresenceUpdate sends a presence update to relevant servers

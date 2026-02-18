@@ -3,10 +3,11 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 	"github.com/concord-chat/concord/internal/models"
 )
 
@@ -17,7 +18,7 @@ type DB struct {
 
 // New creates a new database connection and initializes schema
 func New(path string) (*DB, error) {
-	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_journal_mode=WAL")
+	db, err := sql.Open("sqlite", path+"?_foreign_keys=on&_journal_mode=WAL")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -199,6 +200,16 @@ func (db *DB) initSchema() error {
 		user_agent TEXT
 	);
 
+	-- Bans table
+	CREATE TABLE IF NOT EXISTS bans (
+		server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		reason TEXT,
+		banned_by TEXT NOT NULL REFERENCES users(id),
+		banned_at DATETIME NOT NULL,
+		PRIMARY KEY (server_id, user_id)
+	);
+
 	-- Indexes for common queries
 	CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON messages(channel_id, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_messages_author ON messages(author_id);
@@ -231,17 +242,34 @@ func (db *DB) CreateUser(user *models.User, passwordHash string) error {
 func (db *DB) GetUserByID(id uuid.UUID) (*models.User, error) {
 	user := &models.User{}
 	var idStr string
+	var displayName, avatarHash, statusText sql.NullString
+	var lastSeenAt sql.NullTime
+
 	err := db.QueryRow(`
 		SELECT id, username, discriminator, display_name, email, avatar_hash,
 			status, status_text, created_at, updated_at, last_seen_at, is_bot
 		FROM users WHERE id = ?`, id.String()).Scan(
-		&idStr, &user.Username, &user.Discriminator, &user.DisplayName,
-		&user.Email, &user.AvatarHash, &user.Status, &user.StatusText,
-		&user.CreatedAt, &user.UpdatedAt, &user.LastSeenAt, &user.IsBot)
+		&idStr, &user.Username, &user.Discriminator, &displayName,
+		&user.Email, &avatarHash, &user.Status, &statusText,
+		&user.CreatedAt, &user.UpdatedAt, &lastSeenAt, &user.IsBot)
 	if err != nil {
 		return nil, err
 	}
+
 	user.ID, _ = uuid.Parse(idStr)
+	if displayName.Valid {
+		user.DisplayName = displayName.String
+	}
+	if avatarHash.Valid {
+		user.AvatarHash = avatarHash.String
+	}
+	if statusText.Valid {
+		user.StatusText = statusText.String
+	}
+	if lastSeenAt.Valid {
+		user.LastSeenAt = lastSeenAt.Time
+	}
+
 	return user, nil
 }
 
@@ -249,17 +277,34 @@ func (db *DB) GetUserByID(id uuid.UUID) (*models.User, error) {
 func (db *DB) GetUserByEmail(email string) (*models.User, string, error) {
 	user := &models.User{}
 	var idStr, passwordHash string
+	var displayName, avatarHash, statusText sql.NullString
+	var lastSeenAt sql.NullTime
+
 	err := db.QueryRow(`
 		SELECT id, username, discriminator, display_name, email, password_hash, avatar_hash,
 			status, status_text, created_at, updated_at, last_seen_at, is_bot
 		FROM users WHERE email = ?`, email).Scan(
-		&idStr, &user.Username, &user.Discriminator, &user.DisplayName,
-		&user.Email, &passwordHash, &user.AvatarHash, &user.Status, &user.StatusText,
-		&user.CreatedAt, &user.UpdatedAt, &user.LastSeenAt, &user.IsBot)
+		&idStr, &user.Username, &user.Discriminator, &displayName,
+		&user.Email, &passwordHash, &avatarHash, &user.Status, &statusText,
+		&user.CreatedAt, &user.UpdatedAt, &lastSeenAt, &user.IsBot)
 	if err != nil {
 		return nil, "", err
 	}
+
 	user.ID, _ = uuid.Parse(idStr)
+	if displayName.Valid {
+		user.DisplayName = displayName.String
+	}
+	if avatarHash.Valid {
+		user.AvatarHash = avatarHash.String
+	}
+	if statusText.Valid {
+		user.StatusText = statusText.String
+	}
+	if lastSeenAt.Valid {
+		user.LastSeenAt = lastSeenAt.Time
+	}
+
 	return user, passwordHash, nil
 }
 
@@ -290,7 +335,7 @@ func (db *DB) CreateServer(server *models.Server) error {
 func (db *DB) GetServerByID(id uuid.UUID) (*models.Server, error) {
 	server := &models.Server{}
 	var idStr, ownerIDStr string
-	var defaultChanID, systemChanID, rulesChanID sql.NullString
+	var iconHash, defaultChanID, systemChanID, rulesChanID sql.NullString
 
 	err := db.QueryRow(`
 		SELECT id, name, description, icon_hash, owner_id, default_channel_id,
@@ -298,7 +343,7 @@ func (db *DB) GetServerByID(id uuid.UUID) (*models.Server, error) {
 			verification_level, explicit_content_filter, invites_enabled,
 			default_invite_max_age, default_invite_max_uses
 		FROM servers WHERE id = ?`, id.String()).Scan(
-		&idStr, &server.Name, &server.Description, &server.IconHash,
+		&idStr, &server.Name, &server.Description, &iconHash,
 		&ownerIDStr, &defaultChanID, &systemChanID, &rulesChanID,
 		&server.MaxMembers, &server.CreatedAt, &server.UpdatedAt,
 		&server.VerificationLevel, &server.ExplicitContentFilter,
@@ -309,6 +354,9 @@ func (db *DB) GetServerByID(id uuid.UUID) (*models.Server, error) {
 
 	server.ID, _ = uuid.Parse(idStr)
 	server.OwnerID, _ = uuid.Parse(ownerIDStr)
+	if iconHash.Valid {
+		server.IconHash = iconHash.String
+	}
 	if defaultChanID.Valid {
 		server.DefaultChannelID, _ = uuid.Parse(defaultChanID.String)
 	}
@@ -339,9 +387,9 @@ func (db *DB) GetUserServers(userID uuid.UUID) ([]*models.Server, error) {
 	for rows.Next() {
 		server := &models.Server{}
 		var idStr, ownerIDStr string
-		var defaultChanID, systemChanID sql.NullString
+		var iconHash, defaultChanID, systemChanID sql.NullString
 
-		err := rows.Scan(&idStr, &server.Name, &server.Description, &server.IconHash,
+		err := rows.Scan(&idStr, &server.Name, &server.Description, &iconHash,
 			&ownerIDStr, &defaultChanID, &systemChanID, &server.MaxMembers,
 			&server.CreatedAt, &server.UpdatedAt)
 		if err != nil {
@@ -350,6 +398,9 @@ func (db *DB) GetUserServers(userID uuid.UUID) ([]*models.Server, error) {
 
 		server.ID, _ = uuid.Parse(idStr)
 		server.OwnerID, _ = uuid.Parse(ownerIDStr)
+		if iconHash.Valid {
+			server.IconHash = iconHash.String
+		}
 		if defaultChanID.Valid {
 			server.DefaultChannelID, _ = uuid.Parse(defaultChanID.String)
 		}
@@ -422,6 +473,129 @@ func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 	}
 
 	return channels, rows.Err()
+}
+
+// GetChannelByID retrieves a channel by its ID
+func (db *DB) GetChannelByID(channelID uuid.UUID) (*models.Channel, error) {
+	var ch models.Channel
+	var idStr, serverIDStr string
+	var topic sql.NullString
+	var categoryID sql.NullString
+
+	err := db.QueryRow(`
+		SELECT id, server_id, name, topic, type, position, category_id,
+			is_nsfw, rate_limit_per_user, created_at, updated_at
+		FROM channels WHERE id = ?`, channelID.String()).
+		Scan(&idStr, &serverIDStr, &ch.Name, &topic, &ch.Type, &ch.Position,
+			&categoryID, &ch.IsNSFW, &ch.RateLimitPerUser, &ch.CreatedAt, &ch.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("channel not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	ch.ID, _ = uuid.Parse(idStr)
+	ch.ServerID, _ = uuid.Parse(serverIDStr)
+	if topic.Valid {
+		ch.Topic = topic.String
+	}
+	if categoryID.Valid {
+		ch.CategoryID, _ = uuid.Parse(categoryID.String)
+	}
+
+	return &ch, nil
+}
+
+// UpdateChannel updates an existing channel
+func (db *DB) UpdateChannel(channel *models.Channel) error {
+	var categoryID sql.NullString
+	if channel.CategoryID != uuid.Nil {
+		categoryID.String = channel.CategoryID.String()
+		categoryID.Valid = true
+	}
+
+	_, err := db.Exec(`
+		UPDATE channels
+		SET name = ?, topic = ?, category_id = ?, position = ?, is_nsfw = ?,
+			rate_limit_per_user = ?, updated_at = ?
+		WHERE id = ?`,
+		channel.Name, channel.Topic, categoryID, channel.Position, channel.IsNSFW,
+		channel.RateLimitPerUser, time.Now(), channel.ID.String())
+
+	return err
+}
+
+// DeleteChannel deletes a channel and all its messages
+func (db *DB) DeleteChannel(channelID uuid.UUID) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete messages first (foreign key constraint)
+	_, err = tx.Exec(`DELETE FROM messages WHERE channel_id = ?`, channelID.String())
+	if err != nil {
+		return err
+	}
+
+	// Delete channel
+	_, err = tx.Exec(`DELETE FROM channels WHERE id = ?`, channelID.String())
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// GetServerMember retrieves a server member relationship
+func (db *DB) GetServerMember(serverID, userID uuid.UUID) (*models.ServerMember, error) {
+	var member models.ServerMember
+	var serverIDStr, userIDStr string
+	var nickname sql.NullString
+
+	err := db.QueryRow(`
+		SELECT server_id, user_id, nickname, joined_at, is_muted, is_deafened
+		FROM server_members WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String()).
+		Scan(&serverIDStr, &userIDStr, &nickname, &member.JoinedAt, &member.IsMuted, &member.IsDeafened)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("member not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	member.ServerID, _ = uuid.Parse(serverIDStr)
+	member.UserID, _ = uuid.Parse(userIDStr)
+	if nickname.Valid {
+		member.Nickname = nickname.String
+	}
+
+	// Query roles
+	rows, err := db.Query(`
+		SELECT role_id FROM member_roles
+		WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	member.RoleIDs = []uuid.UUID{}
+	for rows.Next() {
+		var roleIDStr string
+		if err := rows.Scan(&roleIDStr); err != nil {
+			return nil, err
+		}
+		roleID, _ := uuid.Parse(roleIDStr)
+		member.RoleIDs = append(member.RoleIDs, roleID)
+	}
+
+	return &member, nil
 }
 
 // --- Message Operations ---
@@ -533,7 +707,7 @@ func (db *DB) RemoveServerMember(userID, serverID uuid.UUID) error {
 	return err
 }
 
-// GetServerMembers retrieves all members of a server
+// GetServerMembers retrieves all members of a server, including their role IDs
 func (db *DB) GetServerMembers(serverID uuid.UUID) ([]*models.ServerMember, error) {
 	rows, err := db.Query(`
 		SELECT user_id, server_id, nickname, joined_at, is_muted, is_deafened
@@ -544,6 +718,7 @@ func (db *DB) GetServerMembers(serverID uuid.UUID) ([]*models.ServerMember, erro
 	defer rows.Close()
 
 	var members []*models.ServerMember
+	memberIndex := make(map[string]*models.ServerMember)
 	for rows.Next() {
 		m := &models.ServerMember{}
 		var userIDStr, serverIDStr string
@@ -555,11 +730,112 @@ func (db *DB) GetServerMembers(serverID uuid.UUID) ([]*models.ServerMember, erro
 
 		m.UserID, _ = uuid.Parse(userIDStr)
 		m.ServerID, _ = uuid.Parse(serverIDStr)
+		m.RoleIDs = []uuid.UUID{}
 
 		members = append(members, m)
+		memberIndex[userIDStr] = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	return members, rows.Err()
+	// Load all member roles for this server in one query
+	roleRows, err := db.Query(`
+		SELECT user_id, role_id FROM member_roles WHERE server_id = ?`, serverID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer roleRows.Close()
+
+	for roleRows.Next() {
+		var userIDStr, roleIDStr string
+		if err := roleRows.Scan(&userIDStr, &roleIDStr); err != nil {
+			return nil, err
+		}
+		if m, ok := memberIndex[userIDStr]; ok {
+			roleID, _ := uuid.Parse(roleIDStr)
+			m.RoleIDs = append(m.RoleIDs, roleID)
+		}
+	}
+
+	return members, roleRows.Err()
+}
+
+// GetUsersByIDs retrieves multiple users by their IDs in a single query
+func (db *DB) GetUsersByIDs(ids []uuid.UUID) ([]*models.User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Build placeholders
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id.String()
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, username, discriminator, display_name, email, avatar_hash,
+			status, status_text, created_at, updated_at, last_seen_at, is_bot
+		FROM users WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		user := &models.User{}
+		var idStr string
+		var displayName, avatarHash, statusText sql.NullString
+		var lastSeenAt sql.NullTime
+
+		err := rows.Scan(&idStr, &user.Username, &user.Discriminator, &displayName,
+			&user.Email, &avatarHash, &user.Status, &statusText,
+			&user.CreatedAt, &user.UpdatedAt, &lastSeenAt, &user.IsBot)
+		if err != nil {
+			return nil, err
+		}
+
+		user.ID, _ = uuid.Parse(idStr)
+		if displayName.Valid {
+			user.DisplayName = displayName.String
+		}
+		if avatarHash.Valid {
+			user.AvatarHash = avatarHash.String
+		}
+		if statusText.Valid {
+			user.StatusText = statusText.String
+		}
+		if lastSeenAt.Valid {
+			user.LastSeenAt = lastSeenAt.Time
+		}
+		users = append(users, user)
+	}
+
+	return users, rows.Err()
+}
+
+// AddMemberRole assigns a role to a server member
+func (db *DB) AddMemberRole(userID, serverID, roleID uuid.UUID) error {
+	_, err := db.Exec(`
+		INSERT INTO member_roles (user_id, server_id, role_id)
+		VALUES (?, ?, ?)
+		ON CONFLICT DO NOTHING`,
+		userID.String(), serverID.String(), roleID.String())
+	return err
+}
+
+// RemoveMemberRole removes a role from a server member
+func (db *DB) RemoveMemberRole(userID, serverID, roleID uuid.UUID) error {
+	_, err := db.Exec(`
+		DELETE FROM member_roles
+		WHERE user_id = ? AND server_id = ? AND role_id = ?`,
+		userID.String(), serverID.String(), roleID.String())
+	return err
 }
 
 // --- Role Operations ---
@@ -609,6 +885,32 @@ func (db *DB) GetServerRoles(serverID uuid.UUID) ([]*models.Role, error) {
 	return roles, rows.Err()
 }
 
+// GetRoleByID retrieves a role by its ID
+func (db *DB) GetRoleByID(roleID uuid.UUID) (*models.Role, error) {
+	var r models.Role
+	var idStr, serverIDStr string
+
+	err := db.QueryRow(`
+		SELECT id, server_id, name, color, permissions, position,
+			is_hoisted, is_mentionable, is_default, created_at, updated_at
+		FROM roles WHERE id = ?`, roleID.String()).
+		Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &r.Permissions,
+			&r.Position, &r.IsHoisted, &r.IsMentionable, &r.IsDefault,
+			&r.CreatedAt, &r.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("role not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	r.ID, _ = uuid.Parse(idStr)
+	r.ServerID, _ = uuid.Parse(serverIDStr)
+
+	return &r, nil
+}
+
 // --- Session Operations ---
 
 // CreateSession creates a new authentication session
@@ -654,4 +956,250 @@ func (db *DB) DeleteSession(tokenHash string) error {
 func (db *DB) DeleteUserSessions(userID uuid.UUID) error {
 	_, err := db.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID.String())
 	return err
+}
+
+// --- Server Initialization ---
+
+// EnsureDefaultServer ensures a default server exists, creating it if necessary
+// Returns the default server and its @everyone role
+func (db *DB) EnsureDefaultServer() (*models.Server, *models.Role, error) {
+	// Try to find existing default server (first server created)
+	var serverIDStr string
+	err := db.QueryRow(`SELECT id FROM servers ORDER BY created_at ASC LIMIT 1`).Scan(&serverIDStr)
+
+	if err == sql.ErrNoRows {
+		// No server exists, create default server
+		now := time.Now()
+
+		// Create a system user to be the owner (using a fixed UUID for consistency)
+		systemUserID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+		// Check if system user exists, create if not
+		_, err := db.GetUserByID(systemUserID)
+		if err != nil {
+			// System user doesn't exist, create it
+			systemUser := &models.User{
+				ID:            systemUserID,
+				Username:      "system",
+				Discriminator: "0000",
+				DisplayName:   "System",
+				Email:         "system@concord.local",
+				Status:        models.StatusOffline,
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}
+			// Use empty password hash since system user can't log in
+			if err := db.CreateUser(systemUser, ""); err != nil {
+				return nil, nil, fmt.Errorf("failed to create system user: %w", err)
+			}
+		}
+
+		// Create default server
+		server := models.NewServer("Concord Server", systemUserID)
+		if err := db.CreateServer(server); err != nil {
+			return nil, nil, fmt.Errorf("failed to create default server: %w", err)
+		}
+
+		// Create @everyone role
+		everyoneRole := models.NewEveryoneRole(server.ID)
+		if err := db.CreateRole(everyoneRole); err != nil {
+			return nil, nil, fmt.Errorf("failed to create @everyone role: %w", err)
+		}
+
+		// Create default channel
+		generalChannel := models.NewTextChannel(server.ID, "general")
+		if err := db.CreateChannel(generalChannel); err != nil {
+			return nil, nil, fmt.Errorf("failed to create default channel: %w", err)
+		}
+
+		// Set as default channel (update directly in database)
+		_, err = db.Exec(`UPDATE servers SET default_channel_id = ?, updated_at = ? WHERE id = ?`,
+			generalChannel.ID.String(), time.Now(), server.ID.String())
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to update server default channel: %w", err)
+		}
+		server.DefaultChannelID = generalChannel.ID
+
+		return server, everyoneRole, nil
+	} else if err != nil {
+		return nil, nil, fmt.Errorf("failed to query servers: %w", err)
+	}
+
+	// Server exists, retrieve it
+	serverID, _ := uuid.Parse(serverIDStr)
+	server, err := db.GetServerByID(serverID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get server: %w", err)
+	}
+
+	// Get @everyone role
+	roles, err := db.GetServerRoles(serverID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get server roles: %w", err)
+	}
+
+	var everyoneRole *models.Role
+	for _, role := range roles {
+		if role.IsDefault {
+			everyoneRole = role
+			break
+		}
+	}
+
+	if everyoneRole == nil {
+		// @everyone role missing, create it
+		everyoneRole = models.NewEveryoneRole(serverID)
+		if err := db.CreateRole(everyoneRole); err != nil {
+			return nil, nil, fmt.Errorf("failed to create @everyone role: %w", err)
+		}
+	}
+
+	return server, everyoneRole, nil
+}
+
+// CountRealUsers returns the number of non-system users registered on this server.
+func (db *DB) CountRealUsers() (int, error) {
+	systemUserID := "00000000-0000-0000-0000-000000000001"
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE id != ?`, systemUserID).Scan(&count)
+	return count, err
+}
+
+// UpdateServerOwner updates the owner_id of a server.
+func (db *DB) UpdateServerOwner(serverID, ownerID uuid.UUID) error {
+	_, err := db.Exec(`UPDATE servers SET owner_id = ?, updated_at = ? WHERE id = ?`,
+		ownerID.String(), time.Now(), serverID.String())
+	return err
+}
+
+// GetOrCreateAdminRole returns the existing "Admin" role for serverID, creating it if absent.
+func (db *DB) GetOrCreateAdminRole(serverID uuid.UUID) (*models.Role, error) {
+	roles, err := db.GetServerRoles(serverID)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range roles {
+		if r.Name == "Admin" && r.Permissions&models.PermissionAdministrator != 0 {
+			return r, nil
+		}
+	}
+	// Create a new Admin role with gold color (#FFD700 = 16766720)
+	now := time.Now()
+	adminRole := &models.Role{
+		ID:            uuid.New(),
+		ServerID:      serverID,
+		Name:          "Admin",
+		Color:         0xFFD700,
+		Permissions:   models.PermissionsAdmin,
+		Position:      100,
+		IsHoisted:     true,
+		IsMentionable: true,
+		IsDefault:     false,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := db.CreateRole(adminRole); err != nil {
+		return nil, fmt.Errorf("failed to create admin role: %w", err)
+	}
+	return adminRole, nil
+}
+
+// --- Moderation ---
+
+// AddBan adds a ban record for a user on a server.
+func (db *DB) AddBan(serverID, userID, bannedByID uuid.UUID, reason string) error {
+	_, err := db.Exec(`
+		INSERT INTO bans (server_id, user_id, reason, banned_by, banned_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(server_id, user_id) DO UPDATE SET reason=excluded.reason, banned_by=excluded.banned_by, banned_at=excluded.banned_at`,
+		serverID.String(), userID.String(), reason, bannedByID.String(), time.Now())
+	return err
+}
+
+// IsBanned reports whether userID is banned from serverID.
+func (db *DB) IsBanned(serverID, userID uuid.UUID) (bool, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM bans WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String()).Scan(&count)
+	return count > 0, err
+}
+
+// SetMemberMuted sets the server-mute state for a member.
+func (db *DB) SetMemberMuted(serverID, userID uuid.UUID, muted bool) error {
+	val := 0
+	if muted {
+		val = 1
+	}
+	_, err := db.Exec(`UPDATE server_members SET is_muted = ? WHERE server_id = ? AND user_id = ?`,
+		val, serverID.String(), userID.String())
+	return err
+}
+
+// GetRoleByName returns the first role with the given name in a server (case-insensitive).
+func (db *DB) GetRoleByName(serverID uuid.UUID, name string) (*models.Role, error) {
+	roles, err := db.GetServerRoles(serverID)
+	if err != nil {
+		return nil, err
+	}
+	nameLower := strings.ToLower(name)
+	for _, r := range roles {
+		if strings.ToLower(r.Name) == nameLower {
+			return r, nil
+		}
+	}
+	return nil, fmt.Errorf("role %q not found", name)
+}
+
+// GetMemberRoles returns all roles assigned to a member.
+func (db *DB) GetMemberRoles(serverID, userID uuid.UUID) ([]*models.Role, error) {
+	rows, err := db.Query(`
+		SELECT r.id, r.server_id, r.name, r.color, r.permissions, r.position,
+		       r.is_hoisted, r.is_mentionable, r.is_default, r.created_at, r.updated_at
+		FROM roles r
+		JOIN member_roles mr ON mr.role_id = r.id
+		WHERE mr.server_id = ? AND mr.user_id = ?`,
+		serverID.String(), userID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []*models.Role
+	for rows.Next() {
+		r := &models.Role{}
+		var idStr, serverIDStr string
+		if err := rows.Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &r.Permissions,
+			&r.Position, &r.IsHoisted, &r.IsMentionable, &r.IsDefault, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		r.ID, _ = uuid.Parse(idStr)
+		r.ServerID, _ = uuid.Parse(serverIDStr)
+		roles = append(roles, r)
+	}
+	return roles, rows.Err()
+}
+
+// EnsureAdminRole grants the Admin role to the user with the given email, and makes
+// them the server owner. Safe to call repeatedly.
+func (db *DB) EnsureAdminRole(email string) error {
+	user, _, err := db.GetUserByEmail(email)
+	if err != nil {
+		return fmt.Errorf("user not found for email %q: %w", email, err)
+	}
+
+	server, _, err := db.EnsureDefaultServer()
+	if err != nil {
+		return err
+	}
+
+	adminRole, err := db.GetOrCreateAdminRole(server.ID)
+	if err != nil {
+		return err
+	}
+
+	// Assign the role (ignore duplicate errors)
+	_ = db.AddMemberRole(user.ID, server.ID, adminRole.ID)
+
+	// Make them the server owner
+	return db.UpdateServerOwner(server.ID, user.ID)
 }

@@ -1,0 +1,50 @@
+[meta]
+name    = "Monokai"
+author  = "Wimer Hazenberg"
+variant = "dark"
+
+[colors]
+background   = "#272822"
+current_line = "#3E3D32"
+selection    = "#49483E"
+foreground   = "#F8F8F2"
+comment      = "#75715E"
+red          = "#F92672"
+orange       = "#FD971F"
+yellow       = "#E6DB74"
+green        = "#A6E22E"
+cyan         = "#66D9E8"
+purple       = "#AE81FF"
+pink         = "#F92672"
+
+[semantic]
+sidebar_bg       = "#272822"
+sidebar_fg       = "#F8F8F2"
+sidebar_selected = "#49483E"
+sidebar_hover    = "#3E3D32"
+
+chat_bg             = "#272822"
+chat_fg             = "#F8F8F2"
+chat_timestamp      = "#75715E"
+chat_username_self  = "#AE81FF"
+chat_username_other = "#66D9E8"
+chat_mention        = "#F92672"
+
+input_bg           = "#3E3D32"
+input_fg           = "#F8F8F2"
+input_border       = "#49483E"
+input_border_focus = "#AE81FF"
+
+status_online  = "#A6E22E"
+status_idle    = "#E6DB74"
+status_dnd     = "#F92672"
+status_offline = "#75715E"
+
+error   = "#F92672"
+warning = "#FD971F"
+success = "#A6E22E"
+info    = "#66D9E8"
+
+scrollbar       = "#49483E"
+scrollbar_hover = "#75715E"
+border          = "#49483E"
