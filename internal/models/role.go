@@ -7,7 +7,7 @@ import (
 )
 
 // Permission represents individual permissions as bit flags
-type Permission int64
+type Permission uint64
 
 const (
 	// General permissions
