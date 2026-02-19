@@ -337,6 +337,27 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		c.send <- serverCreateMsg
 		log.Printf("Sent SERVER_CREATE for server %s with %d channels, %d members, %d roles, %d users (auto-joined %d channels)",
 			server.Name, len(channels), len(members), len(roles), len(users), len(channels))
+
+		// Broadcast SERVER_MEMBER_ADD to all OTHER clients already in this server so
+		// their members panels update in real time without needing to reconnect.
+		// (The newly connecting user is excluded since they receive the full list via SERVER_CREATE above.)
+		var newUserMember *models.ServerMember
+		for _, m := range members {
+			if m.UserID == user.ID {
+				newUserMember = m
+				break
+			}
+		}
+		if newUserMember != nil {
+			memberAddPayload := &protocol.ServerMemberAddPayload{
+				ServerID: server.ID,
+				Member:   newUserMember,
+				User:     user,
+			}
+			if err := c.hub.BroadcastToServer(server.ID, protocol.EventServerMemberAdd, memberAddPayload, &user.ID); err != nil {
+				log.Printf("Failed to broadcast SERVER_MEMBER_ADD for server %s: %v", server.Name, err)
+			}
+		}
 	}
 
 	// Broadcast presence update to all servers

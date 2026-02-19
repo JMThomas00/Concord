@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -267,8 +269,12 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	input.SetHeight(4)  // 4 rows of text (matches layout slot: 2 borders + 4 content = 6 rows)
 	input.ShowLineNumbers = false
 	input.Prompt = "" // remove the default "> " prompt gutter character
-	// Configure keybindings: disable default Enter behavior (we'll handle it manually)
-	input.KeyMap.InsertNewline.SetKeys("shift+enter")
+	// Configure keybindings: Enter sends the message (handled in handleKeyPress).
+	// Ctrl+Enter or Ctrl+J inserts a newline in the compose box.
+	// - Ctrl+Enter: works in Windows Terminal and terminals with CSI u support
+	// - Ctrl+J: sends ASCII 0x0A (LF), distinct from 0x0D (CR/Enter) in all terminals
+	// - Shift+Enter: kept as fallback for kitty/modern terminal emulators
+	input.KeyMap.InsertNewline.SetKeys("ctrl+enter", "ctrl+j", "shift+enter")
 
 	// Initialize login inputs
 	loginEmail := textinput.New()
@@ -371,7 +377,7 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 
 	app := &App{
 		view:                    startView,
-		focus:                   FocusInput,
+		focus:                   FocusServerIcons, // Start on server list; user navigates into a channel before typing
 		theme:                   theme,
 		styles:                  styles,
 		banner:                  banner,
@@ -453,8 +459,8 @@ func (a *App) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink, a.waitForConnEvent()}
 	// Auto-connect all known servers when identity is configured
 	if a.localIdentity != nil {
-		// Activate the textarea so the user can type immediately on launch
-		a.input.Focus()
+		// Start with focus on server icons; user navigates to a channel before typing.
+		// (textarea focus is activated when the user switches to FocusInput)
 		for _, server := range a.clientServers {
 			cmds = append(cmds, a.autoConnectServer(server.ID))
 		}
@@ -580,7 +586,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		// updateViewportSize sets chatViewport.Width/Height using the same layout
+		// math as renderMainView/renderChatPanel, so updateChatContent below renders
+		// with correct line widths (fixes blank chat on first load).
 		a.updateViewportSize()
+		if a.activeConn != nil && a.currentChannel != nil {
+			a.updateChatContent()
+			a.scrollToBottom()
+		}
 
 	case ServerScopedMsg:
 		// Handle server-scoped messages from ConnectionManager
@@ -752,7 +765,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch msg.String() {
-	case "ctrl+c", "ctrl+q":
+	case "ctrl+q":
 		return tea.Quit
 
 	case "ctrl+b":
@@ -777,14 +790,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewAddServer {
 			a.cycleAddServerFocus()
 		} else if a.view == ViewMain && a.focus == FocusInput {
+			// @mention completion takes priority — works inside slash commands too
+			if a.showMentionPopup && len(a.mentionSuggestions) > 0 {
+				a.completeMention(a.mentionSuggestions[0])
+				return nil
+			}
 			input := a.input.Value()
 			if strings.HasPrefix(input, "/") {
 				a.handleTabCompletion()
-				return nil
-			}
-			// @mention completion: Tab selects first suggestion
-			if a.showMentionPopup && len(a.mentionSuggestions) > 0 {
-				a.completeMention(a.mentionSuggestions[0])
 				return nil
 			}
 			a.cycleFocus()
@@ -911,6 +924,16 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.navigateChannelList(1)
 		} else if a.focus == FocusChat {
 			a.chatViewport.LineDown(1)
+		}
+
+	case "shift+up":
+		if a.view == ViewMain && a.focus == FocusChannelList {
+			return a.reorderChannel(-1)
+		}
+
+	case "shift+down":
+		if a.view == ViewMain && a.focus == FocusChannelList {
+			return a.reorderChannel(1)
 		}
 
 	case "left":
@@ -1142,6 +1165,96 @@ func (a *App) navigateChannelList(delta int) {
 			a.selectChannelByID(a.channelTree.FlatList[newIdx].Channel.ID)
 			break
 		}
+	}
+}
+
+// reorderChannel moves the currently selected channel up (delta=-1) or down (delta=+1)
+// within its sibling list. Positions are normalized across siblings then swapped, and
+// two OpChannelUpdate messages are sent to persist the new order on the server.
+func (a *App) reorderChannel(delta int) tea.Cmd {
+	if a.activeConn == nil || a.currentServer == nil || a.channelTree == nil || a.currentChannel == nil {
+		return nil
+	}
+
+	// Find the current channel's node in the tree
+	node, ok := a.channelTree.NodeMap[a.currentChannel.ID]
+	if !ok || node.Parent == nil {
+		return nil
+	}
+
+	siblings := node.Parent.Children
+
+	// Find current index in siblings
+	currentIdx := -1
+	for i, s := range siblings {
+		if s == node {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < 0 {
+		return nil
+	}
+
+	targetIdx := currentIdx + delta
+	if targetIdx < 0 || targetIdx >= len(siblings) {
+		// Already at boundary — nothing to do
+		return nil
+	}
+	targetNode := siblings[targetIdx]
+
+	// Normalize sibling positions to distinct values (i*10) before swapping,
+	// so equal-position channels (all new channels default to 0) still sort correctly.
+	for i, sib := range siblings {
+		sib.Channel.Position = i * 10
+	}
+
+	// Swap positions between the current and target nodes (they share pointers with sc.Channels)
+	node.Channel.Position, targetNode.Channel.Position = targetNode.Channel.Position, node.Channel.Position
+
+	// Swap in the siblings slice so RebuildFlatList reflects the new order immediately
+	siblings[currentIdx], siblings[targetIdx] = siblings[targetIdx], siblings[currentIdx]
+
+	// Re-sort sc.Channels by position so future loadChannelTree calls use the correct order
+	serverID := a.currentServer.ID
+	a.activeConn.mu.Lock()
+	sort.Slice(a.activeConn.Channels[serverID], func(i, j int) bool {
+		return a.activeConn.Channels[serverID][i].Position < a.activeConn.Channels[serverID][j].Position
+	})
+	a.activeConn.mu.Unlock()
+
+	// Rebuild flat list for immediate rendering
+	a.channelTree.RebuildFlatList(a.collapsedCategories)
+
+	// Capture values before the goroutine closure
+	currID := node.Channel.ID
+	targetID := targetNode.Channel.ID
+	currPos := node.Channel.Position
+	targetPos := targetNode.Channel.Position
+	pServerID := serverID
+
+	return func() tea.Msg {
+		conn := a.activeConn
+		if conn == nil {
+			return nil
+		}
+		req1 := &protocol.ChannelUpdateRequest{
+			ServerID:  pServerID,
+			ChannelID: currID,
+			Position:  &currPos,
+		}
+		if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req1); err == nil {
+			_ = conn.Connection.Send(msg)
+		}
+		req2 := &protocol.ChannelUpdateRequest{
+			ServerID:  pServerID,
+			ChannelID: targetID,
+			Position:  &targetPos,
+		}
+		if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req2); err == nil {
+			_ = conn.Connection.Send(msg)
+		}
+		return nil
 	}
 }
 
@@ -1492,6 +1605,17 @@ func (a *App) updateChatContent() {
 }
 
 // renderMessageContent renders message text, highlighting @mentions of the current user.
+// urlRegex matches http and https URLs.
+var urlRegex = regexp.MustCompile(`https?://[^\s<>"{}|\\^` + "`" + `\[\]]+`)
+
+// osc8Link wraps text in an OSC 8 terminal hyperlink.
+// Uses ESC\ (ST, String Terminator, 0x1B 0x5C) which Windows Terminal requires
+// for reliable Ctrl+Click support. Hold Ctrl and left-click the link to open it.
+func osc8Link(url, styledText string) string {
+	const st = "\033\\"
+	return "\033]8;;" + url + st + styledText + "\033]8;;" + st
+}
+
 func (a *App) renderMessageContent(text string, width int) string {
 	// Determine current user's alias
 	var alias string
@@ -1504,32 +1628,66 @@ func (a *App) renderMessageContent(text string, width int) string {
 	mentionStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Semantic.ChatMention)).
 		Bold(true)
+	linkStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Underline(true)
 
-	if alias == "" || !containsMention(text, alias) {
-		return msgStyle.Width(width).Render(text)
+	// renderLine processes a single line (no \n) applying URL and @mention styling.
+	renderLine := func(line string) string {
+		var out strings.Builder
+		seg := line
+		for len(seg) > 0 {
+			urlLoc := urlRegex.FindStringIndex(seg)
+			mentionLoc := []int{-1, -1}
+			if alias != "" {
+				token := "@" + alias
+				if idx := strings.Index(strings.ToLower(seg), strings.ToLower(token)); idx != -1 {
+					mentionLoc = []int{idx, idx + len(token)}
+				}
+			}
+
+			useURL := urlLoc != nil
+			useMention := mentionLoc[0] != -1
+			if useURL && useMention {
+				if mentionLoc[0] < urlLoc[0] {
+					useURL = false
+				} else {
+					useMention = false
+				}
+			}
+
+			switch {
+			case useMention:
+				if mentionLoc[0] > 0 {
+					out.WriteString(msgStyle.Render(seg[:mentionLoc[0]]))
+				}
+				out.WriteString(mentionStyle.Render(seg[mentionLoc[0]:mentionLoc[1]]))
+				seg = seg[mentionLoc[1]:]
+			case useURL:
+				if urlLoc[0] > 0 {
+					out.WriteString(msgStyle.Render(seg[:urlLoc[0]]))
+				}
+				rawURL := seg[urlLoc[0]:urlLoc[1]]
+				out.WriteString(osc8Link(rawURL, linkStyle.Render(rawURL)))
+				seg = seg[urlLoc[1]:]
+			default:
+				out.WriteString(msgStyle.Render(seg))
+				seg = ""
+			}
+		}
+		return out.String()
 	}
 
-	// Split on @alias (case-insensitive)
-	token := "@" + alias
-	lower := strings.ToLower(text)
-	var result strings.Builder
-	remaining := text
-	lowerRemaining := lower
-	for {
-		idx := strings.Index(lowerRemaining, strings.ToLower(token))
-		if idx == -1 {
-			result.WriteString(msgStyle.Render(remaining))
-			break
-		}
-		if idx > 0 {
-			result.WriteString(msgStyle.Render(remaining[:idx]))
-		}
-		result.WriteString(mentionStyle.Render(remaining[idx : idx+len(token)]))
-		remaining = remaining[idx+len(token):]
-		lowerRemaining = lowerRemaining[idx+len(token):]
+	// Process each newline-separated line independently and apply Width() per line.
+	// Applying Width() to the whole multi-line string causes lipgloss to
+	// miscount visible characters when OSC 8 sequences are on a continuation
+	// line, which shifts the link far to the right with blank space before it.
+	lines := strings.Split(text, "\n")
+	renderedLines := make([]string, len(lines))
+	for i, line := range lines {
+		renderedLines[i] = lipgloss.NewStyle().Width(width).Render(renderLine(line))
 	}
-	// Wrap the whole thing in a width-constrained block
-	return lipgloss.NewStyle().Width(width).Render(result.String())
+	return strings.Join(renderedLines, "\n")
 }
 
 // scrollToBottom scrolls the chat to the bottom
@@ -1542,28 +1700,41 @@ func (a *App) updateTypingIndicator(users []string) {
 	a.typingUsers = users
 }
 
-// updateViewportSize updates viewport dimensions based on window size
+// updateViewportSize updates viewport and textarea dimensions based on window size.
+// Must use the same column widths and height math as renderMainView / renderChatPanel
+// so that chatViewport.Width is correct before updateChatContent() is called.
 func (a *App) updateViewportSize() {
-	// Calculate panel sizes to match renderMainView (4-column layout)
+	// Must match renderMainView exactly
 	availableWidth := a.width - 1
-
-	// Fixed widths for 4-column layout
-	serverIconsWidth := 10   // Server icons column
-	channelsWidth := 30      // Channels list column
-	membersWidth := 30       // Members list column
+	serverIconsWidth := 22
+	channelsWidth := 26
+	membersWidth := 30
 	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
-
-	// Ensure chat has minimum width
 	if chatWidth < 60 {
-		// If terminal is too narrow, reduce members width
 		membersWidth = 20
 		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
 	}
 
-	// Set textarea width to match chat panel interior (minus borders)
-	// chatWidth includes the panel borders, so subtract 4 (panel border 2 + input border 2)
-	a.input.SetWidth(chatWidth - 4)
-	a.input.SetHeight(4) // 4 lines of text (top+bottom border + 4 content = 6 rows total, matching layout slot)
+	// Interior of the chat panel (panel has a 1-char border on each side)
+	interiorWidth := chatWidth - 2
+
+	// Set textarea width — matches renderChatPanel line 919
+	a.input.SetWidth(interiorWidth - 2)
+	a.input.SetHeight(4)
+
+	// Set viewport dimensions — matches renderChatPanel lines 922-924
+	// panelHeight = a.height - 2 (status bar + top padding)
+	// inputHeight = 6, headerHeight = 2
+	panelHeight := a.height - 2
+	inputHeight := 6
+	headerHeight := 2
+	chatHeight := panelHeight - inputHeight - headerHeight
+	if interiorWidth > 0 {
+		a.chatViewport.Width = interiorWidth
+	}
+	if chatHeight > 2 {
+		a.chatViewport.Height = chatHeight - 2
+	}
 }
 
 // handleSendMessage sends the current input as a message
@@ -1965,8 +2136,11 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	// Mark as ready
 	sc.SetState(StateReady)
 
-	// If this is the active connection, update UI
-	if a.activeConn != nil && a.activeConn.ServerID == serverID {
+	// Update UI if this is the server the user currently has selected.
+	// We also set a.activeConn here to correct any race from connectServerAsync goroutines
+	// (multiple servers connecting in parallel can overwrite a.activeConn from different goroutines).
+	if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
+		a.activeConn = sc // ensure activeConn points to the selected server
 		// Select first protocol server if available
 		if len(payload.Servers) > 0 {
 			a.currentServer = payload.Servers[0]
@@ -2126,33 +2300,39 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 
-		// Add messages to connection
-		if a.activeConn != nil {
-			a.activeConn.mu.Lock()
-			// Clear existing messages first
-			a.activeConn.Messages[payload.ChannelID] = nil
+		// Store messages in the server-scoped connection (not a.activeConn which may
+		// point to a different server if the user switched servers between request/response)
+		sc.mu.Lock()
+		// Clear existing messages first
+		sc.Messages[payload.ChannelID] = nil
 
-			// Add historical messages
-			for _, msgDisplay := range payload.Messages {
-				display := &MessageDisplay{
-					Message:     msgDisplay.Message,
-					AuthorName:  msgDisplay.Author.Username,
-					AuthorColor: a.theme.Colors.Purple, // TODO: Use user color from role
-					IsOwn:       msgDisplay.Author.ID == a.activeConn.User.ID,
-					ShowHeader:  true, // TODO: Implement message grouping
-				}
-				a.activeConn.Messages[payload.ChannelID] = append(
-					a.activeConn.Messages[payload.ChannelID],
-					display,
-				)
-			}
-			a.activeConn.mu.Unlock()
+		// Determine current user ID for IsOwn flag
+		var currentUserID uuid.UUID
+		if sc.User != nil {
+			currentUserID = sc.User.ID
+		}
 
-			// Refresh chat if viewing this channel
-			if a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
-				a.updateChatContent()
-				a.scrollToBottom()
+		// Add historical messages
+		for _, msgDisplay := range payload.Messages {
+			display := &MessageDisplay{
+				Message:     msgDisplay.Message,
+				AuthorName:  msgDisplay.Author.Username,
+				AuthorColor: a.theme.Colors.Purple, // TODO: Use user color from role
+				IsOwn:       msgDisplay.Author.ID == currentUserID,
+				ShowHeader:  true, // TODO: Implement message grouping
 			}
+			sc.Messages[payload.ChannelID] = append(
+				sc.Messages[payload.ChannelID],
+				display,
+			)
+		}
+		sc.mu.Unlock()
+
+		// Refresh chat if we're currently viewing this channel on this server
+		if a.activeConn != nil && a.activeConn.ServerID == serverID &&
+			a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
+			a.updateChatContent()
+			a.scrollToBottom()
 		}
 
 	case protocol.EventPresenceUpdate:
@@ -2185,7 +2365,19 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		display := buildMemberDisplay(payload.Member, payload.User, roleMap)
 		sc.mu.Lock()
-		sc.Members = append(sc.Members, display)
+		// Upsert: update the existing entry if the user is already in the list
+		// (e.g. they were shown as offline and have just reconnected), otherwise append.
+		found := false
+		for i, m := range sc.Members {
+			if m.User != nil && m.User.ID == payload.User.ID {
+				sc.Members[i] = display
+				found = true
+				break
+			}
+		}
+		if !found {
+			sc.Members = append(sc.Members, display)
+		}
 		sc.mu.Unlock()
 
 	case protocol.EventServerMemberRemove:
@@ -2214,6 +2406,25 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		for _, r := range payload.Roles {
 			roleMap[r.ID] = r
 		}
+
+		// If this update affects the current user, check for mute state changes
+		if sc.User != nil && payload.User.ID == sc.User.ID {
+			sc.mu.RLock()
+			var prevMuted bool
+			for _, m := range sc.Members {
+				if m.User != nil && m.User.ID == sc.User.ID {
+					prevMuted = m.Member != nil && m.Member.IsMuted
+					break
+				}
+			}
+			sc.mu.RUnlock()
+			if payload.Member.IsMuted && !prevMuted {
+				a.displayLocalSystemMessage("You have been muted by a moderator. You cannot send messages.")
+			} else if !payload.Member.IsMuted && prevMuted {
+				a.displayLocalSystemMessage("You have been unmuted.")
+			}
+		}
+
 		sc.mu.Lock()
 		for i, m := range sc.Members {
 			if m.User != nil && m.User.ID == payload.User.ID {

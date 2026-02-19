@@ -104,11 +104,16 @@ func (h *Hub) registerClient(client *Client) {
 // unregisterClient removes a client from the hub
 func (h *Hub) unregisterClient(client *Client) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if _, ok := h.clients[client.UserID]; !ok {
+		h.mu.Unlock()
 		return
 	}
+
+	// Save for presence broadcast (before removing from maps)
+	user := client.User
+	serverIDs := make([]uuid.UUID, len(client.ServerIDs))
+	copy(serverIDs, client.ServerIDs)
 
 	// Remove from main client map
 	delete(h.clients, client.UserID)
@@ -134,7 +139,16 @@ func (h *Hub) unregisterClient(client *Client) {
 	// Close the client's send channel
 	close(client.send)
 
+	h.mu.Unlock()
+
 	log.Printf("Client unregistered: user=%s", client.UserID)
+
+	// Broadcast offline presence to all servers this user was in
+	if user != nil && len(serverIDs) > 0 {
+		offlineUser := *user
+		offlineUser.Status = models.StatusOffline
+		h.BroadcastPresenceUpdate(&offlineUser, serverIDs)
+	}
 }
 
 // broadcastMessage sends a message to the appropriate clients

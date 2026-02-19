@@ -74,7 +74,7 @@ func (a *App) renderLoginView() string {
 			b.WriteString("\n\n")
 		}
 
-		b.WriteString(helpStyle.Render("Enter: Unlock  •  Ctrl+B: Manage Servers  •  Ctrl+T: Themes  •  Ctrl+C: Quit"))
+		b.WriteString(helpStyle.Render("Enter: Unlock  •  Ctrl+B: Manage Servers  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
 	} else {
 		// Standard login mode: email + password + register link
 		b.WriteString(subtitleStyle.Render("Terminal Chat - Login to continue"))
@@ -121,7 +121,7 @@ func (a *App) renderLoginView() string {
 		}
 		b.WriteString("\n\n")
 
-		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+B: Manage Servers  •  Ctrl+T: Themes  •  Ctrl+C: Quit"))
+		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+B: Manage Servers  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
 	}
 
 	// Create the form box with padding and fixed width
@@ -243,7 +243,7 @@ func (a *App) renderRegisterView() string {
 		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 		Faint(true)
 
-	helpText := "Tab: Switch fields  •  Enter: Create Account  •  Ctrl+C: Quit"
+	helpText := "Tab: Switch fields  •  Enter: Create Account  •  Ctrl+Q: Quit"
 	b.WriteString(helpStyle.Render(helpText))
 
 	// Create the form box with padding and fixed width
@@ -1207,7 +1207,7 @@ func (a *App) renderStatusBar() string {
 	}
 
 	// Right side: help text
-	rightContent := textStyle.Render("Tab: Navigate  |  Up/Down: Select  |  Ctrl+B: Manage Servers  |  Type /help  |  Ctrl+C: Quit ")
+	rightContent := textStyle.Render("Tab: Navigate  |  Up/Down: Select  |  Ctrl+B: Manage Servers  |  Type /help  |  Ctrl+Q: Quit ")
 
 	// Calculate spacing (must know left/right widths before truncating center)
 	leftLen := lipgloss.Width(leftContent)

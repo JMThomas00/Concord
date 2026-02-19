@@ -1,6 +1,6 @@
+# Concord — Technical Architecture
 
-
-This document describes the high-level technical architecture of the terminal-based chat application, with a clear separation between **Text** and **Voice** subsystems and an emphasis on extensibility and maintainability.
+This document describes the high-level technical architecture of Concord, with clear separation between the Text, Voice, and AI/Bot subsystems and an emphasis on extensibility.
 
 ---
 
@@ -19,51 +19,47 @@ flowchart LR
         ServerList[Server List Manager]
         NetMgr[Multi-Server Network Manager]
         Theme[Theme Engine]
-        Cache[Local Cache / Logs]
-        Config[Config - ~/.concord/]
+        Config[Config ~/.concord/]
 
         Input --> Cmd
         Cmd --> State
         State --> TUI
         Theme --> TUI
-        State --> Cache
         ServerList --> NetMgr
         Config --> ServerList
         State --> ServerList
     end
 
-    subgraph Server1[Server A - localhost:8080]
+    subgraph ServerA[Server A - localhost:8080]
         Gateway1[Connection Gateway]
         Auth1[Auth / Identity]
-        Router1[Message Router]
+        Router1[Message Router / Hub]
         Presence1[Presence Service]
         ChannelSvc1[Channel Service]
+        BotGW1[Bot Gateway]
         DB1[(SQLite DB)]
 
         Gateway1 --> Auth1
         Auth1 --> Router1
         Router1 --> ChannelSvc1
         Router1 --> Presence1
+        BotGW1 --> Router1
         ChannelSvc1 --> DB1
     end
 
-    subgraph Server2[Server B - friend.example.com:8080]
+    subgraph ServerB[Server B - friend.example.com:8080]
         Gateway2[Connection Gateway]
         Auth2[Auth / Identity]
-        Router2[Message Router]
-        Presence2[Presence Service]
-        ChannelSvc2[Channel Service]
+        Router2[Message Router / Hub]
         DB2[(SQLite DB)]
 
         Gateway2 --> Auth2
         Auth2 --> Router2
-        Router2 --> ChannelSvc2
-        Router2 --> Presence2
-        ChannelSvc2 --> DB2
+        Router2 --> DB2
     end
 
-    NetMgr <--> Gateway1
-    NetMgr <--> Gateway2
+    NetMgr <-->|WebSocket| Gateway1
+    NetMgr <-->|WebSocket| Gateway2
 ```
 
 ---
@@ -72,229 +68,224 @@ flowchart LR
 
 ### 1. TUI Renderer (Four-Column Layout)
 
-- **Column 1**: Server Icons (~10 chars)
-    - Colored circles with server initials
-    - Active server highlighting
-    - Unread indicators per server
+**Column 1 — Server Icons** (~22 chars)
 
-- **Column 2**: Channels (~30 chars)
-    - Folder explorer-style hierarchical layout
-    - Collapsible channel categories
-    - Indented nested structure
-    - Category and channel names
+- Colored circles with server initials
+- Active server highlighted
+- Unread `●` dot indicator below icon
+- `+` button to add new servers
 
-- **Column 3**: Chat (flexible, fills remaining space)
-    - Message history viewport
-    - Input bar at bottom
-    - Sender info with colored circle avatars
+**Column 2 — Channels** (~26 chars)
 
-- **Column 4**: Members (~30 chars)
-    - Grouped by role (Admin, Moderator, Member)
-    - Colored circle avatars with initials
-    - Presence indicators
-    - Collapsible (can overlay chat on narrow screens)
+- Folder explorer-style hierarchical layout
+- Collapsible categories (Left/Right or H/L keys)
+- Unread `●` and `@N` mention count badges
+- Shift+↑/Shift+↓ for in-place channel reordering
+- Visual indicators: `▼` expanded, `▶` collapsed
 
-- Stateless rendering based on current client state
+**Column 3 — Chat** (flexible, fills remaining space)
 
-- Theme-aware (no hardcoded colors)
+- Scrollable message viewport (PgUp/PgDn, arrow keys)
+- Colored circle avatar + sender name + right-aligned timestamp
+- `@mention` tokens highlighted in sender's color
+- URL hyperlinks via OSC 8 (Ctrl+Click in supported terminals)
+- `[DM]` prefix for ephemeral whispers
+- Multi-line input: Ctrl+J / Ctrl+Enter / Shift+Enter
+- @mention autocomplete popup (type `@`, Tab to complete)
 
-- **Minimum Width**: 160 columns recommended
-    
+**Column 4 — Members** (~30 chars)
+
+- Role-grouped: Admin → Moderators → Members
+- Colored circle avatars (role color or deterministic palette fallback)
+- Presence dots: `●` online, `○` offline
+- Bot badge for AI/bot users
 
 ### 2. Input Handler
 
-- Captures keyboard input
-    
-- Routes input to either:
-    
-    - Message composer
-        
-    - Navigation logic
-        
-    - Command parser
-        
+- Captures keyboard input via bubbletea key messages
+- Routes to: message composer, navigation logic, or command parser
+- Focus areas: Server Icons → Channels → Chat → Input → Members (Tab cycles)
+- Shift+↑/↓ for channel reordering when FocusChannelList is active
 
 ### 3. Command Parser
 
-- Slash-command parsing (`/join`, `/theme`, etc.)
-    
-- Validation and autocomplete hooks
-    
+- Slash-command parsing (`/create-channel`, `/whisper`, `/ai`, etc.)
+- Tab completion for command names and @mention targets
 - Emits structured commands to state manager
-    
+- Current commands: create-channel, create-category, delete-channel, delete-category, rename-channel, move-channel, theme, mute, unmute, whisper, role, kick, ban, help
 
-### 4. Client State Manager
+### 4. Client State Manager (`App` struct)
 
-- Single source of truth for UI state
+Single source of truth for all UI state. Key fields:
 
-- Tracks:
+| Field | Type | Purpose |
+|-------|------|---------|
+| `activeConn` | `*ServerConnection` | Currently displayed server connection |
+| `currentClientServer` | `*ClientServerInfo` | User-selected server from the server list |
+| `currentServer` | `*models.Server` | Protocol server object from READY payload |
+| `currentChannel` | `*models.Channel` | Currently selected channel |
+| `channelTree` | `*ChannelTree` | Hierarchical channel tree for rendering |
+| `connMgr` | `*ConnectionManager` | Manages all WebSocket connections |
+| `connEvents` | `chan tea.Msg` | Cross-goroutine event bus for connection events |
+| `unreadCounts` | `map[uuid][uuid]int` | Unread message counts per server/channel |
+| `mentionCounts` | `map[uuid][uuid]int` | @mention counts per server/channel |
+| `mutedChannels` | `map[uuid]bool` | Client-side mute state |
+| `theme` | `*themes.Theme` | Active theme |
 
-    - Multiple connected servers (IRC-like model)
+**Event flow (bubbletea Elm architecture):**
 
-    - Active server and channel
+```text
+Keyboard / WebSocket event
+    │
+    ▼
+Update(msg tea.Msg) → mutate App state + return tea.Cmd
+    │
+    ▼
+View() → pure render from current state
+    │
+    ▼
+Terminal output
+```
 
-    - Per-server channels and categories
+### 5. Multi-Server Network Manager
 
-    - Users & presence (per server)
-
-    - Message buffers (per channel per server)
-
-    - Collapsed/expanded category states
-
-    - Focus area (server icons, channels, chat, members)
-
-- Emits events to renderer
-
-- Coordinates with Server List Manager for connections
-
-
-### 4b. Server List Manager
-
-- Manages client-side server list
-
-- Loads/saves ~/.concord/servers.json
-
-- Server configuration:
-
-    - Server ID, name, address, port
-
-    - Last connected timestamp
-
-    - Saved credentials (optional, encrypted tokens)
-
-- Default user preferences:
-
-    - Username and email for new server registrations
-
-    - Allows consistent alias across servers
-
-- Handles "Add Server" UI workflow
-
-- Connection state tracking per server
-    
-
-### 5. Network Client
-
-- Persistent connection management
-    
-- Serialization / deserialization
-    
-- Reconnect & retry logic
-    
-- Protocol-version awareness
-    
+- `ConnectionManager`: map of `serverID → ServerConnection`
+- Each `ServerConnection` owns: WebSocket conn, auth token, channels, messages, members, roles
+- `AutoConnectHTTP()`: HTTP-only login/register (synchronous, reliable)
+- `connectServerAsync()`: WebSocket connect + Identify (async tea.Cmd)
+- Two-phase design prevents READY race condition
+- Events routed through `connEvents` channel → `waitForConnEvent()` → bubbletea Update loop
+- All events tagged with `ServerID` via `ServerScopedMsg` wrapper
 
 ### 6. Theme Engine
 
-- Loads theme definitions
-    
-- Maps semantic roles → terminal colors
-    
-- Hot-swappable at runtime
-    
+- `themes.Theme` struct: `[meta]`, `[colors]`, `[semantic]` sections
+- `themes.BuildStyles()` maps semantic roles → `lipgloss.Style`
+- Hot-swappable at runtime: `app.SetTheme(theme)` + re-render
+- Bundled themes: Dracula, Alucard Dark, Alucard Light
+- TOML-based; user overrides from `~/.concord/themes/<name>.toml`
 
-### 7. Local Cache / Logs
+### 7. Client-Side Configuration
 
-- Message history persistence
+**`~/.concord/servers.json`** — Server list
 
-- Offline access
-
-- Debug and audit logs
-
-
-### 8. Client-Side Configuration
-
-**~/.concord/servers.json** - Server list and preferences
 ```json
 {
   "servers": [
     {
-      "id": "uuid-1",
-      "name": "My Local Server",
+      "id": "uuid",
+      "name": "My Server",
       "address": "localhost",
       "port": 8080,
-      "last_connected": "2026-02-05T10:30:00Z",
-      "saved_credentials": {
-        "email": "user@example.com",
-        "token": "encrypted_token_here"
-      }
-    },
-    {
-      "id": "uuid-2",
-      "name": "Friend's Server",
-      "address": "friend.example.com",
-      "port": 8080,
-      "last_connected": "2026-02-04T15:00:00Z"
+      "saved_credentials": { "email": "...", "token": "..." }
     }
   ],
-  "default_user_preferences": {
-    "username": "gh0st",
-    "email": "ghost@example.com"
-  }
+  "default_user_preferences": { "username": "gh0st", "email": "ghost@example.com" }
 }
 ```
 
-**~/.concord/config.json** - Application preferences
-- Theme selection
-- Keybindings
-- UI preferences (collapsed states, etc.)
-    
+**`~/.concord/config.json`** — Application preferences
+
+```json
+{
+  "version": 1,
+  "identity": { "alias": "gh0st", "email": "...", "password": "..." },
+  "ui": {
+    "theme": "alucard-dark",
+    "collapsed_categories": {},
+    "muted_channels": []
+  }
+}
+```
 
 ---
 
 ## Server-Side Architecture
 
-### 1. Connection Gateway
+### 1. Connection Gateway (`server/server.go`)
 
-- TCP/WebSocket entry point
-    
-- Handles connection lifecycle
-    
-- Rate limiting and backpressure
-    
+- HTTP endpoints: `POST /api/register`, `POST /api/login`
+- WebSocket upgrade at `/ws`
+- Handles connection lifecycle; spawns a `Client` goroutine per connection
+- Rate limiting and back-pressure (planned v1.0)
 
 ### 2. Auth / Identity Service
 
-- User authentication
-    
-- Session tokens
-    
-- Per-server nicknames
-    
+- bcrypt password hashing
+- JWT-style session tokens (stored in `sessions` table)
+- `OpInvalidSession` sent to client when token is rejected
+- Per-server user accounts (no federation)
 
-### 3. Message Router
+### 3. Message Router / Hub (`server/hub.go`)
 
-- Routes messages to appropriate channels
-    
-- Fan-out to subscribed clients
-    
-- Enforces permissions
-    
+- `Hub` struct: `clients`, `serverClients`, `channelClients` maps
+- `BroadcastToServer()` — fan-out to all users in a server
+- `BroadcastToChannel()` — fan-out to users currently in a channel
+- `SendToUser()` — targeted delivery (whispers, error responses)
+- `TypingManager` — tracks and expires typing indicators (10s TTL)
+- Thread-safe via `sync.RWMutex`; broadcast channel buffered at 256
 
-### 4. Channel Service
+### 4. Channel Service (`server/handlers.go`)
 
-- Channel creation/deletion
-    
-- Membership management
-    
-- Message ordering guarantees
-    
+- `HandleCreateChannel` / `HandleUpdateChannel` / `HandleDeleteChannel`
+- Permission checks via `HasPermission()` before any mutation
+- `channel.Position` updated and broadcast on `OpChannelUpdate`
+- `BroadcastToServer()` ensures all connected clients see changes
 
 ### 5. Presence Service
 
-- Tracks online/idle/DND/offline states
-    
-- Heartbeat monitoring
-    
+- Online: client registered in `hub.clients`
+- Offline: `unregisterClient()` broadcasts `StatusOffline` to all shared servers
+- `EventPresenceUpdate` payload includes full user object + new status
+- Client updates `MemberDisplay.User.Status` on receipt
 
-### 6. Bot / Automation Service (Optional)
+### 6. Bot Gateway (v0.6.0+)
 
-- Event-driven hooks
-    
-- Server-side scripting
-    
-- Moderation helpers
-    
+- Bots authenticate with `OpIdentify` + `is_bot: true`
+- Receive events they subscribe to (allow-list per bot)
+- Send messages via `OpSendMessage` — same path as human users
+- Bot users stored in `users` table with `is_bot = 1`
+- Rate limits enforced separately from human users
+
+---
+
+## AI Subsystem (v0.7.0+)
+
+```mermaid
+flowchart TD
+    User -->|"/ai what is X?"| ChatMsg[OpSendMessage]
+    ChatMsg --> Hub
+    Hub --> AIBot[AI Bot Process]
+    AIBot -->|HTTP| Provider["AI Provider\n(OpenAI / Anthropic / Ollama)"]
+    Provider -->|Completion| AIBot
+    AIBot -->|OpSendMessage| Hub
+    Hub -->|EventMessageCreate| AllClients[All Channel Clients]
+
+    subgraph Client Side
+        ComposeBox[Input Box] -->|Ctrl+Space| LocalAI[Local AI Assist]
+        LocalAI -->|HTTP| Provider
+        LocalAI -->|Insert at cursor| ComposeBox
+    end
+```
+
+### AI Design Principles
+
+- **AI as Bot**: The AI assistant runs as a regular bot user over the bot gateway. No special server privileges. Disabling AI = not running the bot process.
+- **Provider-agnostic**: Any OpenAI-compatible API works (OpenAI, Anthropic via proxy, Ollama, LM Studio, Together AI).
+- **Context window**: Last N messages from the channel are included as conversation history.
+- **Privacy controls**: Users can `/ai-optout` to exclude their messages from AI context.
+- **Rate limits**: Per-user and per-channel limits enforced by the AI bot process.
+
+### Key AI Features
+
+| Feature | Command | Scope |
+|---------|---------|-------|
+| One-off query | `/ai <prompt>` | Channel (visible to all) |
+| Private query | `/ai --private <prompt>` | Whisper (only you see response) |
+| Summarize | `/summarize [N]` | Last N messages |
+| AI persona | `/ai-config system-prompt <text>` | Per-channel, admin only |
+| Compose help | Ctrl+Space in input box | Client-side, not sent to chat |
+| Opt out | `/ai-optout` | Per-user, persisted |
 
 ---
 
@@ -306,115 +297,116 @@ flowchart LR
     Capture --> Encode[Opus Encoder]
     Encode --> VNet[Voice Network Client]
 
-    VNet <--> VGateway[Voice Gateway]
+    VNet <-->|UDP| VGateway[Voice Gateway]
 
     VGateway --> Mix[Voice Mixer]
     Mix --> Decode[Opus Decoder]
     Decode --> Playback[Audio Output]
 
-    Playback --> Speakers
+    Playback --> Speakers[Speakers]
 ```
 
 ### Voice Design Notes
 
-- Completely separate from text pipeline
-    
-- Uses UDP where possible
-    
-- Independent failure domain
-    
-- Push-to-talk handled client-side
-    
+- Completely separate from text pipeline — independent failure domain
+- UDP where possible; TCP fallback for restrictive NATs
+- Push-to-talk handled client-side (no server processing until PTT active)
+- Speaking indicators via lightweight heartbeat to text server (not voice path)
 
 ---
 
-## Event Flow Example (Text Message)
+## WebSocket Protocol Summary
 
-1. User types message
-    
-2. Input Handler captures keystrokes
-    
-3. Message submitted to Client State
-    
-4. Serialized by Network Client
-    
-5. Sent to Server Gateway
-    
-6. Routed to Channel Service
-    
-7. Broadcast to subscribed clients
-    
-8. Client State updates
-    
-9. TUI re-renders
-    
+### Opcodes
+
+| Op | Name | Dir | Purpose |
+|----|------|-----|---------|
+| 0 | OpIdentify | C→S | Authenticate with token |
+| 1 | OpHeartbeat | C→S | Keep-alive ping |
+| 3 | OpSendMessage | C→S | Send chat message |
+| 4 | OpTypingStart | C→S | Typing indicator |
+| 5 | OpPresenceUpdate | C→S | Update own status |
+| 7 | OpChannelCreate | C→S | Create channel/category |
+| 8 | OpChannelUpdate | C→S | Rename/reorder channel |
+| 9 | OpChannelDelete | C→S | Delete channel/category |
+| 10 | OpDispatch | S→C | All server→client events |
+| 11 | OpHeartbeatAck | S→C | Heartbeat response |
+| 12 | OpHello | S→C | Initial connection info |
+| 13 | OpReady | S→C | Auth success + initial state |
+| 14 | OpInvalidSession | S→C | Auth failure |
+| 16 | OpRequestMessages | C→S | Fetch message history |
+| 17 | OpRoleAssign | C→S | Assign role to member |
+| 18 | OpRoleRemove | C→S | Remove role from member |
+| 19 | OpKickMember | C→S | Kick a member |
+| 20 | OpBanMember | C→S | Ban a member |
+| 21 | OpMuteMember | C→S | Server-mute a member |
+| 22 | OpWhisper | C→S | Ephemeral in-memory DM |
+
+### Event Types (OpDispatch payload)
+
+| Event | Trigger |
+|-------|---------|
+| `READY` | Sent after successful `OpIdentify` |
+| `SERVER_CREATE` | Server info + channels + members on join |
+| `SERVER_MEMBER_ADD` | New user authenticated on this server |
+| `SERVER_MEMBER_REMOVE` | User kicked or left |
+| `SERVER_MEMBER_UPDATE` | Role change, mute state change |
+| `CHANNEL_CREATE` | New channel or category created |
+| `CHANNEL_UPDATE` | Channel renamed, moved, or reordered |
+| `CHANNEL_DELETE` | Channel or category deleted |
+| `MESSAGE_CREATE` | New chat message |
+| `MESSAGES_HISTORY` | Response to `OpRequestMessages` |
+| `PRESENCE_UPDATE` | User status changed (online/offline/idle) |
+| `TYPING_START` | User started typing |
+| `WHISPER_CREATE` | Ephemeral DM received |
 
 ---
 
-## Multi-Server Architecture Pattern
+## Event Flow: Text Message (End-to-End)
 
-### IRC-Like Model (Decentralized)
+```text
+1. User types message, presses Enter
+2. handleSendMessage() called in Update()
+3. connMgr.SendMessage(serverID, channelID, content) → OpSendMessage over WebSocket
+4. Server: HandleSendMessage() validates permissions, saves to DB
+5. Server: hub.BroadcastToChannel() → sends EventMessageCreate to all channel subscribers
+6. Client A: waitForConnEvent() unblocks → ServerScopedMsg{EventMessageCreate}
+7. handleDispatch() → sc.AddMessage() → updateChatContent() → scrollToBottom()
+8. View() re-renders chat panel with new message
+```
 
-Unlike Discord's single-hub model where one entity hosts all servers:
+---
 
-- Each Concord server is **independent** and **self-hosted**
+## Multi-Server Pattern
 
-- No central authority or federation
+Unlike Discord's single-hub model, every Concord server is independent:
 
-- Users connect directly to server IP addresses
-
-- Each server has its own database and user accounts
-
+- No central authority; no federation
+- Users connect directly to IP:Port
+- Each server has its own DB, user accounts, and roles
 - Client manages connections to multiple servers simultaneously
+- `currentClientServer.ID` (client-side) maps to WebSocket connection; `currentServer.ID` (protocol) is the server UUID from READY
 
-
-### Benefits
-
-- **Privacy**: No centralized data collection
-
-- **Control**: Server admins have complete autonomy
-
-- **Simplicity**: No complex federation protocols
-
-- **Resilience**: One server going down doesn't affect others
-
-
-### Identity Management
-
-- Users register separately on each server
-
-- Client stores default preferences (username, email)
-
-- When registering on new server, pre-fills with defaults
-
-- Allows consistent alias across servers without federation
-
-- Optional saved credentials per server for quick reconnect
-
+---
 
 ## Key Architectural Decisions
 
-- **IRC-Like Multi-Server Model**: Decentralized, independent servers
-
-- **Client-Side Server List**: No centralized directory
-
-- **Four-Column Fixed Layout**: Terminal aesthetic, 160+ columns
-
-- **Folder Explorer Categories**: Hierarchical, collapsible, database-driven
-
-- **Single State Authority (Client)**: Predictable rendering
-
-- **Semantic Theming**: Future-proof customization
-
-- **Parallel Voice Stack**: Avoids coupling and instability (v2.0+)
-
-- **Event-Driven Server**: Extensible and bot-friendly
-    
+| Decision | Rationale |
+|----------|-----------|
+| IRC-like multi-server model | Decentralization, privacy, no central failure point |
+| bubbletea Elm architecture | Predictable single-threaded state, no render races |
+| ServerScopedMsg + connEvents | Routes multi-server events through bubbletea without blocking |
+| Two-phase WebSocket connect | HTTP auth first (sync) then WS (async) prevents READY race |
+| Pure-Go SQLite (modernc) | No CGO, works on all platforms without build toolchain |
+| OSC 8 hyperlinks (ST terminator) | `ESC]8;;URL\ESC\` works in Windows Terminal; BEL does not |
+| AI as Bot (not core protocol) | AI is opt-in, provider-agnostic, and trivially removable |
+| Parallel voice stack | Avoids coupling unstable audio code to stable text protocol |
 
 ---
 
 ## Mental Model Summary
 
-> Text is _stateful and ordered_.  
-> Voice is _stateless and real-time_.  
-> Treat them as siblings, not layers.
+> Text is _stateful and ordered_.
+> Voice is _stateless and real-time_.
+> AI is _contextual and advisory_.
+> Treat all three as siblings, not layers.

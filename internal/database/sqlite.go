@@ -685,7 +685,18 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 		messages = append(messages, msg)
 	}
 
-	return messages, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// The query fetches the most-recent N rows with DESC order (needed for
+	// correct LIMIT behaviour). Reverse to chronological order (oldest first)
+	// so the client can simply append new real-time messages to the end.
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	return messages, nil
 }
 
 // --- Member Operations ---
@@ -847,7 +858,7 @@ func (db *DB) CreateRole(role *models.Role) error {
 			is_hoisted, is_mentionable, is_default, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		role.ID.String(), role.ServerID.String(), role.Name, role.Color,
-		role.Permissions, role.Position, role.IsHoisted, role.IsMentionable,
+		int64(role.Permissions), role.Position, role.IsHoisted, role.IsMentionable,
 		role.IsDefault, role.CreatedAt, role.UpdatedAt)
 	return err
 }
@@ -868,8 +879,9 @@ func (db *DB) GetServerRoles(serverID uuid.UUID) ([]*models.Role, error) {
 	for rows.Next() {
 		r := &models.Role{}
 		var idStr, serverIDStr string
+		var permInt int64
 
-		err := rows.Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &r.Permissions,
+		err := rows.Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &permInt,
 			&r.Position, &r.IsHoisted, &r.IsMentionable, &r.IsDefault,
 			&r.CreatedAt, &r.UpdatedAt)
 		if err != nil {
@@ -878,6 +890,7 @@ func (db *DB) GetServerRoles(serverID uuid.UUID) ([]*models.Role, error) {
 
 		r.ID, _ = uuid.Parse(idStr)
 		r.ServerID, _ = uuid.Parse(serverIDStr)
+		r.Permissions = models.Permission(permInt)
 
 		roles = append(roles, r)
 	}
@@ -889,12 +902,13 @@ func (db *DB) GetServerRoles(serverID uuid.UUID) ([]*models.Role, error) {
 func (db *DB) GetRoleByID(roleID uuid.UUID) (*models.Role, error) {
 	var r models.Role
 	var idStr, serverIDStr string
+	var permInt int64
 
 	err := db.QueryRow(`
 		SELECT id, server_id, name, color, permissions, position,
 			is_hoisted, is_mentionable, is_default, created_at, updated_at
 		FROM roles WHERE id = ?`, roleID.String()).
-		Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &r.Permissions,
+		Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &permInt,
 			&r.Position, &r.IsHoisted, &r.IsMentionable, &r.IsDefault,
 			&r.CreatedAt, &r.UpdatedAt)
 
@@ -907,6 +921,7 @@ func (db *DB) GetRoleByID(roleID uuid.UUID) (*models.Role, error) {
 
 	r.ID, _ = uuid.Parse(idStr)
 	r.ServerID, _ = uuid.Parse(serverIDStr)
+	r.Permissions = models.Permission(permInt)
 
 	return &r, nil
 }
@@ -1168,12 +1183,14 @@ func (db *DB) GetMemberRoles(serverID, userID uuid.UUID) ([]*models.Role, error)
 	for rows.Next() {
 		r := &models.Role{}
 		var idStr, serverIDStr string
-		if err := rows.Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &r.Permissions,
+		var permInt int64
+		if err := rows.Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &permInt,
 			&r.Position, &r.IsHoisted, &r.IsMentionable, &r.IsDefault, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.ID, _ = uuid.Parse(idStr)
 		r.ServerID, _ = uuid.Parse(serverIDStr)
+		r.Permissions = models.Permission(permInt)
 		roles = append(roles, r)
 	}
 	return roles, rows.Err()
