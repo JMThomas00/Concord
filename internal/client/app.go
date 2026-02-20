@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os/exec"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -45,6 +48,7 @@ const (
 	FocusChat
 	FocusInput
 	FocusUserList
+	FocusMessageNav                   // Message navigation mode
 )
 
 // App represents the main application state
@@ -140,7 +144,10 @@ type App struct {
 	commandHandler *CommandHandler
 
 	// Typing indicator
-	typingUsers []string
+	typingUsers     []string
+	typingExpiry    map[uuid.UUID]time.Time // userID → when the typing indicator expires
+	typingFrame     int                     // current animation frame index
+	lastTypingSent  time.Time               // when we last sent OpTypingStart
 
 	// Theme browser state
 	themeBrowserState *ThemeBrowserState
@@ -154,6 +161,36 @@ type App struct {
 	unreadCounts  map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → count
 	mentionCounts map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → @mention count
 	mutedChannels map[uuid.UUID]bool              // channelID → muted
+
+	// AFK tracking
+	lastActivityTime time.Time
+	isAFK            bool
+
+	// Message navigation state (two-level system)
+	messageNavMode        bool      // Level 1: browsing messages
+	messageNavIndex       int       // Which message is selected (0-based)
+	inMessageEditMode     bool      // Level 2: navigating within a message
+	messageCursorLine     int       // Cursor line within message (Level 2)
+	messageCursorCol      int       // Cursor column within message (Level 2)
+	messageSelectionStart *Position // Selection start (nil if no selection)
+	messageSelectionEnd   *Position // Selection end
+
+	// Link browser state
+	linkBrowserState *LinkBrowserState
+}
+
+// Position represents a cursor position in a message (for Level 2 navigation)
+type Position struct {
+	Line int // Line number in the message
+	Col  int // Column (character offset) within the line
+}
+
+// LinkBrowserState holds the state for the link browser modal
+type LinkBrowserState struct {
+	Links         []string         // Extracted URLs
+	SelectedIndex int              // Cursor position
+	SourceMessage *MessageDisplay  // Message the links came from (optional)
+	PreviousMode  string           // "message_nav" or "main"
 }
 
 // MessageDisplay wraps a message with display information
@@ -164,6 +201,7 @@ type MessageDisplay struct {
 	IsOwn       bool
 	ShowHeader  bool // Show author/timestamp (false for consecutive messages)
 	IsWhisper   bool // Ephemeral DM from /whisper
+	IsSystem    bool // Server-wide moderation/system announcement
 }
 
 // MemberDisplay wraps a member with display information
@@ -456,7 +494,13 @@ func (a *App) initLoginView() {
 
 // Init implements tea.Model
 func (a *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, a.waitForConnEvent()}
+	a.lastActivityTime = time.Now()
+	cmds := []tea.Cmd{
+		textinput.Blink,
+		a.waitForConnEvent(),
+		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
+		tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }),
+	}
 	// Auto-connect all known servers when identity is configured
 	if a.localIdentity != nil {
 		// Start with focus on server icons; user navigates to a channel before typing.
@@ -571,7 +615,52 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case afkCheckMsg:
+		// Check if the user has been idle for 10 minutes
+		if time.Since(a.lastActivityTime) >= 10*time.Minute && !a.isAFK && a.activeConn != nil {
+			a.isAFK = true
+			sc := a.activeConn
+			if sc.Connection != nil {
+				payload := &protocol.PresenceUpdatePayload{Status: models.StatusIdle}
+				if wsMsg, err := protocol.NewMessage(protocol.OpPresenceUpdate, payload); err == nil {
+					_ = sc.Connection.Send(wsMsg)
+				}
+			}
+		}
+		// Re-schedule the AFK check
+		cmds = append(cmds, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }))
+
+	case typingTickMsg:
+		// Advance animation frame and prune expired typing entries
+		a.typingFrame++
+		now := time.Time(msg)
+		if a.typingExpiry != nil {
+			changed := false
+			for uid, exp := range a.typingExpiry {
+				if now.After(exp) {
+					delete(a.typingExpiry, uid)
+					changed = true
+				}
+			}
+			if changed {
+				a.rebuildTypingUsers()
+			}
+		}
+		cmds = append(cmds, tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }))
+
 	case tea.KeyMsg:
+		// Any key press resets AFK state
+		a.lastActivityTime = time.Now()
+		if a.isAFK && a.activeConn != nil {
+			a.isAFK = false
+			sc := a.activeConn
+			if sc.Connection != nil {
+				payload := &protocol.PresenceUpdatePayload{Status: models.StatusOnline}
+				if wsMsg, err := protocol.NewMessage(protocol.OpPresenceUpdate, payload); err == nil {
+					_ = sc.Connection.Send(wsMsg)
+				}
+			}
+		}
 		// Store current view before handling key
 		viewBeforeKey := a.view
 		cmd := a.handleKeyPress(msg)
@@ -581,6 +670,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If view changed, skip component updates (view transition handled)
 		if a.view != viewBeforeKey {
 			return a, tea.Batch(cmds...)
+		}
+		// Send typing indicator when composing (throttled to once per 4 seconds).
+		// Only send if there's actual text in the input box — this way the indicator
+		// automatically clears when the message is sent (input empties).
+		if a.view == ViewMain && a.focus == FocusInput &&
+			len(a.input.Value()) > 0 &&
+			a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil &&
+			time.Since(a.lastTypingSent) > 4*time.Second {
+			a.lastTypingSent = time.Now()
+			serverID := a.currentClientServer.ID
+			channelID := a.currentChannel.ID
+			cmds = append(cmds, func() tea.Msg {
+				_ = a.connMgr.SendTyping(serverID, channelID)
+				return nil
+			})
 		}
 
 	case tea.WindowSizeMsg:
@@ -731,24 +835,32 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model
 func (a *App) View() string {
+	var baseView string
 	switch a.view {
 	case ViewIdentitySetup:
-		return a.renderIdentitySetupView()
+		baseView = a.renderIdentitySetupView()
 	case ViewLogin:
-		return a.renderLoginView()
+		baseView = a.renderLoginView()
 	case ViewRegister:
-		return a.renderRegisterView()
+		baseView = a.renderRegisterView()
 	case ViewMain:
-		return a.renderMainView()
+		baseView = a.renderMainView()
 	case ViewAddServer:
-		return a.renderAddServerView()
+		baseView = a.renderAddServerView()
 	case ViewManageServers:
-		return a.renderManageServersView()
+		baseView = a.renderManageServersView()
 	case ViewThemeBrowser:
-		return a.renderThemeBrowserView()
+		baseView = a.renderThemeBrowserView()
 	default:
-		return "Unknown view"
+		baseView = "Unknown view"
 	}
+
+	// Render link browser overlay if active
+	if a.linkBrowserState != nil {
+		return a.renderLinkBrowserOverlay(baseView)
+	}
+
+	return baseView
 }
 
 // handleKeyPress handles keyboard input
@@ -767,17 +879,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "ctrl+q":
 		return tea.Quit
-
-	case "ctrl+b":
-		// Open Manage Servers from login or main view
-		if a.view == ViewLogin || a.view == ViewMain {
-			a.view = ViewManageServers
-			a.manageServersFocus = 0
-			if a.pingResults == nil {
-				a.pingResults = make(map[uuid.UUID]*PingResult)
-			}
-			return nil
-		}
 
 	case "ctrl+t":
 		// Open theme browser from login or main view
@@ -815,6 +916,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "enter":
+		// In link browser: open selected link
+		if a.linkBrowserState != nil {
+			if a.linkBrowserState.SelectedIndex >= 0 && a.linkBrowserState.SelectedIndex < len(a.linkBrowserState.Links) {
+				link := a.linkBrowserState.Links[a.linkBrowserState.SelectedIndex]
+				a.closeLinkBrowser()
+				return a.openURL(link)
+			}
+			return nil
+		}
 		if a.view == ViewLogin {
 			if a.registerLinkFocused {
 				// User pressed enter on "Register New Account" link
@@ -847,17 +957,28 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewAddServer {
 			return a.handleAddServerSubmit()
 		}
+		// In message navigation Level 1: Enter transitions to Level 2
+		if a.messageNavMode && !a.inMessageEditMode {
+			a.inMessageEditMode = true
+			a.messageCursorLine = 0
+			a.messageCursorCol = 0
+			a.messageSelectionStart = nil
+			a.messageSelectionEnd = nil
+			// Refresh viewport to show Level 2 background color
+			a.updateChatContent()
+			return nil
+		}
 		// For main view
 		if a.view == ViewMain {
 			// If focused on server icons
 			if a.focus == FocusServerIcons {
-				// Check if (+) add button is selected
+				// Check if "Manage Servers" button is selected
 				if a.serverIndex >= len(a.clientServers) {
-					// Open add server view
-					a.view = ViewAddServer
-					a.addServerFocus = 0
-					a.addServerName.Focus()
-					a.addServerError = ""
+					a.view = ViewManageServers
+					a.manageServersFocus = 0
+					if a.pingResults == nil {
+						a.pingResults = make(map[uuid.UUID]*PingResult)
+					}
 					return nil
 				}
 				// Otherwise select the server and go to login if not connected
@@ -875,6 +996,38 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "esc":
+		// Close link browser if active
+		if a.linkBrowserState != nil {
+			a.closeLinkBrowser()
+			return nil
+		}
+		// Two-level escape: Level 2 → Level 1, Level 1 → Normal chat
+		if a.messageNavMode {
+			if a.inMessageEditMode {
+				// Esc from Level 2: return to Level 1 (message selection)
+				a.inMessageEditMode = false
+				a.messageSelectionStart = nil
+				a.messageSelectionEnd = nil
+				a.messageCursorLine = 0
+				a.messageCursorCol = 0
+				// Refresh viewport to show Level 1 background color
+				a.updateChatContent()
+			} else {
+				// Esc from Level 1: exit navigation mode entirely
+				a.messageNavMode = false
+				a.messageNavIndex = 0
+				// Restore previous focus (input or chat)
+				if a.focus == FocusMessageNav {
+					a.focus = FocusInput
+					a.input.Focus()
+				}
+				// Refresh viewport to clear highlighting
+				a.updateChatContent()
+				// Show terminal cursor again when exiting navigation
+				return tea.ShowCursor
+			}
+			return nil
+		}
 		// Dismiss @mention popup if open
 		if a.showMentionPopup {
 			a.showMentionPopup = false
@@ -908,7 +1061,100 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.addServerUseTLS = !a.addServerUseTLS
 		}
 
-	case "up", "k":
+	case "alt+m":
+		// Enter Level 1: Message Selection Mode
+		if a.view == ViewMain && (a.focus == FocusChat || a.focus == FocusInput) &&
+			a.activeConn != nil && a.currentChannel != nil {
+			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			if len(messages) > 0 {
+				a.messageNavMode = true
+				a.inMessageEditMode = false // Start in Level 1 (message selection)
+				a.focus = FocusMessageNav
+				a.messageNavIndex = len(messages) - 1 // Start at newest message
+				a.messageSelectionStart = nil         // Clear any previous selection
+				a.messageSelectionEnd = nil
+				a.input.Blur()
+				// Refresh viewport to show highlighting
+				a.updateChatContent()
+				// Hide terminal cursor when in navigation mode
+				return tea.HideCursor
+			}
+		}
+
+	case "c":
+		// In link browser: copy selected link URL
+		if a.linkBrowserState != nil {
+			if a.linkBrowserState.SelectedIndex >= 0 && a.linkBrowserState.SelectedIndex < len(a.linkBrowserState.Links) {
+				link := a.linkBrowserState.Links[a.linkBrowserState.SelectedIndex]
+				if err := clipboard.WriteAll(link); err != nil {
+					a.statusMessage = fmt.Sprintf("Failed to copy: %v", err)
+					a.statusError = true
+				} else {
+					a.statusMessage = "Copied link URL"
+					a.statusError = false
+				}
+			}
+			return nil
+		}
+		// Copy selected message to clipboard (in message navigation mode)
+		if a.messageNavMode {
+			return a.copyMessageToClipboard()
+		}
+
+	case "C":
+		// Uppercase C also copies in message navigation mode
+		if a.messageNavMode {
+			return a.copyMessageToClipboard()
+		}
+
+	case "ctrl+c":
+		// Ctrl+C copies in message navigation mode
+		if a.messageNavMode {
+			return a.copyMessageToClipboard()
+		}
+
+	case "l":
+		// In message navigation mode: open link browser if message has URLs
+		if a.messageNavMode && a.activeConn != nil && a.currentChannel != nil {
+			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			if a.messageNavIndex >= 0 && a.messageNavIndex < len(messages) {
+				msg := messages[a.messageNavIndex]
+				links := a.extractLinksFromMessage(msg)
+				if len(links) > 0 {
+					a.openLinkBrowser(links, msg, "message_nav")
+					// Temporarily exit message nav mode while in link browser
+					a.messageNavMode = false
+				} else {
+					a.statusMessage = "No links found in selected message"
+					a.statusError = false
+				}
+			}
+			return nil
+		}
+		// In channel list: expand category (existing behavior)
+		if a.focus == FocusChannelList {
+			a.handleExpandCategory()
+		}
+
+	case "up":
+		// Link browser navigation takes highest priority
+		if a.linkBrowserState != nil {
+			a.linkBrowserState.SelectedIndex--
+			if a.linkBrowserState.SelectedIndex < 0 {
+				a.linkBrowserState.SelectedIndex = len(a.linkBrowserState.Links) - 1
+			}
+			return nil
+		}
+		// Message navigation: Level 1 or Level 2
+		if a.messageNavMode {
+			if a.inMessageEditMode {
+				// Level 2: Move cursor up one line within the message
+				return a.moveCursorInMessage(0, -1, true) // dy = -1 (up), clear selection
+			} else {
+				// Level 1: Navigate to previous message
+				return a.navigateMessage(-1)
+			}
+		}
 		if a.focus == FocusServerIcons {
 			a.navigateServerList(-1)
 		} else if a.focus == FocusChannelList {
@@ -917,7 +1163,25 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.chatViewport.LineUp(1)
 		}
 
-	case "down", "j":
+	case "down":
+		// Link browser navigation takes highest priority
+		if a.linkBrowserState != nil {
+			a.linkBrowserState.SelectedIndex++
+			if a.linkBrowserState.SelectedIndex >= len(a.linkBrowserState.Links) {
+				a.linkBrowserState.SelectedIndex = 0
+			}
+			return nil
+		}
+		// Message navigation: Level 1 or Level 2
+		if a.messageNavMode {
+			if a.inMessageEditMode {
+				// Level 2: Move cursor down one line within the message
+				return a.moveCursorInMessage(0, 1, true) // dy = 1 (down), clear selection
+			} else {
+				// Level 1: Navigate to next message
+				return a.navigateMessage(1)
+			}
+		}
 		if a.focus == FocusServerIcons {
 			a.navigateServerList(1)
 		} else if a.focus == FocusChannelList {
@@ -927,16 +1191,40 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "shift+up":
+		// Level 2: Select text while moving cursor up
+		if a.messageNavMode && a.inMessageEditMode {
+			return a.moveCursorWithSelection(0, -1) // dy = -1
+		}
 		if a.view == ViewMain && a.focus == FocusChannelList {
 			return a.reorderChannel(-1)
 		}
 
 	case "shift+down":
+		// Level 2: Select text while moving cursor down
+		if a.messageNavMode && a.inMessageEditMode {
+			return a.moveCursorWithSelection(0, 1) // dy = 1
+		}
 		if a.view == ViewMain && a.focus == FocusChannelList {
 			return a.reorderChannel(1)
 		}
 
+	case "shift+left":
+		// Level 2: Select text while moving cursor left
+		if a.messageNavMode && a.inMessageEditMode {
+			return a.moveCursorWithSelection(-1, 0) // dx = -1
+		}
+
+	case "shift+right":
+		// Level 2: Select text while moving cursor right
+		if a.messageNavMode && a.inMessageEditMode {
+			return a.moveCursorWithSelection(1, 0) // dx = 1
+		}
+
 	case "left":
+		// Level 2: Move cursor left one character
+		if a.messageNavMode && a.inMessageEditMode {
+			return a.moveCursorInMessage(-1, 0, true) // dx = -1 (left), clear selection
+		}
 		if a.focus == FocusChannelList {
 			a.handleCollapseCategory()
 		}
@@ -947,11 +1235,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "right":
-		if a.focus == FocusChannelList {
-			a.handleExpandCategory()
+		// Level 2: Move cursor right one character
+		if a.messageNavMode && a.inMessageEditMode {
+			return a.moveCursorInMessage(1, 0, true) // dx = 1 (right), clear selection
 		}
-
-	case "l":
 		if a.focus == FocusChannelList {
 			a.handleExpandCategory()
 		}
@@ -1258,6 +1545,449 @@ func (a *App) reorderChannel(delta int) tea.Cmd {
 	}
 }
 
+// navigateMessage navigates through messages in message navigation mode
+func (a *App) navigateMessage(delta int) tea.Cmd {
+	if !a.messageNavMode || a.activeConn == nil || a.currentChannel == nil {
+		return nil
+	}
+
+	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	if len(messages) == 0 {
+		return nil
+	}
+
+	// Update index with wrapping
+	a.messageNavIndex += delta
+	if a.messageNavIndex < 0 {
+		a.messageNavIndex = 0
+	} else if a.messageNavIndex >= len(messages) {
+		a.messageNavIndex = len(messages) - 1
+	}
+
+	// Refresh viewport to show new highlight position
+	a.updateChatContent()
+
+	return nil
+}
+
+// copyMessageToClipboard copies the selected message or selection to the system clipboard
+func (a *App) copyMessageToClipboard() tea.Cmd {
+	if !a.messageNavMode || a.activeConn == nil || a.currentChannel == nil {
+		return nil
+	}
+
+	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
+		return nil
+	}
+
+	var textToCopy string
+
+	if a.inMessageEditMode {
+		// Level 2: copy selection or entire message
+		textToCopy = a.getSelectedText()
+	} else {
+		// Level 1: copy entire message
+		msg := messages[a.messageNavIndex]
+		textToCopy = msg.Content
+	}
+
+	// Copy plain text content to clipboard
+	if err := clipboard.WriteAll(textToCopy); err != nil {
+		a.statusMessage = fmt.Sprintf("Failed to copy: %v", err)
+		a.statusError = true
+		return nil
+	}
+
+	a.statusMessage = fmt.Sprintf("Copied %d characters", len(textToCopy))
+	a.statusError = false
+
+	return nil
+}
+
+// insertCursorIntoMessage inserts a visible cursor character and selection markers
+// Uses plain text markers that will be styled later by renderMessageContent
+func (a *App) insertCursorIntoMessage(content string) string {
+	if !a.inMessageEditMode {
+		return content
+	}
+
+	// Split content into lines
+	lines := strings.Split(content, "\n")
+	if a.messageCursorLine < 0 || a.messageCursorLine >= len(lines) {
+		return content
+	}
+
+	// If there's an active selection, wrap it with markers
+	if a.messageSelectionStart != nil && a.messageSelectionEnd != nil {
+		// Normalize selection (ensure start is before end)
+		start := a.messageSelectionStart
+		end := a.messageSelectionEnd
+		if start.Line > end.Line || (start.Line == end.Line && start.Col > end.Col) {
+			start, end = end, start
+		}
+
+		// Mark selection with special characters
+		for lineIdx := range lines {
+			line := lines[lineIdx]
+			if lineIdx < start.Line || lineIdx > end.Line {
+				continue
+			}
+
+			var startCol, endCol int
+			if lineIdx == start.Line && lineIdx == end.Line {
+				startCol = start.Col
+				endCol = end.Col
+			} else if lineIdx == start.Line {
+				startCol = start.Col
+				endCol = len(line)
+			} else if lineIdx == end.Line {
+				startCol = 0
+				endCol = end.Col
+			} else {
+				startCol = 0
+				endCol = len(line)
+			}
+
+			// Clamp to line bounds
+			if startCol < 0 {
+				startCol = 0
+			}
+			if endCol > len(line) {
+				endCol = len(line)
+			}
+			if startCol >= len(line) {
+				continue
+			}
+
+			// Wrap selected text with markers (will be styled in renderMessageContent)
+			before := line[:startCol]
+			selected := line[startCol:endCol]
+			after := ""
+			if endCol < len(line) {
+				after = line[endCol:]
+			}
+			// Use visible brackets to show selection
+			lines[lineIdx] = before + "[" + selected + "]" + after
+		}
+	}
+
+	// Insert simple cursor character
+	line := lines[a.messageCursorLine]
+	col := a.messageCursorCol
+	if col < 0 {
+		col = 0
+	}
+	if col > len(line) {
+		col = len(line)
+	}
+
+	// Use a simple cursor character
+	cursor := "█"
+
+	// Insert cursor
+	before := line[:col]
+	after := line[col:]
+	lines[a.messageCursorLine] = before + cursor + after
+
+	return strings.Join(lines, "\n")
+}
+
+// extractLinksFromMessage extracts all URLs from a message using the urlRegex
+func (a *App) extractLinksFromMessage(msg *MessageDisplay) []string {
+	matches := urlRegex.FindAllString(msg.Content, -1)
+	return matches
+}
+
+// openLinkBrowser opens the link browser modal with the provided links
+func (a *App) openLinkBrowser(links []string, sourceMsg *MessageDisplay, previousMode string) {
+	if len(links) == 0 {
+		a.statusMessage = "No links found in message"
+		a.statusError = false
+		return
+	}
+
+	a.linkBrowserState = &LinkBrowserState{
+		Links:         links,
+		SelectedIndex: 0,
+		SourceMessage: sourceMsg,
+		PreviousMode:  previousMode,
+	}
+}
+
+// closeLinkBrowser closes the link browser and returns to the previous mode
+func (a *App) closeLinkBrowser() {
+	if a.linkBrowserState == nil {
+		return
+	}
+
+	previousMode := a.linkBrowserState.PreviousMode
+	a.linkBrowserState = nil
+
+	// Restore previous mode
+	if previousMode == "message_nav" {
+		a.messageNavMode = true
+		a.focus = FocusMessageNav
+	}
+}
+
+// openURL opens a URL in the default browser
+func (a *App) openURL(url string) tea.Cmd {
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+
+		// Determine the command based on the OS
+		switch runtime.GOOS {
+		case "windows":
+			cmd = exec.Command("cmd", "/c", "start", url)
+		case "darwin":
+			cmd = exec.Command("open", url)
+		default: // linux, bsd, etc.
+			cmd = exec.Command("xdg-open", url)
+		}
+
+		// Execute the command (non-blocking)
+		if err := cmd.Start(); err != nil {
+			a.statusMessage = fmt.Sprintf("Failed to open URL: %v", err)
+			a.statusError = true
+			return nil
+		}
+
+		a.statusMessage = "Opened link in browser"
+		a.statusError = false
+		return nil
+	}
+}
+
+// splitMessageIntoLines splits a message content into lines based on max width
+// This accounts for word wrapping and returns an array of line strings
+func (a *App) splitMessageIntoLines(content string, maxWidth int) []string {
+	if content == "" {
+		return []string{""}
+	}
+
+	// Simple implementation: split by newlines first, then word-wrap each line
+	lines := strings.Split(content, "\n")
+	result := []string{}
+
+	for _, line := range lines {
+		if len(line) <= maxWidth {
+			result = append(result, line)
+			continue
+		}
+
+		// Word wrap this line
+		words := strings.Fields(line)
+		currentLine := ""
+		for _, word := range words {
+			testLine := currentLine
+			if testLine != "" {
+				testLine += " "
+			}
+			testLine += word
+
+			if len(testLine) > maxWidth {
+				if currentLine != "" {
+					result = append(result, currentLine)
+					currentLine = word
+				} else {
+					// Single word longer than maxWidth - just add it
+					result = append(result, word)
+					currentLine = ""
+				}
+			} else {
+				currentLine = testLine
+			}
+		}
+		if currentLine != "" {
+			result = append(result, currentLine)
+		}
+	}
+
+	if len(result) == 0 {
+		return []string{""}
+	}
+	return result
+}
+
+// moveCursorInMessage moves the cursor within a message (Level 2 navigation)
+// dx: horizontal delta (-1 = left, +1 = right)
+// dy: vertical delta (-1 = up, +1 = down)
+// clearSelection: whether to clear any existing text selection
+func (a *App) moveCursorInMessage(dx, dy int, clearSelection bool) tea.Cmd {
+	if !a.messageNavMode || !a.inMessageEditMode || a.activeConn == nil || a.currentChannel == nil {
+		return nil
+	}
+
+	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
+		return nil
+	}
+
+	// Clear any existing selection when moving without Shift
+	if clearSelection {
+		a.messageSelectionStart = nil
+		a.messageSelectionEnd = nil
+	}
+
+	msg := messages[a.messageNavIndex]
+	lines := a.splitMessageIntoLines(msg.Content, a.chatViewport.Width-10) // Account for padding
+
+	// Move cursor vertically
+	if dy != 0 {
+		a.messageCursorLine += dy
+		// Clamp to valid line range
+		if a.messageCursorLine < 0 {
+			a.messageCursorLine = 0
+		} else if a.messageCursorLine >= len(lines) {
+			a.messageCursorLine = len(lines) - 1
+		}
+		// Clamp column to new line length
+		if a.messageCursorCol >= len(lines[a.messageCursorLine]) {
+			a.messageCursorCol = len(lines[a.messageCursorLine])
+		}
+	}
+
+	// Move cursor horizontally
+	if dx != 0 {
+		a.messageCursorCol += dx
+		currentLine := lines[a.messageCursorLine]
+
+		// Handle wrapping to next/previous line
+		if a.messageCursorCol < 0 && a.messageCursorLine > 0 {
+			// Wrap to end of previous line
+			a.messageCursorLine--
+			a.messageCursorCol = len(lines[a.messageCursorLine])
+		} else if a.messageCursorCol > len(currentLine) && a.messageCursorLine < len(lines)-1 {
+			// Wrap to start of next line
+			a.messageCursorLine++
+			a.messageCursorCol = 0
+		} else {
+			// Clamp to current line bounds
+			if a.messageCursorCol < 0 {
+				a.messageCursorCol = 0
+			} else if a.messageCursorCol > len(currentLine) {
+				a.messageCursorCol = len(currentLine)
+			}
+		}
+	}
+
+	// Refresh viewport to show cursor at new position
+	a.updateChatContent()
+
+	return nil
+}
+
+// moveCursorWithSelection moves the cursor and updates the text selection (Level 2 with Shift)
+func (a *App) moveCursorWithSelection(dx, dy int) tea.Cmd {
+	if !a.messageNavMode || !a.inMessageEditMode {
+		return nil
+	}
+
+	// If no selection exists, start one at current cursor position
+	if a.messageSelectionStart == nil {
+		a.messageSelectionStart = &Position{
+			Line: a.messageCursorLine,
+			Col:  a.messageCursorCol,
+		}
+	}
+
+	// Move the cursor (don't clear selection - we're extending it)
+	a.moveCursorInMessage(dx, dy, false)
+
+	// Update selection end to new cursor position
+	a.messageSelectionEnd = &Position{
+		Line: a.messageCursorLine,
+		Col:  a.messageCursorCol,
+	}
+
+	// Refresh viewport to show cursor and selection
+	a.updateChatContent()
+
+	return nil
+}
+
+// getSelectedText returns the selected text, or the entire message if no selection
+func (a *App) getSelectedText() string {
+	if !a.messageNavMode || a.activeConn == nil || a.currentChannel == nil {
+		return ""
+	}
+
+	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
+		return ""
+	}
+
+	msg := messages[a.messageNavIndex]
+
+	// If no selection, return entire message
+	if a.messageSelectionStart == nil || a.messageSelectionEnd == nil {
+		return msg.Content
+	}
+
+	lines := a.splitMessageIntoLines(msg.Content, a.chatViewport.Width-10)
+
+	// Normalize selection (ensure start is before end)
+	start := a.messageSelectionStart
+	end := a.messageSelectionEnd
+	if start.Line > end.Line || (start.Line == end.Line && start.Col > end.Col) {
+		start, end = end, start
+	}
+
+	// Single line selection
+	if start.Line == end.Line {
+		line := lines[start.Line]
+		startCol := start.Col
+		endCol := end.Col
+		if startCol < 0 {
+			startCol = 0
+		}
+		if endCol > len(line) {
+			endCol = len(line)
+		}
+		if startCol >= len(line) {
+			return ""
+		}
+		return line[startCol:endCol]
+	}
+
+	// Multi-line selection
+	var result strings.Builder
+
+	// First line (from start.Col to end of line)
+	if start.Line < len(lines) {
+		line := lines[start.Line]
+		startCol := start.Col
+		if startCol < 0 {
+			startCol = 0
+		}
+		if startCol < len(line) {
+			result.WriteString(line[startCol:])
+			result.WriteString("\n")
+		}
+	}
+
+	// Middle lines (entire lines)
+	for i := start.Line + 1; i < end.Line && i < len(lines); i++ {
+		result.WriteString(lines[i])
+		result.WriteString("\n")
+	}
+
+	// Last line (from start to end.Col)
+	if end.Line < len(lines) {
+		line := lines[end.Line]
+		endCol := end.Col
+		if endCol > len(line) {
+			endCol = len(line)
+		}
+		if endCol > 0 {
+			result.WriteString(line[:endCol])
+		}
+	}
+
+	return result.String()
+}
+
 // selectChannelByID selects a channel by its UUID, requesting message history from the server
 func (a *App) selectChannelByID(channelID uuid.UUID) {
 	channels := a.getCurrentChannels()
@@ -1336,11 +2066,12 @@ func (a *App) switchToClientServer(index int) {
 	// Get or create connection
 	a.activeConn = a.connMgr.GetConnection(a.currentClientServer.ID)
 
-	// If not connected, show prompt
+	// If not connected, clear stale state and show prompt
 	if a.activeConn == nil || a.activeConn.GetState() != StateReady {
 		a.statusMessage = "Unable to connect to server. Server may be offline."
 		a.currentServer = nil
 		a.currentChannel = nil
+		a.channelTree = nil
 		return
 	}
 
@@ -1453,6 +2184,9 @@ func (a *App) selectChannel(index int) {
 	a.channelIndex = index
 	a.currentChannel = channels[index]
 
+	// Clear typing indicators from the previous channel
+	a.clearTypingState()
+
 	// Clear unread counts for this channel
 	if a.currentClientServer != nil && a.currentChannel != nil {
 		serverID := a.currentClientServer.ID
@@ -1550,9 +2284,32 @@ func (a *App) updateChatContent() {
 	// Get viewport width for full-width backgrounds
 	viewportWidth := a.chatViewport.Width
 
-	for _, msg := range messages {
-		// Check if this is a system message
-		isSystemMsg := msg.AuthorName == "System"
+	for i, msg := range messages {
+		// Check if this message is selected in navigation mode
+		// Level 1: Highlight entire message with selection background
+		// Level 2: Highlight with cursor indicator (editing mode)
+		isSelected := a.messageNavMode && !a.inMessageEditMode && i == a.messageNavIndex
+		isInLevel2 := a.messageNavMode && a.inMessageEditMode && i == a.messageNavIndex
+
+		// Check if this is a system message (either explicit flag or legacy system author)
+		isSystemMsg := msg.IsSystem || msg.AuthorName == "System"
+
+		// Create highlight style for selected message (Level 1 only)
+		var highlightStyle lipgloss.Style
+		if isSelected {
+			// Level 1: Full selection background
+			highlightStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color(a.theme.Colors.Selection)).
+				Width(viewportWidth)
+		}
+		// Level 2: No background - just show cursor inline
+		// The cursor and selection will be rendered within the message content
+
+		// In Level 2, prepare to insert cursor and selection into message content
+		messageContentWithCursor := msg.Content
+		if isInLevel2 && !isSystemMsg {
+			messageContentWithCursor = a.insertCursorIntoMessage(msg.Content)
+		}
 
 		if msg.ShowHeader && !isSystemMsg {
 			// Render author line with full width background (non-system messages)
@@ -1575,29 +2332,54 @@ func (a *App) updateChatContent() {
 			// Apply full width background to entire line
 			lineStyle := lipgloss.NewStyle().
 				Width(viewportWidth)
-			content.WriteString(lineStyle.Render(header))
+			headerLine := lineStyle.Render(header)
+
+			// Wrap in highlight if selected (Level 1 or Level 2)
+			if isSelected || isInLevel2 {
+				headerLine = highlightStyle.Render(headerLine)
+			}
+			content.WriteString(headerLine)
 			content.WriteString("\n")
 		}
 
 		// Render message content
+		var contentLine string
 		if isSystemMsg {
-			systemStyle := lipgloss.NewStyle().
+			// Render as a centered announcement: ─── message text ───
+			barStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Faint(true)
+			textStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 				Italic(true).
-				Width(viewportWidth)
-			content.WriteString(systemStyle.Render(msg.Content))
+				Bold(true)
+			msgText := textStyle.Render(" " + msg.Content + " ")
+			msgVisLen := lipgloss.Width(msgText)
+			remaining := viewportWidth - msgVisLen
+			if remaining < 0 {
+				remaining = 0
+			}
+			leftBar := strings.Repeat("─", remaining/2)
+			rightBar := strings.Repeat("─", remaining-remaining/2)
+			line := barStyle.Render(leftBar) + msgText + barStyle.Render(rightBar)
+			contentLine = lipgloss.NewStyle().Width(viewportWidth).Render(line)
 		} else if msg.IsWhisper {
 			// Whisper: render with distinctive orange/pink color
 			whisperStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Orange)).
 				Italic(true).
 				Width(viewportWidth)
-			content.WriteString(whisperStyle.Render(msg.Content))
+			contentLine = whisperStyle.Render(messageContentWithCursor)
 		} else {
 			// Regular messages — highlight @mentions of the current user
-			rendered := a.renderMessageContent(msg.Content, viewportWidth)
-			content.WriteString(rendered)
+			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth)
 		}
+
+		// Wrap content in highlight if selected (Level 1 or Level 2)
+		if isSelected || isInLevel2 {
+			contentLine = highlightStyle.Render(contentLine)
+		}
+		content.WriteString(contentLine)
 		content.WriteString("\n")
 	}
 
@@ -1695,9 +2477,87 @@ func (a *App) scrollToBottom() {
 	a.chatViewport.GotoBottom()
 }
 
+// roleLevel categorizes the current user's highest permission level on the active server.
+type roleLevel int
+
+const (
+	roleLevelMember roleLevel = iota
+	roleLevelMod
+	roleLevelAdmin
+)
+
+// currentUserRoleLevel returns the effective permission level for the logged-in user
+// on the currently active server connection.
+func (a *App) currentUserRoleLevel() roleLevel {
+	if a.activeConn == nil || a.activeConn.User == nil {
+		return roleLevelMember
+	}
+	userID := a.activeConn.User.ID
+
+	a.activeConn.mu.RLock()
+	members := a.activeConn.Members
+	a.activeConn.mu.RUnlock()
+
+	for _, m := range members {
+		if m.User == nil || m.User.ID != userID {
+			continue
+		}
+		if m.HighestRole == nil {
+			return roleLevelMember
+		}
+		if m.HighestRole.HasPermission(models.PermissionAdministrator) {
+			return roleLevelAdmin
+		}
+		if m.HighestRole.HasPermission(models.PermissionKickMembers) ||
+			m.HighestRole.HasPermission(models.PermissionMuteMembers) ||
+			m.HighestRole.HasPermission(models.PermissionManageChannels) {
+			return roleLevelMod
+		}
+		return roleLevelMember
+	}
+	return roleLevelMember
+}
+
 // updateTypingIndicator updates the typing users list
 func (a *App) updateTypingIndicator(users []string) {
 	a.typingUsers = users
+}
+
+// rebuildTypingUsers refreshes a.typingUsers from the current typingExpiry map,
+// resolving user IDs to display names via the active connection's member list.
+func (a *App) rebuildTypingUsers() {
+	if len(a.typingExpiry) == 0 {
+		a.typingUsers = nil
+		return
+	}
+	// Build a userID → username map from the members list
+	nameMap := make(map[uuid.UUID]string)
+	if a.activeConn != nil {
+		a.activeConn.mu.RLock()
+		for _, m := range a.activeConn.Members {
+			if m.User != nil {
+				nameMap[m.User.ID] = m.User.Username
+			}
+		}
+		a.activeConn.mu.RUnlock()
+	}
+	users := make([]string, 0, len(a.typingExpiry))
+	for uid := range a.typingExpiry {
+		if name, ok := nameMap[uid]; ok {
+			users = append(users, name)
+		} else {
+			users = append(users, uid.String()[:8])
+		}
+	}
+	sort.Strings(users)
+	a.typingUsers = users
+}
+
+// clearTypingState resets all typing indicators for the current channel.
+// Called on channel switch so stale indicators don't bleed across channels.
+func (a *App) clearTypingState() {
+	a.typingExpiry = nil
+	a.typingUsers = nil
 }
 
 // updateViewportSize updates viewport and textarea dimensions based on window size.
@@ -1977,6 +2837,12 @@ type ConnectionReadyMsg struct {
 	ServerID uuid.UUID
 }
 
+// afkCheckMsg is fired periodically to check for AFK inactivity
+type afkCheckMsg struct{ t time.Time }
+
+// typingTickMsg drives the typing indicator animation and expiry pruning
+type typingTickMsg time.Time
+
 // ConnectionFailedMsg indicates connection failed
 type ConnectionFailedMsg struct {
 	ServerID uuid.UUID
@@ -2230,10 +3096,14 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
 			if a.currentServer != nil && a.currentServer.ID == payload.Server.ID {
 				a.loadChannelTree()
-				// Select first channel if none selected
 				if a.currentChannel == nil && len(payload.Channels) > 0 {
+					// First connection: select the first channel
 					a.channelIndex = 0
 					a.selectChannel(0)
+				} else if a.currentChannel != nil {
+					// Reconnect: re-request history for the channel we were viewing
+					// (message history may be stale or empty after a forced disconnect)
+					a.selectChannelByID(a.currentChannel.ID)
 				}
 			}
 		}
@@ -2314,17 +3184,24 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		// Add historical messages
 		for _, msgDisplay := range payload.Messages {
+			isSystem := msgDisplay.Type == models.MessageTypeSystem
 			display := &MessageDisplay{
 				Message:     msgDisplay.Message,
 				AuthorName:  msgDisplay.Author.Username,
 				AuthorColor: a.theme.Colors.Purple, // TODO: Use user color from role
 				IsOwn:       msgDisplay.Author.ID == currentUserID,
-				ShowHeader:  true, // TODO: Implement message grouping
+				ShowHeader:  !isSystem,
+				IsSystem:    isSystem,
 			}
 			sc.Messages[payload.ChannelID] = append(
 				sc.Messages[payload.ChannelID],
 				display,
 			)
+		}
+
+		// Populate pinned messages for this channel
+		if payload.PinnedMessages != nil {
+			sc.PinnedMessages[payload.ChannelID] = payload.PinnedMessages
 		}
 		sc.mu.Unlock()
 
@@ -2464,8 +3341,103 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			a.scrollToBottom()
 		}
 
+	case protocol.EventMessagePin:
+		var payload protocol.MessagePinPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse MESSAGE_PIN payload: %v", err)
+			return nil
+		}
+		if payload.Message != nil {
+			sc.mu.Lock()
+			pinned := sc.PinnedMessages[payload.ChannelID]
+			// Add if not already present
+			alreadyPinned := false
+			for _, pm := range pinned {
+				if pm.ID == payload.Message.ID {
+					alreadyPinned = true
+					break
+				}
+			}
+			if !alreadyPinned {
+				sc.PinnedMessages[payload.ChannelID] = append(pinned, payload.Message)
+			}
+			sc.mu.Unlock()
+			if a.activeConn != nil && a.activeConn.ServerID == serverID &&
+				a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
+				a.updateChatContent()
+			}
+		}
+
+	case protocol.EventMessageUnpin:
+		var payload protocol.MessagePinPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse MESSAGE_UNPIN payload: %v", err)
+			return nil
+		}
+		if payload.Message != nil {
+			sc.mu.Lock()
+			pinned := sc.PinnedMessages[payload.ChannelID]
+			filtered := pinned[:0]
+			for _, pm := range pinned {
+				if pm.ID != payload.Message.ID {
+					filtered = append(filtered, pm)
+				}
+			}
+			sc.PinnedMessages[payload.ChannelID] = filtered
+			sc.mu.Unlock()
+			if a.activeConn != nil && a.activeConn.ServerID == serverID &&
+				a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
+				a.updateChatContent()
+			}
+		}
+
+	case protocol.EventSystemMessage:
+		var payload protocol.SystemMessagePayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse SYSTEM_MESSAGE payload: %v", err)
+			return nil
+		}
+		// Show in whatever channel is currently viewed on this server
+		var chID uuid.UUID
+		if a.currentChannel != nil {
+			chID = a.currentChannel.ID
+		}
+		display := &MessageDisplay{
+			Message: &models.Message{
+				ID:        uuid.New(),
+				ChannelID: chID,
+				Content:   payload.Content,
+				CreatedAt: payload.Timestamp,
+			},
+			IsSystem:   true,
+			ShowHeader: false,
+		}
+		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			sc.AddMessage(chID, display)
+			if a.currentChannel != nil && a.currentChannel.ID == chID {
+				a.updateChatContent()
+				a.scrollToBottom()
+			}
+		}
+
 	case protocol.EventTypingStart:
-		// TODO: Handle typing indicators
+		var typingPayload protocol.TypingStartEventPayload
+		if err := json.Unmarshal(msg.Data, &typingPayload); err != nil {
+			return nil
+		}
+		// Only show for the channel the user is currently viewing on this server
+		if a.currentChannel == nil || typingPayload.ChannelID != a.currentChannel.ID {
+			return nil
+		}
+		// Never show our own typing indicator
+		if sc.User != nil && typingPayload.UserID == sc.User.ID {
+			return nil
+		}
+		if a.typingExpiry == nil {
+			a.typingExpiry = make(map[uuid.UUID]time.Time)
+		}
+		a.typingExpiry[typingPayload.UserID] = time.Now().Add(10 * time.Second)
+		a.rebuildTypingUsers()
 
 	case protocol.EventChannelCreate:
 		// Parse channel payload

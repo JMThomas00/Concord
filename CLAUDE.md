@@ -100,6 +100,10 @@ Concord follows an **IRC-like model**, not Discord's centralized model:
    - URL hyperlinks (OSC 8, Ctrl+Click in supported terminals)
    - `[DM]` prefix for whispers
    - Multi-line compose with Ctrl+J / Ctrl+Enter
+   - **Two-level message navigation** (Alt+M):
+     - **Level 1**: Navigate between messages with ↑/↓, copy entire message with Ctrl+C
+     - **Level 2**: Press Enter to edit mode, navigate within message with arrows, select text with Shift+arrows, copy selection with Ctrl+C
+     - **Link browser**: Press L to view/open URLs in selected message
 
 4. **Members** (~30 chars)
    - Role-grouped: Admin → Moderators → Members
@@ -194,6 +198,10 @@ Application preferences and local identity:
 - Theme browser with real-time preview (Ctrl+T)
 - /whisper ephemeral DMs
 - Shift+↑/↓ channel reordering
+- **Two-level message navigation & copying** (Alt+M):
+  - Level 1: Navigate messages, copy entire message, open link browser
+  - Level 2: Navigate within message, select text with Shift+arrows, copy selection
+  - Keyboard-only workflow for copy/paste without relying on terminal mouse
 
 ### Planned
 
@@ -495,7 +503,7 @@ Concord/
 - User authentication (per-server)
 - WebSocket communication with auto-reconnect
 - SQLite persistence
-- **Slash commands**: /create-channel, /create-category, /delete-channel, /delete-category, /rename-channel, /move-channel, /theme, /mute, /unmute, /whisper, /help
+- **Slash commands**: /create-channel, /create-category, /delete-channel, /delete-category, /rename-channel, /move-channel, /theme, /mute, /unmute, /whisper, /links, /help
 - **Connection resilience**: Non-blocking connections, exponential backoff, 10s timeouts
 - **Server management**: Manage Servers view (Ctrl+B), server ping, pre-auth deletion, Shift+↑/↓ reordering
 - **Message broadcasting**: Auto-join channels for proper event delivery
@@ -515,6 +523,10 @@ Concord/
 - **Startup fix**: Correct channels shown immediately on startup (handleReady race condition fixed)
 - **Real-time member updates**: Members appear/disappear in real-time as users connect/disconnect
 - **Offline presence**: Server broadcasts StatusOffline to all servers when client disconnects
+- **Two-level message navigation** (Alt+M): Keyboard-driven copy/paste system
+  - Level 1: ↑/↓ navigate messages, Ctrl+C copy entire message, L open link browser
+  - Level 2: Enter for edit mode, arrows navigate within message, Shift+arrows select text, Ctrl+C copy selection
+  - Esc to go back one level (Level 2→Level 1→normal chat)
 
 ### In Progress 🚧
 

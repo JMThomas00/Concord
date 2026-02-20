@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/concord-chat/concord/internal/models"
@@ -66,7 +67,7 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 	case "theme":
 		return ch.handleTheme(cmd.Args)
 	case "mute":
-		// /mute with no args = mute current channel; /mute @user = server-mute
+		// /mute with no args = mute current channel; /mute @user [minutes] = server-mute
 		if len(cmd.Args) > 0 && strings.HasPrefix(cmd.Args[0], "@") {
 			return ch.handleMuteMember(cmd.Args, true)
 		}
@@ -82,8 +83,18 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleKickBan(cmd.Args, false)
 	case "ban":
 		return ch.handleKickBan(cmd.Args, true)
+	case "unban":
+		return ch.handleUnban(cmd.Args)
+	case "timeout":
+		return ch.handleTimeout(cmd.Args)
+	case "pin":
+		return ch.handlePin(cmd.Args)
+	case "unpin":
+		return ch.handleUnpin(cmd.Args)
 	case "whisper", "w":
 		return ch.handleWhisper(cmd.Args)
+	case "links":
+		return ch.handleLinks(cmd.Args)
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}
@@ -328,25 +339,44 @@ func (ch *CommandHandler) handleMoveChannel(args []string) (string, error) {
 }
 
 func (ch *CommandHandler) handleHelp(args []string) (string, error) {
-	help := `Available Commands:
-/create-channel <name>     - Create a new text channel
-/create-category <name>    - Create a new category
-/delete-channel            - Delete the current channel
-/delete-category <name>    - Delete an empty category
-/rename-channel <name>     - Rename the current channel
-/move-channel <category>   - Move current channel to a category
-/theme [name]              - Open theme browser, or apply theme directly
-/mute                      - Mute current channel (suppress unread badges)
-/mute @user                - Server-mute a member (requires permission)
-/unmute @user              - Server-unmute a member
-/unmute                    - Unmute current channel
-/role assign|remove @user <role> - Manage member roles
-/kick @user [reason]       - Kick a member from the server
-/ban @user [reason]        - Ban a member from the server
-/whisper @user <message>   - Send an ephemeral DM (alias: /w)
-/help                      - Show this help message`
+	level := ch.app.currentUserRoleLevel()
 
-	return help, nil
+	// All users can whisper and change theme
+	lines := []string{
+		"Available Commands:",
+		"/whisper @user <msg>       - Send an ephemeral DM (alias: /w)",
+		"/links [N]                 - Show links from recent N messages (default: 20)",
+		"/theme [name]              - Open theme browser, or apply theme directly",
+		"/mute                      - Mute current channel (suppress unread badges)",
+		"/unmute                    - Unmute current channel",
+	}
+
+	if level >= roleLevelMod {
+		lines = append(lines,
+			"/create-channel <name>     - Create a new text channel",
+			"/create-category <name>    - Create a new category",
+			"/delete-channel            - Delete the current channel",
+			"/delete-category <name>    - Delete an empty category",
+			"/rename-channel <name>     - Rename the current channel",
+			"/move-channel <category>   - Move current channel to a category",
+			"/mute @user [minutes]      - Server-mute a member",
+			"/unmute @user              - Server-unmute a member",
+			"/kick @user [reason]       - Kick a member from the server",
+			"/timeout @user <minutes>   - Temporarily ban a member",
+			"/pin [N]                   - Pin the Nth most recent message (default: 1)",
+			"/unpin [N]                 - Unpin the Nth pinned message (default: 1)",
+		)
+	}
+
+	if level >= roleLevelAdmin {
+		lines = append(lines,
+			"/role assign|remove @user <role> - Manage member roles",
+			"/ban @user [reason]        - Permanently ban a member",
+			"/unban @user               - Lift a ban from a member",
+		)
+	}
+
+	return strings.Join(lines, "\n"), nil
 }
 
 // resolveMember finds a MemberDisplay by @username (strips leading @).
@@ -480,10 +510,33 @@ func (ch *CommandHandler) handleKickBan(args []string, ban bool) (string, error)
 	return fmt.Sprintf("Kicked %s.", md.User.Username), nil
 }
 
-// handleMuteMember handles /mute @user and /unmute @user (server-side mute)
+// handleUnban handles /unban @user — lifts a ban by username
+func (ch *CommandHandler) handleUnban(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("usage: /unban @user")
+	}
+	username := strings.TrimPrefix(strings.ToLower(args[0]), "@")
+	if username == "" {
+		return "", fmt.Errorf("usage: /unban @user")
+	}
+	serverID := ch.app.getActiveServerID()
+	if serverID == uuid.Nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+	err := ch.sendModMsg(protocol.OpUnbanMember, &protocol.UnbanMemberRequest{
+		ServerID: serverID,
+		Username: username,
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Unbanned %s.", username), nil
+}
+
+// handleMuteMember handles /mute @user [minutes] and /unmute @user (server-side mute)
 func (ch *CommandHandler) handleMuteMember(args []string, mute bool) (string, error) {
 	if len(args) < 1 {
-		return "", fmt.Errorf("usage: /mute @user")
+		return "", fmt.Errorf("usage: /mute @user [minutes]")
 	}
 	md := ch.resolveMember(args[0])
 	if md == nil {
@@ -493,8 +546,17 @@ func (ch *CommandHandler) handleMuteMember(args []string, mute bool) (string, er
 	if serverID == uuid.Nil {
 		return "", fmt.Errorf("not connected to a server")
 	}
+	// Optional duration in minutes (only applies when muting)
+	durationMinutes := 0
+	if mute && len(args) >= 2 {
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n <= 0 {
+			return "", fmt.Errorf("invalid duration %q — must be a positive integer (minutes)", args[1])
+		}
+		durationMinutes = n
+	}
 	err := ch.sendModMsg(protocol.OpMuteMember, &protocol.MuteMemberRequest{
-		ServerID: serverID, UserID: md.User.ID, Mute: mute,
+		ServerID: serverID, UserID: md.User.ID, Mute: mute, DurationMinutes: durationMinutes,
 	})
 	if err != nil {
 		return "", err
@@ -502,6 +564,9 @@ func (ch *CommandHandler) handleMuteMember(args []string, mute bool) (string, er
 	action := "Muted"
 	if !mute {
 		action = "Unmuted"
+	}
+	if mute && durationMinutes > 0 {
+		return fmt.Sprintf("%s %s for %d minutes.", action, md.User.Username, durationMinutes), nil
 	}
 	return fmt.Sprintf("%s %s.", action, md.User.Username), nil
 }
@@ -534,6 +599,101 @@ func (ch *CommandHandler) handleMuteChannel(unmute bool) (string, error) {
 	return fmt.Sprintf("Muted #%s", chName), nil
 }
 
+// handleTimeout handles /timeout @user <minutes> [reason]
+func (ch *CommandHandler) handleTimeout(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("usage: /timeout @user <minutes> [reason]")
+	}
+	md := ch.resolveMember(args[0])
+	if md == nil {
+		return "", fmt.Errorf("user %s not found", args[0])
+	}
+	minutes, err := strconv.Atoi(args[1])
+	if err != nil || minutes <= 0 {
+		return "", fmt.Errorf("invalid duration %q — must be a positive integer (minutes)", args[1])
+	}
+	reason := strings.Join(args[2:], " ")
+	serverID := ch.app.getActiveServerID()
+	if serverID == uuid.Nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+	if err := ch.sendModMsg(protocol.OpTimeoutMember, &protocol.TimeoutMemberRequest{
+		ServerID:        serverID,
+		UserID:          md.User.ID,
+		DurationMinutes: minutes,
+		Reason:          reason,
+	}); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Timed out %s for %d minutes.", md.User.Username, minutes), nil
+}
+
+// handlePin handles /pin [N] — pins the Nth most recent message (default 1).
+func (ch *CommandHandler) handlePin(args []string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil || a.currentChannel == nil {
+		return "", fmt.Errorf("no channel selected")
+	}
+	n := 1
+	if len(args) >= 1 {
+		parsed, err := strconv.Atoi(args[0])
+		if err != nil || parsed <= 0 {
+			return "", fmt.Errorf("invalid index %q — must be a positive integer", args[0])
+		}
+		n = parsed
+	}
+	a.activeConn.mu.RLock()
+	msgs := a.activeConn.Messages[a.currentChannel.ID]
+	a.activeConn.mu.RUnlock()
+	if len(msgs) == 0 {
+		return "", fmt.Errorf("no messages in this channel")
+	}
+	if n > len(msgs) {
+		return "", fmt.Errorf("only %d messages available", len(msgs))
+	}
+	target := msgs[len(msgs)-n]
+	if err := ch.sendModMsg(protocol.OpPinMessage, &protocol.PinMessageRequest{
+		ChannelID: a.currentChannel.ID,
+		MessageID: target.Message.ID,
+	}); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Pinning message by %s...", target.AuthorName), nil
+}
+
+// handleUnpin handles /unpin [N] — unpins the Nth pinned message (default 1).
+func (ch *CommandHandler) handleUnpin(args []string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil || a.currentChannel == nil {
+		return "", fmt.Errorf("no channel selected")
+	}
+	n := 1
+	if len(args) >= 1 {
+		parsed, err := strconv.Atoi(args[0])
+		if err != nil || parsed <= 0 {
+			return "", fmt.Errorf("invalid index %q — must be a positive integer", args[0])
+		}
+		n = parsed
+	}
+	a.activeConn.mu.RLock()
+	pinned := a.activeConn.PinnedMessages[a.currentChannel.ID]
+	a.activeConn.mu.RUnlock()
+	if len(pinned) == 0 {
+		return "", fmt.Errorf("no pinned messages in this channel")
+	}
+	if n > len(pinned) {
+		return "", fmt.Errorf("only %d pinned messages", len(pinned))
+	}
+	target := pinned[n-1]
+	if err := ch.sendModMsg(protocol.OpUnpinMessage, &protocol.UnpinMessageRequest{
+		ChannelID: a.currentChannel.ID,
+		MessageID: target.ID,
+	}); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Unpinning message #%d...", n), nil
+}
+
 func (ch *CommandHandler) handleTheme(args []string) (string, error) {
 	if len(args) == 0 {
 		// Open the interactive theme browser
@@ -546,4 +706,40 @@ func (ch *CommandHandler) handleTheme(args []string) (string, error) {
 	ch.app.applyAndSaveTheme(name)
 	displayName := themes.GetThemeDisplayName(name)
 	return fmt.Sprintf("Theme set to %q", displayName), nil
+}
+
+// handleLinks handles /links [N] — shows links from recent N messages (default 20)
+func (ch *CommandHandler) handleLinks(args []string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil || a.currentChannel == nil {
+		return "", fmt.Errorf("not connected to a channel")
+	}
+
+	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+
+	// Collect all links from recent N messages (default: last 20)
+	limit := 20
+	if len(args) > 0 {
+		if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	var allLinks []string
+	startIdx := len(messages) - limit
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	for i := startIdx; i < len(messages); i++ {
+		links := a.extractLinksFromMessage(messages[i])
+		allLinks = append(allLinks, links...)
+	}
+
+	if len(allLinks) == 0 {
+		return "No links found in recent messages", nil
+	}
+
+	a.openLinkBrowser(allLinks, nil, "main")
+	return "", nil
 }

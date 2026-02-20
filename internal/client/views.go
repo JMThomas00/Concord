@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -10,6 +11,10 @@ import (
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/themes"
 )
+
+// typingFrames is the braille spinner sequence used for the typing animation.
+// Each frame is shown for ~400ms, cycling smoothly at ~2.5 frames/sec.
+var typingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // renderLoginView renders the login screen
 func (a *App) renderLoginView() string {
@@ -74,7 +79,7 @@ func (a *App) renderLoginView() string {
 			b.WriteString("\n\n")
 		}
 
-		b.WriteString(helpStyle.Render("Enter: Unlock  •  Ctrl+B: Manage Servers  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
+		b.WriteString(helpStyle.Render("Enter: Unlock  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
 	} else {
 		// Standard login mode: email + password + register link
 		b.WriteString(subtitleStyle.Render("Terminal Chat - Login to continue"))
@@ -121,7 +126,7 @@ func (a *App) renderLoginView() string {
 		}
 		b.WriteString("\n\n")
 
-		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+B: Manage Servers  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
+		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
 	}
 
 	// Create the form box with padding and fixed width
@@ -520,18 +525,18 @@ func (a *App) renderServerIcons(width, height int) string {
 		b.WriteString("\n")
 	}
 
-	// Add "+" button to add new server (highlighted when selected)
+	// "Manage Servers" button (highlighted when selected)
 	isAddSelected := a.serverIndex >= len(servers)
 	var addButtonStr string
 	if isAddSelected {
 		addButtonStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Purple)).
 			Bold(true)
-		addButtonStr = addButtonStyle.Render("▶ + Add Server")
+		addButtonStr = addButtonStyle.Render("▶ Manage Servers")
 	} else {
 		addButtonStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Green))
-		addButtonStr = addButtonStyle.Render("  + Add Server")
+		addButtonStr = addButtonStyle.Render("  Manage Servers")
 	}
 	b.WriteString(addButtonStr)
 
@@ -798,8 +803,12 @@ func (a *App) renderChannelList(width, height int) string {
 		Padding(0, 1)
 
 	serverName := "No Server"
+	serverOffline := false
 	if a.currentServer != nil {
 		serverName = a.currentServer.Name
+	} else if a.currentClientServer != nil {
+		serverName = a.currentClientServer.Name
+		serverOffline = true
 	}
 	b.WriteString(serverNameStyle.Render(serverName))
 	b.WriteString("\n\n")
@@ -829,11 +838,16 @@ func (a *App) renderChannelList(width, height int) string {
 			Italic(true).
 			PaddingLeft(1)
 
-		if a.currentServer == nil {
-			b.WriteString(placeholderStyle.Render("Select a server"))
-		} else {
-			b.WriteString(placeholderStyle.Render("No channels"))
+		var placeholder string
+		switch {
+		case serverOffline:
+			placeholder = "Server offline"
+		case a.currentServer == nil:
+			placeholder = "Select a server"
+		default:
+			placeholder = "No channels"
 		}
+		b.WriteString(placeholderStyle.Render(placeholder))
 		b.WriteString("\n")
 	}
 
@@ -885,6 +899,7 @@ func (a *App) renderChatPanel(width, height int) string {
 	inputHeight := 6 // 5 lines of text + 1 bottom border (top border removed to avoid double-border gap)
 	headerHeight := 2 // header line + spacer line below it
 	chatHeight := height - inputHeight - headerHeight
+	chatHeight -= 1 // Reserve space for typing indicator (always present, blank when inactive)
 
 	// Channel header
 	headerStyle := lipgloss.NewStyle().
@@ -902,6 +917,51 @@ func (a *App) renderChatPanel(width, height int) string {
 		}
 	}
 	header := headerStyle.Render(channelHeader)
+
+	// Pinned messages header — shown above the chat viewport when pins exist
+	pinnedHeader := ""
+	if a.activeConn != nil && a.currentChannel != nil {
+		a.activeConn.mu.RLock()
+		pinnedMsgs := a.activeConn.PinnedMessages[a.currentChannel.ID]
+		a.activeConn.mu.RUnlock()
+
+		if len(pinnedMsgs) > 0 {
+			pinStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Yellow)).
+				Width(interiorWidth).
+				PaddingLeft(1)
+			pinDivider := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Width(interiorWidth).
+				PaddingLeft(1)
+
+			var pinBuf strings.Builder
+			// Cap display to 3 pinned messages to limit height consumption
+			displayCount := len(pinnedMsgs)
+			if displayCount > 3 {
+				displayCount = 3
+			}
+			pinBuf.WriteString(pinStyle.Render(fmt.Sprintf("📌 %d pinned message(s)  (/unpin N to remove)", len(pinnedMsgs))))
+			pinBuf.WriteString("\n")
+			for i := 0; i < displayCount; i++ {
+				pm := pinnedMsgs[i]
+				snippet := pm.Content
+				maxLen := interiorWidth - 10
+				if maxLen < 10 {
+					maxLen = 10
+				}
+				if len([]rune(snippet)) > maxLen {
+					snippet = string([]rune(snippet)[:maxLen]) + "…"
+				}
+				pinBuf.WriteString(pinDivider.Render(fmt.Sprintf("[%d] %s", i+1, snippet)))
+				pinBuf.WriteString("\n")
+			}
+			pinBuf.WriteString(pinDivider.Render(strings.Repeat("─", interiorWidth-2)))
+			pinnedHeader = strings.TrimRight(pinBuf.String(), "\n")
+			// Each pin uses 1 line, plus title + divider = displayCount+2 lines
+			chatHeight -= displayCount + 2
+		}
+	}
 
 	// Chat viewport - always show border for consistent sizing
 	// Subtract 2 for border to get interior content height
@@ -944,22 +1004,31 @@ func (a *App) renderChatPanel(width, height int) string {
 	}
 	chat := chatStyle.Render(chatContent)
 
-	// Typing indicator — only rendered when someone is actually typing (no reserved blank row)
+	// Typing indicator — always reserve space (render blank when inactive to prevent layout shift).
+	// The braille spinner (typingFrames) advances every 400ms via typingTickMsg.
 	typing := ""
 	if len(a.typingUsers) > 0 {
-		typingText := ""
-		if len(a.typingUsers) == 1 {
-			typingText = "  " + a.typingUsers[0] + " is typing..."
-		} else if len(a.typingUsers) == 2 {
-			typingText = "  " + a.typingUsers[0] + " and " + a.typingUsers[1] + " are typing..."
-		} else {
-			typingText = fmt.Sprintf("  %d people are typing...", len(a.typingUsers))
+		frame := typingFrames[a.typingFrame%len(typingFrames)]
+		var who string
+		switch len(a.typingUsers) {
+		case 1:
+			who = a.typingUsers[0] + " is typing"
+		case 2:
+			who = a.typingUsers[0] + " and " + a.typingUsers[1] + " are typing"
+		default:
+			who = fmt.Sprintf("%d people are typing", len(a.typingUsers))
 		}
-		typing = lipgloss.NewStyle().
+		spinnerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Bold(true)
+		textStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-			Italic(true).
-			Width(width).
-			Render(typingText)
+			Italic(true)
+		typingLine := "  " + spinnerStyle.Render(frame) + " " + textStyle.Render(who+"...")
+		typing = lipgloss.NewStyle().Width(width).Render(typingLine)
+	} else {
+		// Render blank line to maintain spacing (prevents border shift when typing starts/stops)
+		typing = lipgloss.NewStyle().Width(width).Height(1).Render("")
 	}
 
 	// Input area — full rounded border; textarea is 4 content lines so that
@@ -973,49 +1042,167 @@ func (a *App) renderChatPanel(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(inputBorderColor)
 
-	input := inputStyle.Render(a.input.View())
+	input := inputStyle.Render(a.injectMentionGhost(a.input.View()))
 
 	// Spacer between header and chat viewport (aligns viewport border with panel borders)
 	spacer := lipgloss.NewStyle().Width(width).Height(1).Render("")
 
-	// @mention autocomplete popup (rendered just above the input)
-	mentionPopup := ""
-	if a.showMentionPopup && len(a.mentionSuggestions) > 0 {
-		var popBuf strings.Builder
-		popStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-			Background(lipgloss.Color(a.theme.Colors.CurrentLine)).
-			Width(width - 2).
-			PaddingLeft(1)
-		hlStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-			Background(lipgloss.Color(a.theme.Colors.CurrentLine)).
-			Bold(true).
-			Width(width - 2).
-			PaddingLeft(1)
-		for i, s := range a.mentionSuggestions {
-			line := "@" + s
-			if i == 0 {
-				popBuf.WriteString(hlStyle.Render(line))
-			} else {
-				popBuf.WriteString(popStyle.Render(line))
-			}
-			popBuf.WriteString("\n")
-		}
-		mentionPopup = strings.TrimRight(popBuf.String(), "\n")
+	// Combine vertically — always include typing row (blank when inactive) to prevent border shift
+	parts := []string{header, spacer}
+	if pinnedHeader != "" {
+		parts = append(parts, pinnedHeader)
 	}
-
-	// Combine vertically — only include typing row when someone is actually typing
-	// (an empty string in JoinVertical still adds a blank line, which creates an unwanted gap)
-	parts := []string{header, spacer, chat}
-	if typing != "" {
-		parts = append(parts, typing)
-	}
-	if mentionPopup != "" {
-		parts = append(parts, mentionPopup)
-	}
+	parts = append(parts, chat)
+	parts = append(parts, typing) // Always append (blank or with content)
 	parts = append(parts, input)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// injectMentionGhost post-processes the textarea View() output to show the
+// top @mention suggestion as inline ghost text (dim italic) immediately after
+// the cursor, replacing an equal number of trailing spaces so line width stays
+// constant and borders are not pushed around.
+func (a *App) injectMentionGhost(view string) string {
+	if !a.showMentionPopup || len(a.mentionSuggestions) == 0 {
+		return view
+	}
+	suggestion := a.mentionSuggestions[0]
+	if len(suggestion) <= len(a.mentionQuery) {
+		return view
+	}
+	ghost := suggestion[len(a.mentionQuery):]
+
+	ghostRendered := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Render(ghost)
+
+	lines := strings.Split(view, "\n")
+	cursorLine := a.input.Line()
+	if cursorLine >= len(lines) {
+		return view
+	}
+
+	line := lines[cursorLine]
+
+	// The textarea renders the cursor character with reverse-video (\x1b[7m).
+	// Find that sequence and skip past it and its reset to locate the injection point.
+	cursorSeq := "\x1b[7m"
+	cursorStart := strings.Index(line, cursorSeq)
+	if cursorStart < 0 {
+		return view
+	}
+	// Skip \x1b[7m + one cursor rune + any trailing CSI reset sequences.
+	i := cursorStart + len(cursorSeq)
+	if i < len(line) {
+		_, size := utf8.DecodeRuneInString(line[i:])
+		i += size
+	}
+	for i < len(line) && line[i] == '\x1b' {
+		j := i + 1
+		if j < len(line) && line[j] == '[' {
+			j++
+			for j < len(line) && (line[j] < 0x40 || line[j] > 0x7e) {
+				j++
+			}
+			if j < len(line) {
+				j++
+			}
+			i = j
+		} else {
+			break
+		}
+	}
+	insertOffset := i
+
+	// Remove len(ghost) trailing visible characters from the suffix so the
+	// overall visual width of the line does not change.
+	suffix := line[insertOffset:]
+	suffix = ansiTrimTrailingVisChars(suffix, len(ghost))
+
+	lines[cursorLine] = line[:insertOffset] + ghostRendered + suffix
+	return strings.Join(lines, "\n")
+}
+
+// ansiVisColToByteOffset returns the byte offset in s at which visible column
+// visCol (0-indexed) begins, skipping ANSI/CSI/OSC escape sequences entirely.
+// Returns len(s) when visCol exceeds the visible length.
+func ansiVisColToByteOffset(s string, visCol int) int {
+	col := 0
+	i := 0
+	for i < len(s) {
+		if col >= visCol {
+			return i
+		}
+		if s[i] == '\x1b' {
+			j := i + 1
+			if j < len(s) && s[j] == '[' {
+				// CSI: \x1b[ params finalByte (0x40–0x7e)
+				j++
+				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+					j++
+				}
+				if j < len(s) {
+					j++
+				}
+			} else if j < len(s) && s[j] == ']' {
+				// OSC: ends with BEL or ST (\x1b\\)
+				j++
+				for j < len(s) {
+					if s[j] == '\a' {
+						j++
+						break
+					}
+					if s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\' {
+						j += 2
+						break
+					}
+					j++
+				}
+			}
+			i = j
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		col++
+	}
+	return i
+}
+
+// ansiTrimTrailingVisChars removes up to n trailing visible characters from s,
+// preserving ANSI escape sequences. Returns the truncated string.
+func ansiTrimTrailingVisChars(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	// Count total visible characters.
+	visLen := 0
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			j := i + 1
+			if j < len(s) && s[j] == '[' {
+				j++
+				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+					j++
+				}
+				if j < len(s) {
+					j++
+				}
+			}
+			i = j
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		visLen++
+	}
+	target := visLen - n
+	if target <= 0 {
+		return ""
+	}
+	return s[:ansiVisColToByteOffset(s, target)]
 }
 
 // renderMemberAvatar renders a colored circle with the member's initial, e.g. "(A)"
@@ -1207,7 +1394,7 @@ func (a *App) renderStatusBar() string {
 	}
 
 	// Right side: help text
-	rightContent := textStyle.Render("Tab: Navigate  |  Up/Down: Select  |  Ctrl+B: Manage Servers  |  Type /help  |  Ctrl+Q: Quit ")
+	rightContent := textStyle.Render("Tab: Navigate  |  Up/Down: Select  |  Type /help  |  Ctrl+Q: Quit ")
 
 	// Calculate spacing (must know left/right widths before truncating center)
 	leftLen := lipgloss.Width(leftContent)
@@ -1245,4 +1432,100 @@ func (a *App) renderStatusBar() string {
 	}
 
 	return bar
+}
+
+// renderLinkBrowserOverlay renders the link browser modal overlay on top of the base view
+func (a *App) renderLinkBrowserOverlay(baseView string) string {
+	if a.linkBrowserState == nil {
+		return baseView
+	}
+
+	// Calculate overlay dimensions (centered modal)
+	overlayWidth := 80
+	if overlayWidth > a.width-4 {
+		overlayWidth = a.width - 4
+	}
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(overlayWidth - 2)
+	header := headerStyle.Render("Links")
+
+	// Link list
+	var linkLines []string
+	for i, link := range a.linkBrowserState.Links {
+		numberStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			Bold(true)
+		linkStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan))
+
+		// Highlight selected link
+		if i == a.linkBrowserState.SelectedIndex {
+			numberStyle = numberStyle.
+				Background(lipgloss.Color(a.theme.Colors.Selection))
+			linkStyle = linkStyle.
+				Background(lipgloss.Color(a.theme.Colors.Selection))
+		}
+
+		// Truncate link if too long
+		maxLinkLen := overlayWidth - 10
+		displayLink := link
+		if len(displayLink) > maxLinkLen {
+			displayLink = displayLink[:maxLinkLen-1] + "…"
+		}
+
+		line := fmt.Sprintf("%s %s",
+			numberStyle.Render(fmt.Sprintf("[%d]", i+1)),
+			linkStyle.Render(displayLink))
+		linkLines = append(linkLines, line)
+	}
+
+	// Footer with keybind hints
+	hintStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Align(lipgloss.Center).
+		Width(overlayWidth - 2)
+	hints := hintStyle.Render("Enter: Open  •  C: Copy  •  Esc: Close")
+
+	// Build modal content
+	var modalContent strings.Builder
+	modalContent.WriteString(header + "\n\n")
+	for _, line := range linkLines {
+		modalContent.WriteString(line + "\n")
+	}
+	modalContent.WriteString("\n" + hints)
+
+	// Calculate modal height
+	modalHeight := len(linkLines) + 5 // header + links + footer + spacing
+
+	// Wrap in box
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
+		Width(overlayWidth).
+		Height(modalHeight).
+		Padding(1).
+		Background(lipgloss.Color(a.theme.Colors.Background))
+
+	modal := boxStyle.Render(modalContent.String())
+
+	// Place modal centered on screen
+	yOffset := (a.height - modalHeight) / 2
+	if yOffset < 0 {
+		yOffset = 0
+	}
+	xOffset := (a.width - overlayWidth) / 2
+	if xOffset < 0 {
+		xOffset = 0
+	}
+
+	// Use lipgloss.Place to overlay the modal on the base view
+	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, modal,
+		lipgloss.WithWhitespaceChars(""),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color(a.theme.Colors.Background)))
 }
