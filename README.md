@@ -212,7 +212,7 @@ Or pass flags: `--host`, `--port`, `--db`, `--config <path>`, `--admin-email <em
 {
   "version": 1,
   "identity": {
-    "alias": "gh0st",
+    "alias": "user",
     "email": "ghost@example.com",
     "password": "..."
   },
@@ -246,7 +246,7 @@ Managed automatically. Stores the list of known servers and cached auth tokens:
     }
   ],
   "default_user_preferences": {
-    "username": "gh0st",
+    "username": "user",
     "email": "ghost@example.com"
   }
 }
