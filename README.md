@@ -213,7 +213,7 @@ Or pass flags: `--host`, `--port`, `--db`, `--config <path>`, `--admin-email <em
   "version": 1,
   "identity": {
     "alias": "user",
-    "email": "ghost@example.com",
+    "email": "user@example.com",
     "password": "..."
   },
   "ui": {
@@ -240,14 +240,14 @@ Managed automatically. Stores the list of known servers and cached auth tokens:
       "port": 8080,
       "last_connected": "2026-02-18T10:00:00Z",
       "saved_credentials": {
-        "email": "ghost@example.com",
+        "email": "user@example.com",
         "token": "..."
       }
     }
   ],
   "default_user_preferences": {
     "username": "user",
-    "email": "ghost@example.com"
+    "email": "user@example.com"
   }
 }
 ```
