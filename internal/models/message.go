@@ -28,6 +28,8 @@ type Message struct {
 	CreatedAt       time.Time    `json:"created_at"`
 	EditedAt        *time.Time   `json:"edited_at,omitempty"`
 	IsPinned        bool         `json:"is_pinned"`
+	IsWhisper       bool         `json:"is_whisper"`                // Whisper (ephemeral DM)
+	RecipientID     *uuid.UUID   `json:"recipient_id,omitempty"`    // For whispers only
 	Mentions        []uuid.UUID  `json:"mentions,omitempty"`        // User IDs mentioned
 	MentionRoles    []uuid.UUID  `json:"mention_roles,omitempty"`   // Role IDs mentioned
 	MentionEveryone bool         `json:"mention_everyone"`

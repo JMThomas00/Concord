@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"sync"
 	"time"
 
@@ -98,7 +97,7 @@ func (h *Hub) registerClient(client *Client) {
 		h.serverClients[serverID][client.UserID] = client
 	}
 
-	log.Printf("Client registered: user=%s, servers=%d", client.UserID, len(client.ServerIDs))
+	HubLog.Info("Client registered", "user_id", client.UserID, "server_count", len(client.ServerIDs))
 }
 
 // unregisterClient removes a client from the hub
@@ -141,7 +140,7 @@ func (h *Hub) unregisterClient(client *Client) {
 
 	h.mu.Unlock()
 
-	log.Printf("Client unregistered: user=%s", client.UserID)
+	HubLog.Info("Client unregistered", "user_id", client.UserID)
 
 	// Broadcast offline presence to all servers this user was in
 	if user != nil && len(serverIDs) > 0 {
@@ -179,9 +178,9 @@ func (h *Hub) broadcastMessage(msg *BroadcastMessage) {
 			for _, client := range clients {
 				targets = append(targets, client)
 			}
-			log.Printf("Broadcasting to channel %s: found %d clients", msg.ChannelID, len(targets))
+			HubLog.Debug("Broadcasting to channel", "channel_id", msg.ChannelID, "client_count", len(targets))
 		} else {
-			log.Printf("Broadcasting to channel %s: no clients found in channelClients map", msg.ChannelID)
+			HubLog.Debug("No clients found in channel", "channel_id", msg.ChannelID)
 		}
 	}
 
@@ -195,7 +194,7 @@ func (h *Hub) broadcastMessage(msg *BroadcastMessage) {
 		case client.send <- msg.Message:
 		default:
 			// Client's buffer is full, skip
-			log.Printf("Client buffer full, dropping message: user=%s", client.UserID)
+			HubLog.Warn("Client buffer full, dropping message", "user_id", client.UserID)
 		}
 	}
 }
@@ -358,7 +357,7 @@ func (h *Hub) BroadcastPresenceUpdate(user *models.User, serverIDs []uuid.UUID) 
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("Failed to marshal presence update: %v", err)
+		HubLog.Error("Failed to marshal presence update", "user_id", user.ID, "error", err)
 		return
 	}
 

@@ -70,6 +70,17 @@ func BuildChannelTree(channels []*models.Channel) *ChannelTree {
 		}
 	}
 
+	// Third pass: Sort all children by position
+	// Root children: Interleaved (orphans and categories by position, orphans before categories on tie)
+	sortNodesByPosition(tree.Root.Children)
+
+	// Category children: Simple position sort
+	for _, node := range tree.NodeMap {
+		if node.IsCategory {
+			sortNodesByPosition(node.Children)
+		}
+	}
+
 	// Build initial flat list (all categories expanded)
 	tree.RebuildFlatList(make(map[uuid.UUID]bool))
 
@@ -211,15 +222,33 @@ func (t *ChannelTree) UpdateChannel(channel *models.Channel) {
 			if newParent, exists := t.NodeMap[channel.CategoryID]; exists {
 				node.Parent = newParent
 				newParent.Children = append(newParent.Children, node)
+				// Re-sort category children
+				sortNodesByPosition(newParent.Children)
 			} else {
 				// New parent doesn't exist - attach to root
 				node.Parent = t.Root
 				t.Root.Children = append(t.Root.Children, node)
+				// Re-sort root children
+				sortNodesByPosition(t.Root.Children)
 			}
 		} else {
 			// No category - attach to root
 			node.Parent = t.Root
 			t.Root.Children = append(t.Root.Children, node)
+			// Re-sort root children
+			sortNodesByPosition(t.Root.Children)
+		}
+	}
+}
+
+// sortNodesByPosition sorts nodes by SortOrder (simple numeric comparison)
+func sortNodesByPosition(nodes []*ChannelTreeNode) {
+	for i := 0; i < len(nodes)-1; i++ {
+		for j := i + 1; j < len(nodes); j++ {
+			// Simple comparison - no tie-breaker needed
+			if nodes[j].Channel.SortOrder < nodes[i].Channel.SortOrder {
+				nodes[i], nodes[j] = nodes[j], nodes[i]
+			}
 		}
 	}
 }

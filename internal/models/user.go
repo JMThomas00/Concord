@@ -86,13 +86,14 @@ func generateDiscriminator() string {
 
 // ServerMember represents a user's membership in a server
 type ServerMember struct {
-	UserID    uuid.UUID   `json:"user_id"`
-	ServerID  uuid.UUID   `json:"server_id"`
-	Nickname  string      `json:"nickname,omitempty"`
-	RoleIDs   []uuid.UUID `json:"role_ids"`
-	JoinedAt  time.Time   `json:"joined_at"`
-	IsMuted   bool        `json:"is_muted"`
-	IsDeafened bool       `json:"is_deafened"`
+	UserID      uuid.UUID   `json:"user_id"`
+	ServerID    uuid.UUID   `json:"server_id"`
+	Nickname    string      `json:"nickname,omitempty"`
+	CustomTitle string      `json:"custom_title,omitempty"` // Admin-assigned title
+	RoleIDs     []uuid.UUID `json:"role_ids"`
+	JoinedAt    time.Time   `json:"joined_at"`
+	IsMuted     bool        `json:"is_muted"`
+	IsDeafened  bool        `json:"is_deafened"`
 }
 
 // NewServerMember creates a new server membership

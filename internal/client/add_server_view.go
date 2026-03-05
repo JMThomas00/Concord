@@ -196,7 +196,14 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 			updatedServer := cs
 
 			a.editingServerID = nil
-			a.view = ViewManageServers
+			// Return to appropriate view based on context
+			if a.settingsState != nil {
+				a.view = ViewSettings
+			} else if a.serverManagementState != nil {
+				a.view = ViewServerManagement
+			} else {
+				a.view = ViewManageServers
+			}
 			a.addServerError = ""
 
 			return func() tea.Msg {
@@ -207,7 +214,14 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 			}
 		}
 		a.editingServerID = nil
-		a.view = ViewManageServers
+		// Return to appropriate view based on context
+		if a.settingsState != nil {
+			a.view = ViewSettings
+		} else if a.serverManagementState != nil {
+			a.view = ViewServerManagement
+		} else {
+			a.view = ViewManageServers
+		}
 		return nil
 	}
 
@@ -233,8 +247,14 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 
 	a.addServerError = ""
 
-	// Always return to ViewMain and auto-connect in background
-	a.view = ViewMain
+	// Return to appropriate view based on context
+	if a.settingsState != nil {
+		a.view = ViewSettings
+	} else if a.serverManagementState != nil {
+		a.view = ViewServerManagement
+	} else {
+		a.view = ViewMain
+	}
 	a.statusMessage = fmt.Sprintf("Server '%s' added. Connecting...", name)
 
 	// Save to servers.json

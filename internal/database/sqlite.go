@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -32,6 +33,37 @@ func New(path string) (*DB, error) {
 	if err := wrapper.initSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	// Run database migrations
+	if err := wrapper.MigrateChannelSortOrder(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	if err := wrapper.MigrateOrphanedCategories(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate orphaned categories: %w", err)
+	}
+
+	if err := wrapper.MigrateRoleDisplayOrder(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate role display_order: %w", err)
+	}
+
+	if err := wrapper.MigrateServerMemberCustomTitle(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate server_members custom_title: %w", err)
+	}
+
+	if err := wrapper.MigrateMessageWhisperFields(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate message whisper fields: %w", err)
+	}
+
+	if err := wrapper.MigrateMessageSoftDelete(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate message soft delete: %w", err)
 	}
 
 	return wrapper, nil
@@ -210,6 +242,60 @@ func (db *DB) initSchema() error {
 		PRIMARY KEY (server_id, user_id)
 	);
 
+	-- Timeouts table (temporary bans)
+	CREATE TABLE IF NOT EXISTS timeouts (
+		id TEXT PRIMARY KEY,
+		server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+		reason TEXT,
+		duration INTEGER NOT NULL,
+		issued_by TEXT NOT NULL REFERENCES users(id),
+		issued_at DATETIME NOT NULL,
+		expires_at DATETIME NOT NULL
+	);
+
+	-- Mutes table (timed server mutes)
+	CREATE TABLE IF NOT EXISTS mutes (
+		id TEXT PRIMARY KEY,
+		server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+		duration INTEGER NOT NULL,
+		issued_by TEXT NOT NULL REFERENCES users(id),
+		issued_at DATETIME NOT NULL,
+		expires_at DATETIME NOT NULL
+	);
+
+	-- Message retention policies (server defaults + channel overrides)
+	CREATE TABLE IF NOT EXISTS message_retention_policies (
+		id TEXT PRIMARY KEY,
+		server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+		channel_id TEXT REFERENCES channels(id) ON DELETE CASCADE,
+		time_retention_days INTEGER,
+		system_time_retention_days INTEGER,
+		max_message_count INTEGER,
+		preserve_pinned INTEGER DEFAULT 1,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		created_by TEXT REFERENCES users(id),
+		UNIQUE(server_id, channel_id)
+	);
+
+	-- Audit log for pruning operations
+	CREATE TABLE IF NOT EXISTS message_prune_history (
+		id TEXT PRIMARY KEY,
+		server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+		channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL,
+		messages_deleted INTEGER NOT NULL,
+		time_based_count INTEGER DEFAULT 0,
+		count_based_count INTEGER DEFAULT 0,
+		trigger_type TEXT NOT NULL,
+		triggered_by TEXT REFERENCES users(id),
+		executed_at DATETIME NOT NULL,
+		duration_ms INTEGER
+	);
+
 	-- Indexes for common queries
 	CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON messages(channel_id, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_messages_author ON messages(author_id);
@@ -219,10 +305,280 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 	CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash);
 	CREATE INDEX IF NOT EXISTS idx_invites_server ON invites(server_id);
+	CREATE INDEX IF NOT EXISTS idx_timeouts_server_user ON timeouts(server_id, user_id);
+	CREATE INDEX IF NOT EXISTS idx_timeouts_expires ON timeouts(expires_at);
+	CREATE INDEX IF NOT EXISTS idx_mutes_server_user ON mutes(server_id, user_id);
+	CREATE INDEX IF NOT EXISTS idx_mutes_expires ON mutes(expires_at);
+	CREATE INDEX IF NOT EXISTS idx_retention_server ON message_retention_policies(server_id, channel_id);
+	CREATE INDEX IF NOT EXISTS idx_messages_channel_pinned_created ON messages(channel_id, is_pinned, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_prune_history_server ON message_prune_history(server_id, executed_at DESC);
 	`
 
 	_, err := db.Exec(schema)
 	return err
+}
+
+// MigrateChannelSortOrder adds sort_order column and migrates existing position values
+func (db *DB) MigrateChannelSortOrder() error {
+	// Check if column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('channels')
+		WHERE name='sort_order'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for sort_order column: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Already migrated
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Add column
+	_, err = tx.Exec(`ALTER TABLE channels ADD COLUMN sort_order INTEGER DEFAULT 0`)
+	if err != nil {
+		return fmt.Errorf("failed to add sort_order column: %w", err)
+	}
+
+	// Migrate: normalize positions within each parent
+	rows, err := tx.Query(`
+		SELECT id, server_id, category_id, position, type
+		FROM channels
+		ORDER BY server_id, COALESCE(category_id, ''), position, id
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to query channels: %w", err)
+	}
+	defer rows.Close()
+
+	type channelPos struct {
+		id         string
+		serverID   string
+		categoryID string
+		sortOrder  int
+	}
+
+	var channels []channelPos
+	orderMap := make(map[string]int) // key: "serverID|categoryID"
+
+	for rows.Next() {
+		var id, serverID, categoryID string
+		var position, channelType int
+		err = rows.Scan(&id, &serverID, &categoryID, &position, &channelType)
+		if err != nil {
+			return fmt.Errorf("failed to scan channel: %w", err)
+		}
+
+		key := serverID + "|" + categoryID
+		order := orderMap[key]
+		orderMap[key] = order + 10
+
+		channels = append(channels, channelPos{
+			id:         id,
+			serverID:   serverID,
+			categoryID: categoryID,
+			sortOrder:  order,
+		})
+	}
+
+	if err = rows.Err(); err != nil {
+		return fmt.Errorf("error iterating channels: %w", err)
+	}
+
+	// Update all channels with new sort_order
+	stmt, err := tx.Prepare(`UPDATE channels SET sort_order = ? WHERE id = ?`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare update statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, ch := range channels {
+		_, err = stmt.Exec(ch.sortOrder, ch.id)
+		if err != nil {
+			return fmt.Errorf("failed to update sort_order for channel %s: %w", ch.id, err)
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// MigrateOrphanedCategories fixes categories that were accidentally created with a category_id set.
+// Categories must always be at root level. Clear category_id for any that have one.
+func (db *DB) MigrateOrphanedCategories() error {
+	_, err := db.Exec(`
+		UPDATE channels
+		SET category_id = NULL, updated_at = ?
+		WHERE type = 2 AND category_id IS NOT NULL
+	`, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to clear orphaned categories: %w", err)
+	}
+	return nil
+}
+
+// MigrateRoleDisplayOrder adds display_order column to roles table
+func (db *DB) MigrateRoleDisplayOrder() error {
+	// Check if column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('roles')
+		WHERE name='display_order'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for display_order column: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Already migrated
+	}
+
+	// Add column
+	_, err = db.Exec(`ALTER TABLE roles ADD COLUMN display_order INTEGER DEFAULT 0`)
+	if err != nil {
+		return fmt.Errorf("failed to add display_order column: %w", err)
+	}
+
+	return nil
+}
+
+// MigrateServerMemberCustomTitle adds custom_title column to server_members table
+func (db *DB) MigrateServerMemberCustomTitle() error {
+	// Check if column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('server_members')
+		WHERE name='custom_title'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for custom_title column: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Already migrated
+	}
+
+	// Add column
+	_, err = db.Exec(`ALTER TABLE server_members ADD COLUMN custom_title TEXT DEFAULT ''`)
+	if err != nil {
+		return fmt.Errorf("failed to add custom_title column: %w", err)
+	}
+
+	return nil
+}
+
+// MigrateMessageWhisperFields adds is_whisper and recipient_id to messages table
+func (db *DB) MigrateMessageWhisperFields() error {
+	// Check if is_whisper column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('messages')
+		WHERE name='is_whisper'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for is_whisper column: %w", err)
+	}
+
+	if count == 0 {
+		// Add is_whisper column
+		_, err = db.Exec(`ALTER TABLE messages ADD COLUMN is_whisper INTEGER DEFAULT 0`)
+		if err != nil {
+			return fmt.Errorf("failed to add is_whisper column: %w", err)
+		}
+	}
+
+	// Check if recipient_id column exists
+	err = db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('messages')
+		WHERE name='recipient_id'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for recipient_id column: %w", err)
+	}
+
+	if count == 0 {
+		// Add recipient_id column
+		_, err = db.Exec(`ALTER TABLE messages ADD COLUMN recipient_id TEXT REFERENCES users(id)`)
+		if err != nil {
+			return fmt.Errorf("failed to add recipient_id column: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// MigrateMessageSoftDelete adds soft-delete columns to messages table
+func (db *DB) MigrateMessageSoftDelete() error {
+	// Check if is_deleted column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('messages')
+		WHERE name='is_deleted'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for is_deleted column: %w", err)
+	}
+
+	if count == 0 {
+		// Add is_deleted column
+		_, err = db.Exec(`ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0`)
+		if err != nil {
+			return fmt.Errorf("failed to add is_deleted column: %w", err)
+		}
+	}
+
+	// Check if deleted_at column exists
+	err = db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('messages')
+		WHERE name='deleted_at'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for deleted_at column: %w", err)
+	}
+
+	if count == 0 {
+		// Add deleted_at column
+		_, err = db.Exec(`ALTER TABLE messages ADD COLUMN deleted_at DATETIME`)
+		if err != nil {
+			return fmt.Errorf("failed to add deleted_at column: %w", err)
+		}
+	}
+
+	// Check if deleted_by column exists
+	err = db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('messages')
+		WHERE name='deleted_by'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for deleted_by column: %w", err)
+	}
+
+	if count == 0 {
+		// Add deleted_by column
+		_, err = db.Exec(`ALTER TABLE messages ADD COLUMN deleted_by TEXT REFERENCES users(id)`)
+		if err != nil {
+			return fmt.Errorf("failed to add deleted_by column: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // --- User Operations ---
@@ -370,6 +726,57 @@ func (db *DB) GetServerByID(id uuid.UUID) (*models.Server, error) {
 	return server, nil
 }
 
+// GetAllServers retrieves all servers in the database
+func (db *DB) GetAllServers() ([]*models.Server, error) {
+	rows, err := db.Query(`
+		SELECT id, name, description, icon_hash, owner_id, default_channel_id,
+			system_channel_id, rules_channel_id, max_members, created_at, updated_at,
+			verification_level, explicit_content_filter, invites_enabled,
+			default_invite_max_age, default_invite_max_uses
+		FROM servers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var servers []*models.Server
+	for rows.Next() {
+		server := &models.Server{}
+		var idStr, ownerIDStr string
+		var iconHash, defaultChanID, systemChanID, rulesChanID sql.NullString
+
+		err := rows.Scan(
+			&idStr, &server.Name, &server.Description, &iconHash,
+			&ownerIDStr, &defaultChanID, &systemChanID, &rulesChanID,
+			&server.MaxMembers, &server.CreatedAt, &server.UpdatedAt,
+			&server.VerificationLevel, &server.ExplicitContentFilter,
+			&server.InvitesEnabled, &server.DefaultInviteMaxAge, &server.DefaultInviteMaxUses,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		server.ID, _ = uuid.Parse(idStr)
+		server.OwnerID, _ = uuid.Parse(ownerIDStr)
+		if iconHash.Valid {
+			server.IconHash = iconHash.String
+		}
+		if defaultChanID.Valid {
+			server.DefaultChannelID, _ = uuid.Parse(defaultChanID.String)
+		}
+		if systemChanID.Valid {
+			server.SystemChannelID, _ = uuid.Parse(systemChanID.String)
+		}
+		if rulesChanID.Valid {
+			server.RulesChannelID, _ = uuid.Parse(rulesChanID.String)
+		}
+
+		servers = append(servers, server)
+	}
+
+	return servers, rows.Err()
+}
+
 // GetUserServers retrieves all servers a user is a member of
 func (db *DB) GetUserServers(userID uuid.UUID) ([]*models.Server, error) {
 	rows, err := db.Query(`
@@ -428,12 +835,27 @@ func (db *DB) CreateChannel(channel *models.Channel) error {
 		categoryID.Valid = true
 	}
 
-	_, err := db.Exec(`
-		INSERT INTO channels (id, server_id, name, topic, type, position, category_id,
+	// Calculate sort_order: find max in parent + 10
+	var maxOrder int
+	query := `
+		SELECT COALESCE(MAX(sort_order), -10)
+		FROM channels
+		WHERE server_id = ? AND COALESCE(category_id, '') = COALESCE(?, '')
+	`
+	err := db.QueryRow(query, channel.ServerID.String(), categoryID).Scan(&maxOrder)
+	if err != nil {
+		return fmt.Errorf("failed to calculate sort_order: %w", err)
+	}
+
+	channel.SortOrder = maxOrder + 10
+	channel.Position = channel.SortOrder // Keep in sync
+
+	_, err = db.Exec(`
+		INSERT INTO channels (id, server_id, name, topic, type, position, sort_order, category_id,
 			is_nsfw, rate_limit_per_user, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		channel.ID.String(), serverID, channel.Name, channel.Topic, channel.Type,
-		channel.Position, categoryID, channel.IsNSFW, channel.RateLimitPerUser,
+		channel.Position, channel.SortOrder, categoryID, channel.IsNSFW, channel.RateLimitPerUser,
 		channel.CreatedAt, channel.UpdatedAt)
 	return err
 }
@@ -441,10 +863,10 @@ func (db *DB) CreateChannel(channel *models.Channel) error {
 // GetServerChannels retrieves all channels for a server
 func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 	rows, err := db.Query(`
-		SELECT id, server_id, name, topic, type, position, category_id,
+		SELECT id, server_id, name, topic, type, position, sort_order, category_id,
 			is_nsfw, rate_limit_per_user, created_at, updated_at
 		FROM channels WHERE server_id = ?
-		ORDER BY position`, serverID.String())
+		ORDER BY sort_order`, serverID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -457,7 +879,7 @@ func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 		var categoryID sql.NullString
 
 		err := rows.Scan(&idStr, &serverIDStr, &ch.Name, &ch.Topic, &ch.Type,
-			&ch.Position, &categoryID, &ch.IsNSFW, &ch.RateLimitPerUser,
+			&ch.Position, &ch.SortOrder, &categoryID, &ch.IsNSFW, &ch.RateLimitPerUser,
 			&ch.CreatedAt, &ch.UpdatedAt)
 		if err != nil {
 			return nil, err
@@ -483,10 +905,10 @@ func (db *DB) GetChannelByID(channelID uuid.UUID) (*models.Channel, error) {
 	var categoryID sql.NullString
 
 	err := db.QueryRow(`
-		SELECT id, server_id, name, topic, type, position, category_id,
+		SELECT id, server_id, name, topic, type, position, sort_order, category_id,
 			is_nsfw, rate_limit_per_user, created_at, updated_at
 		FROM channels WHERE id = ?`, channelID.String()).
-		Scan(&idStr, &serverIDStr, &ch.Name, &topic, &ch.Type, &ch.Position,
+		Scan(&idStr, &serverIDStr, &ch.Name, &topic, &ch.Type, &ch.Position, &ch.SortOrder,
 			&categoryID, &ch.IsNSFW, &ch.RateLimitPerUser, &ch.CreatedAt, &ch.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -518,10 +940,10 @@ func (db *DB) UpdateChannel(channel *models.Channel) error {
 
 	_, err := db.Exec(`
 		UPDATE channels
-		SET name = ?, topic = ?, category_id = ?, position = ?, is_nsfw = ?,
+		SET name = ?, topic = ?, category_id = ?, position = ?, sort_order = ?, is_nsfw = ?,
 			rate_limit_per_user = ?, updated_at = ?
 		WHERE id = ?`,
-		channel.Name, channel.Topic, categoryID, channel.Position, channel.IsNSFW,
+		channel.Name, channel.Topic, categoryID, channel.Position, channel.SortOrder, channel.IsNSFW,
 		channel.RateLimitPerUser, time.Now(), channel.ID.String())
 
 	return err
@@ -535,19 +957,74 @@ func (db *DB) DeleteChannel(channelID uuid.UUID) error {
 	}
 	defer tx.Rollback()
 
-	// Delete messages first (foreign key constraint)
+	// Find all child channels (channels with category_id = channelID)
+	rows, err := tx.Query(`SELECT id FROM channels WHERE category_id = ?`, channelID.String())
+	if err != nil {
+		return err
+	}
+	var childIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		childIDs = append(childIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Delete messages for all children
+	for _, childID := range childIDs {
+		_, err = tx.Exec(`DELETE FROM messages WHERE channel_id = ?`, childID)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Delete child channels
+	for _, childID := range childIDs {
+		_, err = tx.Exec(`DELETE FROM channels WHERE id = ?`, childID)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Delete messages for the channel itself
 	_, err = tx.Exec(`DELETE FROM messages WHERE channel_id = ?`, channelID.String())
 	if err != nil {
 		return err
 	}
 
-	// Delete channel
+	// Delete the channel itself
 	_, err = tx.Exec(`DELETE FROM channels WHERE id = ?`, channelID.String())
 	if err != nil {
 		return err
 	}
 
 	return tx.Commit()
+}
+
+// GetChildChannelIDs returns all channels that have the given category as their parent.
+func (db *DB) GetChildChannelIDs(categoryID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := db.Query(`SELECT id FROM channels WHERE category_id = ?`, categoryID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var idStr string
+		if err := rows.Scan(&idStr); err != nil {
+			return nil, err
+		}
+		id, _ := uuid.Parse(idStr)
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // GetServerMember retrieves a server member relationship
@@ -608,11 +1085,17 @@ func (db *DB) CreateMessage(msg *models.Message) error {
 		replyToID.Valid = true
 	}
 
+	var recipientID sql.NullString
+	if msg.RecipientID != nil {
+		recipientID.String = msg.RecipientID.String()
+		recipientID.Valid = true
+	}
+
 	_, err := db.Exec(`
-		INSERT INTO messages (id, channel_id, author_id, content, type, created_at, is_pinned, reply_to_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO messages (id, channel_id, author_id, content, type, created_at, is_pinned, is_whisper, recipient_id, reply_to_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID.String(), msg.ChannelID.String(), msg.AuthorID.String(),
-		msg.Content, msg.Type, msg.CreatedAt, msg.IsPinned, replyToID)
+		msg.Content, msg.Type, msg.CreatedAt, msg.IsPinned, msg.IsWhisper, recipientID, replyToID)
 	if err != nil {
 		return err
 	}
@@ -630,29 +1113,48 @@ func (db *DB) CreateMessage(msg *models.Message) error {
 }
 
 // GetChannelMessages retrieves messages for a channel with pagination
-func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UUID) ([]*models.Message, error) {
-	var query string
-	var args []interface{}
+// GetMessage retrieves a single message by ID
+func (db *DB) GetMessage(messageID uuid.UUID) (*models.Message, error) {
+	query := `
+		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id
+		FROM messages
+		WHERE id = ?`
 
-	if before != nil {
-		query = `
-			SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id
-			FROM messages
-			WHERE channel_id = ? AND created_at < (SELECT created_at FROM messages WHERE id = ?)
-			ORDER BY created_at DESC
-			LIMIT ?`
-		args = []interface{}{channelID.String(), before.String(), limit}
-	} else {
-		query = `
-			SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id
-			FROM messages
-			WHERE channel_id = ?
-			ORDER BY created_at DESC
-			LIMIT ?`
-		args = []interface{}{channelID.String(), limit}
+	msg := &models.Message{}
+	var idStr, channelIDStr, authorIDStr string
+	var editedAt sql.NullTime
+	var replyToID sql.NullString
+
+	err := db.QueryRow(query, messageID.String()).Scan(
+		&idStr, &channelIDStr, &authorIDStr, &msg.Content,
+		&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &replyToID)
+	if err != nil {
+		return nil, err
 	}
 
-	rows, err := db.Query(query, args...)
+	msg.ID = uuid.MustParse(idStr)
+	msg.ChannelID = uuid.MustParse(channelIDStr)
+	msg.AuthorID = uuid.MustParse(authorIDStr)
+	if editedAt.Valid {
+		msg.EditedAt = &editedAt.Time
+	}
+	if replyToID.Valid {
+		replyID := uuid.MustParse(replyToID.String)
+		msg.ReplyToID = &replyID
+	}
+
+	return msg, nil
+}
+
+// GetPinnedMessages retrieves all pinned messages for a channel
+func (db *DB) GetPinnedMessages(channelID uuid.UUID) ([]*models.Message, error) {
+	query := `
+		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id
+		FROM messages
+		WHERE channel_id = ? AND is_pinned = 1
+		ORDER BY created_at DESC`
+
+	rows, err := db.Query(query, channelID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -671,11 +1173,103 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 			return nil, err
 		}
 
+		msg.ID = uuid.MustParse(idStr)
+		msg.ChannelID = uuid.MustParse(channelIDStr)
+		msg.AuthorID = uuid.MustParse(authorIDStr)
+		if editedAt.Valid {
+			msg.EditedAt = &editedAt.Time
+		}
+		if replyToID.Valid {
+			replyID := uuid.MustParse(replyToID.String)
+			msg.ReplyToID = &replyID
+		}
+
+		messages = append(messages, msg)
+	}
+
+	return messages, rows.Err()
+}
+
+// SetMessagePinned updates the is_pinned status of a message
+func (db *DB) SetMessagePinned(messageID uuid.UUID, pinned bool) error {
+	query := `UPDATE messages SET is_pinned = ? WHERE id = ?`
+	pinnedInt := 0
+	if pinned {
+		pinnedInt = 1
+	}
+	_, err := db.Exec(query, pinnedInt, messageID.String())
+	return err
+}
+
+// UpdateMessage updates the content and edited_at timestamp of a message
+func (db *DB) UpdateMessage(msg *models.Message) error {
+	query := `UPDATE messages SET content = ?, edited_at = ? WHERE id = ?`
+	_, err := db.Exec(query, msg.Content, msg.EditedAt, msg.ID.String())
+	return err
+}
+
+// SoftDeleteMessage marks a message as deleted (soft delete)
+func (db *DB) SoftDeleteMessage(messageID, deletedBy uuid.UUID) error {
+	query := `UPDATE messages SET is_deleted = 1, deleted_at = ?, deleted_by = ? WHERE id = ?`
+	_, err := db.Exec(query, time.Now(), deletedBy.String(), messageID.String())
+	return err
+}
+
+func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UUID, userID uuid.UUID) ([]*models.Message, error) {
+	var query string
+	var args []interface{}
+
+	// Filter: show regular messages to everyone, whispers only to sender/recipient, hide deleted messages
+	whisperFilter := "(is_whisper = 0 OR author_id = ? OR recipient_id = ?)"
+	deletedFilter := "(is_deleted = 0 OR is_deleted IS NULL)"
+
+	if before != nil {
+		query = `
+			SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, is_whisper, recipient_id, reply_to_id
+			FROM messages
+			WHERE channel_id = ? AND created_at < (SELECT created_at FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
+			ORDER BY created_at DESC
+			LIMIT ?`
+		args = []interface{}{channelID.String(), before.String(), userID.String(), userID.String(), limit}
+	} else {
+		query = `
+			SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, is_whisper, recipient_id, reply_to_id
+			FROM messages
+			WHERE channel_id = ? AND ` + whisperFilter + ` AND ` + deletedFilter + `
+			ORDER BY created_at DESC
+			LIMIT ?`
+		args = []interface{}{channelID.String(), userID.String(), userID.String(), limit}
+	}
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*models.Message
+	for rows.Next() {
+		msg := &models.Message{}
+		var idStr, channelIDStr, authorIDStr string
+		var editedAt sql.NullTime
+		var recipientID sql.NullString
+		var replyToID sql.NullString
+
+		err := rows.Scan(&idStr, &channelIDStr, &authorIDStr, &msg.Content,
+			&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &msg.IsWhisper, &recipientID, &replyToID)
+		if err != nil {
+			return nil, err
+		}
+
 		msg.ID, _ = uuid.Parse(idStr)
 		msg.ChannelID, _ = uuid.Parse(channelIDStr)
 		msg.AuthorID, _ = uuid.Parse(authorIDStr)
 		if editedAt.Valid {
 			msg.EditedAt = &editedAt.Time
+		}
+		if recipientID.Valid {
+			id, _ := uuid.Parse(recipientID.String)
+			msg.RecipientID = &id
 		}
 		if replyToID.Valid {
 			id, _ := uuid.Parse(replyToID.String)
@@ -697,6 +1291,472 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 	}
 
 	return messages, nil
+}
+
+// --- Message Retention Policy Operations ---
+
+// GetRetentionPolicy returns the effective retention policy for a channel.
+// If a channel-specific policy exists, it returns that; otherwise returns the server default.
+func (db *DB) GetRetentionPolicy(serverID, channelID uuid.UUID) (*models.MessageRetentionPolicy, error) {
+	// Try channel-specific policy first
+	policy, err := db.GetRetentionPolicyDirect(serverID, &channelID)
+	if err == nil && policy != nil {
+		return policy, nil
+	}
+
+	// Fall back to server default (channel_id = NULL)
+	return db.GetRetentionPolicyDirect(serverID, nil)
+}
+
+// GetRetentionPolicyDirect fetches an exact policy (server default or channel override)
+func (db *DB) GetRetentionPolicyDirect(serverID uuid.UUID, channelID *uuid.UUID) (*models.MessageRetentionPolicy, error) {
+	query := `
+		SELECT id, server_id, channel_id, time_retention_days, system_time_retention_days,
+		       max_message_count, preserve_pinned, created_at, updated_at, created_by
+		FROM message_retention_policies
+		WHERE server_id = ? AND `
+
+	var args []interface{}
+	args = append(args, serverID.String())
+
+	if channelID == nil {
+		query += "channel_id IS NULL"
+	} else {
+		query += "channel_id = ?"
+		args = append(args, channelID.String())
+	}
+
+	policy := &models.MessageRetentionPolicy{}
+	var idStr, serverIDStr string
+	var channelIDStr sql.NullString
+	var timeRetentionDays, systemTimeRetentionDays, maxMessageCount sql.NullInt64
+	var preservePinned int
+	var createdByStr sql.NullString
+
+	err := db.QueryRow(query, args...).Scan(
+		&idStr, &serverIDStr, &channelIDStr,
+		&timeRetentionDays, &systemTimeRetentionDays, &maxMessageCount,
+		&preservePinned, &policy.CreatedAt, &policy.UpdatedAt, &createdByStr,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	policy.ID, _ = uuid.Parse(idStr)
+	policy.ServerID, _ = uuid.Parse(serverIDStr)
+
+	if channelIDStr.Valid {
+		cID, _ := uuid.Parse(channelIDStr.String)
+		policy.ChannelID = &cID
+	}
+
+	if timeRetentionDays.Valid {
+		days := int(timeRetentionDays.Int64)
+		policy.TimeRetentionDays = &days
+	}
+
+	if systemTimeRetentionDays.Valid {
+		days := int(systemTimeRetentionDays.Int64)
+		policy.SystemTimeRetentionDays = &days
+	}
+
+	if maxMessageCount.Valid {
+		count := int(maxMessageCount.Int64)
+		policy.MaxMessageCount = &count
+	}
+
+	policy.PreservePinned = preservePinned == 1
+
+	if createdByStr.Valid {
+		createdBy, _ := uuid.Parse(createdByStr.String)
+		policy.CreatedBy = createdBy
+	}
+
+	return policy, nil
+}
+
+// UpsertRetentionPolicy creates or updates a retention policy
+func (db *DB) UpsertRetentionPolicy(policy *models.MessageRetentionPolicy) error {
+	var channelIDStr sql.NullString
+	if policy.ChannelID != nil {
+		channelIDStr.Valid = true
+		channelIDStr.String = policy.ChannelID.String()
+	}
+
+	var timeRetentionDays, systemTimeRetentionDays, maxMessageCount sql.NullInt64
+	if policy.TimeRetentionDays != nil {
+		timeRetentionDays.Valid = true
+		timeRetentionDays.Int64 = int64(*policy.TimeRetentionDays)
+	}
+	if policy.SystemTimeRetentionDays != nil {
+		systemTimeRetentionDays.Valid = true
+		systemTimeRetentionDays.Int64 = int64(*policy.SystemTimeRetentionDays)
+	}
+	if policy.MaxMessageCount != nil {
+		maxMessageCount.Valid = true
+		maxMessageCount.Int64 = int64(*policy.MaxMessageCount)
+	}
+
+	preservePinned := 0
+	if policy.PreservePinned {
+		preservePinned = 1
+	}
+
+	// SQLite treats NULL != NULL, so ON CONFLICT doesn't work for NULL channel_id
+	// We need to explicitly handle the server default (NULL channel_id) case
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete existing policy (if any) for this server/channel combination
+	if policy.ChannelID != nil {
+		_, err = tx.Exec(`DELETE FROM message_retention_policies WHERE server_id = ? AND channel_id = ?`,
+			policy.ServerID.String(), channelIDStr.String)
+	} else {
+		_, err = tx.Exec(`DELETE FROM message_retention_policies WHERE server_id = ? AND channel_id IS NULL`,
+			policy.ServerID.String())
+	}
+	if err != nil {
+		return err
+	}
+
+	// Insert new policy
+	_, err = tx.Exec(`
+		INSERT INTO message_retention_policies (
+			id, server_id, channel_id, time_retention_days, system_time_retention_days,
+			max_message_count, preserve_pinned, created_at, updated_at, created_by
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		policy.ID.String(), policy.ServerID.String(), channelIDStr,
+		timeRetentionDays, systemTimeRetentionDays, maxMessageCount,
+		preservePinned, policy.CreatedAt, policy.UpdatedAt, policy.CreatedBy.String(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// DeleteRetentionPolicy removes a channel-specific override
+func (db *DB) DeleteRetentionPolicy(serverID, channelID uuid.UUID) error {
+	_, err := db.Exec(`
+		DELETE FROM message_retention_policies
+		WHERE server_id = ? AND channel_id = ?`,
+		serverID.String(), channelID.String(),
+	)
+	return err
+}
+
+// ListChannelOverrides returns all channel-specific retention policies for a server
+func (db *DB) ListChannelOverrides(serverID uuid.UUID) ([]*models.MessageRetentionPolicy, error) {
+	rows, err := db.Query(`
+		SELECT id, server_id, channel_id, time_retention_days, system_time_retention_days,
+		       max_message_count, preserve_pinned, created_at, updated_at, created_by
+		FROM message_retention_policies
+		WHERE server_id = ? AND channel_id IS NOT NULL
+		ORDER BY created_at DESC`,
+		serverID.String(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var policies []*models.MessageRetentionPolicy
+	for rows.Next() {
+		policy := &models.MessageRetentionPolicy{}
+		var idStr, serverIDStr string
+		var channelIDStr sql.NullString
+		var timeRetentionDays, systemTimeRetentionDays, maxMessageCount sql.NullInt64
+		var preservePinned int
+		var createdByStr sql.NullString
+
+		err := rows.Scan(
+			&idStr, &serverIDStr, &channelIDStr,
+			&timeRetentionDays, &systemTimeRetentionDays, &maxMessageCount,
+			&preservePinned, &policy.CreatedAt, &policy.UpdatedAt, &createdByStr,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		policy.ID, _ = uuid.Parse(idStr)
+		policy.ServerID, _ = uuid.Parse(serverIDStr)
+
+		if channelIDStr.Valid {
+			cID, _ := uuid.Parse(channelIDStr.String)
+			policy.ChannelID = &cID
+		}
+
+		if timeRetentionDays.Valid {
+			days := int(timeRetentionDays.Int64)
+			policy.TimeRetentionDays = &days
+		}
+
+		if systemTimeRetentionDays.Valid {
+			days := int(systemTimeRetentionDays.Int64)
+			policy.SystemTimeRetentionDays = &days
+		}
+
+		if maxMessageCount.Valid {
+			count := int(maxMessageCount.Int64)
+			policy.MaxMessageCount = &count
+		}
+
+		policy.PreservePinned = preservePinned == 1
+
+		if createdByStr.Valid {
+			createdBy, _ := uuid.Parse(createdByStr.String)
+			policy.CreatedBy = createdBy
+		}
+
+		policies = append(policies, policy)
+	}
+
+	return policies, rows.Err()
+}
+
+// PruneMessagesByAge deletes messages older than the specified time
+func (db *DB) PruneMessagesByAge(channelID uuid.UUID, olderThan time.Time, preservePinned bool, systemOnly bool) (int, error) {
+	query := `DELETE FROM messages WHERE channel_id = ? AND created_at < ?`
+	args := []interface{}{channelID.String(), olderThan}
+
+	if preservePinned {
+		query += " AND is_pinned = 0"
+	}
+
+	if systemOnly {
+		// MessageTypeDefault = 0, so system messages have type != 0
+		query += " AND type != 0"
+	}
+
+	result, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	affected, _ := result.RowsAffected()
+	return int(affected), nil
+}
+
+// PruneMessagesByCount keeps only the last N messages in a channel
+func (db *DB) PruneMessagesByCount(channelID uuid.UUID, keepLast int, preservePinned bool, systemOnly bool) (int, error) {
+	// Find the timestamp of the Nth newest message
+	query := `
+		SELECT created_at FROM messages
+		WHERE channel_id = ?`
+	args := []interface{}{channelID.String()}
+
+	if preservePinned {
+		query += " AND is_pinned = 0"
+	}
+
+	if systemOnly {
+		query += " AND type != 0"
+	}
+
+	query += " ORDER BY created_at DESC LIMIT 1 OFFSET ?"
+	args = append(args, keepLast)
+
+	var cutoffTime time.Time
+	err := db.QueryRow(query, args...).Scan(&cutoffTime)
+	if err == sql.ErrNoRows {
+		// Fewer than N messages exist, nothing to prune
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	// Delete everything older than the cutoff
+	deleteQuery := `DELETE FROM messages WHERE channel_id = ? AND created_at < ?`
+	deleteArgs := []interface{}{channelID.String(), cutoffTime}
+
+	if preservePinned {
+		deleteQuery += " AND is_pinned = 0"
+	}
+
+	if systemOnly {
+		deleteQuery += " AND type != 0"
+	}
+
+	result, err := db.Exec(deleteQuery, deleteArgs...)
+	if err != nil {
+		return 0, err
+	}
+
+	affected, _ := result.RowsAffected()
+	return int(affected), nil
+}
+
+// PruneChannelMessages applies the retention policy to a single channel
+func (db *DB) PruneChannelMessages(serverID, channelID uuid.UUID) (*models.PruneStats, error) {
+	start := time.Now()
+	stats := &models.PruneStats{
+		ChannelID: channelID,
+	}
+
+	// Get effective policy
+	policy, err := db.GetRetentionPolicy(serverID, channelID)
+	if err != nil || policy == nil {
+		// No policy configured, skip pruning
+		return stats, nil
+	}
+
+	// Pass 1: Time-based pruning for regular messages
+	if policy.TimeRetentionDays != nil && *policy.TimeRetentionDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -*policy.TimeRetentionDays)
+		deleted, err := db.PruneMessagesByAge(channelID, cutoff, policy.PreservePinned, false)
+		if err != nil {
+			return stats, err
+		}
+		stats.TimeBasedDeleted += deleted
+	}
+
+	// Pass 1.5: Time-based pruning for system messages (separate retention)
+	if policy.SystemTimeRetentionDays != nil && *policy.SystemTimeRetentionDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -*policy.SystemTimeRetentionDays)
+		deleted, err := db.PruneMessagesByAge(channelID, cutoff, policy.PreservePinned, true)
+		if err != nil {
+			return stats, err
+		}
+		stats.TimeBasedDeleted += deleted
+	}
+
+	// Pass 2: Count-based pruning (operates on survivors from time-based)
+	if policy.MaxMessageCount != nil && *policy.MaxMessageCount > 0 {
+		deleted, err := db.PruneMessagesByCount(channelID, *policy.MaxMessageCount, policy.PreservePinned, false)
+		if err != nil {
+			return stats, err
+		}
+		stats.CountBasedDeleted = deleted
+	}
+
+	stats.TotalDeleted = stats.TimeBasedDeleted + stats.CountBasedDeleted
+	stats.DurationMs = time.Since(start).Milliseconds()
+
+	return stats, nil
+}
+
+// PruneServerMessages prunes all channels in a server according to their policies
+func (db *DB) PruneServerMessages(serverID uuid.UUID) (map[uuid.UUID]*models.PruneStats, error) {
+	// Get all channels for this server
+	rows, err := db.Query(`
+		SELECT id FROM channels WHERE server_id = ? AND type = 0`,
+		serverID.String(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channelIDs []uuid.UUID
+	for rows.Next() {
+		var idStr string
+		if err := rows.Scan(&idStr); err != nil {
+			return nil, err
+		}
+		id, _ := uuid.Parse(idStr)
+		channelIDs = append(channelIDs, id)
+	}
+
+	// Prune each channel
+	results := make(map[uuid.UUID]*models.PruneStats)
+	for _, channelID := range channelIDs {
+		stats, err := db.PruneChannelMessages(serverID, channelID)
+		if err != nil {
+			log.Printf("Failed to prune channel %s: %v", channelID, err)
+			continue
+		}
+		if stats.TotalDeleted > 0 {
+			results[channelID] = stats
+		}
+	}
+
+	return results, nil
+}
+
+// RecordPruneHistory saves a pruning operation to the audit log
+func (db *DB) RecordPruneHistory(history *models.MessagePruneHistory) error {
+	var channelIDStr, triggeredByStr sql.NullString
+
+	if history.ChannelID != nil {
+		channelIDStr.Valid = true
+		channelIDStr.String = history.ChannelID.String()
+	}
+
+	if history.TriggeredBy != nil {
+		triggeredByStr.Valid = true
+		triggeredByStr.String = history.TriggeredBy.String()
+	}
+
+	_, err := db.Exec(`
+		INSERT INTO message_prune_history (
+			id, server_id, channel_id, messages_deleted, time_based_count,
+			count_based_count, trigger_type, triggered_by, executed_at, duration_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		history.ID.String(), history.ServerID.String(), channelIDStr,
+		history.MessagesDeleted, history.TimeBasedCount, history.CountBasedCount,
+		history.TriggerType, triggeredByStr, history.ExecutedAt, history.DurationMs,
+	)
+
+	return err
+}
+
+// GetPruneHistory retrieves recent pruning operations for a server
+func (db *DB) GetPruneHistory(serverID uuid.UUID, limit int) ([]*models.MessagePruneHistory, error) {
+	rows, err := db.Query(`
+		SELECT id, server_id, channel_id, messages_deleted, time_based_count,
+		       count_based_count, trigger_type, triggered_by, executed_at, duration_ms
+		FROM message_prune_history
+		WHERE server_id = ?
+		ORDER BY executed_at DESC
+		LIMIT ?`,
+		serverID.String(), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var history []*models.MessagePruneHistory
+	for rows.Next() {
+		h := &models.MessagePruneHistory{}
+		var idStr, serverIDStr string
+		var channelIDStr, triggeredByStr sql.NullString
+
+		err := rows.Scan(
+			&idStr, &serverIDStr, &channelIDStr,
+			&h.MessagesDeleted, &h.TimeBasedCount, &h.CountBasedCount,
+			&h.TriggerType, &triggeredByStr, &h.ExecutedAt, &h.DurationMs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		h.ID, _ = uuid.Parse(idStr)
+		h.ServerID, _ = uuid.Parse(serverIDStr)
+
+		if channelIDStr.Valid {
+			cID, _ := uuid.Parse(channelIDStr.String)
+			h.ChannelID = &cID
+		}
+
+		if triggeredByStr.Valid {
+			tID, _ := uuid.Parse(triggeredByStr.String)
+			h.TriggeredBy = &tID
+		}
+
+		history = append(history, h)
+	}
+
+	return history, rows.Err()
 }
 
 // --- Member Operations ---
@@ -854,19 +1914,65 @@ func (db *DB) RemoveMemberRole(userID, serverID, roleID uuid.UUID) error {
 // CreateRole inserts a new role
 func (db *DB) CreateRole(role *models.Role) error {
 	_, err := db.Exec(`
-		INSERT INTO roles (id, server_id, name, color, permissions, position,
+		INSERT INTO roles (id, server_id, name, color, permissions, position, display_order,
 			is_hoisted, is_mentionable, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		role.ID.String(), role.ServerID.String(), role.Name, role.Color,
-		int64(role.Permissions), role.Position, role.IsHoisted, role.IsMentionable,
+		int64(role.Permissions), role.Position, role.DisplayOrder, role.IsHoisted, role.IsMentionable,
 		role.IsDefault, role.CreatedAt, role.UpdatedAt)
 	return err
+}
+
+// UpdateRole updates an existing role
+func (db *DB) UpdateRole(role *models.Role) error {
+	_, err := db.Exec(`
+		UPDATE roles
+		SET name = ?, permissions = ?, color = ?, display_order = ?,
+			is_hoisted = ?, is_mentionable = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND server_id = ?`,
+		role.Name, int64(role.Permissions), role.Color, role.DisplayOrder,
+		role.IsHoisted, role.IsMentionable, role.ID.String(), role.ServerID.String())
+	return err
+}
+
+// DeleteRole deletes a role and removes it from all members
+func (db *DB) DeleteRole(roleID, serverID uuid.UUID) error {
+	// Begin transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Check if role is @everyone (IsDefault = true)
+	var isDefault bool
+	err = tx.QueryRow("SELECT is_default FROM roles WHERE id = ?", roleID.String()).Scan(&isDefault)
+	if err != nil {
+		return err
+	}
+	if isDefault {
+		return fmt.Errorf("cannot delete @everyone role")
+	}
+
+	// Remove role from all members
+	_, err = tx.Exec("DELETE FROM member_roles WHERE role_id = ?", roleID.String())
+	if err != nil {
+		return err
+	}
+
+	// Delete role
+	_, err = tx.Exec("DELETE FROM roles WHERE id = ? AND server_id = ?", roleID.String(), serverID.String())
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // GetServerRoles retrieves all roles for a server
 func (db *DB) GetServerRoles(serverID uuid.UUID) ([]*models.Role, error) {
 	rows, err := db.Query(`
-		SELECT id, server_id, name, color, permissions, position,
+		SELECT id, server_id, name, color, permissions, position, display_order,
 			is_hoisted, is_mentionable, is_default, created_at, updated_at
 		FROM roles WHERE server_id = ?
 		ORDER BY position DESC`, serverID.String())
@@ -882,7 +1988,7 @@ func (db *DB) GetServerRoles(serverID uuid.UUID) ([]*models.Role, error) {
 		var permInt int64
 
 		err := rows.Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &permInt,
-			&r.Position, &r.IsHoisted, &r.IsMentionable, &r.IsDefault,
+			&r.Position, &r.DisplayOrder, &r.IsHoisted, &r.IsMentionable, &r.IsDefault,
 			&r.CreatedAt, &r.UpdatedAt)
 		if err != nil {
 			return nil, err
@@ -905,11 +2011,11 @@ func (db *DB) GetRoleByID(roleID uuid.UUID) (*models.Role, error) {
 	var permInt int64
 
 	err := db.QueryRow(`
-		SELECT id, server_id, name, color, permissions, position,
+		SELECT id, server_id, name, color, permissions, position, display_order,
 			is_hoisted, is_mentionable, is_default, created_at, updated_at
 		FROM roles WHERE id = ?`, roleID.String()).
 		Scan(&idStr, &serverIDStr, &r.Name, &r.Color, &permInt,
-			&r.Position, &r.IsHoisted, &r.IsMentionable, &r.IsDefault,
+			&r.Position, &r.DisplayOrder, &r.IsHoisted, &r.IsMentionable, &r.IsDefault,
 			&r.CreatedAt, &r.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -977,7 +2083,7 @@ func (db *DB) DeleteUserSessions(userID uuid.UUID) error {
 
 // EnsureDefaultServer ensures a default server exists, creating it if necessary
 // Returns the default server and its @everyone role
-func (db *DB) EnsureDefaultServer() (*models.Server, *models.Role, error) {
+func (db *DB) EnsureDefaultServer(serverName string) (*models.Server, *models.Role, error) {
 	// Try to find existing default server (first server created)
 	var serverIDStr string
 	err := db.QueryRow(`SELECT id FROM servers ORDER BY created_at ASC LIMIT 1`).Scan(&serverIDStr)
@@ -1010,7 +2116,7 @@ func (db *DB) EnsureDefaultServer() (*models.Server, *models.Role, error) {
 		}
 
 		// Create default server
-		server := models.NewServer("Concord Server", systemUserID)
+		server := models.NewServer(serverName, systemUserID)
 		if err := db.CreateServer(server); err != nil {
 			return nil, nil, fmt.Errorf("failed to create default server: %w", err)
 		}
@@ -1139,6 +2245,34 @@ func (db *DB) IsBanned(serverID, userID uuid.UUID) (bool, error) {
 	return count > 0, err
 }
 
+// RemoveBan removes a ban for a user from a server
+func (db *DB) RemoveBan(serverID, userID uuid.UUID) error {
+	_, err := db.Exec(`DELETE FROM bans WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String())
+	return err
+}
+
+// GetBannedUserByUsername finds a banned user by username on a specific server
+func (db *DB) GetBannedUserByUsername(serverID uuid.UUID, username string) (*models.User, error) {
+	var userIDStr string
+	err := db.QueryRow(`
+		SELECT user_id FROM bans WHERE server_id = ? AND user_id IN (
+			SELECT id FROM users WHERE LOWER(username) = LOWER(?)
+		)`,
+		serverID.String(), username).Scan(&userIDStr)
+
+	if err != nil {
+		return nil, err
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return nil, err
+	}
+
+	return db.GetUserByID(userID)
+}
+
 // SetMemberMuted sets the server-mute state for a member.
 func (db *DB) SetMemberMuted(serverID, userID uuid.UUID, muted bool) error {
 	val := 0
@@ -1148,6 +2282,133 @@ func (db *DB) SetMemberMuted(serverID, userID uuid.UUID, muted bool) error {
 	_, err := db.Exec(`UPDATE server_members SET is_muted = ? WHERE server_id = ? AND user_id = ?`,
 		val, serverID.String(), userID.String())
 	return err
+}
+
+// UpdateServerMemberTitle updates a member's custom title
+func (db *DB) UpdateServerMemberTitle(serverID, userID uuid.UUID, title string) error {
+	_, err := db.Exec(`
+		UPDATE server_members
+		SET custom_title = ?
+		WHERE server_id = ? AND user_id = ?
+	`, title, serverID.String(), userID.String())
+	return err
+}
+
+// AddTimeout adds a temporary ban (timeout) for a user
+func (db *DB) AddTimeout(serverID, userID, channelID, issuedBy uuid.UUID, duration int, reason string) error {
+	id := uuid.New()
+	now := time.Now()
+	expiresAt := now.Add(time.Duration(duration) * time.Minute)
+
+	_, err := db.Exec(`
+		INSERT INTO timeouts (id, server_id, user_id, channel_id, reason, duration, issued_by, issued_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.String(), serverID.String(), userID.String(), channelID.String(), reason, duration, issuedBy.String(), now, expiresAt)
+	return err
+}
+
+// IsTimedOut reports whether userID has an active timeout on serverID
+func (db *DB) IsTimedOut(serverID, userID uuid.UUID) (bool, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM timeouts
+		WHERE server_id = ? AND user_id = ? AND expires_at > ?`,
+		serverID.String(), userID.String(), time.Now()).Scan(&count)
+	return count > 0, err
+}
+
+// RemoveTimeout removes an active timeout for a user
+func (db *DB) RemoveTimeout(serverID, userID uuid.UUID) error {
+	_, err := db.Exec(`DELETE FROM timeouts WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String())
+	return err
+}
+
+// CleanupExpiredTimeouts removes expired timeouts from the database
+func (db *DB) CleanupExpiredTimeouts() ([]struct{ ServerID, UserID, ChannelID uuid.UUID }, error) {
+	rows, err := db.Query(`SELECT server_id, user_id, channel_id FROM timeouts WHERE expires_at <= ?`, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var expired []struct{ ServerID, UserID, ChannelID uuid.UUID }
+	for rows.Next() {
+		var serverIDStr, userIDStr, channelIDStr string
+		if err := rows.Scan(&serverIDStr, &userIDStr, &channelIDStr); err != nil {
+			return nil, err
+		}
+		serverID, _ := uuid.Parse(serverIDStr)
+		userID, _ := uuid.Parse(userIDStr)
+		channelID, _ := uuid.Parse(channelIDStr)
+		expired = append(expired, struct{ ServerID, UserID, ChannelID uuid.UUID }{serverID, userID, channelID})
+	}
+
+	// Delete expired timeouts
+	_, err = db.Exec(`DELETE FROM timeouts WHERE expires_at <= ?`, time.Now())
+	return expired, err
+}
+
+// AddMute adds a timed mute for a user
+func (db *DB) AddMute(serverID, userID, channelID, issuedBy uuid.UUID, duration int) error {
+	id := uuid.New()
+	now := time.Now()
+	expiresAt := now.Add(time.Duration(duration) * time.Minute)
+
+	_, err := db.Exec(`
+		INSERT INTO mutes (id, server_id, user_id, channel_id, duration, issued_by, issued_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.String(), serverID.String(), userID.String(), channelID.String(), duration, issuedBy.String(), now, expiresAt)
+	return err
+}
+
+// GetActiveMute returns the expiry time for an active mute, or nil if not muted
+func (db *DB) GetActiveMute(serverID, userID uuid.UUID) (*time.Time, error) {
+	var expiresAt time.Time
+	err := db.QueryRow(`
+		SELECT expires_at FROM mutes
+		WHERE server_id = ? AND user_id = ? AND expires_at > ?`,
+		serverID.String(), userID.String(), time.Now()).Scan(&expiresAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &expiresAt, nil
+}
+
+// RemoveMute removes an active mute for a user
+func (db *DB) RemoveMute(serverID, userID uuid.UUID) error {
+	_, err := db.Exec(`DELETE FROM mutes WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String())
+	return err
+}
+
+// CleanupExpiredMutes removes expired mutes and returns the users that were unmuted
+func (db *DB) CleanupExpiredMutes() ([]struct{ ServerID, UserID, ChannelID uuid.UUID }, error) {
+	rows, err := db.Query(`SELECT server_id, user_id, channel_id FROM mutes WHERE expires_at <= ?`, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var unmuted []struct{ ServerID, UserID, ChannelID uuid.UUID }
+	for rows.Next() {
+		var serverIDStr, userIDStr, channelIDStr string
+		if err := rows.Scan(&serverIDStr, &userIDStr, &channelIDStr); err != nil {
+			return nil, err
+		}
+		serverID, _ := uuid.Parse(serverIDStr)
+		userID, _ := uuid.Parse(userIDStr)
+		channelID, _ := uuid.Parse(channelIDStr)
+		unmuted = append(unmuted, struct{ ServerID, UserID, ChannelID uuid.UUID }{serverID, userID, channelID})
+	}
+
+	// Delete expired mutes
+	_, err = db.Exec(`DELETE FROM mutes WHERE expires_at <= ?`, time.Now())
+	return unmuted, err
 }
 
 // GetRoleByName returns the first role with the given name in a server (case-insensitive).
@@ -1204,7 +2465,7 @@ func (db *DB) EnsureAdminRole(email string) error {
 		return fmt.Errorf("user not found for email %q: %w", email, err)
 	}
 
-	server, _, err := db.EnsureDefaultServer()
+	server, _, err := db.EnsureDefaultServer("Concord Server") // Name only used if creating new server
 	if err != nil {
 		return err
 	}
@@ -1219,4 +2480,43 @@ func (db *DB) EnsureAdminRole(email string) error {
 
 	// Make them the server owner
 	return db.UpdateServerOwner(server.ID, user.ID)
+}
+
+// CountMessagesSince counts messages in a channel since a given time
+func (db *DB) CountMessagesSince(channelID uuid.UUID, since time.Time) (int, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE channel_id = ? AND created_at > ?
+	`, channelID.String(), since).Scan(&count)
+	return count, err
+}
+
+// GetMessageCountsByChannel returns message counts per channel for a server in a time window
+func (db *DB) GetMessageCountsByChannel(serverID uuid.UUID, since time.Time) (map[uuid.UUID]int, error) {
+	rows, err := db.Query(`
+		SELECT c.id, COUNT(m.id) as count
+		FROM channels c
+		LEFT JOIN messages m ON c.id = m.channel_id AND m.created_at > ?
+		WHERE c.server_id = ? AND c.type = 0
+		GROUP BY c.id
+	`, since, serverID.String())
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[uuid.UUID]int)
+	for rows.Next() {
+		var chID string
+		var count int
+		if err := rows.Scan(&chID, &count); err != nil {
+			return nil, err
+		}
+		id, _ := uuid.Parse(chID)
+		counts[id] = count
+	}
+
+	return counts, rows.Err()
 }

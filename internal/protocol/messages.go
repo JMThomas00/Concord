@@ -30,10 +30,20 @@ const (
 	OpBanMember        OpCode = 20 // Ban a member from the server
 	OpMuteMember       OpCode = 21 // Server-mute a member
 	OpWhisper          OpCode = 22 // Send an ephemeral DM to another connected user
-	OpUnbanMember      OpCode = 23 // Unban a member from the server
-	OpTimeoutMember    OpCode = 24 // Timeout a member temporarily
-	OpPinMessage       OpCode = 25 // Pin a message in a channel
-	OpUnpinMessage     OpCode = 26 // Unpin a message from a channel
+	OpPinMessage       OpCode = 23 // Pin a message in a channel
+	OpUnpinMessage     OpCode = 24 // Unpin a message from a channel
+	OpTimeoutMember    OpCode = 25 // Temporarily ban a member for X minutes
+	OpUnbanMember      OpCode = 26 // Unban a member from the server
+	OpCreateRole       OpCode = 27 // Create a new role
+	OpUpdateRole       OpCode = 28 // Update an existing role
+	OpDeleteRole       OpCode = 29 // Delete a role
+	OpEditMessage      OpCode = 30 // Edit message content
+	OpDeleteMessage    OpCode = 31 // Delete message (soft-delete)
+	OpGetRetentionPolicy    OpCode = 40 // Get retention policy for server/channel
+	OpSetRetentionPolicy    OpCode = 41 // Update retention policy
+	OpDeleteRetentionPolicy OpCode = 42 // Remove channel override
+	OpPruneMessages         OpCode = 43 // Manual prune trigger
+	OpAssignTitle           OpCode = 44 // Assign custom title to member
 
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
@@ -74,7 +84,6 @@ const (
 	EventMessagesHistory  EventType = "MESSAGES_HISTORY"
 	EventMessagePin       EventType = "MESSAGE_PIN"
 	EventMessageUnpin     EventType = "MESSAGE_UNPIN"
-	EventSystemMessage    EventType = "SYSTEM_MESSAGE"
 
 	// User events
 	EventPresenceUpdate   EventType = "PRESENCE_UPDATE"
@@ -84,11 +93,19 @@ const (
 	// Whisper events
 	EventWhisperCreate    EventType = "WHISPER_CREATE"
 
+	// System message events
+	EventSystemMessage    EventType = "SYSTEM_MESSAGE"
+
 	// Role events
 	EventRoleCreate       EventType = "ROLE_CREATE"
 	EventRoleUpdate       EventType = "ROLE_UPDATE"
 	EventRoleDelete       EventType = "ROLE_DELETE"
-	
+	EventTitleUpdate      EventType = "TITLE_UPDATE"
+
+	// Retention policy events
+	EventRetentionPolicyUpdate EventType = "RETENTION_POLICY_UPDATE"
+	EventMessagesPruned        EventType = "MESSAGES_PRUNED"
+
 	// Voice events (v2)
 	EventVoiceStateUpdate EventType = "VOICE_STATE_UPDATE"
 	EventVoiceServerUpdate EventType = "VOICE_SERVER_UPDATE"
@@ -157,6 +174,19 @@ type SendMessagePayload struct {
 	Nonce     string     `json:"nonce,omitempty"` // Client-generated ID for deduplication
 }
 
+// EditMessagePayload is sent to edit a message
+type EditMessagePayload struct {
+	MessageID uuid.UUID `json:"message_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	Content   string    `json:"content"`
+}
+
+// DeleteMessagePayload is sent to delete a message
+type DeleteMessagePayload struct {
+	MessageID uuid.UUID `json:"message_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+}
+
 // TypingStartPayload is sent when a user starts typing
 type TypingStartPayload struct {
 	ChannelID uuid.UUID `json:"channel_id"`
@@ -183,7 +213,8 @@ type ChannelUpdateRequest struct {
 	ChannelID  uuid.UUID  `json:"channel_id"`
 	Name       *string    `json:"name,omitempty"`
 	CategoryID *uuid.UUID `json:"category_id,omitempty"`
-	Position   *int       `json:"position,omitempty"`
+	Position   *int       `json:"position,omitempty"`   // Deprecated - kept for compatibility
+	SortOrder  *int       `json:"sort_order,omitempty"` // NEW: Use for all ordering operations
 }
 
 // ChannelDeleteRequest is sent by clients to delete a channel
@@ -211,55 +242,96 @@ type RoleRemoveRequest struct {
 	ServerID uuid.UUID `json:"server_id"`
 	UserID   uuid.UUID `json:"user_id"`
 	RoleName string    `json:"role_name"`
+	Force    bool      `json:"force,omitempty"` // Override last-admin protection
 }
 
 // KickMemberRequest kicks a member from a server
 type KickMemberRequest struct {
-	ServerID uuid.UUID `json:"server_id"`
-	UserID   uuid.UUID `json:"user_id"`
-	Reason   string    `json:"reason,omitempty"`
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
+	UserID    uuid.UUID `json:"user_id"`
+	Reason    string    `json:"reason,omitempty"`
 }
 
 // BanMemberRequest bans a member from a server
 type BanMemberRequest struct {
-	ServerID uuid.UUID `json:"server_id"`
-	UserID   uuid.UUID `json:"user_id"`
-	Reason   string    `json:"reason,omitempty"`
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
+	UserID    uuid.UUID `json:"user_id"`
+	Reason    string    `json:"reason,omitempty"`
 }
 
 // MuteMemberRequest server-mutes (or unmutes) a member
 type MuteMemberRequest struct {
-	ServerID        uuid.UUID `json:"server_id"`
-	UserID          uuid.UUID `json:"user_id"`
-	Mute            bool      `json:"mute"` // true=mute, false=unmute
-	DurationMinutes int       `json:"duration_minutes,omitempty"`
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
+	UserID    uuid.UUID `json:"user_id"`
+	Mute      bool      `json:"mute"` // true=mute, false=unmute
+	Duration  int       `json:"duration,omitempty"` // Duration in minutes (0 = permanent)
+}
+
+// TimeoutMemberRequest temporarily bans a member for X minutes
+type TimeoutMemberRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
+	UserID    uuid.UUID `json:"user_id"`
+	Duration  int       `json:"duration"` // Duration in minutes
+	Reason    string    `json:"reason,omitempty"`
+}
+
+// UnbanMemberRequest unbans a member from a server
+type UnbanMemberRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
+	Username  string    `json:"username"`    // Username to unban (can't use UserID since they're not a member)
+}
+
+// CreateRoleRequest creates a new role on a server
+type CreateRoleRequest struct {
+	ServerID      uuid.UUID `json:"server_id"`
+	ChannelID     uuid.UUID `json:"channel_id"` // Channel where command was issued (for system message)
+	Name          string    `json:"name"`
+	Permissions   uint64    `json:"permissions"`    // Permission bitfield
+	Color         int       `json:"color"`
+	DisplayOrder  *int      `json:"display_order,omitempty"` // Member panel sort order (lower = top)
+	IsHoisted     bool      `json:"is_hoisted"`
+	IsMentionable bool      `json:"is_mentionable"`
+}
+
+// UpdateRoleRequest updates an existing role
+type UpdateRoleRequest struct {
+	ServerID      uuid.UUID `json:"server_id"`
+	ChannelID     uuid.UUID `json:"channel_id"` // Channel where command was issued (for system message)
+	RoleID        uuid.UUID `json:"role_id"`
+	Name          string    `json:"name"`
+	Permissions   uint64    `json:"permissions"`    // Permission bitfield
+	Color         int       `json:"color"`
+	DisplayOrder  *int      `json:"display_order,omitempty"` // Member panel sort order (lower = top)
+	IsHoisted     bool      `json:"is_hoisted"`
+	IsMentionable bool      `json:"is_mentionable"`
+}
+
+// DeleteRoleRequest deletes a role from a server
+type DeleteRoleRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued (for system message)
+	RoleID    uuid.UUID `json:"role_id"`
 }
 
 // WhisperPayload is sent by a client to whisper to another user
 type WhisperPayload struct {
 	TargetUserID uuid.UUID `json:"target_user_id"`
+	ChannelID    uuid.UUID `json:"channel_id"`
 	Content      string    `json:"content"`
 }
 
 // WhisperCreatePayload is dispatched to both sender and recipient
 type WhisperCreatePayload struct {
 	FromUser  *models.User `json:"from_user"`
+	ToUser    *models.User `json:"to_user"`
+	ChannelID uuid.UUID    `json:"channel_id"`
 	Content   string       `json:"content"`
 	Timestamp time.Time    `json:"timestamp"`
-}
-
-// UnbanMemberRequest unbans a member from a server
-type UnbanMemberRequest struct {
-	ServerID uuid.UUID `json:"server_id"`
-	Username string    `json:"username"`
-}
-
-// TimeoutMemberRequest temporarily restricts a member
-type TimeoutMemberRequest struct {
-	ServerID        uuid.UUID `json:"server_id"`
-	UserID          uuid.UUID `json:"user_id"`
-	DurationMinutes int       `json:"duration_minutes"`
-	Reason          string    `json:"reason,omitempty"`
 }
 
 // PinMessageRequest pins a message in a channel
@@ -272,6 +344,21 @@ type PinMessageRequest struct {
 type UnpinMessageRequest struct {
 	ChannelID uuid.UUID `json:"channel_id"`
 	MessageID uuid.UUID `json:"message_id"`
+}
+
+// MessagePinPayload is dispatched when a message is pinned or unpinned
+type MessagePinPayload struct {
+	ChannelID uuid.UUID      `json:"channel_id"`
+	Message   *models.Message `json:"message"`
+	PinnedBy  *models.User   `json:"pinned_by"`
+	Timestamp time.Time      `json:"timestamp"`
+}
+
+// SystemMessagePayload represents a system-generated message (moderation actions, etc.)
+type SystemMessagePayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // --- Server -> Client Payloads ---
@@ -320,7 +407,8 @@ type MessageHistoryPayload struct {
 // MessageDisplay is the client-side message representation
 type MessageDisplay struct {
 	*models.Message
-	Author *models.User `json:"author"`
+	Author    *models.User `json:"author"`
+	Recipient *models.User `json:"recipient,omitempty"` // For whispers only
 }
 
 // MessageUpdatePayload is dispatched when a message is edited
@@ -376,18 +464,6 @@ type ServerMemberUpdatePayload struct {
 	Roles    []*models.Role       `json:"roles"`
 }
 
-// MessagePinPayload is dispatched when a message is pinned
-type MessagePinPayload struct {
-	ChannelID uuid.UUID       `json:"channel_id"`
-	Message   *models.Message `json:"message"`
-}
-
-// SystemMessagePayload is dispatched for system messages
-type SystemMessagePayload struct {
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
 // ChannelCreatePayload is dispatched when a channel is created
 type ChannelCreatePayload struct {
 	*models.Channel
@@ -435,6 +511,64 @@ const (
 	ErrorCodeSessionTimeout    = 4008
 	ErrorCodeAlreadyAuthenticated = 4009
 )
+
+// --- Retention Policy Payloads ---
+
+// GetRetentionPolicyRequest requests a retention policy
+type GetRetentionPolicyRequest struct {
+	ServerID  uuid.UUID  `json:"server_id"`
+	ChannelID *uuid.UUID `json:"channel_id,omitempty"` // NULL = server default
+}
+
+// SetRetentionPolicyRequest updates a retention policy
+type SetRetentionPolicyRequest struct {
+	ServerID                uuid.UUID  `json:"server_id"`
+	ChannelID               *uuid.UUID `json:"channel_id,omitempty"` // NULL = server default
+	TimeRetentionDays       *int       `json:"time_retention_days,omitempty"`
+	SystemTimeRetentionDays *int       `json:"system_time_retention_days,omitempty"`
+	MaxMessageCount         *int       `json:"max_message_count,omitempty"`
+}
+
+// DeleteRetentionPolicyRequest removes a channel override
+type DeleteRetentionPolicyRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+}
+
+// PruneMessagesRequest triggers manual message pruning
+type PruneMessagesRequest struct {
+	ServerID  uuid.UUID  `json:"server_id"`
+	ChannelID *uuid.UUID `json:"channel_id,omitempty"` // NULL = all channels
+}
+
+// RetentionPolicyUpdatePayload is dispatched when a retention policy changes
+type RetentionPolicyUpdatePayload struct {
+	Policy *models.MessageRetentionPolicy `json:"policy"`
+}
+
+// MessagesPrunedPayload is dispatched when messages are pruned
+type MessagesPrunedPayload struct {
+	ServerID     uuid.UUID                   `json:"server_id"`
+	ChannelStats map[uuid.UUID]*models.PruneStats `json:"channel_stats"`
+	TriggerType  string                      `json:"trigger_type"` // "manual" or "automatic"
+	TriggeredBy  *uuid.UUID                  `json:"triggered_by,omitempty"`
+	ExecutedAt   time.Time                   `json:"executed_at"`
+	TotalDeleted int                         `json:"total_deleted"`
+}
+
+// AssignTitleRequest assigns a custom title to a member
+type AssignTitleRequest struct {
+	ServerID uuid.UUID `json:"server_id"`
+	UserID   uuid.UUID `json:"user_id"`
+	Title    string    `json:"title"` // Empty string = clear title
+}
+
+// AssignTitlePayload is dispatched when a member's title is updated
+type AssignTitlePayload struct {
+	ServerID uuid.UUID `json:"server_id"`
+	UserID   uuid.UUID `json:"user_id"`
+	Title    string    `json:"title"`
+}
 
 // CloseCode represents WebSocket close codes
 type CloseCode int

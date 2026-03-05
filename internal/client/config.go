@@ -45,6 +45,7 @@ type UIConfig struct {
 	ShowMembersList     bool                         `json:"show_members_list"`
 	CollapsedCategories map[string]map[string]bool   `json:"collapsed_categories,omitempty"` // serverID -> categoryID -> collapsed
 	MutedChannels       []string                     `json:"muted_channels,omitempty"`       // channel UUIDs
+	LastBannerIndex     int                          `json:"last_banner_index"`              // Index of last displayed banner
 }
 
 // ConfigManager handles loading and saving configuration files
@@ -242,6 +243,7 @@ func (cm *ConfigManager) LoadAppConfig() (*AppConfig, error) {
 			Version: 1,
 			UI: UIConfig{
 				Theme:               "dracula",
+				LastBannerIndex:     -1,
 				ShowMembersList:     true,
 				CollapsedCategories: make(map[string]map[string]bool),
 			},

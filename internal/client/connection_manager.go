@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -55,14 +56,14 @@ type ServerConnection struct {
 	LastError  error             // Last error encountered
 
 	// Per-server data cache
-	User           *models.User                        // Authenticated user
-	Token          string                              // Auth token
-	Servers        []*models.Server                    // Servers from READY message
-	Channels       map[uuid.UUID][]*models.Channel     // Channels per protocol server
-	Messages       map[uuid.UUID][]*MessageDisplay     // Messages per channel
-	Members        []*MemberDisplay                    // Members in current server
-	Roles          map[uuid.UUID][]*models.Role        // Roles per protocol server
-	PinnedMessages map[uuid.UUID][]*models.Message     // Pinned messages per channel
+	User    *models.User            // Authenticated user
+	Token   string                  // Auth token
+	Servers []*models.Server        // Servers from READY message
+	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
+	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
+	Members  []*MemberDisplay        // Members in current server
+	Roles    map[uuid.UUID][]*models.Role    // Roles per protocol server
+	PinnedMessages map[uuid.UUID][]*models.Message // Pinned messages per channel
 
 	// Retry tracking
 	RetryCount     int
@@ -111,6 +112,7 @@ func (sc *ServerConnection) GetChannels(protocolServerID uuid.UUID) []*models.Ch
 func (sc *ServerConnection) SetChannels(protocolServerID uuid.UUID, channels []*models.Channel) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	log.Printf("DEBUG SetChannels: ServerConnection=%p, protocolServerID=%s, setting %d channels", sc, protocolServerID, len(channels))
 	sc.Channels[protocolServerID] = channels
 }
 
@@ -300,7 +302,7 @@ func (cm *ConnectionManager) GetConnectedServers() []*ServerConnection {
 }
 
 // SendMessage sends a message to a channel on a specific server
-func (cm *ConnectionManager) SendMessage(serverID, channelID uuid.UUID, content string) error {
+func (cm *ConnectionManager) SendMessage(serverID, channelID uuid.UUID, content string, replyToID *uuid.UUID) error {
 	sc := cm.GetConnection(serverID)
 	if sc == nil {
 		return fmt.Errorf("server %s not found", serverID)
@@ -318,7 +320,7 @@ func (cm *ConnectionManager) SendMessage(serverID, channelID uuid.UUID, content 
 		return fmt.Errorf("no connection for server %s", serverID)
 	}
 
-	return conn.SendMessage(channelID, content, nil)
+	return conn.SendMessage(channelID, content, replyToID)
 }
 
 // SendTyping sends a typing indicator to a channel on a specific server
@@ -341,6 +343,28 @@ func (cm *ConnectionManager) SendTyping(serverID, channelID uuid.UUID) error {
 	}
 
 	return conn.SendTyping(channelID)
+}
+
+// SendRaw sends a raw protocol message to a specific server
+func (cm *ConnectionManager) SendRaw(serverID uuid.UUID, msg *protocol.Message) error {
+	sc := cm.GetConnection(serverID)
+	if sc == nil {
+		return fmt.Errorf("server %s not found", serverID)
+	}
+
+	if sc.GetState() != StateReady {
+		return fmt.Errorf("server %s not ready", serverID)
+	}
+
+	sc.mu.RLock()
+	conn := sc.Connection
+	sc.mu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("no connection for server %s", serverID)
+	}
+
+	return conn.Send(msg)
 }
 
 // Login authenticates with a server using email/password

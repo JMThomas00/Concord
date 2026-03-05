@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"unicode/utf8"
 
@@ -79,7 +80,7 @@ func (a *App) renderLoginView() string {
 			b.WriteString("\n\n")
 		}
 
-		b.WriteString(helpStyle.Render("Enter: Unlock  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
+		b.WriteString(helpStyle.Render("Enter: Unlock  •  Ctrl+S: Settings  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
 	} else {
 		// Standard login mode: email + password + register link
 		b.WriteString(subtitleStyle.Render("Terminal Chat - Login to continue"))
@@ -126,7 +127,7 @@ func (a *App) renderLoginView() string {
 		}
 		b.WriteString("\n\n")
 
-		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
+		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+S: Settings  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
 	}
 
 	// Create the form box with padding and fixed width
@@ -322,14 +323,37 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 			return nil
 		}
 		a.loginError = ""
+		log.Printf("DEBUG handleLoginSubmit: Changing view to ViewMain, setting focus to FocusServerIcons")
 		a.view = ViewMain
-		a.statusMessage = "Connecting to servers..."
-		// Auto-connect all configured servers in background
+		a.focus = FocusServerIcons // Start on server icons (consistent with auto-login)
+
+		// Only auto-connect servers that aren't already connected
+		// (servers auto-connect in background during Init, so they may already be ready)
 		servers := a.configMgr.GetClientServers()
 		cmds := make([]tea.Cmd, 0, len(servers))
+		allConnected := true
 		for _, server := range servers {
-			cmds = append(cmds, a.autoConnectServer(server.ID))
+			conn := a.connMgr.GetConnection(server.ID)
+			log.Printf("DEBUG handleLoginSubmit: Server %s - conn=%v, state=%v",
+				server.Name, conn != nil,
+				func() string { if conn != nil { return fmt.Sprintf("%v", conn.GetState()) }; return "nil" }())
+			if conn == nil || conn.GetState() != StateReady {
+				log.Printf("DEBUG handleLoginSubmit: Server %s NOT ready, calling autoConnectServer", server.Name)
+				cmds = append(cmds, a.autoConnectServer(server.ID))
+				allConnected = false
+			} else {
+				log.Printf("DEBUG handleLoginSubmit: Server %s already connected, skipping reconnect", server.Name)
+			}
 		}
+
+		if allConnected {
+			log.Printf("DEBUG handleLoginSubmit: All servers already connected")
+			a.statusMessage = "Ready"
+		} else {
+			log.Printf("DEBUG handleLoginSubmit: Some servers not connected, reconnecting")
+			a.statusMessage = "Connecting to servers..."
+		}
+
 		return tea.Batch(cmds...)
 	}
 
@@ -425,7 +449,10 @@ func (a *App) handleRegisterSubmit() tea.Cmd {
 		}
 
 		// Set active connection
+		oldConn := a.activeConn
 		a.activeConn = a.connMgr.GetConnection(serverID)
+		log.Printf("DEBUG handleAddServerSubmit: Changed activeConn from %p to %p (serverID=%s)",
+			oldConn, a.activeConn, serverID)
 
 		return LoginSuccessMsg{
 			User:    user,
@@ -520,25 +547,7 @@ func (a *App) renderServerIcons(width, height int) string {
 		b.WriteString("\n")
 	}
 
-	// Add spacing before "+" button
-	if len(servers) > 0 {
-		b.WriteString("\n")
-	}
-
-	// "Manage Servers" button (highlighted when selected)
-	isAddSelected := a.serverIndex >= len(servers)
-	var addButtonStr string
-	if isAddSelected {
-		addButtonStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-			Bold(true)
-		addButtonStr = addButtonStyle.Render("▶ Manage Servers")
-	} else {
-		addButtonStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Green))
-		addButtonStr = addButtonStyle.Render("  Manage Servers")
-	}
-	b.WriteString(addButtonStr)
+	// Removed "Manage Servers" button - now accessible via 's' key or Ctrl+S
 
 	// Wrap in bordered box
 	boxStyle := lipgloss.NewStyle().
@@ -920,18 +929,21 @@ func (a *App) renderChatPanel(width, height int) string {
 
 	// Pinned messages header — shown above the chat viewport when pins exist
 	pinnedHeader := ""
+	pinnedHeaderLines := 0
 	if a.activeConn != nil && a.currentChannel != nil {
 		a.activeConn.mu.RLock()
 		pinnedMsgs := a.activeConn.PinnedMessages[a.currentChannel.ID]
 		a.activeConn.mu.RUnlock()
 
 		if len(pinnedMsgs) > 0 {
-			pinStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Yellow)).
+			// Header style (grey/comment color)
+			pinHeaderStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 				Width(interiorWidth).
 				PaddingLeft(1)
-			pinDivider := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			// Message content style (yellow - more noticeable)
+			pinContentStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Yellow)).
 				Width(interiorWidth).
 				PaddingLeft(1)
 
@@ -941,25 +953,36 @@ func (a *App) renderChatPanel(width, height int) string {
 			if displayCount > 3 {
 				displayCount = 3
 			}
-			pinBuf.WriteString(pinStyle.Render(fmt.Sprintf("📌 %d pinned message(s)  (/unpin N to remove)", len(pinnedMsgs))))
+			pinBuf.WriteString(pinHeaderStyle.Render(fmt.Sprintf("📌 %d pinned message(s)  (/unpin N to remove)", len(pinnedMsgs))))
 			pinBuf.WriteString("\n")
 			for i := 0; i < displayCount; i++ {
 				pm := pinnedMsgs[i]
-				snippet := pm.Content
-				maxLen := interiorWidth - 10
-				if maxLen < 10 {
-					maxLen = 10
+				// Word-wrap the message content to fit the width
+				// Account for "[i] " prefix (4 chars max) and padding
+				maxWidth := interiorWidth - 6
+				if maxWidth < 20 {
+					maxWidth = 20
 				}
-				if len([]rune(snippet)) > maxLen {
-					snippet = string([]rune(snippet)[:maxLen]) + "…"
+				wrappedLines := a.splitMessageIntoLines(pm.Content, maxWidth)
+
+				// Render each wrapped line with proper indentation
+				for lineIdx, line := range wrappedLines {
+					var prefix string
+					if lineIdx == 0 {
+						// First line: show message number
+						prefix = fmt.Sprintf("[%d] ", i+1)
+					} else {
+						// Continuation lines: indent to align with first line content
+						prefix = "    "
+					}
+					pinBuf.WriteString(pinContentStyle.Render(prefix + line))
+					pinBuf.WriteString("\n")
 				}
-				pinBuf.WriteString(pinDivider.Render(fmt.Sprintf("[%d] %s", i+1, snippet)))
-				pinBuf.WriteString("\n")
 			}
-			pinBuf.WriteString(pinDivider.Render(strings.Repeat("─", interiorWidth-2)))
+			pinBuf.WriteString(pinHeaderStyle.Render(strings.Repeat("─", interiorWidth-2)))
 			pinnedHeader = strings.TrimRight(pinBuf.String(), "\n")
-			// Each pin uses 1 line, plus title + divider = displayCount+2 lines
-			chatHeight -= displayCount + 2
+			// Count actual lines by counting newlines in rendered output (+1 for final line)
+			pinnedHeaderLines = strings.Count(pinnedHeader, "\n") + 1
 		}
 	}
 
@@ -978,10 +1001,11 @@ func (a *App) renderChatPanel(width, height int) string {
 	// Keep textarea width in sync with panel interior
 	a.input.SetWidth(interiorWidth - 2)
 
-	// Update viewport size to match interior
-	if a.chatViewport.Width != interiorWidth || a.chatViewport.Height != chatHeight-2 {
+	// Update viewport size to match interior, reducing height for pinned messages
+	viewportHeight := chatHeight - 2 - pinnedHeaderLines
+	if a.chatViewport.Width != interiorWidth || a.chatViewport.Height != viewportHeight {
 		a.chatViewport.Width = interiorWidth
-		a.chatViewport.Height = chatHeight - 2
+		a.chatViewport.Height = viewportHeight
 	}
 
 	chatContent := a.chatViewport.View()
@@ -1002,6 +1026,12 @@ func (a *App) renderChatPanel(width, height int) string {
 			MarginTop((chatHeight - 2) / 3)
 		chatContent = emptyStyle.Render("No messages yet. Say hello!")
 	}
+
+	// Prepend pinned messages INSIDE the chat border (above the viewport content)
+	if pinnedHeader != "" {
+		chatContent = pinnedHeader + "\n" + chatContent
+	}
+
 	chat := chatStyle.Render(chatContent)
 
 	// Typing indicator — always reserve space (render blank when inactive to prevent layout shift).
@@ -1042,19 +1072,24 @@ func (a *App) renderChatPanel(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(inputBorderColor)
 
-	input := inputStyle.Render(a.injectMentionGhost(a.input.View()))
+	// Prepare input content with optional reply quote
+	inputContent := a.injectMentionGhost(a.input.View())
+	if a.replyTarget != nil {
+		// Show reply quote above input (styled, dimmed, italic)
+		replyStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).  // Dim gray
+			Italic(true)
+		replyLine := fmt.Sprintf("↩ Replying to %s: %s", a.replyTarget.AuthorName, a.replyQuote)
+		inputContent = replyStyle.Render(replyLine) + "\n" + inputContent
+	}
+	input := inputStyle.Render(inputContent)
 
 	// Spacer between header and chat viewport (aligns viewport border with panel borders)
 	spacer := lipgloss.NewStyle().Width(width).Height(1).Render("")
 
 	// Combine vertically — always include typing row (blank when inactive) to prevent border shift
-	parts := []string{header, spacer}
-	if pinnedHeader != "" {
-		parts = append(parts, pinnedHeader)
-	}
-	parts = append(parts, chat)
-	parts = append(parts, typing) // Always append (blank or with content)
-	parts = append(parts, input)
+	// Note: pinnedHeader is now rendered INSIDE the chat border, not as a separate element
+	parts := []string{header, spacer, chat, typing, input}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
@@ -1238,6 +1273,13 @@ func (a *App) renderUserList(width, height int) string {
 	// Inner width available for text (subtract border chars used by lipgloss border)
 	innerWidth := width - 2
 
+	// Top border separator (for symmetry with channels panel)
+	topBorderStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Selection)).
+		Width(innerWidth)
+	b.WriteString(topBorderStyle.Render(strings.Repeat("─", innerWidth)))
+	b.WriteString("\n")
+
 	// Header
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
@@ -1261,6 +1303,12 @@ func (a *App) renderUserList(width, height int) string {
 		b.WriteString(placeholderStyle.Render("No members"))
 		b.WriteString("\n")
 	} else {
+		// Build flat member list for highlighting if focused
+		var flatMembers []*MemberDisplay
+		if a.focus == FocusUserList {
+			flatMembers = a.buildFlatMemberList()
+		}
+
 		// Gather distinct hoisted roles present among members, sorted by position DESC
 		type roleSection struct {
 			role    *models.Role
@@ -1284,12 +1332,31 @@ func (a *App) renderUserList(width, height int) string {
 			}
 		}
 
-		// Sort roleSectionOrder by position DESC (simple insertion sort — small N)
+		// Sort roleSectionOrder by DisplayOrder ASC, fallback to Position DESC
 		for i := 1; i < len(roleSectionOrder); i++ {
 			for j := i; j > 0; j-- {
-				a := roleSectionMap[roleSectionOrder[j]]
-				b2 := roleSectionMap[roleSectionOrder[j-1]]
-				if a.role.Position > b2.role.Position {
+				curr := roleSectionMap[roleSectionOrder[j]]
+				prev := roleSectionMap[roleSectionOrder[j-1]]
+
+				currOrder := curr.role.DisplayOrder
+				prevOrder := prev.role.DisplayOrder
+
+				shouldSwap := false
+				// If both have display order, sort by display order ASC (lower = top)
+				if currOrder > 0 && prevOrder > 0 {
+					shouldSwap = currOrder < prevOrder
+				} else if currOrder > 0 {
+					// Current has display order, previous doesn't - current comes first
+					shouldSwap = true
+				} else if prevOrder > 0 {
+					// Previous has display order, current doesn't - keep previous first
+					shouldSwap = false
+				} else {
+					// Neither has display order, use Position DESC (legacy behavior)
+					shouldSwap = curr.role.Position > prev.role.Position
+				}
+
+				if shouldSwap {
 					roleSectionOrder[j], roleSectionOrder[j-1] = roleSectionOrder[j-1], roleSectionOrder[j]
 				} else {
 					break
@@ -1302,9 +1369,22 @@ func (a *App) renderUserList(width, height int) string {
 			Bold(true).
 			Width(innerWidth)
 
-		nameMaxLen := innerWidth - 7 // avatar(3) + space(1) + dot(1) + space(1) = 6 + 1 padding
+		nameMaxLen := innerWidth - 9 // avatar(3) + prefix(2) + space(1) + dot(1) + space(1) = 8 + 1 padding
+
+		// Track position in flat list for selection highlighting
+		flatIndex := 0
 
 		renderMember := func(m *MemberDisplay) {
+			prefix := "  "
+			baseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+
+			// Highlight selected member
+			isSelected := a.focus == FocusUserList && len(flatMembers) > 0 && flatIndex == a.selectedMemberIndex
+			if isSelected {
+				prefix = "> "
+				baseStyle = baseStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+			}
+
 			dot, dotColor := presenceDot(m.User.Status, a.theme)
 			dotStr := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render(dot)
 			avatar := a.renderMemberAvatar(m.User.GetDisplayName(), m.AvatarColor)
@@ -1313,11 +1393,61 @@ func (a *App) renderUserList(width, height int) string {
 			if len([]rune(name)) > nameMaxLen {
 				name = string([]rune(name)[:nameMaxLen-1]) + "…"
 			}
-			nameStr := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-				Render(name)
+			nameStr := baseStyle.Render(name)
 
-			b.WriteString(" " + avatar + " " + nameStr + " " + dotStr + "\n")
+			line := prefix + avatar + " " + nameStr + " " + dotStr
+			if isSelected {
+				// Apply background to entire line
+				line = baseStyle.Width(innerWidth).Render(line)
+			}
+
+			b.WriteString(line + "\n")
+
+			// Render custom title if present (yellow, bold, indented)
+			if m.Member != nil && m.Member.CustomTitle != "" {
+				titleStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Yellow)).
+					Bold(true)
+				if isSelected {
+					titleStyle = titleStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+				}
+				// Truncate title if too long - very conservative to ensure ellipsis shows
+				titleText := m.Member.CustomTitle
+				titleMaxLen := innerWidth - 10 // Extra conservative for ellipsis visibility
+				if titleMaxLen < 10 {
+					titleMaxLen = 10 // Minimum readable length
+				}
+				if len([]rune(titleText)) > titleMaxLen {
+					runes := []rune(titleText)
+					titleText = string(runes[:titleMaxLen-1]) + "…"
+				}
+				titleLine := "    " + titleStyle.Render(titleText)
+				b.WriteString(titleLine + "\n")
+			}
+
+			// Render status text if present (gray, italic, indented)
+			if m.User.StatusText != "" {
+				statusStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+					Italic(true)
+				if isSelected {
+					statusStyle = statusStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+				}
+				// Truncate status if too long - very conservative to ensure ellipsis shows
+				statusText := m.User.StatusText
+				statusMaxLen := innerWidth - 10 // Extra conservative for ellipsis visibility
+				if statusMaxLen < 10 {
+					statusMaxLen = 10 // Minimum readable length
+				}
+				if len([]rune(statusText)) > statusMaxLen {
+					runes := []rune(statusText)
+					statusText = string(runes[:statusMaxLen-1]) + "…"
+				}
+				statusLine := "    " + statusStyle.Render(statusText)
+				b.WriteString(statusLine + "\n")
+			}
+
+			flatIndex++
 		}
 
 		// Render hoisted role sections
@@ -1342,6 +1472,8 @@ func (a *App) renderUserList(width, height int) string {
 			}
 		}
 	}
+
+	// Removed "Manage Members" button - now accessible via Ctrl+B
 
 	userListStyle := lipgloss.NewStyle().
 		Width(width).
@@ -1393,8 +1525,13 @@ func (a *App) renderStatusBar() string {
 		leftContent += textStyle.Render("  |  " + currentUser.FullUsername())
 	}
 
-	// Right side: help text
-	rightContent := textStyle.Render("Tab: Navigate  |  Up/Down: Select  |  Type /help  |  Ctrl+Q: Quit ")
+	// Right side: help text (include Server Settings for admins)
+	helpText := "Tab: Navigate  |  Ctrl+S: Settings  |  "
+	if a.currentUserRoleLevel() >= roleLevelAdmin {
+		helpText += "Ctrl+B: Server Settings  |  "
+	}
+	helpText += "Type /help  |  Ctrl+Q: Quit "
+	rightContent := textStyle.Render(helpText)
 
 	// Calculate spacing (must know left/right widths before truncating center)
 	leftLen := lipgloss.Width(leftContent)
@@ -1449,6 +1586,7 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 	// Header
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Background(lipgloss.Color(a.theme.Semantic.InputBg)).
 		Bold(true).
 		Align(lipgloss.Center).
 		Width(overlayWidth - 2)
@@ -1459,9 +1597,11 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 	for i, link := range a.linkBrowserState.Links {
 		numberStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			Background(lipgloss.Color(a.theme.Semantic.InputBg)).
 			Bold(true)
 		linkStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Cyan))
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Background(lipgloss.Color(a.theme.Semantic.InputBg))
 
 		// Highlight selected link
 		if i == a.linkBrowserState.SelectedIndex {
@@ -1478,15 +1618,21 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 			displayLink = displayLink[:maxLinkLen-1] + "…"
 		}
 
-		line := fmt.Sprintf("%s %s",
+		line := fmt.Sprintf("%s%s",
 			numberStyle.Render(fmt.Sprintf("[%d]", i+1)),
-			linkStyle.Render(displayLink))
-		linkLines = append(linkLines, line)
+			linkStyle.Render(" " + displayLink))
+
+		// Wrap line in full-width style to ensure background fills
+		lineStyle := lipgloss.NewStyle().
+			Background(lipgloss.Color(a.theme.Semantic.InputBg)).
+			Width(overlayWidth - 2)
+		linkLines = append(linkLines, lineStyle.Render(line))
 	}
 
 	// Footer with keybind hints
 	hintStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Background(lipgloss.Color(a.theme.Semantic.InputBg)).
 		Italic(true).
 		Align(lipgloss.Center).
 		Width(overlayWidth - 2)
@@ -1510,7 +1656,7 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 		Width(overlayWidth).
 		Height(modalHeight).
 		Padding(1).
-		Background(lipgloss.Color(a.theme.Colors.Background))
+		Background(lipgloss.Color(a.theme.Semantic.InputBg))
 
 	modal := boxStyle.Render(modalContent.String())
 
@@ -1523,6 +1669,157 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 	if xOffset < 0 {
 		xOffset = 0
 	}
+
+	// Use lipgloss.Place to overlay the modal on the base view
+	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, modal,
+		lipgloss.WithWhitespaceChars(""),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color(a.theme.Colors.Background)))
+}
+
+// renderHelpModalOverlay renders the help modal overlay on top of the base view
+func (a *App) renderHelpModalOverlay(baseView string) string {
+	if a.helpModalState == nil {
+		return baseView
+	}
+
+	// Calculate overlay dimensions (centered modal, slightly wider than link browser)
+	overlayWidth := 100
+	if overlayWidth > a.width-4 {
+		overlayWidth = a.width - 4
+	}
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Background(lipgloss.Color(a.theme.Colors.Background)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(overlayWidth - 2)
+	header := headerStyle.Render("Help - Available Commands")
+
+	// Content (preserve existing formatting from command handler)
+	contentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Colors.Background)).
+		Width(overlayWidth - 4)
+	content := contentStyle.Render(a.helpModalState.Content)
+
+	// Footer with keybind hints
+	hintStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Background(lipgloss.Color(a.theme.Colors.Background)).
+		Italic(true).
+		Align(lipgloss.Center).
+		Width(overlayWidth - 2)
+	hints := hintStyle.Render("Esc: Close")
+
+	// Build modal content
+	var modalContent strings.Builder
+	modalContent.WriteString(header + "\n\n")
+	modalContent.WriteString(content)
+	modalContent.WriteString("\n\n" + hints)
+
+	// Calculate modal height (based on content lines + header + footer + padding)
+	contentLines := strings.Count(a.helpModalState.Content, "\n") + 1
+	modalHeight := contentLines + 6 // header + content + footer + spacing
+
+	// Cap height to avoid overflow
+	maxHeight := a.height - 4
+	if modalHeight > maxHeight {
+		modalHeight = maxHeight
+	}
+
+	// Wrap in box
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
+		Width(overlayWidth).
+		Height(modalHeight).
+		Padding(1).
+		Background(lipgloss.Color(a.theme.Colors.Background))
+
+	modal := boxStyle.Render(modalContent.String())
+
+	// Place modal centered on screen
+	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, modal,
+		lipgloss.WithWhitespaceChars(""),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color(a.theme.Colors.Background)))
+}
+
+// renderMemberContextMenuOverlay renders the member action context menu overlay
+func (a *App) renderMemberContextMenuOverlay(baseView string) string {
+	if a.memberContextMenu == nil {
+		return baseView
+	}
+
+	// Calculate overlay dimensions
+	overlayWidth := 50
+	if overlayWidth > a.width-4 {
+		overlayWidth = a.width - 4
+	}
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(overlayWidth - 2)
+	title := titleStyle.Render(fmt.Sprintf("Actions for @%s", a.memberContextMenu.TargetMember.User.Username))
+
+	// Action list
+	var actionLines []string
+	for i, action := range a.memberContextMenu.Actions {
+		keyStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			Bold(true)
+		labelStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+
+		prefix := "  "
+
+		// Highlight selected action
+		if i == a.memberContextMenu.SelectedIndex {
+			prefix = "> "
+			keyStyle = keyStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+			labelStyle = labelStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+		}
+
+		line := fmt.Sprintf("%s%s %s",
+			prefix,
+			keyStyle.Render(fmt.Sprintf("[%s]", action.Key)),
+			labelStyle.Render(action.Label))
+		actionLines = append(actionLines, line)
+	}
+
+	// Footer with keybind hints
+	hintStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Align(lipgloss.Center).
+		Width(overlayWidth - 2)
+	hints := hintStyle.Render("Enter: Execute  •  Esc: Close")
+
+	// Build modal content
+	var modalContent strings.Builder
+	modalContent.WriteString(title + "\n\n")
+	for _, line := range actionLines {
+		modalContent.WriteString(line + "\n")
+	}
+	modalContent.WriteString("\n" + hints)
+
+	// Calculate modal height
+	modalHeight := len(actionLines) + 5 // title + actions + footer + spacing
+
+	// Wrap in box
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
+		Width(overlayWidth).
+		Height(modalHeight).
+		Padding(1).
+		Background(lipgloss.Color(a.theme.Colors.Background))
+
+	modal := boxStyle.Render(modalContent.String())
 
 	// Use lipgloss.Place to overlay the modal on the base view
 	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, modal,

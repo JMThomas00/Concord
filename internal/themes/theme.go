@@ -196,12 +196,10 @@ func (t *Theme) BuildStyles() *Styles {
 		Faint(true)
 
 	s.UsernameSelf = lipgloss.NewStyle().
-		Background(lipgloss.Color(t.Semantic.ChatBg)).
 		Foreground(lipgloss.Color(t.Semantic.ChatUsernameSelf)).
 		Bold(true)
 
 	s.UsernameOther = lipgloss.NewStyle().
-		Background(lipgloss.Color(t.Semantic.ChatBg)).
 		Foreground(lipgloss.Color(t.Semantic.ChatUsernameOther)).
 		Bold(true)
 

@@ -3,9 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
+	charmlog "github.com/charmbracelet/log"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/server"
@@ -18,7 +18,25 @@ func main() {
 	port := flag.Int("port", 0, "Port to bind to (overrides config)")
 	dbPath := flag.String("db", "", "Path to database file (overrides config)")
 	adminEmail := flag.String("admin-email", "", "Grant admin role to this email on startup")
+	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+	hybridMode := flag.Bool("hybrid", false, "Enable hybrid dashboard with live logs")
 	flag.Parse()
+
+	// Parse and initialize logger early
+	var level charmlog.Level
+	switch *logLevel {
+	case "debug":
+		level = charmlog.DebugLevel
+	case "info":
+		level = charmlog.InfoLevel
+	case "warn":
+		level = charmlog.WarnLevel
+	case "error":
+		level = charmlog.ErrorLevel
+	default:
+		level = charmlog.InfoLevel
+	}
+	server.InitLogger(level)
 
 	// Detect first-run: no config file specified and default config file absent
 	isFirstRun := *configPath == ""
@@ -36,11 +54,11 @@ func main() {
 		config = server.DefaultConfig()
 		if *configPath != "" {
 			if err := loadConfig(*configPath, config); err != nil {
-				log.Fatalf("Failed to load config: %v", err)
+				server.Logger.Fatal("Failed to load config", "error", err)
 			}
 		} else if _, err := os.Stat(configFilename); err == nil {
 			if err := loadConfig(configFilename, config); err != nil {
-				log.Fatalf("Failed to load config: %v", err)
+				server.Logger.Fatal("Failed to load config", "error", err)
 			}
 		}
 	}
@@ -56,30 +74,39 @@ func main() {
 		config.DatabasePath = *dbPath
 	}
 
-	// Print banner
-	printBanner()
+	// Print beautiful startup banner and information (only in normal mode)
+	if !*hybridMode {
+		server.PrintBanner()
+		addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
+		server.PrintStartupInfo(addr, config.DatabasePath)
+	}
 
 	// Handle --admin-email: open DB, grant role, close, then start normally
 	if *adminEmail != "" {
 		db, err := database.New(config.DatabasePath)
 		if err != nil {
-			log.Fatalf("Failed to open database for admin-email: %v", err)
+			server.Logger.Fatal("Failed to open database for admin-email", "error", err)
 		}
 		if err := db.EnsureAdminRole(*adminEmail); err != nil {
-			log.Fatalf("Failed to grant admin role to %s: %v", *adminEmail, err)
+			server.Logger.Fatal("Failed to grant admin role", "email", *adminEmail, "error", err)
 		}
-		log.Printf("Admin role granted to %s", *adminEmail)
+		server.AuthLog.Info("Admin role granted", "email", *adminEmail)
 		db.Close()
 	}
 
 	// Create and run server
 	srv, err := server.New(config)
 	if err != nil {
-		log.Fatalf("Failed to create server: %v", err)
+		server.Logger.Fatal("Failed to create server", "error", err)
+	}
+
+	// Enable hybrid mode if requested
+	if *hybridMode {
+		srv.SetDashboardMode(true)
 	}
 
 	if err := srv.Run(); err != nil {
-		log.Fatalf("Server error: %v", err)
+		server.Logger.Fatal("Server error", "error", err)
 	}
 }
 
@@ -96,16 +123,4 @@ func loadConfig(path string, config *server.Config) error {
 	return nil
 }
 
-func printBanner() {
-	banner := `
-   ____                              _ 
-  / ___|___  _ __   ___ ___  _ __ __| |
- | |   / _ \| '_ \ / __/ _ \| '__/ _' |
- | |__| (_) | | | | (_| (_) | | | (_| |
-  \____\___/|_| |_|\___\___/|_|  \__,_|
-                                       
-  Terminal Chat Server v0.1.0
-  ===========================
-`
-	fmt.Println(banner)
-}
+// Old printBanner removed - now using server.PrintBanner() with beautiful ASCII art

@@ -156,12 +156,22 @@ func runFirstRunSetup() *server.Config {
 		port = 8080
 	}
 
+	serverName := strings.TrimSpace(final.inputs[fieldName].Value())
+	if serverName == "" {
+		serverName = "Concord Server"
+	}
+
 	cfg := &server.Config{
 		Host:           strings.TrimSpace(final.inputs[fieldHost].Value()),
 		Port:           port,
+		ServerName:     serverName,
 		DatabasePath:   strings.TrimSpace(final.inputs[fieldDB].Value()),
 		MaxConnections: 1000,
 		Debug:          false,
+		MessagePruning: server.MessagePruningConfig{
+			Enabled:       true,
+			IntervalHours: 24,
+		},
 	}
 
 	// Write config file

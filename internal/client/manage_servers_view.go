@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -275,7 +276,10 @@ func (a *App) handleManageServersKey(msg tea.KeyMsg) tea.Cmd {
 
 			// If deleted server was active or current, clear state
 			if a.activeConn != nil && a.activeConn.ServerID == server.ID {
+				oldConn := a.activeConn
 				a.activeConn = nil
+				log.Printf("DEBUG handleManageServersKey (delete): Changed activeConn from %p to nil (deleted serverID=%s)",
+					oldConn, server.ID)
 				a.currentServer = nil
 				a.currentChannel = nil
 			}

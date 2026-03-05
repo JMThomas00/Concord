@@ -24,7 +24,8 @@ type Channel struct {
 	Name        string      `json:"name"`
 	Topic       string      `json:"topic,omitempty"`
 	Type        ChannelType `json:"type"`
-	Position    int         `json:"position"`
+	Position    int         `json:"position"`     // Deprecated - kept for compatibility
+	SortOrder   int         `json:"sort_order"`   // NEW: Use for all ordering operations
 	CategoryID  uuid.UUID   `json:"category_id,omitempty"` // Parent category
 	IsNSFW      bool        `json:"is_nsfw"`
 	RateLimitPerUser int    `json:"rate_limit_per_user,omitempty"` // Slowmode in seconds

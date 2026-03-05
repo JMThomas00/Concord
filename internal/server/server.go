@@ -4,26 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/protocol"
+	"github.com/concord-chat/concord/internal/server/dashboard"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // Config holds the server configuration
 type Config struct {
-	Host           string `toml:"host"`
-	Port           int    `toml:"port"`
-	DatabasePath   string `toml:"database_path"`
-	MaxConnections int    `toml:"max_connections"`
-	Debug          bool   `toml:"debug"`
+	Host           string               `toml:"host"`
+	Port           int                  `toml:"port"`
+	ServerName     string               `toml:"server_name"`
+	DatabasePath   string               `toml:"database_path"`
+	MaxConnections int                  `toml:"max_connections"`
+	Debug          bool                 `toml:"debug"`
+	MessagePruning MessagePruningConfig `toml:"message_pruning"`
+}
+
+// MessagePruningConfig configures automatic message pruning
+type MessagePruningConfig struct {
+	Enabled       bool `toml:"enabled"`        // Default: true
+	IntervalHours int  `toml:"interval_hours"` // Default: 24 (daily)
 }
 
 // DefaultConfig returns the default server configuration
@@ -31,20 +43,30 @@ func DefaultConfig() *Config {
 	return &Config{
 		Host:           "0.0.0.0",
 		Port:           8080,
+		ServerName:     "Concord Server",
 		DatabasePath:   "concord.db",
 		MaxConnections: 1000,
 		Debug:          false,
+		MessagePruning: MessagePruningConfig{
+			Enabled:       true,
+			IntervalHours: 24,
+		},
 	}
 }
 
 // Server represents the Concord server
 type Server struct {
-	config   *Config
-	hub      *Hub
-	handlers *Handlers
-	db       *database.DB
-	upgrader websocket.Upgrader
-	httpServer *http.Server
+	config        *Config
+	hub           *Hub
+	handlers      *Handlers
+	db            *database.DB
+	upgrader      websocket.Upgrader
+	httpServer    *http.Server
+
+	// Dashboard support
+	dashboardMode bool
+	dashboard     *dashboard.Model
+	stats         *StatsTracker
 }
 
 // New creates a new server instance
@@ -56,18 +78,21 @@ func New(config *Config) (*Server, error) {
 	}
 
 	// Ensure default server exists
-	defaultServer, _, err := db.EnsureDefaultServer()
+	defaultServer, _, err := db.EnsureDefaultServer(config.ServerName)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to ensure default server: %w", err)
 	}
-	log.Printf("Default server initialized: ID=%s, Name=%s", defaultServer.ID, defaultServer.Name)
+	DBLog.Info("Default server initialized", "server_id", defaultServer.ID, "name", defaultServer.Name)
 
 	// Create hub
 	hub := NewHub()
 
+	// Create stats tracker
+	stats := NewStatsTracker()
+
 	// Create handlers
-	handlers := NewHandlers(db, hub)
+	handlers := NewHandlers(db, hub, stats)
 
 	// Create server
 	s := &Server{
@@ -75,6 +100,7 @@ func New(config *Config) (*Server, error) {
 		hub:      hub,
 		handlers: handlers,
 		db:       db,
+		stats:    stats,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -90,8 +116,21 @@ func New(config *Config) (*Server, error) {
 
 // Run starts the server
 func (s *Server) Run() error {
-	// Start the hub
+	// If dashboard mode is enabled, use hybrid dashboard runner
+	if s.dashboardMode {
+		return s.runWithHybridDashboard()
+	}
+
+	// Normal mode: Start the hub
 	go s.hub.Run()
+
+	// Start cleanup tasks for expired timeouts and mutes
+	go s.runCleanupTasks()
+
+	// Start message pruning task
+	if s.config.MessagePruning.Enabled {
+		go s.runMessagePruningTask()
+	}
 
 	// Set up HTTP routes
 	mux := http.NewServeMux()
@@ -113,9 +152,9 @@ func (s *Server) Run() error {
 	// Handle graceful shutdown
 	go s.handleShutdown()
 
-	log.Printf("Concord server starting on %s", addr)
-	log.Printf("WebSocket endpoint: ws://%s/ws", addr)
-	log.Printf("API endpoint: http://%s/api", addr)
+	Logger.Info("Concord server starting", "address", addr)
+	Logger.Debug("WebSocket endpoint ready", "endpoint", "ws://"+addr+"/ws")
+	Logger.Debug("API endpoint ready", "endpoint", "http://"+addr+"/api")
 
 	if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
@@ -130,7 +169,7 @@ func (s *Server) handleShutdown() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
-	log.Println("Shutting down server...")
+	Logger.Warn("Shutting down server...")
 
 	// Create a deadline for shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -138,22 +177,181 @@ func (s *Server) handleShutdown() {
 
 	// Shutdown HTTP server
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		Logger.Error("HTTP server shutdown error", "error", err)
 	}
 
 	// Close database
 	if err := s.db.Close(); err != nil {
-		log.Printf("Database close error: %v", err)
+		DBLog.Error("Database close error", "error", err)
 	}
 
-	log.Println("Server stopped")
+	Logger.Info("Server stopped")
+}
+
+// runCleanupTasks periodically cleans up expired timeouts and mutes
+func (s *Server) runCleanupTasks() {
+	ticker := time.NewTicker(1 * time.Minute) // Run every minute
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Cleanup expired timeouts and send expiry notifications
+		expiredTimeouts, err := s.db.CleanupExpiredTimeouts()
+		if err != nil {
+			DBLog.Error("Failed to cleanup expired timeouts", "error", err)
+		}
+
+		// For each expired timeout, send notification to the channel where it was issued
+		for _, entry := range expiredTimeouts {
+			user, err := s.db.GetUserByID(entry.UserID)
+			if err != nil {
+				continue
+			}
+
+			// Send funny timeout expiry message to the channel where the timeout was issued
+			msg := getRandomMessage(timeoutExpiryMessages, user.Username)
+
+			// Create system message
+			systemMsg := &models.Message{
+				ID:        uuid.New(),
+				ChannelID: entry.ChannelID,
+				AuthorID:  uuid.Nil,
+				Content:   msg,
+				Type:      models.MessageTypeSystem,
+				CreatedAt: time.Now(),
+			}
+
+			if err := s.db.CreateMessage(systemMsg); err == nil {
+				// Broadcast the system message
+				payload := &protocol.SystemMessagePayload{
+					ChannelID: entry.ChannelID,
+					Content:   msg,
+					Timestamp: time.Now(),
+				}
+				s.hub.BroadcastToChannel(entry.ChannelID, protocol.EventSystemMessage, payload, nil)
+			}
+		}
+
+		// Cleanup expired mutes and auto-unmute users
+		unmutedUsers, err := s.db.CleanupExpiredMutes()
+		if err != nil {
+			DBLog.Error("Failed to cleanup expired mutes", "error", err)
+			continue
+		}
+
+		// For each unmuted user, update their mute state and send notification
+		for _, entry := range unmutedUsers {
+			// Update mute state in server_members table
+			if err := s.db.SetMemberMuted(entry.ServerID, entry.UserID, false); err != nil {
+				DBLog.Error("Failed to unmute user", "user_id", entry.UserID, "error", err)
+				continue
+			}
+
+			// Send system message about auto-unmute to the channel where the mute was issued
+			user, err := s.db.GetUserByID(entry.UserID)
+			if err != nil {
+				continue
+			}
+
+			msg := fmt.Sprintf("🔊 %s has been automatically unmuted (mute timer expired).", user.Username)
+
+			// Create system message
+			systemMsg := &models.Message{
+				ID:        uuid.New(),
+				ChannelID: entry.ChannelID,
+				AuthorID:  uuid.Nil,
+				Content:   msg,
+				Type:      models.MessageTypeSystem,
+				CreatedAt: time.Now(),
+			}
+
+			if err := s.db.CreateMessage(systemMsg); err == nil {
+				// Broadcast the system message
+				payload := &protocol.SystemMessagePayload{
+					ChannelID: entry.ChannelID,
+					Content:   msg,
+					Timestamp: time.Now(),
+				}
+				s.hub.BroadcastToChannel(entry.ChannelID, protocol.EventSystemMessage, payload, nil)
+			}
+
+			// Broadcast member update
+			s.handlers.broadcastMemberUpdate(entry.ServerID, entry.UserID)
+		}
+	}
+}
+
+// runMessagePruningTask periodically prunes old messages according to retention policies
+func (s *Server) runMessagePruningTask() {
+	interval := time.Duration(s.config.MessagePruning.IntervalHours) * time.Hour
+	if interval == 0 {
+		interval = 24 * time.Hour // Default to daily
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Run once on startup (after 5-minute delay to avoid startup churn)
+	time.Sleep(5 * time.Minute)
+	s.performAutomaticPruning()
+
+	for range ticker.C {
+		s.performAutomaticPruning()
+	}
+}
+
+// performAutomaticPruning executes message pruning across all servers
+func (s *Server) performAutomaticPruning() {
+	Logger.Info("Starting automatic message pruning")
+	start := time.Now()
+
+	// Get all servers (in a real multi-server setup, this would get all servers)
+	// For now, we'll just get the default server and process all its channels
+	servers, err := s.db.GetAllServers()
+	if err != nil {
+		DBLog.Error("Failed to get servers for pruning", "error", err)
+		return
+	}
+
+	totalDeleted := 0
+
+	for _, server := range servers {
+		results, err := s.db.PruneServerMessages(server.ID)
+		if err != nil {
+			DBLog.Error("Failed to prune server", "server_id", server.ID, "error", err)
+			continue
+		}
+
+		// Record history for each channel that had deletions
+		for channelID, stats := range results {
+			history := &models.MessagePruneHistory{
+				ID:              uuid.New(),
+				ServerID:        server.ID,
+				ChannelID:       &channelID,
+				MessagesDeleted: stats.TotalDeleted,
+				TimeBasedCount:  stats.TimeBasedDeleted,
+				CountBasedCount: stats.CountBasedDeleted,
+				TriggerType:     "automatic",
+				TriggeredBy:     nil,
+				ExecutedAt:      time.Now(),
+				DurationMs:      stats.DurationMs,
+			}
+			if err := s.db.RecordPruneHistory(history); err != nil {
+				DBLog.Error("Failed to record prune history", "error", err)
+			}
+			totalDeleted += stats.TotalDeleted
+		}
+	}
+
+	if totalDeleted > 0 {
+		Logger.Info("Automatic pruning completed", "messages_deleted", totalDeleted, "duration", time.Since(start))
+	}
 }
 
 // handleWebSocket handles WebSocket upgrade requests
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
+		ClientLog.Error("WebSocket upgrade failed", "error", err, "remote_addr", r.RemoteAddr)
 		return
 	}
 
@@ -199,37 +397,36 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Hash password
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		log.Printf("Failed to hash password: %v", err)
+		AuthLog.Error("Failed to hash password", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	// Create user
 	user := models.NewUser(req.Username, req.Email)
-	log.Printf("Creating user: ID=%s, Username=%s, Email=%s, Discriminator=%s",
-		user.ID, user.Username, user.Email, user.Discriminator)
+	AuthLog.Info("Creating user", "user_id", user.ID, "username", user.Username, "email", user.Email, "discriminator", user.Discriminator)
 
 	if err := s.db.CreateUser(user, string(passwordHash)); err != nil {
-		log.Printf("Failed to create user: %v", err)
+		AuthLog.Error("Failed to create user", "error", err, "username", req.Username, "email", req.Email)
 		http.Error(w, "Failed to create user (email or username may already exist)", http.StatusConflict)
 		return
 	}
 
-	log.Printf("User created successfully: ID=%s, Username=%s#%s", user.ID, user.Username, user.Discriminator)
+	AuthLog.Info("User created successfully", "user_id", user.ID, "username", user.Username, "discriminator", user.Discriminator)
 
 	// Verify user was created by trying to retrieve it
 	retrievedUser, err := s.db.GetUserByID(user.ID)
 	if err != nil {
-		log.Printf("ERROR: User was created but cannot be retrieved: %v", err)
+		AuthLog.Error("User was created but cannot be retrieved", "user_id", user.ID, "error", err)
 		http.Error(w, "Internal server error: user created but not retrievable", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("User retrieval verified: ID=%s, Username=%s", retrievedUser.ID, retrievedUser.Username)
+	AuthLog.Debug("User retrieval verified", "user_id", retrievedUser.ID, "username", retrievedUser.Username)
 
 	// Add user to default server
-	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer()
+	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer(s.config.ServerName)
 	if err != nil {
-		log.Printf("Failed to get default server: %v", err)
+		DBLog.Error("Failed to get default server", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -243,38 +440,38 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		IsDeafened: false,
 	}
 	if err := s.db.AddServerMember(member); err != nil {
-		log.Printf("Failed to add user to default server: %v", err)
+		DBLog.Error("Failed to add user to default server", "user_id", user.ID, "server_id", defaultServer.ID, "error", err)
 		// Don't fail registration, just log the error
 	} else {
-		log.Printf("User added to default server: ServerID=%s", defaultServer.ID)
+		DBLog.Info("User added to default server", "user_id", user.ID, "server_id", defaultServer.ID)
 	}
 
 	// Assign @everyone role
 	if err := s.db.AddMemberRole(user.ID, defaultServer.ID, everyoneRole.ID); err != nil {
-		log.Printf("Failed to assign @everyone role: %v", err)
+		DBLog.Error("Failed to assign @everyone role", "user_id", user.ID, "role_id", everyoneRole.ID, "error", err)
 		// Don't fail registration, just log the error
 	} else {
-		log.Printf("User assigned @everyone role: RoleID=%s", everyoneRole.ID)
+		DBLog.Info("User assigned @everyone role", "user_id", user.ID, "role_id", everyoneRole.ID)
 	}
 
 	// Auto-grant admin to the very first real user
 	if count, err := s.db.CountRealUsers(); err == nil && count == 1 {
 		if err := s.db.EnsureAdminRole(user.Email); err != nil {
-			log.Printf("Failed to auto-grant admin to first user: %v", err)
+			AuthLog.Error("Failed to auto-grant admin to first user", "email", user.Email, "error", err)
 		} else {
-			log.Printf("First registrant %s granted Admin role", user.Email)
+			AuthLog.Info("First registrant granted Admin role", "email", user.Email)
 		}
 	}
 
 	// Generate auth token
 	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
 	if err != nil {
-		log.Printf("Failed to create auth token: %v", err)
+		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Auth token created for user ID=%s", user.ID)
+	AuthLog.Debug("Auth token created", "user_id", user.ID)
 
 	// Return response
 	w.Header().Set("Content-Type", "application/json")
@@ -302,14 +499,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up user
-	log.Printf("Login attempt for email: %s", req.Email)
+	AuthLog.Info("Login attempt", "email", req.Email)
 	user, passwordHash, err := s.db.GetUserByEmail(req.Email)
 	if err != nil {
-		log.Printf("Login failed - user not found for email %s: %v", req.Email, err)
+		AuthLog.Warn("Login failed - user not found", "email", req.Email, "error", err)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
-	log.Printf("User found for login: ID=%s, Username=%s#%s", user.ID, user.Username, user.Discriminator)
+	AuthLog.Debug("User found for login", "user_id", user.ID, "username", user.Username, "discriminator", user.Discriminator)
 
 	// Check password
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
@@ -318,9 +515,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ensure user is a member of the default server
-	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer()
+	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer(s.config.ServerName)
 	if err != nil {
-		log.Printf("Failed to get default server: %v", err)
+		DBLog.Error("Failed to get default server", "error", err)
 		// Don't fail login, continue
 	} else {
 		// Check if user is already a member
@@ -335,15 +532,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 				IsDeafened: false,
 			}
 			if err := s.db.AddServerMember(member); err != nil {
-				log.Printf("Failed to add user to default server on login: %v", err)
+				DBLog.Error("Failed to add user to default server on login", "user_id", user.ID, "server_id", defaultServer.ID, "error", err)
 			} else {
-				log.Printf("User added to default server on login: ServerID=%s", defaultServer.ID)
+				DBLog.Info("User added to default server on login", "user_id", user.ID, "server_id", defaultServer.ID)
 
 				// Assign @everyone role
 				if err := s.db.AddMemberRole(user.ID, defaultServer.ID, everyoneRole.ID); err != nil {
-					log.Printf("Failed to assign @everyone role on login: %v", err)
+					DBLog.Error("Failed to assign @everyone role on login", "user_id", user.ID, "role_id", everyoneRole.ID, "error", err)
 				} else {
-					log.Printf("User assigned @everyone role on login: RoleID=%s", everyoneRole.ID)
+					DBLog.Info("User assigned @everyone role on login", "user_id", user.ID, "role_id", everyoneRole.ID)
 				}
 			}
 		}
@@ -352,7 +549,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Generate auth token
 	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
 	if err != nil {
-		log.Printf("Failed to create auth token: %v", err)
+		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -372,4 +569,331 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"time":   time.Now().UTC(),
 	})
+}
+
+// SetDashboardMode enables or disables dashboard mode
+func (s *Server) SetDashboardMode(enabled bool) {
+	s.dashboardMode = enabled
+	if enabled {
+		s.dashboard = dashboard.NewModel()
+	}
+}
+
+// LogDashboardEvent logs an event to the dashboard activity feed
+func (s *Server) LogDashboardEvent(level, component, message string) {
+	if s.dashboardMode && s.dashboard != nil {
+		s.dashboard.AddActivityEvent(level, component, message)
+	}
+}
+
+// runWithDashboard starts the server with an interactive TUI dashboard
+func (s *Server) runWithDashboard() error {
+	// Start the hub
+	go s.hub.Run()
+
+	// Start cleanup tasks
+	go s.runCleanupTasks()
+
+	// Start message pruning task
+	if s.config.MessagePruning.Enabled {
+		go s.runMessagePruningTask()
+	}
+
+	// Set up HTTP routes
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", s.handleWebSocket)
+	mux.HandleFunc("/api/register", s.handleRegister)
+	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/health", s.handleHealth)
+
+	// Create HTTP server
+	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.httpServer = &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Start HTTP server in goroutine
+	go func() {
+		s.dashboard.AddActivityEvent("INFO", "SERVER", fmt.Sprintf("Server starting on %s", addr))
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.dashboard.AddActivityEvent("ERROR", "SERVER", fmt.Sprintf("HTTP server error: %v", err))
+		}
+	}()
+
+	// Start dashboard update loop
+	go s.updateDashboardLoop()
+
+	// Run Bubble Tea program (blocks until quit)
+	p := tea.NewProgram(s.dashboard, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		return fmt.Errorf("dashboard error: %w", err)
+	}
+
+	// Graceful shutdown after dashboard exits
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("server shutdown error: %w", err)
+	}
+
+	return nil
+}
+
+// updateDashboardLoop periodically updates dashboard stats
+func (s *Server) updateDashboardLoop() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if s.dashboard == nil {
+			return
+		}
+
+		// Update system stats
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+
+		s.hub.mu.RLock()
+		connectionCount := len(s.hub.clients)
+		s.hub.mu.RUnlock()
+
+		s.dashboard.UpdateSystemStats(
+			s.stats.GetUptime(),
+			m.Alloc/1024/1024, // Memory in MB
+			runtime.NumGoroutine(),
+			connectionCount,
+			s.config.MaxConnections,
+			s.stats.GetMessageRate(),
+		)
+
+		// Update client list
+		clientInfos := s.getConnectedClientInfo()
+		s.dashboard.UpdateClientList(clientInfos)
+
+		// Update message stats
+		totalMessages := s.stats.GetTotalMessages()
+		channelCounts := s.getChannelMessageCounts()
+		peakRate := s.stats.GetPeakRate()
+		avgRate := s.stats.GetMessageRate()
+
+		s.dashboard.UpdateMessageStats(
+			int(totalMessages),
+			channelCounts,
+			peakRate,
+			avgRate,
+		)
+	}
+}
+
+// getConnectedClientInfo returns information about connected clients
+func (s *Server) getConnectedClientInfo() []*dashboard.ClientInfo {
+	s.hub.mu.RLock()
+	defer s.hub.mu.RUnlock()
+
+	clients := make([]*dashboard.ClientInfo, 0, len(s.hub.clients))
+
+	for _, client := range s.hub.clients {
+		// Skip clients that haven't authenticated yet
+		if client == nil || client.User == nil {
+			continue
+		}
+
+		info := &dashboard.ClientInfo{
+			Username:      client.User.Username,
+			Discriminator: client.User.Discriminator,
+			Status:        string(client.User.Status),
+			Activity:      "Idle", // TODO: Detect typing activity
+			LastSeen:      client.User.LastSeenAt,
+		}
+
+		clients = append(clients, info)
+	}
+
+	return clients
+}
+
+// getChannelMessageCounts returns message counts per channel (24h window)
+func (s *Server) getChannelMessageCounts() map[string]int {
+	counts := make(map[string]int)
+
+	// Get all servers
+	servers, err := s.db.GetAllServers()
+	if err != nil {
+		return counts
+	}
+
+	// For each server, get channels and count messages
+	since := time.Now().Add(-24 * time.Hour)
+
+	for _, srv := range servers {
+		channels, err := s.db.GetServerChannels(srv.ID)
+		if err != nil {
+			continue
+		}
+
+		for _, ch := range channels {
+			if ch.Type != 0 { // Only text channels
+				continue
+			}
+
+			count, err := s.db.CountMessagesSince(ch.ID, since)
+			if err != nil {
+				continue
+			}
+
+			counts[ch.Name] = count
+		}
+	}
+
+	return counts
+}
+
+// runWithHybridDashboard starts the server with hybrid inline dashboard
+func (s *Server) runWithHybridDashboard() error {
+	// Clear screen and move to home
+	fmt.Print("\033[2J\033[H")
+
+	// Print banner
+	PrintBanner()
+
+	// Calculate dashboard start line (banner is 15 lines + 1 blank line before dashboard)
+	dashboardStartLine := 17
+
+	// Create hybrid renderer
+	renderer := dashboard.NewHybridRenderer()
+	renderer.SetDashboardStartLine(dashboardStartLine)
+
+	// Calculate scroll region start (after dashboard + blank lines + startup info)
+	scrollRegionStart := dashboardStartLine + 7 + 2 + 14 // Dashboard (7) + blanks (2) + startup (14)
+	renderer.SetScrollRegionStartLine(scrollRegionStart)
+
+	// Print initial dashboard
+	fmt.Println() // Blank line after banner
+	fmt.Println(renderer.RenderInitial())
+	fmt.Println() // Blank line after dashboard
+
+	// Set up HTTP routes (needed for startup info)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", s.handleWebSocket)
+	mux.HandleFunc("/api/register", s.handleRegister)
+	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/health", s.handleHealth)
+
+	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.httpServer = &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Print startup info BEFORE setting scroll region (so it stays fixed)
+	PrintStartupInfo(addr, s.config.DatabasePath)
+
+	// Set scroll region (using pre-calculated scrollRegionStart value)
+	fmt.Printf("\033[%d;r", scrollRegionStart) // Set scroll region from scrollRegionStart to bottom of screen
+
+	// Move cursor to scroll region start for logs
+	fmt.Printf("\033[%d;1H", scrollRegionStart)
+
+	// Now start all the background services
+	// Start the hub
+	go s.hub.Run()
+
+	// Start cleanup tasks
+	go s.runCleanupTasks()
+
+	// Start message pruning
+	if s.config.MessagePruning.Enabled {
+		go s.runMessagePruningTask()
+	}
+
+	// Start dashboard update loop
+	go s.updateHybridDashboardLoop(renderer)
+
+	// Handle graceful shutdown
+	go s.handleShutdown()
+
+	Logger.Info("Concord server starting", "address", addr)
+
+	// Start HTTP server (logs will scroll below dashboard)
+	if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
+		return fmt.Errorf("server error: %w", err)
+	}
+
+	return nil
+}
+
+// updateHybridDashboardLoop periodically updates the hybrid dashboard
+func (s *Server) updateHybridDashboardLoop(renderer *dashboard.HybridRenderer) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Update system stats
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+
+		s.hub.mu.RLock()
+		connectionCount := len(s.hub.clients)
+		s.hub.mu.RUnlock()
+
+		renderer.UpdateSystemStats(
+			s.stats.GetUptime(),
+			m.Alloc/1024/1024,
+			runtime.NumGoroutine(),
+			connectionCount,
+			s.config.MaxConnections,
+			s.stats.GetMessageRate(),
+		)
+
+		// Update client list
+		clientInfos := s.getConnectedClientInfo()
+		renderer.UpdateClientList(clientInfos)
+
+		// Update broadcast stats
+		channelCounts := s.getChannelMessageCounts()
+		renderer.UpdateBroadcastStats(channelCounts)
+
+		// Update activity summary
+		lastMsgTime := s.stats.GetLastMessageTime()
+		lastConnTime := s.stats.GetLastConnectionTime()
+		totalEvents := s.stats.GetTotalEvents()
+
+		lastMsgStr := "Never"
+		if !lastMsgTime.IsZero() {
+			lastMsgStr = formatTimeAgo(time.Since(lastMsgTime))
+		}
+
+		lastConnStr := "Never"
+		if !lastConnTime.IsZero() {
+			lastConnStr = formatTimeAgo(time.Since(lastConnTime))
+		}
+
+		renderer.UpdateActivitySummary(lastMsgStr, lastConnStr, totalEvents)
+
+		// Update dashboard in place
+		renderer.UpdateInPlace()
+	}
+}
+
+// formatTimeAgo formats a duration as a human-readable "time ago" string
+func formatTimeAgo(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	days := int(d.Hours()) / 24
+	return fmt.Sprintf("%dd", days)
 }

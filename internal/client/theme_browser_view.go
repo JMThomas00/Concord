@@ -6,7 +6,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/concord-chat/concord/internal/themes"
+	"github.com/google/uuid"
 )
 
 // ThemeBrowserState holds state for the interactive theme selection UI
@@ -15,6 +18,158 @@ type ThemeBrowserState struct {
 	SelectedIndex int           // cursor position in the list
 	PreviousTheme *themes.Theme // theme active before the browser was opened
 	PreviousView  View          // view to return to on Esc/Enter
+}
+
+// SettingsState holds state for the Settings view (app-level preferences)
+type SettingsState struct {
+	Categories       []string      // Category names (e.g., "Theme", "Notifications")
+	SelectedCategory int           // Cursor position in category list
+	FocusOnForm      bool          // Toggle: false = category list, true = form/content
+	PreviousView     View          // View to return to on Esc
+
+	// Theme category state (migrated from theme browser)
+	AvailableThemes  []string      // All theme slugs
+	SelectedTheme    int           // Cursor position in theme list
+	OriginalTheme    string        // Theme name before opening Settings (for Esc revert)
+
+	// Manage Servers category state
+	SelectedServer   int           // Cursor position in server list
+
+	// Server form state (add/edit server)
+	ServerFormOpen   bool
+	ServerFormState  *ServerFormState
+}
+
+// ServerFormState holds state for the add/edit server form
+type ServerFormState struct {
+	Mode        string // "add" or "edit"
+	ServerID    *uuid.UUID
+	ServerIndex int
+	NameInput   string
+	NameCursor  int
+	AddressInput string
+	AddressCursor int
+	PortInput   string
+	PortCursor  int
+	UseTLS      bool
+	FocusField  int // 0=name, 1=address, 2=port, 3=tls, 4=submit, 5=cancel
+	ErrorMsg    string
+}
+
+// ServerManagementState holds state for the Server Management view (server-level admin)
+type ServerManagementState struct {
+	Categories       []string      // Category names (e.g., "Roles", "Members", "Channels")
+	SelectedCategory int           // Cursor position in category list
+	FocusOnForm      bool          // Toggle: false = category list, true = form/content
+	PreviousView     View          // View to return to on Esc
+
+	// Roles category state
+	RoleList         []*models.Role
+	SelectedRole     int
+
+	// Role creation/edit modal state
+	RoleFormOpen     bool
+	RoleFormState    *RoleFormState
+
+	// Role delete confirmation dialog
+	DeleteConfirmOpen    bool
+	DeleteConfirmRole    *models.Role
+	DeleteConfirmChannel *models.Channel
+
+	// Permissions editor state (full-page modal)
+	PermissionsEditorOpen bool         // Is permissions editor open?
+	PermissionsEditorRole *models.Role // Which role's permissions are being edited
+	PermSelectedIndex     int          // Cursor position in permissions list
+	PermScrollOffset      int          // Scroll offset for long list
+	PermModifiedBits      uint64       // Modified permission bitfield (for previewing changes)
+
+	// Members category state
+	MemberList       []*MemberDisplay
+	SelectedMember   int
+	FilterRole       string             // "" = all roles, or role name
+	FilterOnline     string             // "all", "online", "offline"
+	SearchQuery      string
+	SortBy           string             // "username", "joined", "role"
+	BulkSelectMode   bool
+	BulkSelected     map[uuid.UUID]bool // Selected member user IDs
+
+	// Member filter panel UI
+	FilterPanelOpen   bool
+	FilterPanelFocus  int // 0=role, 1=status, 2=sort
+
+	// Member search input
+	SearchInputOpen   bool
+	SearchInputValue  string
+	SearchInputCursor int
+
+	// Channels category state
+	ChannelList         []*models.Channel
+	SelectedChannel     int
+	ChannelFormOpen     bool
+	ChannelFormState    *ChannelFormState
+	MoveDialogOpen      bool
+	MoveDialogState     *MoveDialogState
+
+	// Messages category state
+	RetentionPolicy      *models.MessageRetentionPolicy
+	RetentionFormState   *RetentionFormState
+	PruneConfirmOpen     bool
+	PruneResultsOpen     bool
+	PruneResults         *protocol.MessagesPrunedPayload
+	ChannelOverrides     []*models.MessageRetentionPolicy
+	SelectedOverride     int
+}
+
+// RoleFormState holds state for the role creation/edit modal
+type RoleFormState struct {
+	Mode          string      // "create" or "edit"
+	EditingRoleID *uuid.UUID  // Role being edited (nil for create)
+	NameInput     string
+	NameCursor    int
+	PresetIndex   int    // 0=Text, 1=Moderator, 2=Admin, 3=Custom
+	ColorIndex    int    // 0=Gold, 1=Blue, 2=Red, 3=Green, 4=Purple
+	IsHoisted        bool
+	IsMentionable    bool
+	DisplayOrder     string // Numeric input field
+	DisplayOrderCursor int
+	FocusField       int    // 0=name, 1=preset, 2=color, 3=hoisted, 4=mentionable, 5=displayorder, 6=submit, 7=cancel
+	ErrorMsg         string
+
+	// Permissions editor state
+	PermissionsEditorOpen bool   // Is permissions editor modal open?
+	CustomPermissions     uint64 // Custom permission bitfield
+	PermSelectedIndex     int    // Cursor position in permissions list
+	PermScrollOffset      int    // Scroll offset for long list
+}
+
+// ChannelFormState holds state for channel/category creation/editing
+type ChannelFormState struct {
+	Mode              string      // "create" or "edit"
+	EditingChannelID  *uuid.UUID  // Channel being edited (nil for create)
+	NameInput         string
+	NameCursor        int
+	TypeIndex         int         // 0=Text Channel, 1=Category
+	CategoryID        *uuid.UUID  // Pre-filled based on selection
+	FocusField        int         // 0=name, 1=type, 2=submit, 3=cancel
+	ErrorMsg          string
+}
+
+// MoveDialogState holds state for the move channel dialog
+type MoveDialogState struct {
+	Channel         *models.Channel
+	CategoryList    []*models.Channel // Categories only
+	SelectedIndex   int
+}
+
+// RetentionFormState holds state for the retention policy editor
+type RetentionFormState struct {
+	Mode                    string      // "server" or "channel"
+	ChannelID               *uuid.UUID  // nil = server default
+	TimeRetentionDays       string
+	SystemTimeRetentionDays string
+	MaxMessageCount         string
+	FocusField              int         // 0=time, 1=system_time, 2=count, 3=save, 4=cancel
+	CursorPos               int
 }
 
 // openThemeBrowser transitions the app into the theme browser.

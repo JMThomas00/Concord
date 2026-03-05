@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"sync"
 	"time"
 
@@ -91,14 +90,14 @@ func (c *Client) ReadPump() {
 		_, data, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v", err)
+				ClientLog.Error("WebSocket error", "user_id", c.UserID, "error", err)
 			}
 			break
 		}
 
 		var msg protocol.Message
 		if err := json.Unmarshal(data, &msg); err != nil {
-			log.Printf("Failed to parse message: %v", err)
+			ClientLog.Error("Failed to parse message", "user_id", c.UserID, "error", err)
 			c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid message format")
 			continue
 		}
@@ -127,12 +126,12 @@ func (c *Client) WritePump() {
 
 			data, err := json.Marshal(msg)
 			if err != nil {
-				log.Printf("Failed to marshal message: %v", err)
+				ClientLog.Error("Failed to marshal message", "user_id", c.UserID, "op", msg.Op, "error", err)
 				continue
 			}
 
 			if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				log.Printf("Failed to write message: %v", err)
+				ClientLog.Error("Failed to write message", "user_id", c.UserID, "error", err)
 				return
 			}
 
@@ -153,7 +152,7 @@ func (c *Client) SendHello() {
 
 	msg, err := protocol.NewMessage(protocol.OpHello, payload)
 	if err != nil {
-		log.Printf("Failed to create hello message: %v", err)
+		ClientLog.Error("Failed to create hello message", "error", err)
 		return
 	}
 
@@ -234,13 +233,83 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleMuteMember(c, msg)
 		})
 
+	case protocol.OpTimeoutMember:
+		c.requireAuth(func() {
+			c.handlers.HandleTimeoutMember(c, msg)
+		})
+
+	case protocol.OpUnbanMember:
+		c.requireAuth(func() {
+			c.handlers.HandleUnbanMember(c, msg)
+		})
+
+	case protocol.OpCreateRole:
+		c.requireAuth(func() {
+			c.handlers.HandleCreateRole(c, msg)
+		})
+
+	case protocol.OpUpdateRole:
+		c.requireAuth(func() {
+			c.handlers.HandleUpdateRole(c, msg)
+		})
+
+	case protocol.OpDeleteRole:
+		c.requireAuth(func() {
+			c.handlers.HandleDeleteRole(c, msg)
+		})
+
 	case protocol.OpWhisper:
 		c.requireAuth(func() {
 			c.handlers.HandleWhisper(c, msg)
 		})
 
+	case protocol.OpPinMessage:
+		c.requireAuth(func() {
+			c.handlers.HandlePinMessage(c, msg)
+		})
+
+	case protocol.OpUnpinMessage:
+		c.requireAuth(func() {
+			c.handlers.HandleUnpinMessage(c, msg)
+		})
+
+	case protocol.OpGetRetentionPolicy:
+		c.requireAuth(func() {
+			c.handlers.HandleGetRetentionPolicy(c, msg)
+		})
+
+	case protocol.OpSetRetentionPolicy:
+		c.requireAuth(func() {
+			c.handlers.HandleSetRetentionPolicy(c, msg)
+		})
+
+	case protocol.OpDeleteRetentionPolicy:
+		c.requireAuth(func() {
+			c.handlers.HandleDeleteRetentionPolicy(c, msg)
+		})
+
+	case protocol.OpPruneMessages:
+		c.requireAuth(func() {
+			c.handlers.HandlePruneMessages(c, msg)
+		})
+
+	case protocol.OpAssignTitle:
+		c.requireAuth(func() {
+			c.handlers.HandleAssignTitle(c, msg)
+		})
+
+	case protocol.OpEditMessage:
+		c.requireAuth(func() {
+			c.handlers.HandleEditMessage(c, msg)
+		})
+
+	case protocol.OpDeleteMessage:
+		c.requireAuth(func() {
+			c.handlers.HandleDeleteMessage(c, msg)
+		})
+
 	default:
-		log.Printf("Unknown opcode: %d", msg.Op)
+		ClientLog.Warn("Unknown opcode", "user_id", c.UserID, "opcode", msg.Op)
 		c.sendError(protocol.ErrorCodeUnknown, "Unknown operation")
 	}
 }
@@ -264,9 +333,26 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 	// Authenticate the user
 	user, serverIDs, err := c.handlers.Authenticate(payload.Token)
 	if err != nil {
-		log.Printf("Authentication failed: %v", err)
+		AuthLog.Warn("Authentication failed", "error", err)
 		c.sendInvalidSession("Authentication failed")
 		return
+	}
+
+	// Check for bans and timeouts on each server
+	for _, serverID := range serverIDs {
+		// Check for permanent ban
+		isBanned, _ := c.handlers.db.IsBanned(serverID, user.ID)
+		if isBanned {
+			c.sendInvalidSession("You are banned from this server")
+			return
+		}
+
+		// Check for active timeout
+		isTimedOut, _ := c.handlers.db.IsTimedOut(serverID, user.ID)
+		if isTimedOut {
+			c.sendInvalidSession("You are currently timed out from this server")
+			return
+		}
 	}
 
 	// Set client state
@@ -278,6 +364,9 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 
 	// Register with hub
 	c.hub.register <- c
+
+	// Record connection in stats tracker
+	c.handlers.stats.RecordConnection()
 
 	// Update user status to online
 	user.SetOnline()
@@ -293,7 +382,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
 	if err != nil {
-		log.Printf("Failed to create ready message: %v", err)
+		ClientLog.Error("Failed to create ready message", "user_id", user.ID, "error", err)
 		return
 	}
 
@@ -330,13 +419,12 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		seq := int64(i + 1)
 		serverCreateMsg, err := protocol.NewDispatch(protocol.EventServerCreate, seq, serverCreatePayload)
 		if err != nil {
-			log.Printf("Failed to create SERVER_CREATE message: %v", err)
+			ClientLog.Error("Failed to create SERVER_CREATE message", "server_id", server.ID, "user_id", user.ID, "error", err)
 			continue
 		}
 
 		c.send <- serverCreateMsg
-		log.Printf("Sent SERVER_CREATE for server %s with %d channels, %d members, %d roles, %d users (auto-joined %d channels)",
-			server.Name, len(channels), len(members), len(roles), len(users), len(channels))
+		ClientLog.Info("Sent SERVER_CREATE", "server_name", server.Name, "channels", len(channels), "members", len(members), "roles", len(roles), "users", len(users), "auto_joined_channels", len(channels))
 
 		// Broadcast SERVER_MEMBER_ADD to all OTHER clients already in this server so
 		// their members panels update in real time without needing to reconnect.
@@ -355,7 +443,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 				User:     user,
 			}
 			if err := c.hub.BroadcastToServer(server.ID, protocol.EventServerMemberAdd, memberAddPayload, &user.ID); err != nil {
-				log.Printf("Failed to broadcast SERVER_MEMBER_ADD for server %s: %v", server.Name, err)
+				HubLog.Error("Failed to broadcast SERVER_MEMBER_ADD", "server_name", server.Name, "user_id", user.ID, "error", err)
 			}
 		}
 	}
@@ -363,7 +451,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 	// Broadcast presence update to all servers
 	c.hub.BroadcastPresenceUpdate(user, serverIDs)
 
-	log.Printf("User authenticated: %s (%s)", user.Username, user.ID)
+	AuthLog.Info("User authenticated successfully", "username", user.Username, "user_id", user.ID, "server_count", len(serverIDs))
 }
 
 // handleHeartbeat processes heartbeat messages
@@ -417,7 +505,7 @@ func (c *Client) sendError(code int, message string) {
 	select {
 	case c.send <- msg:
 	default:
-		log.Printf("Failed to send error, buffer full")
+		ClientLog.Warn("Failed to send error, buffer full", "user_id", c.UserID, "error_code", code)
 	}
 }
 
@@ -443,7 +531,7 @@ func (c *Client) Send(msg *protocol.Message) {
 	select {
 	case c.send <- msg:
 	default:
-		log.Printf("Client send buffer full, dropping message")
+		ClientLog.Warn("Client send buffer full, dropping message", "user_id", c.UserID, "op", msg.Op)
 	}
 }
 

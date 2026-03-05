@@ -5,7 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,13 +20,15 @@ type Handlers struct {
 	db            *database.DB
 	hub           *Hub
 	typingManager *TypingManager
+	stats         *StatsTracker
 }
 
 // NewHandlers creates a new Handlers instance
-func NewHandlers(db *database.DB, hub *Hub) *Handlers {
+func NewHandlers(db *database.DB, hub *Hub, stats *StatsTracker) *Handlers {
 	h := &Handlers{
-		db:  db,
-		hub: hub,
+		db:    db,
+		hub:   hub,
+		stats: stats,
 	}
 	h.typingManager = NewTypingManager(hub)
 	return h
@@ -35,21 +38,21 @@ func NewHandlers(db *database.DB, hub *Hub) *Handlers {
 func (h *Handlers) Authenticate(token string) (*models.User, []uuid.UUID, error) {
 	// Hash the token to look up the session
 	tokenHash := hashToken(token)
-	log.Printf("Authenticating token (first 8 chars): %s..., hash: %s", token[:min(8, len(token))], tokenHash[:16])
+	AuthLog.Debug("Authenticating token", "token_prefix", token[:min(8, len(token))], "hash_prefix", tokenHash[:16])
 
 	userID, err := h.db.GetSessionByToken(tokenHash)
 	if err != nil {
-		log.Printf("Session not found for token hash: %s, error: %v", tokenHash[:16], err)
+		AuthLog.Warn("Session not found", "hash_prefix", tokenHash[:16], "error", err)
 		return nil, nil, errors.New("invalid or expired token")
 	}
-	log.Printf("Session found for user ID: %s", userID)
+	AuthLog.Debug("Session found", "user_id", userID)
 
 	user, err := h.db.GetUserByID(userID)
 	if err != nil {
-		log.Printf("User not found for ID %s: %v", userID, err)
+		AuthLog.Error("User not found", "user_id", userID, "error", err)
 		return nil, nil, errors.New("user not found")
 	}
-	log.Printf("User authenticated: ID=%s, Username=%s#%s", user.ID, user.Username, user.Discriminator)
+	AuthLog.Info("User authenticated", "user_id", user.ID, "username", user.Username, "discriminator", user.Discriminator)
 
 	// Get user's server memberships
 	servers, err := h.db.GetUserServers(userID)
@@ -150,9 +153,22 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		newMsg.ReplyToID = payload.ReplyToID
 	}
 
+	// Check @everyone permission
+	if newMsg.MentionEveryone {
+		// Get channel to determine server ID
+		channel, err := h.db.GetChannelByID(payload.ChannelID)
+		if err == nil && channel.ServerID != uuid.Nil {
+			// Check if user has permission to mention everyone
+			if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionMentionEveryone); err != nil {
+				c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to mention @everyone")
+				return
+			}
+		}
+	}
+
 	// Save to database
 	if err := h.db.CreateMessage(newMsg); err != nil {
-		log.Printf("Failed to save message: %v", err)
+		MsgLog.Error("Failed to save message", "message_id", newMsg.ID, "channel_id", payload.ChannelID, "error", err)
 		c.sendError(protocol.ErrorCodeServerError, "Failed to save message")
 		return
 	}
@@ -174,7 +190,12 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 	// Broadcast to channel
 	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageCreate, responsePayload, nil)
 
-	log.Printf("Message sent: channel=%s, author=%s", payload.ChannelID, c.User.Username)
+	// Record message stats
+	if h.stats != nil {
+		h.stats.RecordMessage()
+	}
+
+	MsgLog.Info("Message sent", "channel_id", payload.ChannelID, "author", c.User.Username, "message_id", newMsg.ID)
 }
 
 // HandleTypingStart processes a typing indicator
@@ -205,7 +226,7 @@ func (h *Handlers) HandlePresenceUpdate(c *Client, msg *protocol.Message) {
 
 	// Save to database
 	if err := h.UpdateUserStatus(c.User); err != nil {
-		log.Printf("Failed to update user status: %v", err)
+		DBLog.Error("Failed to update user status", "user_id", c.User.ID, "status", payload.Status, "error", err)
 		c.sendError(protocol.ErrorCodeServerError, "Failed to update status")
 		return
 	}
@@ -248,19 +269,19 @@ func (h *Handlers) HandleRequestGuild(c *Client, msg *protocol.Message) {
 	// Get channels
 	channels, err := h.db.GetServerChannels(payload.ServerID)
 	if err != nil {
-		log.Printf("Failed to get channels: %v", err)
+		DBLog.Error("Failed to get channels", "server_id", payload.ServerID, "error", err)
 	}
 
 	// Get roles
 	roles, err := h.db.GetServerRoles(payload.ServerID)
 	if err != nil {
-		log.Printf("Failed to get roles: %v", err)
+		DBLog.Error("Failed to get roles", "server_id", payload.ServerID, "error", err)
 	}
 
 	// Get members
 	members, err := h.db.GetServerMembers(payload.ServerID)
 	if err != nil {
-		log.Printf("Failed to get members: %v", err)
+		DBLog.Error("Failed to get members", "server_id", payload.ServerID, "error", err)
 	}
 
 	// Send server create event with full data
@@ -320,6 +341,11 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 
 	// Set optional fields
 	if req.CategoryID != nil {
+		// Categories cannot have a parent category - reject the request
+		if channel.Type == models.ChannelTypeCategory && *req.CategoryID != uuid.Nil {
+			c.sendError(protocol.ErrorCodeInvalidPayload, "Channel groups cannot be nested inside other channel groups")
+			return
+		}
 		channel.CategoryID = *req.CategoryID
 	}
 	channel.Position = req.Position
@@ -335,7 +361,7 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 	for _, userID := range onlineUsers {
 		h.hub.JoinChannel(userID, channel.ID)
 	}
-	log.Printf("Auto-joined %d users to new channel %s", len(onlineUsers), channel.Name)
+	HubLog.Info("Auto-joined users to new channel", "user_count", len(onlineUsers), "channel_name", channel.Name, "channel_id", channel.ID)
 
 	// Broadcast to all server members
 	payload := protocol.ChannelCreatePayload{Channel: channel}
@@ -378,10 +404,19 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 		channel.Name = *req.Name
 	}
 	if req.CategoryID != nil {
+		// Safety check: categories cannot have a parent category
+		if channel.Type == models.ChannelTypeCategory && *req.CategoryID != uuid.Nil {
+			c.sendError(protocol.ErrorCodeInvalidPayload, "Channel groups cannot be nested")
+			return
+		}
 		channel.CategoryID = *req.CategoryID
 	}
 	if req.Position != nil {
 		channel.Position = *req.Position
+	}
+	if req.SortOrder != nil {
+		channel.SortOrder = *req.SortOrder
+		channel.Position = *req.SortOrder // Keep in sync
 	}
 
 	if err := h.db.UpdateChannel(channel); err != nil {
@@ -420,12 +455,32 @@ func (h *Handlers) HandleDeleteChannel(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	// If deleting a category, get children first (before DB delete removes them)
+	var childIDs []uuid.UUID
+	if channel.Type == models.ChannelTypeCategory {
+		childIDs, err = h.db.GetChildChannelIDs(req.ChannelID)
+		if err != nil {
+			DBLog.Warn("Could not fetch child channels for category", "category_id", req.ChannelID, "error", err)
+			// Don't fail - the DB cascade will still handle deletion
+		}
+	}
+
 	if err := h.db.DeleteChannel(req.ChannelID); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to delete channel")
 		return
 	}
 
-	// Broadcast to all server members
+	// Broadcast delete events for child channels first
+	for _, childID := range childIDs {
+		childPayload := protocol.ChannelDeletePayload{
+			ChannelID: childID,
+			ServerID:  req.ServerID,
+			Type:      models.ChannelTypeText, // Children are never categories (after migration)
+		}
+		h.hub.BroadcastToServer(req.ServerID, protocol.EventChannelDelete, childPayload, nil)
+	}
+
+	// Broadcast delete event for the category itself
 	payload := protocol.ChannelDeletePayload{
 		ChannelID: req.ChannelID,
 		ServerID:  req.ServerID,
@@ -447,58 +502,73 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 		req.Limit = 200
 	}
 
-	log.Printf("HandleRequestMessages: user=%s, channel=%s, limit=%d", c.UserID, req.ChannelID, req.Limit)
+	MsgLog.Debug("Requesting messages", "user_id", c.UserID, "channel_id", req.ChannelID, "limit", req.Limit)
 
-	// Get messages from database
-	messages, err := h.db.GetChannelMessages(req.ChannelID, req.Limit, nil)
+	// Get messages from database (filtered by user for whispers)
+	messages, err := h.db.GetChannelMessages(req.ChannelID, req.Limit, nil, c.UserID)
 	if err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to retrieve messages")
-		log.Printf("Failed to get channel messages: %v", err)
+		MsgLog.Error("Failed to get channel messages", "channel_id", req.ChannelID, "error", err)
 		return
 	}
 
-	log.Printf("HandleRequestMessages: found %d messages for channel %s", len(messages), req.ChannelID)
+	MsgLog.Debug("Messages retrieved", "count", len(messages), "channel_id", req.ChannelID)
 
 	// Build MessageDisplay array with author info
 	var displayMessages []*protocol.MessageDisplay
 	for _, dbMsg := range messages {
-		// Get author from database
-		author, err := h.db.GetUserByID(dbMsg.AuthorID)
-		if err != nil {
-			log.Printf("Failed to get author for message %s: %v", dbMsg.ID, err)
-			continue
+		var author *models.User
+		var recipient *models.User
+
+		// System messages don't have authors
+		if dbMsg.Type == models.MessageTypeSystem {
+			author = nil // System message
+		} else {
+			// Get author from database for regular messages
+			var err error
+			author, err = h.db.GetUserByID(dbMsg.AuthorID)
+			if err != nil {
+				MsgLog.Error("Failed to get author for message", "message_id", dbMsg.ID, "author_id", dbMsg.AuthorID, "error", err)
+				continue
+			}
+		}
+
+		// For whispers, get recipient info
+		if dbMsg.IsWhisper && dbMsg.RecipientID != nil {
+			var err error
+			recipient, err = h.db.GetUserByID(*dbMsg.RecipientID)
+			if err != nil {
+				MsgLog.Warn("Failed to get recipient for whisper", "message_id", dbMsg.ID, "recipient_id", *dbMsg.RecipientID, "error", err)
+				// Continue anyway, whisper will just not show recipient name
+			}
 		}
 
 		displayMessages = append(displayMessages, &protocol.MessageDisplay{
-			Message: dbMsg,
-			Author:  author,
+			Message:   dbMsg,
+			Author:    author,
+			Recipient: recipient,
 		})
+	}
+
+	// Get all pinned messages for this channel (separate query to ensure we get them all)
+	pinnedMessages, err := h.db.GetPinnedMessages(req.ChannelID)
+	if err != nil {
+		MsgLog.Warn("Failed to get pinned messages", "channel_id", req.ChannelID, "error", err)
+		pinnedMessages = nil // Continue without pinned messages
 	}
 
 	// Send history via OpDispatch
 	payload := &protocol.MessageHistoryPayload{
-		ChannelID: req.ChannelID,
-		Messages:  displayMessages,
-		HasMore:   len(messages) == req.Limit, // Simple pagination check
+		ChannelID:      req.ChannelID,
+		Messages:       displayMessages,
+		HasMore:        len(messages) == req.Limit, // Simple pagination check
+		PinnedMessages: pinnedMessages,
 	}
 
 	h.hub.SendToUser(c.UserID, protocol.EventMessagesHistory, payload)
 }
 
 // HandleDeleteMessage handles message deletion
-func (h *Handlers) HandleDeleteMessage(c *Client, messageID, channelID uuid.UUID) error {
-	// TODO: Implement permission checking and message deletion
-	// For now, just broadcast the delete event
-
-	payload := &protocol.MessageDeletePayload{
-		ID:        messageID,
-		ChannelID: channelID,
-	}
-
-	h.hub.BroadcastToChannel(channelID, protocol.EventMessageDelete, payload, nil)
-	return nil
-}
-
 // HandleReaction handles adding/removing reactions
 func (h *Handlers) HandleReaction(c *Client, messageID, channelID uuid.UUID, emoji string, add bool) error {
 	payload := &protocol.ReactionPayload{
@@ -590,6 +660,35 @@ func (h *Handlers) HandleRoleRemove(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
 		return
 	}
+
+	// Check if removing admin role from last admin (unless --force is used)
+	if role.Permissions&models.PermissionAdministrator != 0 && !req.Force {
+		// Count how many members have admin permissions
+		members, err := h.db.GetServerMembers(req.ServerID)
+		if err != nil {
+			c.sendError(protocol.ErrorCodeServerError, "Failed to check admin count")
+			return
+		}
+		adminCount := 0
+		for _, member := range members {
+			memberRoles, err := h.db.GetMemberRoles(member.UserID, req.ServerID)
+			if err != nil {
+				continue
+			}
+			for _, r := range memberRoles {
+				if r.Permissions&models.PermissionAdministrator != 0 {
+					adminCount++
+					break
+				}
+			}
+		}
+		// If this is the last admin, block the removal
+		if adminCount <= 1 {
+			c.sendError(protocol.ErrorCodeForbidden, "⚠️ Cannot remove the last admin. Use '/role remove @user Admin --force' to override.")
+			return
+		}
+	}
+
 	if err := h.db.RemoveMemberRole(req.UserID, req.ServerID, role.ID); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to remove role")
 		return
@@ -613,6 +712,14 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeNotFound, "User not found")
 		return
 	}
+
+	// Send warning message to the channel where the command was issued
+	warningMsg := fmt.Sprintf("⚠️ %s will be kicked in 5 seconds...", target.Username)
+	h.sendSystemMessage(req.ChannelID, warningMsg)
+
+	// Wait 5 seconds
+	time.Sleep(5 * time.Second)
+
 	if err := h.db.RemoveServerMember(req.UserID, req.ServerID); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to kick member")
 		return
@@ -620,6 +727,11 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 	// Notify server of removal
 	removePayload := &protocol.ServerMemberRemovePayload{ServerID: req.ServerID, User: target}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberRemove, removePayload, nil)
+
+	// Send funny system message to the channel where the command was issued
+	kickMsg := getRandomMessage(kickMessages, target.Username)
+	h.sendSystemMessage(req.ChannelID, kickMsg)
+
 	// Force-close the kicked user's connection
 	h.hub.mu.RLock()
 	kicked, ok := h.hub.clients[req.UserID]
@@ -645,6 +757,14 @@ func (h *Handlers) HandleBanMember(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeNotFound, "User not found")
 		return
 	}
+
+	// Send warning message to the channel where the command was issued
+	warningMsg := fmt.Sprintf("⚠️ %s will be banned in 5 seconds...", target.Username)
+	h.sendSystemMessage(req.ChannelID, warningMsg)
+
+	// Wait 5 seconds
+	time.Sleep(5 * time.Second)
+
 	if err := h.db.AddBan(req.ServerID, req.UserID, c.UserID, req.Reason); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to ban member")
 		return
@@ -652,6 +772,11 @@ func (h *Handlers) HandleBanMember(c *Client, msg *protocol.Message) {
 	_ = h.db.RemoveServerMember(req.UserID, req.ServerID)
 	removePayload := &protocol.ServerMemberRemovePayload{ServerID: req.ServerID, User: target}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberRemove, removePayload, nil)
+
+	// Send funny ban message to the channel where the command was issued
+	banMsg := getRandomMessage(banMessages, target.Username)
+	h.sendSystemMessage(req.ChannelID, banMsg)
+
 	h.hub.mu.RLock()
 	banned, ok := h.hub.clients[req.UserID]
 	h.hub.mu.RUnlock()
@@ -675,7 +800,307 @@ func (h *Handlers) HandleMuteMember(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to update mute state")
 		return
 	}
+
+	// Send funny mute/unmute message to the channel where the command was issued
+	target, _ := h.db.GetUserByID(req.UserID)
+	if target != nil {
+		var muteMsg string
+		if req.Mute {
+			muteMsg = getRandomMessage(muteMessages, target.Username)
+		} else {
+			muteMsg = getRandomMessage(unmuteMessages, target.Username)
+		}
+		h.sendSystemMessage(req.ChannelID, muteMsg)
+	}
+
+	// If duration is specified, add timed mute
+	if req.Mute && req.Duration > 0 {
+		if err := h.db.AddMute(req.ServerID, req.UserID, req.ChannelID, c.UserID, req.Duration); err != nil {
+			DBLog.Error("Failed to add timed mute", "server_id", req.ServerID, "user_id", req.UserID, "duration", req.Duration, "error", err)
+		}
+	} else if !req.Mute {
+		// Remove any active timed mute when unmuting
+		_ = h.db.RemoveMute(req.ServerID, req.UserID)
+	}
+
 	h.broadcastMemberUpdate(req.ServerID, req.UserID)
+}
+
+// HandleTimeoutMember temporarily bans a member for X minutes (requires PermissionKickMembers).
+func (h *Handlers) HandleTimeoutMember(c *Client, msg *protocol.Message) {
+	var req protocol.TimeoutMemberRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid payload")
+		return
+	}
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionKickMembers); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+	target, err := h.db.GetUserByID(req.UserID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "User not found")
+		return
+	}
+
+	// Send warning message to the channel where the command was issued
+	warningMsg := fmt.Sprintf("⚠️ %s will be timed out in 5 seconds...", target.Username)
+	h.sendSystemMessage(req.ChannelID, warningMsg)
+
+	// Wait 5 seconds
+	time.Sleep(5 * time.Second)
+
+	// Add timeout to database
+	if err := h.db.AddTimeout(req.ServerID, req.UserID, req.ChannelID, c.UserID, req.Duration, req.Reason); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to add timeout")
+		return
+	}
+
+	// Remove from server
+	if err := h.db.RemoveServerMember(req.UserID, req.ServerID); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to remove member")
+		return
+	}
+
+	// Broadcast member removal
+	removePayload := &protocol.ServerMemberRemovePayload{ServerID: req.ServerID, User: target}
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberRemove, removePayload, nil)
+
+	// Send timeout message to the channel where the command was issued
+	timeoutMsg := getRandomMessage(timeoutMessages, target.Username) + fmt.Sprintf(" (%d minutes)", req.Duration)
+	h.sendSystemMessage(req.ChannelID, timeoutMsg)
+
+	// Force-close the connection
+	h.hub.mu.RLock()
+	timedOut, ok := h.hub.clients[req.UserID]
+	h.hub.mu.RUnlock()
+	if ok {
+		timedOut.conn.Close()
+	}
+}
+
+// HandleUnbanMember unbans a member from the server (requires PermissionBanMembers).
+func (h *Handlers) HandleUnbanMember(c *Client, msg *protocol.Message) {
+	var req protocol.UnbanMemberRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid payload")
+		return
+	}
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionBanMembers); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	// Find the banned user by username
+	target, err := h.db.GetBannedUserByUsername(req.ServerID, req.Username)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, fmt.Sprintf("No banned user found with username %s", req.Username))
+		return
+	}
+
+	// Remove the ban
+	if err := h.db.RemoveBan(req.ServerID, target.ID); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to remove ban")
+		return
+	}
+
+	// Send system message to the channel where the command was issued
+	unbanMsg := fmt.Sprintf("✅ %s has been unbanned. Welcome back!", target.Username)
+	h.sendSystemMessage(req.ChannelID, unbanMsg)
+}
+
+// HandleCreateRole handles role creation requests
+func (h *Handlers) HandleCreateRole(c *Client, msg *protocol.Message) {
+	var req protocol.CreateRoleRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid payload")
+		return
+	}
+
+	// Check permission: must have ManageRoles or be server owner
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageRoles); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	// Validate role name
+	if len(req.Name) < 1 || len(req.Name) > 32 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Role name must be 1-32 characters")
+		return
+	}
+
+	// Check if role name already exists (case-insensitive)
+	existingRoles, err := h.db.GetServerRoles(req.ServerID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to check existing roles")
+		return
+	}
+	for _, role := range existingRoles {
+		if role.Name == req.Name {
+			c.sendError(protocol.ErrorCodeInvalidPayload, fmt.Sprintf("Role %q already exists", req.Name))
+			return
+		}
+	}
+
+	// Calculate position (highest non-@everyone position + 10)
+	maxPosition := 0
+	for _, role := range existingRoles {
+		if !role.IsDefault && role.Position > maxPosition {
+			maxPosition = role.Position
+		}
+	}
+	position := maxPosition + 10
+
+	// Create role in database
+	role := &models.Role{
+		ID:            uuid.New(),
+		ServerID:      req.ServerID,
+		Name:          req.Name,
+		Color:         req.Color,
+		Permissions:   models.Permission(req.Permissions),
+		Position:      position,
+		DisplayOrder:  0, // Default
+		IsHoisted:     req.IsHoisted,
+		IsMentionable: req.IsMentionable,
+		IsDefault:     false,
+	}
+	if req.DisplayOrder != nil {
+		role.DisplayOrder = *req.DisplayOrder
+	}
+
+	if err := h.db.CreateRole(role); err != nil {
+		DBLog.Error("Failed to create role", "role_name", req.Name, "server_id", req.ServerID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to create role")
+		return
+	}
+
+	// Broadcast EventRoleCreate to all server members
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventRoleCreate, role, nil)
+
+	// Send system message to the channel where the command was issued
+	createMsg := fmt.Sprintf("✅ Role %q created", role.Name)
+	h.sendSystemMessage(req.ChannelID, createMsg)
+}
+
+// HandleUpdateRole updates an existing role
+func (h *Handlers) HandleUpdateRole(c *Client, msg *protocol.Message) {
+	var req protocol.UpdateRoleRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid payload")
+		return
+	}
+
+	// Check permission: must have ManageRoles or be server owner
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageRoles); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	// Get role from DB
+	role, err := h.db.GetRoleByID(req.RoleID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
+		return
+	}
+
+	// Verify role belongs to correct server
+	if role.ServerID != req.ServerID {
+		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
+		return
+	}
+
+	// Prevent editing @everyone
+	if role.IsDefault {
+		c.sendError(protocol.ErrorCodeForbidden, "Cannot edit @everyone role")
+		return
+	}
+
+	// Validate name
+	if len(req.Name) < 1 || len(req.Name) > 32 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Role name must be 1-32 characters")
+		return
+	}
+
+	// Check for duplicate name (excluding current role)
+	existingRoles, err := h.db.GetServerRoles(req.ServerID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to check existing roles")
+		return
+	}
+	for _, existingRole := range existingRoles {
+		if existingRole.Name == req.Name && existingRole.ID != req.RoleID {
+			c.sendError(protocol.ErrorCodeInvalidPayload, fmt.Sprintf("Role %q already exists", req.Name))
+			return
+		}
+	}
+
+	// Update role fields
+	role.Name = req.Name
+	role.Permissions = models.Permission(req.Permissions)
+	role.Color = req.Color
+	role.IsHoisted = req.IsHoisted
+	role.IsMentionable = req.IsMentionable
+	if req.DisplayOrder != nil {
+		role.DisplayOrder = *req.DisplayOrder
+	}
+
+	if err := h.db.UpdateRole(role); err != nil {
+		DBLog.Error("Failed to update role", "role_id", req.RoleID, "role_name", role.Name, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update role")
+		return
+	}
+
+	// Broadcast update
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventRoleUpdate, role, nil)
+
+	// Send system message
+	updateMsg := fmt.Sprintf("✅ Role %q updated", role.Name)
+	h.sendSystemMessage(req.ChannelID, updateMsg)
+}
+
+// HandleDeleteRole deletes a role
+func (h *Handlers) HandleDeleteRole(c *Client, msg *protocol.Message) {
+	var req protocol.DeleteRoleRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid payload")
+		return
+	}
+
+	// Check permission: must have ManageRoles or be server owner
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageRoles); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	// Get role for validation and system message
+	role, err := h.db.GetRoleByID(req.RoleID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
+		return
+	}
+
+	// Verify role belongs to correct server
+	if role.ServerID != req.ServerID {
+		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
+		return
+	}
+
+	// DeleteRole checks IsDefault internally
+	if err := h.db.DeleteRole(req.RoleID, req.ServerID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	// Broadcast deletion
+	deleteData := map[string]interface{}{
+		"server_id": req.ServerID,
+		"role_id":   req.RoleID,
+	}
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventRoleDelete, deleteData, nil)
+
+	// Send system message
+	deleteMsg := fmt.Sprintf("✅ Role %q deleted", role.Name)
+	h.sendSystemMessage(req.ChannelID, deleteMsg)
 }
 
 // HandleWhisper routes an ephemeral DM to a specific connected user.
@@ -690,20 +1115,264 @@ func (h *Handlers) HandleWhisper(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	dispatch := &protocol.WhisperCreatePayload{
-		FromUser:  c.User,
-		Content:   payload.Content,
-		Timestamp: time.Now(),
-	}
-
-	// Deliver to recipient; if offline, return error
+	// Check if recipient is online
 	if !h.hub.IsUserOnline(payload.TargetUserID) {
 		c.sendError(protocol.ErrorCodeNotFound, "User is not online")
 		return
 	}
+
+	// Create and save whisper message to database
+	whisperMsg := &models.Message{
+		ID:          uuid.New(),
+		ChannelID:   payload.ChannelID,
+		AuthorID:    c.UserID,
+		Content:     payload.Content,
+		Type:        models.MessageTypeDefault,
+		CreatedAt:   time.Now(),
+		IsWhisper:   true,
+		RecipientID: &payload.TargetUserID,
+	}
+
+	if err := h.db.CreateMessage(whisperMsg); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to save whisper")
+		MsgLog.Error("Failed to save whisper", "message_id", whisperMsg.ID, "sender_id", c.UserID, "recipient_id", payload.TargetUserID, "error", err)
+		return
+	}
+
+	// Get recipient user info
+	recipientUser, err := h.db.GetUserByID(payload.TargetUserID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Recipient user not found")
+		DBLog.Error("Failed to get recipient user", "recipient_id", payload.TargetUserID, "error", err)
+		return
+	}
+
+	dispatch := &protocol.WhisperCreatePayload{
+		FromUser:  c.User,
+		ToUser:    recipientUser,
+		ChannelID: payload.ChannelID,
+		Content:   payload.Content,
+		Timestamp: whisperMsg.CreatedAt,
+	}
+
+	// Deliver to recipient
 	_ = h.hub.SendToUser(payload.TargetUserID, protocol.EventWhisperCreate, dispatch)
 	// Echo to sender as well
 	_ = h.hub.SendToUser(c.UserID, protocol.EventWhisperCreate, dispatch)
+}
+
+// HandlePinMessage pins a message in a channel
+func (h *Handlers) HandlePinMessage(c *Client, msg *protocol.Message) {
+	var req protocol.PinMessageRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid pin request")
+		return
+	}
+
+	// Get the message to pin
+	message, err := h.db.GetMessage(req.MessageID)
+	if err != nil || message == nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Message not found")
+		return
+	}
+
+	// Verify channel matches
+	if message.ChannelID != req.ChannelID {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Channel ID mismatch")
+		return
+	}
+
+	// TODO: Add permission check for MANAGE_MESSAGES
+	// For now, allow anyone to pin
+
+	// Update database to set message as pinned
+	if err := h.db.SetMessagePinned(req.MessageID, true); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to pin message")
+		MsgLog.Error("Failed to pin message", "message_id", req.MessageID, "channel_id", req.ChannelID, "error", err)
+		return
+	}
+
+	// Update the message object to reflect pinned status
+	message.IsPinned = true
+
+	// Broadcast pin event to all users in the channel
+	payload := &protocol.MessagePinPayload{
+		ChannelID: req.ChannelID,
+		Message:   message,
+		PinnedBy:  c.User,
+		Timestamp: time.Now(),
+	}
+
+	h.hub.BroadcastToChannel(req.ChannelID, protocol.EventMessagePin, payload, nil)
+}
+
+// HandleUnpinMessage unpins a message from a channel
+func (h *Handlers) HandleUnpinMessage(c *Client, msg *protocol.Message) {
+	var req protocol.UnpinMessageRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid unpin request")
+		return
+	}
+
+	// Get the message to unpin
+	message, err := h.db.GetMessage(req.MessageID)
+	if err != nil || message == nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Message not found")
+		return
+	}
+
+	// Verify channel matches
+	if message.ChannelID != req.ChannelID {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Channel ID mismatch")
+		return
+	}
+
+	// TODO: Add permission check for MANAGE_MESSAGES
+	// For now, allow anyone to unpin
+
+	// Update database to set message as unpinned
+	if err := h.db.SetMessagePinned(req.MessageID, false); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to unpin message")
+		MsgLog.Error("Failed to unpin message", "message_id", req.MessageID, "channel_id", req.ChannelID, "error", err)
+		return
+	}
+
+	// Update the message object to reflect unpinned status
+	message.IsPinned = false
+
+	// Broadcast unpin event to all users in the channel
+	payload := &protocol.MessagePinPayload{
+		ChannelID: req.ChannelID,
+		Message:   message,
+		PinnedBy:  c.User,
+		Timestamp: time.Now(),
+	}
+
+	h.hub.BroadcastToChannel(req.ChannelID, protocol.EventMessageUnpin, payload, nil)
+}
+
+// HandleEditMessage handles editing an existing message
+func (h *Handlers) HandleEditMessage(c *Client, msg *protocol.Message) {
+	var payload protocol.EditMessagePayload
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid edit message payload")
+		return
+	}
+
+	// Validate content
+	if len(payload.Content) == 0 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Message content cannot be empty")
+		return
+	}
+
+	if len(payload.Content) > 2000 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Message content too long (max 2000 characters)")
+		return
+	}
+
+	// Get original message
+	origMsg, err := h.db.GetMessage(payload.MessageID)
+	if err != nil || origMsg == nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Message not found")
+		return
+	}
+
+	// Permission check: user can only edit their own messages, or admin/mod with PermissionManageMessages
+	if origMsg.AuthorID != c.UserID {
+		// Check if user has PermissionManageMessages
+		channel, err := h.db.GetChannelByID(payload.ChannelID)
+		if err != nil || channel.ServerID == uuid.Nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You can only edit your own messages")
+			return
+		}
+
+		if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionManageMessages); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You can only edit your own messages")
+			return
+		}
+	}
+
+	// Update message
+	origMsg.Content = payload.Content
+	origMsg.EditedAt = new(time.Time)
+	*origMsg.EditedAt = time.Now()
+
+	if err := h.db.UpdateMessage(origMsg); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update message")
+		MsgLog.Error("Failed to update message", "message_id", payload.MessageID, "error", err)
+		return
+	}
+
+	// Broadcast update event
+	updatePayload := &protocol.MessageUpdatePayload{
+		ID:        payload.MessageID,
+		ChannelID: payload.ChannelID,
+		Content:   payload.Content,
+		EditedAt:  origMsg.EditedAt,
+	}
+
+	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageUpdate, updatePayload, nil)
+}
+
+// HandleDeleteMessage handles deleting a message (soft-delete with permission check)
+func (h *Handlers) HandleDeleteMessage(c *Client, msg *protocol.Message) {
+	var payload protocol.DeleteMessagePayload
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid delete message payload")
+		return
+	}
+
+	// Get original message
+	origMsg, err := h.db.GetMessage(payload.MessageID)
+	if err != nil || origMsg == nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Message not found")
+		return
+	}
+
+	// Permission check
+	isOwn := origMsg.AuthorID == c.UserID
+	withinWindow := time.Since(origMsg.CreatedAt) < 24*time.Hour
+
+	if isOwn && !withinWindow {
+		// Check if user has PermissionManageMessages
+		channel, err := h.db.GetChannelByID(payload.ChannelID)
+		if err != nil || channel.ServerID == uuid.Nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You can only delete your own messages within 24 hours")
+			return
+		}
+
+		if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionManageMessages); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You can only delete your own messages within 24 hours")
+			return
+		}
+	} else if !isOwn {
+		// Check if user has PermissionManageMessages
+		channel, err := h.db.GetChannelByID(payload.ChannelID)
+		if err != nil || channel.ServerID == uuid.Nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to delete this message")
+			return
+		}
+
+		if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionManageMessages); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to delete this message")
+			return
+		}
+	}
+
+	// Soft-delete message
+	if err := h.db.SoftDeleteMessage(payload.MessageID, c.UserID); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to delete message")
+		MsgLog.Error("Failed to delete message", "message_id", payload.MessageID, "error", err)
+		return
+	}
+
+	// Broadcast delete event
+	deletePayload := &protocol.MessageDeletePayload{
+		ID:        payload.MessageID,
+		ChannelID: payload.ChannelID,
+	}
+
+	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageDelete, deletePayload, nil)
 }
 
 // broadcastMemberUpdate fetches updated member data and broadcasts EventServerMemberUpdate.
@@ -727,4 +1396,329 @@ func (h *Handlers) broadcastMemberUpdate(serverID, userID uuid.UUID) {
 		Roles:    roles,
 	}
 	h.hub.BroadcastToServer(serverID, protocol.EventServerMemberUpdate, payload, nil)
+}
+
+// Funny system message templates for moderation actions
+var (
+	muteMessages = []string{
+		"🔇 %s has been muted. Enjoy the silence!",
+		"🤐 %s's voice has been temporarily confiscated.",
+		"🙊 %s is now on a mandatory vacation from talking.",
+		"⛔ %s has been sentenced to quiet time.",
+		"🚫 %s discovered the 'speak less' achievement!",
+		"🔕 %s's keyboard privileges have been revoked.",
+		"😶 %s is taking an involuntary vow of silence.",
+		"🤫 %s has entered stealth mode (not by choice).",
+		"📴 %s's megaphone has been disabled.",
+		"🙈 %s is practicing the art of saying nothing.",
+		"⏸️ %s has been put on pause.",
+		"🎭 %s is now a mime (temporarily).",
+	}
+
+	unmuteMessages = []string{
+		"🔊 %s can speak again! Brace yourselves.",
+		"📢 %s's voice has been returned. Everyone hide.",
+		"🗣️ %s is back! The silence was nice while it lasted.",
+		"🎤 %s's ban on fun has been lifted.",
+		"✅ %s has rejoined the conversation. May the gods have mercy.",
+		"🔓 %s is unleashed. Ear plugs recommended.",
+		"🎉 %s can talk again! (Unfortunately)",
+		"🌟 %s's mute sentence has been served.",
+		"🔔 %s's voice is back from vacation.",
+		"📣 %s is free to resume their TED talk.",
+		"🎊 %s has been unmuted. Prepare for chaos.",
+		"💬 %s's typing privileges restored!",
+	}
+
+	kickMessages = []string{
+		"👢 %s has been kicked. They'll be back... probably.",
+		"🚪 %s was shown the exit. Don't let the door hit you!",
+		"✈️ %s has been yeeted from the server.",
+		"🌪️ %s was swept away by the ban hammer (lite edition).",
+		"🎪 %s left the chat (not voluntarily).",
+		"🏃 %s is speedrunning a server exit.",
+		"💨 %s vanished. Poof!",
+		"🎯 %s hit the eject button (with help).",
+		"🌊 %s was washed away.",
+		"⚡ %s has been disconnected from reality.",
+		"🎢 %s took the express lane out.",
+		"🚀 %s has left orbit.",
+		"🍃 %s was blown away by moderator wind.",
+	}
+
+	banMessages = []string{
+		"🔨 %s has been banned. Farewell, sweet chaos.",
+		"⛔ %s has been permanently archived.",
+		"🚫 %s's membership has expired (forever).",
+		"💀 %s has been sent to the shadow realm.",
+		"🗿 %s is now a legend (banned legends count, right?).",
+		"🌑 %s entered the void and won't be returning.",
+		"📛 %s has been blacklisted from existence here.",
+		"❌ %s discovered what 'consequences' means.",
+		"🏴‍☠️ %s walked the plank.",
+		"⚰️ %s's server adventure has concluded.",
+		"🔐 %s's access has been permanently revoked.",
+		"🎭 %s's final curtain call.",
+		"🌪️ %s was tornadoed into the ban dimension.",
+	}
+
+	timeoutMessages = []string{
+		"⏰ %s has been timed out. Time for some reflection.",
+		"⏸️ %s is taking a mandatory break.",
+		"🚨 %s has been sent to timeout. Think about what you did!",
+		"⌛ %s is in timeout. The clock is ticking...",
+		"🕐 %s has been temporarily evicted.",
+		"⏲️ %s is on a forced vacation.",
+		"🔄 %s needs a cooldown period.",
+		"⛔ %s's server privileges have been paused.",
+		"📵 %s is disconnected (temporarily).",
+		"🎮 %s has been put in the penalty box.",
+		"⚠️ %s is serving time.",
+		"🏖️ %s is on involuntary leave.",
+	}
+
+	timeoutExpiryMessages = []string{
+		"⏰ %s's timeout has expired. They're back!",
+		"🔓 %s has been released from timeout. Behave this time!",
+		"✅ %s's sentence is served. Welcome back!",
+		"⌛ %s's time is up. Second chances activated!",
+		"🎉 %s is no longer timed out. Play nice!",
+		"🔔 %s's timeout expired. Let's see how long this lasts...",
+		"🎊 %s is back from the penalty box!",
+		"🌟 %s's mandatory reflection period is over.",
+		"🔄 %s has returned from their involuntary vacation.",
+		"✨ %s's timeout ended. Everyone be nice... or else!",
+		"🕐 %s is back! The timeout gods have spoken.",
+		"🎭 %s's intermission is over. Back to the show!",
+		"🚪 %s has been let back in. Don't make us regret it!",
+	}
+)
+
+// sendSystemMessage broadcasts a system message to a channel
+func (h *Handlers) sendSystemMessage(channelID uuid.UUID, content string) {
+	// Create and save system message to database for persistence
+	msg := models.NewSystemMessage(channelID, content, models.MessageTypeSystem)
+	if err := h.db.CreateMessage(msg); err != nil {
+		MsgLog.Error("Failed to save system message", "channel_id", channelID, "error", err)
+		// Continue anyway to broadcast the message even if DB save fails
+	}
+
+	// Broadcast to all users in the channel
+	payload := &protocol.SystemMessagePayload{
+		ChannelID: channelID,
+		Content:   content,
+		Timestamp: msg.CreatedAt,
+	}
+	h.hub.BroadcastToChannel(channelID, protocol.EventSystemMessage, payload, nil)
+}
+
+// getRandomMessage returns a random message from the slice formatted with username
+func getRandomMessage(messages []string, username string) string {
+	if len(messages) == 0 {
+		return fmt.Sprintf("Moderation action performed on %s", username)
+	}
+	msg := messages[rand.Intn(len(messages))]
+	return fmt.Sprintf(msg, username)
+}
+
+// --- Message Retention Policy Handlers ---
+
+// HandleGetRetentionPolicy retrieves the effective retention policy for a channel or server
+func (h *Handlers) HandleGetRetentionPolicy(c *Client, msg *protocol.Message) {
+	var req protocol.GetRetentionPolicyRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request payload")
+		return
+	}
+
+	// Permission check: ManageMessages
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageMessages); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "Insufficient permissions")
+		return
+	}
+
+	// Get effective policy
+	var policy *models.MessageRetentionPolicy
+	var err error
+	if req.ChannelID != nil {
+		policy, err = h.db.GetRetentionPolicy(req.ServerID, *req.ChannelID)
+	} else {
+		policy, err = h.db.GetRetentionPolicyDirect(req.ServerID, nil)
+	}
+
+	if err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to retrieve retention policy")
+		return
+	}
+
+	// Send response (policy can be nil if not configured)
+	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy}
+	h.hub.SendToUser(c.UserID, protocol.EventRetentionPolicyUpdate, payload)
+}
+
+// HandleSetRetentionPolicy creates or updates a retention policy
+func (h *Handlers) HandleSetRetentionPolicy(c *Client, msg *protocol.Message) {
+	var req protocol.SetRetentionPolicyRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request payload")
+		return
+	}
+
+	// Permission check: ManageMessages
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageMessages); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "Insufficient permissions")
+		return
+	}
+
+	// Build/update policy
+	policy := models.NewRetentionPolicy(req.ServerID, c.UserID)
+	policy.ChannelID = req.ChannelID
+	policy.TimeRetentionDays = req.TimeRetentionDays
+	policy.SystemTimeRetentionDays = req.SystemTimeRetentionDays
+	policy.MaxMessageCount = req.MaxMessageCount
+	policy.UpdatedAt = time.Now()
+
+	if err := h.db.UpsertRetentionPolicy(policy); err != nil {
+		DBLog.Error("Failed to upsert retention policy", "server_id", req.ServerID, "channel_id", req.ChannelID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to save retention policy")
+		return
+	}
+
+	// Broadcast update to all users on this server
+	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy}
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventRetentionPolicyUpdate, payload, nil)
+}
+
+// HandleDeleteRetentionPolicy removes a channel-specific override
+func (h *Handlers) HandleDeleteRetentionPolicy(c *Client, msg *protocol.Message) {
+	var req protocol.DeleteRetentionPolicyRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request payload")
+		return
+	}
+
+	// Permission check: ManageMessages
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageMessages); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "Insufficient permissions")
+		return
+	}
+
+	if err := h.db.DeleteRetentionPolicy(req.ServerID, req.ChannelID); err != nil {
+		DBLog.Error("Failed to delete retention policy", "server_id", req.ServerID, "channel_id", req.ChannelID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to delete retention policy")
+		return
+	}
+
+	// Broadcast revert to server default
+	serverDefault, _ := h.db.GetRetentionPolicyDirect(req.ServerID, nil)
+	payload := &protocol.RetentionPolicyUpdatePayload{Policy: serverDefault}
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventRetentionPolicyUpdate, payload, nil)
+}
+
+// HandlePruneMessages executes manual message pruning
+func (h *Handlers) HandlePruneMessages(c *Client, msg *protocol.Message) {
+	var req protocol.PruneMessagesRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request payload")
+		return
+	}
+
+	// Permission check: Administrator required for manual pruning
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionAdministrator); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "Administrator permission required")
+		return
+	}
+
+	// Execute pruning
+	var results map[uuid.UUID]*models.PruneStats
+	var err error
+	if req.ChannelID != nil {
+		stats, pruneErr := h.db.PruneChannelMessages(req.ServerID, *req.ChannelID)
+		if pruneErr != nil {
+			err = pruneErr
+		} else {
+			results = map[uuid.UUID]*models.PruneStats{*req.ChannelID: stats}
+		}
+	} else {
+		results, err = h.db.PruneServerMessages(req.ServerID)
+	}
+
+	if err != nil {
+		DBLog.Error("Failed to prune messages", "server_id", req.ServerID, "channel_id", req.ChannelID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to prune messages")
+		return
+	}
+
+	// Record history for each channel
+	totalDeleted := 0
+	for channelID, stats := range results {
+		history := &models.MessagePruneHistory{
+			ID:              uuid.New(),
+			ServerID:        req.ServerID,
+			ChannelID:       &channelID,
+			MessagesDeleted: stats.TotalDeleted,
+			TimeBasedCount:  stats.TimeBasedDeleted,
+			CountBasedCount: stats.CountBasedDeleted,
+			TriggerType:     "manual",
+			TriggeredBy:     &c.UserID,
+			ExecutedAt:      time.Now(),
+			DurationMs:      stats.DurationMs,
+		}
+		if err := h.db.RecordPruneHistory(history); err != nil {
+			DBLog.Error("Failed to record prune history", "server_id", req.ServerID, "channel_id", channelID, "error", err)
+		}
+		totalDeleted += stats.TotalDeleted
+	}
+
+	// Broadcast results
+	payload := &protocol.MessagesPrunedPayload{
+		ServerID:     req.ServerID,
+		ChannelStats: results,
+		TriggerType:  "manual",
+		TriggeredBy:  &c.UserID,
+		ExecutedAt:   time.Now(),
+		TotalDeleted: totalDeleted,
+	}
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventMessagesPruned, payload, nil)
+}
+
+// HandleAssignTitle assigns or clears a custom title for a server member
+func (h *Handlers) HandleAssignTitle(c *Client, msg *protocol.Message) {
+	var req protocol.AssignTitleRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		Logger.Error("Failed to parse assign title request", "error", err)
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+
+	// Permission check: ManageNicknames
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageNicknames); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to manage titles")
+		return
+	}
+
+	// Validate title length
+	if len(req.Title) > 50 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Title too long (max 50 characters)")
+		return
+	}
+
+	// Update server member title
+	if err := h.db.UpdateServerMemberTitle(req.ServerID, req.UserID, req.Title); err != nil {
+		DBLog.Error("Failed to update member title", "server_id", req.ServerID, "user_id", req.UserID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update title")
+		return
+	}
+
+	// Broadcast update to all clients in the server
+	payload := &protocol.AssignTitlePayload{
+		ServerID: req.ServerID,
+		UserID:   req.UserID,
+		Title:    req.Title,
+	}
+	if err := h.hub.BroadcastToServer(req.ServerID, protocol.EventTitleUpdate, payload, nil); err != nil {
+		HubLog.Error("Failed to broadcast title update", "server_id", req.ServerID, "user_id", req.UserID, "error", err)
+	}
+
+	Logger.Info("Title updated", "user_id", req.UserID, "server_id", req.ServerID, "title", req.Title)
 }

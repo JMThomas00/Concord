@@ -52,11 +52,11 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 	switch cmd.Name {
 	case "create-channel":
 		return ch.handleCreateChannel(cmd.Args)
-	case "create-category":
+	case "create-group":
 		return ch.handleCreateCategory(cmd.Args)
 	case "delete-channel":
 		return ch.handleDeleteChannel(cmd.Args)
-	case "delete-category":
+	case "delete-group":
 		return ch.handleDeleteCategory(cmd.Args)
 	case "rename-channel":
 		return ch.handleRenameChannel(cmd.Args)
@@ -79,14 +79,18 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleMuteChannel(true)
 	case "role":
 		return ch.handleRole(cmd.Args)
+	case "roles":
+		return ch.handleRoles(cmd.Args)
+	case "create-role":
+		return ch.handleCreateRole(cmd.Args)
 	case "kick":
 		return ch.handleKickBan(cmd.Args, false)
 	case "ban":
 		return ch.handleKickBan(cmd.Args, true)
-	case "unban":
-		return ch.handleUnban(cmd.Args)
 	case "timeout":
 		return ch.handleTimeout(cmd.Args)
+	case "unban":
+		return ch.handleUnban(cmd.Args)
 	case "pin":
 		return ch.handlePin(cmd.Args)
 	case "unpin":
@@ -95,6 +99,10 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleWhisper(cmd.Args)
 	case "links":
 		return ch.handleLinks(cmd.Args)
+	case "status":
+		return ch.handleStatus(cmd.Args)
+	case "title":
+		return ch.handleTitle(cmd.Args)
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}
@@ -142,7 +150,7 @@ func (ch *CommandHandler) handleCreateChannel(args []string) (string, error) {
 
 func (ch *CommandHandler) handleCreateCategory(args []string) (string, error) {
 	if len(args) < 1 {
-		return "", errors.New("usage: /create-category <name>")
+		return "", errors.New("usage: /create-group <name>")
 	}
 
 	if ch.app.activeConn == nil || ch.app.currentServer == nil {
@@ -166,7 +174,7 @@ func (ch *CommandHandler) handleCreateCategory(args []string) (string, error) {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 
-	return fmt.Sprintf("Creating category '%s'...", strings.ToUpper(name)), nil
+	return fmt.Sprintf("Creating channel group '%s'...", strings.ToUpper(name)), nil
 }
 
 func (ch *CommandHandler) handleDeleteChannel(args []string) (string, error) {
@@ -197,7 +205,7 @@ func (ch *CommandHandler) handleDeleteChannel(args []string) (string, error) {
 
 func (ch *CommandHandler) handleDeleteCategory(args []string) (string, error) {
 	if len(args) < 1 {
-		return "", errors.New("usage: /delete-category <name>")
+		return "", errors.New("usage: /delete-group <name>")
 	}
 
 	if ch.app.activeConn == nil || ch.app.currentServer == nil {
@@ -228,12 +236,12 @@ func (ch *CommandHandler) handleDeleteCategory(args []string) (string, error) {
 	}
 
 	if foundCategory == nil {
-		return "", fmt.Errorf("category '%s' not found", categoryName)
+		return "", fmt.Errorf("channel group '%s' not found", categoryName)
 	}
 
 	// Check if category has any channels in it
 	if len(foundCategory.Children) > 0 {
-		return "", fmt.Errorf("cannot delete category '%s': it contains %d channel(s). Please move or delete them first.", categoryName, len(foundCategory.Children))
+		return "", fmt.Errorf("cannot delete channel group '%s': it contains %d channel(s). Please move or delete them first.", categoryName, len(foundCategory.Children))
 	}
 
 	req := &protocol.ChannelDeleteRequest{
@@ -250,7 +258,7 @@ func (ch *CommandHandler) handleDeleteCategory(args []string) (string, error) {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 
-	return fmt.Sprintf("Deleting category '%s'...", categoryName), nil
+	return fmt.Sprintf("Deleting channel group '%s'...", categoryName), nil
 }
 
 func (ch *CommandHandler) handleRenameChannel(args []string) (string, error) {
@@ -288,7 +296,7 @@ func (ch *CommandHandler) handleRenameChannel(args []string) (string, error) {
 
 func (ch *CommandHandler) handleMoveChannel(args []string) (string, error) {
 	if len(args) < 1 {
-		return "", errors.New("usage: /move-channel <category-name>")
+		return "", errors.New("usage: /move-channel <group-name>")
 	}
 
 	if ch.app.activeConn == nil || ch.app.currentServer == nil {
@@ -314,7 +322,7 @@ func (ch *CommandHandler) handleMoveChannel(args []string) (string, error) {
 	}
 
 	if categoryID == nil && categoryName != "NONE" {
-		return "", fmt.Errorf("category '%s' not found", categoryName)
+		return "", fmt.Errorf("channel group '%s' not found", categoryName)
 	}
 
 	req := &protocol.ChannelUpdateRequest{
@@ -335,7 +343,7 @@ func (ch *CommandHandler) handleMoveChannel(args []string) (string, error) {
 	if categoryID == nil {
 		return "Moving channel to top level...", nil
 	}
-	return fmt.Sprintf("Moving channel to category '%s'...", categoryName), nil
+	return fmt.Sprintf("Moving channel to group '%s'...", categoryName), nil
 }
 
 func (ch *CommandHandler) handleHelp(args []string) (string, error) {
@@ -347,6 +355,7 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 		"/whisper @user <msg>       - Send an ephemeral DM (alias: /w)",
 		"/links [N]                 - Show links from recent N messages (default: 20)",
 		"/theme [name]              - Open theme browser, or apply theme directly",
+		"/status <message>          - Set your status (use /status clear to remove)",
 		"/mute                      - Mute current channel (suppress unread badges)",
 		"/unmute                    - Unmute current channel",
 	}
@@ -354,11 +363,11 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 	if level >= roleLevelMod {
 		lines = append(lines,
 			"/create-channel <name>     - Create a new text channel",
-			"/create-category <name>    - Create a new category",
+			"/create-group <name>       - Create a new channel group",
 			"/delete-channel            - Delete the current channel",
-			"/delete-category <name>    - Delete an empty category",
+			"/delete-group <name>       - Delete an empty channel group",
 			"/rename-channel <name>     - Rename the current channel",
-			"/move-channel <category>   - Move current channel to a category",
+			"/move-channel <group>      - Move current channel to a channel group",
 			"/mute @user [minutes]      - Server-mute a member",
 			"/unmute @user              - Server-unmute a member",
 			"/kick @user [reason]       - Kick a member from the server",
@@ -370,7 +379,10 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 
 	if level >= roleLevelAdmin {
 		lines = append(lines,
+			"/roles                     - List all available roles on this server",
 			"/role assign|remove @user <role> - Manage member roles",
+			"/create-role <name> [preset] - Create a new role (presets: text, moderator, admin)",
+			"/title @user <title>       - Assign a custom title to a member (use clear to remove)",
 			"/ban @user [reason]        - Permanently ban a member",
 			"/unban @user               - Lift a ban from a member",
 		)
@@ -427,8 +439,12 @@ func (ch *CommandHandler) handleWhisper(args []string) (string, error) {
 	if a.activeConn == nil || a.activeConn.Connection == nil {
 		return "", fmt.Errorf("not connected")
 	}
+	if a.currentChannel == nil {
+		return "", fmt.Errorf("no channel selected")
+	}
 	msg, err := protocol.NewMessage(protocol.OpWhisper, &protocol.WhisperPayload{
 		TargetUserID: md.User.ID,
+		ChannelID:    a.currentChannel.ID,
 		Content:      content,
 	})
 	if err != nil {
@@ -462,8 +478,14 @@ func (ch *CommandHandler) handleRole(args []string) (string, error) {
 		}
 		return fmt.Sprintf("Assigning role %q to %s...", roleName, md.User.Username), nil
 	case "remove":
+		// Check for --force flag
+		force := false
+		if strings.HasSuffix(roleName, " --force") {
+			force = true
+			roleName = strings.TrimSuffix(roleName, " --force")
+		}
 		err := ch.sendModMsg(protocol.OpRoleRemove, &protocol.RoleRemoveRequest{
-			ServerID: serverID, UserID: md.User.ID, RoleName: roleName,
+			ServerID: serverID, UserID: md.User.ID, RoleName: roleName, Force: force,
 		})
 		if err != nil {
 			return "", err
@@ -472,6 +494,124 @@ func (ch *CommandHandler) handleRole(args []string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown subcommand %q — use assign or remove", subCmd)
 	}
+}
+
+// handleRoles lists all available roles on the current server
+func (ch *CommandHandler) handleRoles(args []string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+
+	serverID := a.getActiveServerID()
+	if serverID == uuid.Nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+
+	roles, ok := a.activeConn.Roles[serverID]
+	if !ok || len(roles) == 0 {
+		return "No roles available on this server.", nil
+	}
+
+	var result strings.Builder
+	result.WriteString("Available roles:\n")
+
+	// Sort roles by position (highest first)
+	sortedRoles := make([]*models.Role, len(roles))
+	copy(sortedRoles, roles)
+	// Sort by position descending
+	for i := 0; i < len(sortedRoles)-1; i++ {
+		for j := i + 1; j < len(sortedRoles); j++ {
+			if sortedRoles[j].Position > sortedRoles[i].Position {
+				sortedRoles[i], sortedRoles[j] = sortedRoles[j], sortedRoles[i]
+			}
+		}
+	}
+
+	for _, role := range sortedRoles {
+		// Skip @everyone role
+		if role.Name == "@everyone" {
+			continue
+		}
+		result.WriteString(fmt.Sprintf("  • %s (position: %d)\n", role.Name, role.Position))
+	}
+
+	return result.String(), nil
+}
+
+// handleCreateRole handles /create-role <name> [preset]
+// Presets: text (default), moderator, admin
+func (ch *CommandHandler) handleCreateRole(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("usage: /create-role <name> [preset]\nPresets: text (default), moderator, admin")
+	}
+
+	a := ch.app
+	if a.activeConn == nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+
+	serverID := a.getActiveServerID()
+	if serverID == uuid.Nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+
+	if a.currentChannel == nil {
+		return "", fmt.Errorf("no active channel")
+	}
+
+	// Parse role name (first arg)
+	roleName := args[0]
+	// Remove quotes if present
+	roleName = strings.Trim(roleName, "\"'")
+
+	// Validate role name
+	if len(roleName) < 1 || len(roleName) > 32 {
+		return "", fmt.Errorf("role name must be 1-32 characters")
+	}
+	if strings.EqualFold(roleName, "@everyone") {
+		return "", fmt.Errorf("cannot create role named '@everyone' (reserved)")
+	}
+
+	// Parse preset (optional second arg, default: text)
+	preset := "text"
+	if len(args) > 1 {
+		preset = strings.ToLower(args[1])
+	}
+
+	// Map preset to permission bitfield
+	var permissions uint64
+	switch preset {
+	case "text":
+		permissions = uint64(models.PermissionsText)
+	case "moderator", "mod":
+		permissions = uint64(models.PermissionsModerator)
+	case "admin", "administrator":
+		permissions = uint64(models.PermissionsAdmin)
+	default:
+		return "", fmt.Errorf("unknown preset %q (valid: text, moderator, admin)", preset)
+	}
+
+	// Default color (purple)
+	color := 0xBD93F9
+
+	// Create request
+	req := &protocol.CreateRoleRequest{
+		ServerID:      serverID,
+		ChannelID:     a.currentChannel.ID,
+		Name:          roleName,
+		Permissions:   permissions,
+		Color:         color,
+		IsHoisted:     false,
+		IsMentionable: true,
+	}
+
+	// Send to server
+	if err := ch.sendModMsg(protocol.OpCreateRole, req); err != nil {
+		return "", fmt.Errorf("failed to create role: %w", err)
+	}
+
+	return fmt.Sprintf("Creating role %q with %s permissions...", roleName, preset), nil
 }
 
 // handleKickBan handles /kick @user [reason] and /ban @user [reason]
@@ -492,9 +632,13 @@ func (ch *CommandHandler) handleKickBan(args []string, ban bool) (string, error)
 	if serverID == uuid.Nil {
 		return "", fmt.Errorf("not connected to a server")
 	}
+	if ch.app.currentChannel == nil {
+		return "", fmt.Errorf("no channel selected")
+	}
+	channelID := ch.app.currentChannel.ID
 	if ban {
 		err := ch.sendModMsg(protocol.OpBanMember, &protocol.BanMemberRequest{
-			ServerID: serverID, UserID: md.User.ID, Reason: reason,
+			ServerID: serverID, ChannelID: channelID, UserID: md.User.ID, Reason: reason,
 		})
 		if err != nil {
 			return "", err
@@ -502,7 +646,7 @@ func (ch *CommandHandler) handleKickBan(args []string, ban bool) (string, error)
 		return fmt.Sprintf("Banned %s.", md.User.Username), nil
 	}
 	err := ch.sendModMsg(protocol.OpKickMember, &protocol.KickMemberRequest{
-		ServerID: serverID, UserID: md.User.ID, Reason: reason,
+		ServerID: serverID, ChannelID: channelID, UserID: md.User.ID, Reason: reason,
 	})
 	if err != nil {
 		return "", err
@@ -510,22 +654,71 @@ func (ch *CommandHandler) handleKickBan(args []string, ban bool) (string, error)
 	return fmt.Sprintf("Kicked %s.", md.User.Username), nil
 }
 
-// handleUnban handles /unban @user — lifts a ban by username
+// handleTimeout handles /timeout @user <minutes> [reason] — temporarily bans a user
+func (ch *CommandHandler) handleTimeout(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("usage: /timeout @user <minutes> [reason]")
+	}
+	md := ch.resolveMember(args[0])
+	if md == nil {
+		return "", fmt.Errorf("user %s not found", args[0])
+	}
+
+	duration, err := strconv.Atoi(args[1])
+	if err != nil || duration <= 0 {
+		return "", fmt.Errorf("invalid duration %q — must be a positive integer (minutes)", args[1])
+	}
+
+	reason := ""
+	if len(args) > 2 {
+		reason = strings.Join(args[2:], " ")
+	}
+
+	serverID := ch.app.getActiveServerID()
+	if serverID == uuid.Nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+
+	if ch.app.currentChannel == nil {
+		return "", fmt.Errorf("no channel selected")
+	}
+	channelID := ch.app.currentChannel.ID
+
+	err = ch.sendModMsg(protocol.OpTimeoutMember, &protocol.TimeoutMemberRequest{
+		ServerID:  serverID,
+		ChannelID: channelID,
+		UserID:    md.User.ID,
+		Duration:  duration,
+		Reason:    reason,
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Timed out %s for %d minutes.", md.User.Username, duration), nil
+}
+
+// handleUnban handles /unban username — lifts a ban by username
 func (ch *CommandHandler) handleUnban(args []string) (string, error) {
 	if len(args) < 1 {
-		return "", fmt.Errorf("usage: /unban @user")
+		return "", fmt.Errorf("usage: /unban <username>")
 	}
-	username := strings.TrimPrefix(strings.ToLower(args[0]), "@")
+	username := strings.TrimPrefix(args[0], "@")
 	if username == "" {
-		return "", fmt.Errorf("usage: /unban @user")
+		return "", fmt.Errorf("usage: /unban <username>")
 	}
 	serverID := ch.app.getActiveServerID()
 	if serverID == uuid.Nil {
 		return "", fmt.Errorf("not connected to a server")
 	}
+	if ch.app.currentChannel == nil {
+		return "", fmt.Errorf("no channel selected")
+	}
+	channelID := ch.app.currentChannel.ID
+
 	err := ch.sendModMsg(protocol.OpUnbanMember, &protocol.UnbanMemberRequest{
-		ServerID: serverID,
-		Username: username,
+		ServerID:  serverID,
+		ChannelID: channelID,
+		Username:  username,
 	})
 	if err != nil {
 		return "", err
@@ -546,7 +739,13 @@ func (ch *CommandHandler) handleMuteMember(args []string, mute bool) (string, er
 	if serverID == uuid.Nil {
 		return "", fmt.Errorf("not connected to a server")
 	}
-	// Optional duration in minutes (only applies when muting)
+
+	if ch.app.currentChannel == nil {
+		return "", fmt.Errorf("no channel selected")
+	}
+	channelID := ch.app.currentChannel.ID
+
+	// Parse duration if provided (for mute only)
 	durationMinutes := 0
 	if mute && len(args) >= 2 {
 		n, err := strconv.Atoi(args[1])
@@ -555,20 +754,26 @@ func (ch *CommandHandler) handleMuteMember(args []string, mute bool) (string, er
 		}
 		durationMinutes = n
 	}
+
 	err := ch.sendModMsg(protocol.OpMuteMember, &protocol.MuteMemberRequest{
-		ServerID: serverID, UserID: md.User.ID, Mute: mute, DurationMinutes: durationMinutes,
+		ServerID:  serverID,
+		ChannelID: channelID,
+		UserID:    md.User.ID,
+		Mute:      mute,
+		Duration:  durationMinutes,
 	})
 	if err != nil {
 		return "", err
 	}
-	action := "Muted"
+
 	if !mute {
-		action = "Unmuted"
+		return fmt.Sprintf("Unmuted %s.", md.User.Username), nil
 	}
-	if mute && durationMinutes > 0 {
-		return fmt.Sprintf("%s %s for %d minutes.", action, md.User.Username, durationMinutes), nil
+
+	if durationMinutes > 0 {
+		return fmt.Sprintf("Muted %s for %d minutes.", md.User.Username, durationMinutes), nil
 	}
-	return fmt.Sprintf("%s %s.", action, md.User.Username), nil
+	return fmt.Sprintf("Muted %s.", md.User.Username), nil
 }
 
 // handleMuteChannel mutes (unmute=false) or unmutes (unmute=true) the current channel.
@@ -599,34 +804,35 @@ func (ch *CommandHandler) handleMuteChannel(unmute bool) (string, error) {
 	return fmt.Sprintf("Muted #%s", chName), nil
 }
 
+// TODO: Implement when protocol support is added
 // handleTimeout handles /timeout @user <minutes> [reason]
-func (ch *CommandHandler) handleTimeout(args []string) (string, error) {
-	if len(args) < 2 {
-		return "", fmt.Errorf("usage: /timeout @user <minutes> [reason]")
-	}
-	md := ch.resolveMember(args[0])
-	if md == nil {
-		return "", fmt.Errorf("user %s not found", args[0])
-	}
-	minutes, err := strconv.Atoi(args[1])
-	if err != nil || minutes <= 0 {
-		return "", fmt.Errorf("invalid duration %q — must be a positive integer (minutes)", args[1])
-	}
-	reason := strings.Join(args[2:], " ")
-	serverID := ch.app.getActiveServerID()
-	if serverID == uuid.Nil {
-		return "", fmt.Errorf("not connected to a server")
-	}
-	if err := ch.sendModMsg(protocol.OpTimeoutMember, &protocol.TimeoutMemberRequest{
-		ServerID:        serverID,
-		UserID:          md.User.ID,
-		DurationMinutes: minutes,
-		Reason:          reason,
-	}); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Timed out %s for %d minutes.", md.User.Username, minutes), nil
-}
+// func (ch *CommandHandler) handleTimeout(args []string) (string, error) {
+// 	if len(args) < 2 {
+// 		return "", fmt.Errorf("usage: /timeout @user <minutes> [reason]")
+// 	}
+// 	md := ch.resolveMember(args[0])
+// 	if md == nil {
+// 		return "", fmt.Errorf("user %s not found", args[0])
+// 	}
+// 	minutes, err := strconv.Atoi(args[1])
+// 	if err != nil || minutes <= 0 {
+// 		return "", fmt.Errorf("invalid duration %q — must be a positive integer (minutes)", args[1])
+// 	}
+// 	reason := strings.Join(args[2:], " ")
+// 	serverID := ch.app.getActiveServerID()
+// 	if serverID == uuid.Nil {
+// 		return "", fmt.Errorf("not connected to a server")
+// 	}
+// 	if err := ch.sendModMsg(protocol.OpTimeoutMember, &protocol.TimeoutMemberRequest{
+// 		ServerID:        serverID,
+// 		UserID:          md.User.ID,
+// 		DurationMinutes: minutes,
+// 		Reason:          reason,
+// 	}); err != nil {
+// 		return "", err
+// 	}
+// 	return fmt.Sprintf("Timed out %s for %d minutes.", md.User.Username, minutes), nil
+// }
 
 // handlePin handles /pin [N] — pins the Nth most recent message (default 1).
 func (ch *CommandHandler) handlePin(args []string) (string, error) {
@@ -742,4 +948,131 @@ func (ch *CommandHandler) handleLinks(args []string) (string, error) {
 
 	a.openLinkBrowser(allLinks, nil, "main")
 	return "", nil
+}
+
+// handleStatus handles /status <message> or /status clear
+func (ch *CommandHandler) handleStatus(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("usage: /status <message> or /status clear")
+	}
+
+	// Check for "clear" subcommand
+	if args[0] == "clear" {
+		return ch.setStatus("")
+	}
+
+	// Set status message
+	statusText := strings.Join(args, " ")
+	if len(statusText) > 100 {
+		return "", fmt.Errorf("status message too long (max 100 characters)")
+	}
+
+	return ch.setStatus(statusText)
+}
+
+// setStatus updates the user's status text
+func (ch *CommandHandler) setStatus(statusText string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil {
+		return "", fmt.Errorf("not connected to server")
+	}
+
+	if a.activeConn.User == nil {
+		return "", fmt.Errorf("user not authenticated")
+	}
+
+	// Send presence update
+	payload := &protocol.PresenceUpdatePayload{
+		Status:     a.activeConn.User.Status, // Keep current status
+		StatusText: statusText,
+	}
+
+	msg, err := protocol.NewMessage(protocol.OpPresenceUpdate, payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to create message: %w", err)
+	}
+
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		return "", fmt.Errorf("failed to send status update: %w", err)
+	}
+
+	// Update local state optimistically
+	a.activeConn.User.StatusText = statusText
+
+	if statusText == "" {
+		return "Status cleared", nil
+	}
+	return fmt.Sprintf("Status set to: %s", statusText), nil
+}
+
+// handleTitle handles /title @username <title> or /title @username clear
+func (ch *CommandHandler) handleTitle(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("usage: /title @username <title> or /title @username clear")
+	}
+
+	a := ch.app
+	if a.activeConn == nil {
+		return "", fmt.Errorf("not connected to server")
+	}
+
+	serverID := a.getActiveServerID()
+	if serverID == uuid.Nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+
+	// Parse username (remove @ prefix if present)
+	username := strings.TrimPrefix(args[0], "@")
+
+	// Find user by alias in current server's members
+	a.activeConn.mu.RLock()
+	members := a.activeConn.Members
+	a.activeConn.mu.RUnlock()
+
+	var targetUserID uuid.UUID
+	var targetUsername string
+	found := false
+	for _, member := range members {
+		if strings.EqualFold(member.User.Username, username) {
+			targetUserID = member.User.ID
+			targetUsername = member.User.Username
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return "", fmt.Errorf("user '%s' not found", username)
+	}
+
+	// Get title (everything after username)
+	title := strings.Join(args[1:], " ")
+	if strings.ToLower(title) == "clear" {
+		title = ""
+	}
+
+	if len(title) > 50 {
+		return "", fmt.Errorf("title too long (max 50 characters)")
+	}
+
+	// Send request
+	req := &protocol.AssignTitleRequest{
+		ServerID: serverID,
+		UserID:   targetUserID,
+		Title:    title,
+	}
+
+	msg, err := protocol.NewMessage(protocol.OpAssignTitle, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create message: %w", err)
+	}
+
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+
+	if title == "" {
+		return fmt.Sprintf("Cleared title for @%s", targetUsername), nil
+	}
+	return fmt.Sprintf("Set title for @%s: %s", targetUsername, title), nil
 }

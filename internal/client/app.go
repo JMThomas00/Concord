@@ -34,6 +34,7 @@ const (
 	ViewServerList
 	ViewChannelList
 	ViewSettings
+	ViewServerManagement
 	ViewAddServer
 	ViewManageServers
 	ViewThemeBrowser
@@ -152,6 +153,12 @@ type App struct {
 	// Theme browser state
 	themeBrowserState *ThemeBrowserState
 
+	// Settings view state
+	settingsState *SettingsState
+
+	// Server Management view state
+	serverManagementState *ServerManagementState
+
 	// @mention autocomplete state
 	mentionSuggestions []string
 	mentionQuery       string
@@ -175,8 +182,27 @@ type App struct {
 	messageSelectionStart *Position // Selection start (nil if no selection)
 	messageSelectionEnd   *Position // Selection end
 
+	// Reply state (Teams-style quoted replies)
+	replyTarget *MessageDisplay // Message being replied to
+	replyQuote  string          // Ellipsized first line for display
+
+	// Edit message state
+	editingMessageID  *uuid.UUID // Message being edited
+	editingChannelID  *uuid.UUID // Channel of message being edited
+
+	// Delete message state (confirmation)
+	deleteConfirmMessageID *uuid.UUID // Message awaiting delete confirmation
+	deleteConfirmChannelID *uuid.UUID // Channel of message to delete
+
 	// Link browser state
 	linkBrowserState *LinkBrowserState
+
+	// Help modal state
+	helpModalState *HelpModalState
+
+	// Member panel navigation state
+	selectedMemberIndex int                // Index in flattened member list
+	memberContextMenu   *MemberContextMenu // Context menu state (nil when closed)
 }
 
 // Position represents a cursor position in a message (for Level 2 navigation)
@@ -193,15 +219,37 @@ type LinkBrowserState struct {
 	PreviousMode  string           // "message_nav" or "main"
 }
 
+// HelpModalState holds the state for the help modal overlay
+type HelpModalState struct {
+	Content      string // Multi-line help text to display
+	ScrollOffset int    // For future scrolling support (start at 0)
+}
+
+// MemberContextMenu holds the state for the member action context menu
+type MemberContextMenu struct {
+	TargetMember  *MemberDisplay
+	Actions       []MemberAction
+	SelectedIndex int
+}
+
+// MemberAction represents a single action in the context menu
+type MemberAction struct {
+	Label        string
+	Key          string // Keyboard shortcut (e.g., "W", "K")
+	Handler      func(*App, *MemberDisplay) tea.Cmd
+	RequiresPerm models.Permission // 0 = no permission required
+}
+
 // MessageDisplay wraps a message with display information
 type MessageDisplay struct {
 	*models.Message
-	AuthorName  string
-	AuthorColor string
-	IsOwn       bool
-	ShowHeader  bool // Show author/timestamp (false for consecutive messages)
-	IsWhisper   bool // Ephemeral DM from /whisper
-	IsSystem    bool // Server-wide moderation/system announcement
+	AuthorName    string
+	AuthorColor   string
+	RecipientName string // For whispers only
+	IsOwn         bool
+	ShowHeader    bool // Show author/timestamp (false for consecutive messages)
+	IsWhisper     bool // Ephemeral DM from /whisper
+	IsSystem      bool // Server-wide moderation/system announcement
 }
 
 // MemberDisplay wraps a member with display information
@@ -313,6 +361,11 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	// - Ctrl+J: sends ASCII 0x0A (LF), distinct from 0x0D (CR/Enter) in all terminals
 	// - Shift+Enter: kept as fallback for kitty/modern terminal emulators
 	input.KeyMap.InsertNewline.SetKeys("ctrl+enter", "ctrl+j", "shift+enter")
+	// Remove background color to match terminal background
+	input.FocusedStyle.Base = input.FocusedStyle.Base.Background(lipgloss.NoColor{})
+	input.FocusedStyle.CursorLine = input.FocusedStyle.CursorLine.Background(lipgloss.NoColor{})
+	input.BlurredStyle.Base = input.BlurredStyle.Base.Background(lipgloss.NoColor{})
+	input.BlurredStyle.CursorLine = input.BlurredStyle.CursorLine.Background(lipgloss.NoColor{})
 
 	// Initialize login inputs
 	loginEmail := textinput.New()
@@ -348,9 +401,6 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	theme := themes.GetDefaultTheme()
 	styles := theme.BuildStyles()
 
-	// Select random banner at startup (not on every render)
-	banner := GetRandomBanner()
-
 	// Create event channel for async connection events
 	connEvents := make(chan tea.Msg, 10)
 
@@ -378,8 +428,19 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 				Theme:               "dracula",
 				ShowMembersList:     true,
 				CollapsedCategories: make(map[string]map[string]bool),
+				LastBannerIndex:     -1,
 			},
 		}
+	}
+
+	// Select random banner at startup (not on every render)
+	// Use last banner index from config to ensure no consecutive repeats across launches
+	banner, newBannerIndex := GetRandomBanner(appConfig.UI.LastBannerIndex)
+
+	// Save the new banner index back to config
+	appConfig.UI.LastBannerIndex = newBannerIndex
+	if err := configMgr.SaveAppConfig(appConfig); err != nil {
+		log.Printf("Warning: Failed to save banner index: %v", err)
 	}
 
 	// Determine startup view
@@ -531,13 +592,32 @@ func (a *App) connectServerAsync(serverID uuid.UUID, token string) tea.Cmd {
 			}
 		}
 
-		// Set active connection IMMEDIATELY after connect (before Identify)
-		// This prevents race condition where READY arrives before activeConn is set
-		a.activeConn = a.connMgr.GetConnection(serverID)
-		if a.activeConn != nil {
-			a.activeConn.mu.Lock()
-			a.activeConn.Token = token
-			a.activeConn.mu.Unlock()
+		// Set active connection ONLY if it's nil (first connection)
+		// OR if this is the server the user currently has selected.
+		// This prevents background connections from overwriting activeConn.
+		oldConn := a.activeConn
+		shouldSetActive := a.activeConn == nil ||
+			(a.currentClientServer != nil && a.currentClientServer.ID == serverID)
+
+		if shouldSetActive {
+			a.activeConn = a.connMgr.GetConnection(serverID)
+			log.Printf("DEBUG connectServerAsync: Changed activeConn from %p to %p (serverID=%s, reason=%s)",
+				oldConn, a.activeConn, serverID,
+				func() string {
+					if oldConn == nil { return "first connection" }
+					return "user's current server"
+				}())
+		} else {
+			log.Printf("DEBUG connectServerAsync: SKIPPED setting activeConn (serverID=%s, currentClientServer=%v)",
+				serverID, a.currentClientServer != nil)
+		}
+
+		// Set token on the connection we just made (not necessarily activeConn)
+		conn := a.connMgr.GetConnection(serverID)
+		if conn != nil {
+			conn.mu.Lock()
+			conn.Token = token
+			conn.mu.Unlock()
 		}
 
 		// Authenticate (READY response will arrive asynchronously)
@@ -630,6 +710,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-schedule the AFK check
 		cmds = append(cmds, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }))
 
+	case exitNavModeMsg:
+		a.messageNavMode = false
+		if msg.setFocus {
+			a.focus = FocusInput
+			a.input.Focus()
+		}
+		if msg.enableEditMode {
+			a.inMessageEditMode = true
+		}
+		a.updateChatContent()
+		return a, tea.ShowCursor
+
 	case typingTickMsg:
 		// Advance animation frame and prune expired typing entries
 		a.typingFrame++
@@ -647,23 +739,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds = append(cmds, tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }))
-
-	case tea.MouseMsg:
-		// Handle mouse wheel scrolling in chat viewport
-		switch msg.Type {
-		case tea.MouseWheelUp:
-			// Scroll chat viewport up (only when not in message nav mode)
-			if !a.messageNavMode && a.focus == FocusChat {
-				a.chatViewport.LineUp(3) // Scroll up 3 lines
-				return a, nil
-			}
-		case tea.MouseWheelDown:
-			// Scroll chat viewport down (only when not in message nav mode)
-			if !a.messageNavMode && a.focus == FocusChat {
-				a.chatViewport.LineDown(3) // Scroll down 3 lines
-				return a, nil
-			}
-		}
 
 	case tea.KeyMsg:
 		// Any key press resets AFK state
@@ -714,6 +789,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.activeConn != nil && a.currentChannel != nil {
 			a.updateChatContent()
 			a.scrollToBottom()
+		}
+
+	case tea.MouseMsg:
+		// Handle mouse wheel scrolling over chat viewport (regardless of focus)
+		if a.view == ViewMain && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
+			if a.isCursorOverChatViewport(msg.X, msg.Y) {
+				var cmd tea.Cmd
+				a.chatViewport, cmd = a.chatViewport.Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		}
 
 	case ServerScopedMsg:
@@ -835,7 +920,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := a.updateAddServerForm(msg)
 		cmds = append(cmds, cmd)
 	case ViewMain:
-		if a.focus == FocusInput {
+		// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode
+		if a.focus == FocusInput && !a.messageNavMode {
 			var cmd tea.Cmd
 			a.input, cmd = a.input.Update(msg)
 			cmds = append(cmds, cmd)
@@ -866,6 +952,10 @@ func (a *App) View() string {
 		baseView = a.renderAddServerView()
 	case ViewManageServers:
 		baseView = a.renderManageServersView()
+	case ViewSettings:
+		baseView = a.renderSettingsView()
+	case ViewServerManagement:
+		baseView = a.renderServerManagementView()
 	case ViewThemeBrowser:
 		baseView = a.renderThemeBrowserView()
 	default:
@@ -875,6 +965,16 @@ func (a *App) View() string {
 	// Render link browser overlay if active
 	if a.linkBrowserState != nil {
 		return a.renderLinkBrowserOverlay(baseView)
+	}
+
+	// Render help modal overlay if active
+	if a.helpModalState != nil {
+		return a.renderHelpModalOverlay(baseView)
+	}
+
+	// Render member context menu overlay if active
+	if a.memberContextMenu != nil {
+		return a.renderMemberContextMenuOverlay(baseView)
 	}
 
 	return baseView
@@ -892,10 +992,38 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	if a.view == ViewThemeBrowser {
 		return a.handleThemeBrowserKey(msg)
 	}
+	if a.view == ViewSettings {
+		return a.handleSettingsKey(msg)
+	}
+	if a.view == ViewServerManagement {
+		return a.handleServerManagementKey(msg)
+	}
 
 	switch msg.String() {
 	case "ctrl+q":
 		return tea.Quit
+
+	case "ctrl+s":
+		// Context-aware: Open Settings from login/main view, otherwise cycle servers
+		if a.view == ViewLogin || a.view == ViewMain {
+			a.openSettings(a.view)
+			return nil
+		}
+		// Cycle through client servers (forward) when not in login/main view
+		if len(a.clientServers) > 0 {
+			a.serverIndex = (a.serverIndex + 1) % len(a.clientServers)
+			a.switchToClientServer(a.serverIndex)
+		}
+
+	case "ctrl+b":
+		// Open Server Management from main view (admin only)
+		if a.view == ViewMain {
+			// Check if user has admin permissions
+			if a.currentUserRoleLevel() >= roleLevelAdmin {
+				a.openServerManagement(ViewMain, 0) // Start on Channels category
+				return nil
+			}
+		}
 
 	case "ctrl+t":
 		// Open theme browser from login or main view
@@ -933,6 +1061,50 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "enter":
+		// Delete confirmation: send delete request
+		if a.deleteConfirmMessageID != nil && a.deleteConfirmChannelID != nil {
+			messageID := *a.deleteConfirmMessageID
+			channelID := *a.deleteConfirmChannelID
+			serverID := a.currentClientServer.ID
+
+			// Clear confirmation state
+			a.deleteConfirmMessageID = nil
+			a.deleteConfirmChannelID = nil
+
+			// Send delete request
+			payload := &protocol.DeleteMessagePayload{
+				MessageID: messageID,
+				ChannelID: channelID,
+			}
+
+			data, err := json.Marshal(payload)
+			if err != nil {
+				a.statusMessage = fmt.Sprintf("Failed to marshal delete payload: %v", err)
+				a.statusError = true
+				return nil
+			}
+
+			msg := &protocol.Message{
+				Op:   protocol.OpDeleteMessage,
+				Data: data,
+			}
+
+			if err := a.connMgr.SendRaw(serverID, msg); err != nil {
+				a.statusMessage = fmt.Sprintf("Failed to delete message: %v", err)
+				a.statusError = true
+				return nil
+			}
+
+			a.statusMessage = "Message deleted"
+			a.statusError = false
+
+			// Exit message nav mode
+			a.messageNavMode = false
+			a.focus = FocusInput
+			a.updateChatContent()
+			return nil
+		}
+
 		// In link browser: open selected link
 		if a.linkBrowserState != nil {
 			if a.linkBrowserState.SelectedIndex >= 0 && a.linkBrowserState.SelectedIndex < len(a.linkBrowserState.Links) {
@@ -941,6 +1113,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				return a.openURL(link)
 			}
 			return nil
+		}
+		// In member context menu: execute selected action
+		if a.memberContextMenu != nil {
+			return a.executeMemberAction()
+		}
+		// In member list: open context menu for selected member
+		if a.view == ViewMain && a.focus == FocusUserList {
+			return a.openMemberContextMenu()
 		}
 		if a.view == ViewLogin {
 			if a.registerLinkFocused {
@@ -989,20 +1169,13 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewMain {
 			// If focused on server icons
 			if a.focus == FocusServerIcons {
-				// Check if "Manage Servers" button is selected
-				if a.serverIndex >= len(a.clientServers) {
-					a.view = ViewManageServers
-					a.manageServersFocus = 0
-					if a.pingResults == nil {
-						a.pingResults = make(map[uuid.UUID]*PingResult)
+				// Select the server and go to login if not connected
+				if a.serverIndex < len(a.clientServers) {
+					a.switchToClientServer(a.serverIndex)
+					if a.activeConn == nil || a.activeConn.GetState() != StateReady {
+						a.view = ViewLogin
+						a.initLoginView()
 					}
-					return nil
-				}
-				// Otherwise select the server and go to login if not connected
-				a.switchToClientServer(a.serverIndex)
-				if a.activeConn == nil || a.activeConn.GetState() != StateReady {
-					a.view = ViewLogin
-					a.initLoginView()
 				}
 				return nil
 			}
@@ -1016,6 +1189,16 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Close link browser if active
 		if a.linkBrowserState != nil {
 			a.closeLinkBrowser()
+			return nil
+		}
+		// Close help modal if active
+		if a.helpModalState != nil {
+			a.closeHelpModal()
+			return nil
+		}
+		// Close member context menu if active
+		if a.memberContextMenu != nil {
+			a.closeMemberContextMenu()
 			return nil
 		}
 		// Two-level escape: Level 2 → Level 1, Level 1 → Normal chat
@@ -1051,6 +1234,22 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.mentionSuggestions = nil
 			return nil
 		}
+		// Clear reply state if active
+		if a.replyTarget != nil {
+			a.replyTarget = nil
+			a.replyQuote = ""
+			a.statusMessage = "Reply cancelled"
+			a.statusError = false
+			return nil
+		}
+		// Cancel delete confirmation if active
+		if a.deleteConfirmMessageID != nil {
+			a.deleteConfirmMessageID = nil
+			a.deleteConfirmChannelID = nil
+			a.statusMessage = "Delete cancelled"
+			a.statusError = false
+			return nil
+		}
 		if a.view == ViewRegister {
 			// Go back to login view
 			a.view = ViewLogin
@@ -1059,12 +1258,17 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.loginPasswordConfirm.Blur()
 			a.initLoginView()
 		} else if a.view == ViewAddServer {
-			// Cancel: return to manage servers if editing, otherwise main view
+			// Cancel: return to appropriate view based on context
 			a.addServerError = ""
-			if a.editingServerID != nil {
-				a.editingServerID = nil
-				a.view = ViewManageServers
+			a.editingServerID = nil
+			if a.settingsState != nil {
+				// Return to Settings if opened from there
+				a.view = ViewSettings
+			} else if a.serverManagementState != nil {
+				// Return to Server Management if opened from there
+				a.view = ViewServerManagement
 			} else {
+				// Otherwise return to main view
 				a.view = ViewMain
 			}
 		} else if a.view == ViewMain {
@@ -1091,8 +1295,21 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				a.messageSelectionStart = nil         // Clear any previous selection
 				a.messageSelectionEnd = nil
 				a.input.Blur()
+
+				// PRE-CALCULATE scroll position for newest message
+				linePos := a.calculateMessageLinePosition(a.messageNavIndex)
+				viewportHeight := a.chatViewport.Height
+				targetOffset := linePos - (viewportHeight / 3)
+				if targetOffset < 0 {
+					targetOffset = 0
+				}
+
 				// Refresh viewport to show highlighting
 				a.updateChatContent()
+
+				// Apply scroll position
+				a.chatViewport.SetYOffset(targetOffset)
+
 				// Hide terminal cursor when in navigation mode
 				return tea.HideCursor
 			}
@@ -1130,20 +1347,126 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			return a.copyMessageToClipboard()
 		}
 
+	case "r", "R":
+		// Reply to selected message (Teams-style quoted reply)
+		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
+			if a.activeConn == nil || a.currentChannel == nil {
+				return nil
+			}
+			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			if a.messageNavIndex < len(messages) {
+				msg := messages[a.messageNavIndex]
+
+				// Set reply target (quote will show above input, styled)
+				a.replyTarget = msg
+				a.replyQuote = extractFirstLineWithEllipsis(msg.Content, 60)
+
+				// Clear input and return command to exit nav mode AFTER component updates
+				a.input.SetValue("")  // Clear any stray input
+				return func() tea.Msg {
+					return exitNavModeMsg{setFocus: true}
+				}
+			}
+		}
+
+	case "e", "E":
+		// Edit selected message (own messages only, or admin/mod with permission)
+		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
+			if a.activeConn == nil || a.currentChannel == nil || a.activeConn.User == nil {
+				return nil
+			}
+			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			if a.messageNavIndex < len(messages) {
+				msg := messages[a.messageNavIndex]
+
+				// Check if user can edit (own message only for now - permissions check TODO)
+				if msg.AuthorID != a.activeConn.User.ID {
+					a.statusMessage = "You can only edit your own messages"
+					a.statusError = true
+					return nil
+				}
+
+				// Pre-fill input with message content
+				a.input.SetValue(msg.Content)  // This replaces any content, so should be clean
+
+				// Track editing state
+				a.editingMessageID = &msg.ID
+				a.editingChannelID = &msg.ChannelID
+
+				// Return command to exit nav mode AFTER component updates
+				return func() tea.Msg {
+					return exitNavModeMsg{setFocus: true, enableEditMode: true}
+				}
+			}
+		}
+
+	case "d", "D":
+		// Delete selected message (with confirmation)
+		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
+			if a.activeConn == nil || a.currentChannel == nil || a.activeConn.User == nil {
+				return nil
+			}
+			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			if a.messageNavIndex < len(messages) {
+				msg := messages[a.messageNavIndex]
+
+				// Check permission: own message (24h window) or manage messages permission
+				isOwn := msg.AuthorID == a.activeConn.User.ID
+				withinWindow := time.Since(msg.CreatedAt) < 24*time.Hour
+				hasManageMessages := a.hasPermission(a.activeConn.User, models.PermissionManageMessages)
+
+				// Can delete if: (own message within 24h) OR (has manage messages permission)
+				canDelete := (isOwn && withinWindow) || hasManageMessages
+
+				if !canDelete {
+					if isOwn && !withinWindow {
+						a.statusMessage = "You can only delete your own messages within 24 hours"
+					} else {
+						a.statusMessage = "You don't have permission to delete this message"
+					}
+					a.statusError = true
+					return nil
+				}
+
+				// Enter confirmation mode
+				a.deleteConfirmMessageID = &msg.ID
+				a.deleteConfirmChannelID = &msg.ChannelID
+				a.statusMessage = "Delete this message? [Enter] Confirm [Esc] Cancel"
+				a.statusError = false
+				a.updateChatContent()
+			}
+		}
+
+	case "s":
+		// Open Settings when focused on server list
+		if a.view == ViewMain && a.focus == FocusServerIcons {
+			a.openSettings(ViewMain)
+			return nil
+		}
+
 	case "l":
-		// In message navigation mode: open link browser if message has URLs
+		// In message navigation mode: open link(s) in selected message
 		if a.messageNavMode && a.activeConn != nil && a.currentChannel != nil {
 			messages := a.activeConn.GetMessages(a.currentChannel.ID)
 			if a.messageNavIndex >= 0 && a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 				links := a.extractLinksFromMessage(msg)
-				if len(links) > 0 {
+
+				if len(links) == 0 {
+					// No links: show status message
+					a.statusMessage = "No links found in selected message"
+					a.statusError = false
+				} else if len(links) == 1 {
+					// Single link: open directly without link browser
+					cmd := a.openURL(links[0])
+					a.statusMessage = "Opened link in browser"
+					a.statusError = false
+					return cmd
+				} else {
+					// Multiple links: show link browser
 					a.openLinkBrowser(links, msg, "message_nav")
 					// Temporarily exit message nav mode while in link browser
 					a.messageNavMode = false
-				} else {
-					a.statusMessage = "No links found in selected message"
-					a.statusError = false
 				}
 			}
 			return nil
@@ -1162,6 +1485,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			}
 			return nil
 		}
+		// Member context menu navigation
+		if a.memberContextMenu != nil {
+			a.memberContextMenu.SelectedIndex--
+			if a.memberContextMenu.SelectedIndex < 0 {
+				a.memberContextMenu.SelectedIndex = len(a.memberContextMenu.Actions) - 1
+			}
+			return nil
+		}
 		// Message navigation: Level 1 or Level 2
 		if a.messageNavMode {
 			if a.inMessageEditMode {
@@ -1176,6 +1507,8 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.navigateServerList(-1)
 		} else if a.focus == FocusChannelList {
 			a.navigateChannelList(-1)
+		} else if a.focus == FocusUserList {
+			a.navigateMemberList(-1)
 		} else if a.focus == FocusChat {
 			a.chatViewport.LineUp(1)
 		}
@@ -1186,6 +1519,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.linkBrowserState.SelectedIndex++
 			if a.linkBrowserState.SelectedIndex >= len(a.linkBrowserState.Links) {
 				a.linkBrowserState.SelectedIndex = 0
+			}
+			return nil
+		}
+		// Member context menu navigation
+		if a.memberContextMenu != nil {
+			a.memberContextMenu.SelectedIndex++
+			if a.memberContextMenu.SelectedIndex >= len(a.memberContextMenu.Actions) {
+				a.memberContextMenu.SelectedIndex = 0
 			}
 			return nil
 		}
@@ -1203,6 +1544,8 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.navigateServerList(1)
 		} else if a.focus == FocusChannelList {
 			a.navigateChannelList(1)
+		} else if a.focus == FocusUserList {
+			a.navigateMemberList(1)
 		} else if a.focus == FocusChat {
 			a.chatViewport.LineDown(1)
 		}
@@ -1268,13 +1611,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "pgdown":
 		if a.focus == FocusChat {
 			a.chatViewport.HalfViewDown()
-		}
-
-	case "ctrl+s":
-		// Cycle through client servers (forward)
-		if len(a.clientServers) > 0 {
-			a.serverIndex = (a.serverIndex + 1) % len(a.clientServers)
-			a.switchToClientServer(a.serverIndex)
 		}
 
 	case "ctrl+shift+s":
@@ -1408,16 +1744,28 @@ func (a *App) cycleFocusReverse() {
 
 // getCurrentChannels returns channels for the current protocol server
 func (a *App) getCurrentChannels() []*models.Channel {
+	log.Printf("DEBUG getCurrentChannels: activeConn=%p (exists=%v), currentServer=%v",
+		a.activeConn, a.activeConn != nil, a.currentServer != nil)
 	if a.activeConn == nil || a.currentServer == nil {
+		log.Printf("DEBUG getCurrentChannels: Returning empty (nil activeConn or currentServer)")
 		return []*models.Channel{}
 	}
-	return a.activeConn.GetChannels(a.currentServer.ID)
+	channels := a.activeConn.GetChannels(a.currentServer.ID)
+	log.Printf("DEBUG getCurrentChannels: Got %d channels for server %s (ID=%s) from ServerConnection=%p",
+		len(channels),
+		func() string { if a.currentServer != nil { return a.currentServer.Name }; return "nil" }(),
+		a.currentServer.ID,
+		a.activeConn)
+	return channels
 }
 
 // navigateServerList navigates the client server list
 func (a *App) navigateServerList(delta int) {
-	// Total items = servers + add button (+)
-	totalItems := len(a.clientServers) + 1
+	// Navigate through servers only (removed "Manage Servers" button)
+	totalItems := len(a.clientServers)
+	if totalItems == 0 {
+		return
+	}
 
 	a.serverIndex += delta
 	if a.serverIndex < 0 {
@@ -1426,48 +1774,64 @@ func (a *App) navigateServerList(delta int) {
 		a.serverIndex = 0
 	}
 
-	// Only switch server if not on the (+) button
-	if a.serverIndex < len(a.clientServers) {
-		a.switchToClientServer(a.serverIndex)
-	}
+	a.switchToClientServer(a.serverIndex)
 }
 
 // navigateChannelList navigates the channel list for the current server
 func (a *App) navigateChannelList(delta int) {
+	log.Printf("DEBUG navigateChannelList: channelTree=%v, flatListLen=%d, currentChannel=%v",
+		a.channelTree != nil,
+		func() int { if a.channelTree != nil { return len(a.channelTree.FlatList) }; return 0 }(),
+		a.currentChannel != nil)
 	if a.channelTree == nil || len(a.channelTree.FlatList) == 0 {
+		log.Printf("DEBUG navigateChannelList: EARLY RETURN - channelTree is nil or empty")
 		return
 	}
 
 	// Find current channel in flat list
 	currentIdx := -1
 	for i, node := range a.channelTree.FlatList {
+		log.Printf("DEBUG navigateChannelList: FlatList[%d]: IsCategory=%v, ChannelName=%s",
+			i, node.IsCategory,
+			func() string { if node.Channel != nil { return node.Channel.Name }; return "nil" }())
 		if !node.IsCategory && a.currentChannel != nil && node.Channel.ID == a.currentChannel.ID {
 			currentIdx = i
+			log.Printf("DEBUG navigateChannelList: Found current channel at index %d", i)
 			break
 		}
 	}
+	log.Printf("DEBUG navigateChannelList: currentIdx=%d, delta=%d", currentIdx, delta)
 
 	// Navigate to next/previous channel (skip categories)
 	newIdx := currentIdx
+	iterations := 0
 	for {
 		newIdx += delta
+		iterations++
+		log.Printf("DEBUG navigateChannelList: iteration %d, newIdx=%d (before wrap)", iterations, newIdx)
 
 		// Wrap around
 		if newIdx < 0 {
 			newIdx = len(a.channelTree.FlatList) - 1
+			log.Printf("DEBUG navigateChannelList: Wrapped to end, newIdx=%d", newIdx)
 		} else if newIdx >= len(a.channelTree.FlatList) {
 			newIdx = 0
+			log.Printf("DEBUG navigateChannelList: Wrapped to start, newIdx=%d", newIdx)
 		}
 
 		// Stop if we've wrapped around back to start
 		if newIdx == currentIdx {
+			log.Printf("DEBUG navigateChannelList: Wrapped back to start, breaking")
 			break
 		}
 
 		// Found a channel (not a category)
 		if !a.channelTree.FlatList[newIdx].IsCategory {
+			log.Printf("DEBUG navigateChannelList: Found channel at index %d, selecting it", newIdx)
 			a.selectChannelByID(a.channelTree.FlatList[newIdx].Channel.ID)
 			break
+		} else {
+			log.Printf("DEBUG navigateChannelList: Index %d is a category, skipping", newIdx)
 		}
 	}
 }
@@ -1507,23 +1871,23 @@ func (a *App) reorderChannel(delta int) tea.Cmd {
 	}
 	targetNode := siblings[targetIdx]
 
-	// Normalize sibling positions to distinct values (i*10) before swapping,
-	// so equal-position channels (all new channels default to 0) still sort correctly.
+	// Normalize sibling SortOrder to distinct values (i*10) before swapping,
+	// so equal-SortOrder channels (all new channels default to 0) still sort correctly.
 	for i, sib := range siblings {
-		sib.Channel.Position = i * 10
+		sib.Channel.SortOrder = i * 10
 	}
 
-	// Swap positions between the current and target nodes (they share pointers with sc.Channels)
-	node.Channel.Position, targetNode.Channel.Position = targetNode.Channel.Position, node.Channel.Position
+	// Swap SortOrder between the current and target nodes (they share pointers with sc.Channels)
+	node.Channel.SortOrder, targetNode.Channel.SortOrder = targetNode.Channel.SortOrder, node.Channel.SortOrder
 
 	// Swap in the siblings slice so RebuildFlatList reflects the new order immediately
 	siblings[currentIdx], siblings[targetIdx] = siblings[targetIdx], siblings[currentIdx]
 
-	// Re-sort sc.Channels by position so future loadChannelTree calls use the correct order
+	// Re-sort sc.Channels by SortOrder so future loadChannelTree calls use the correct order
 	serverID := a.currentServer.ID
 	a.activeConn.mu.Lock()
 	sort.Slice(a.activeConn.Channels[serverID], func(i, j int) bool {
-		return a.activeConn.Channels[serverID][i].Position < a.activeConn.Channels[serverID][j].Position
+		return a.activeConn.Channels[serverID][i].SortOrder < a.activeConn.Channels[serverID][j].SortOrder
 	})
 	a.activeConn.mu.Unlock()
 
@@ -1533,8 +1897,8 @@ func (a *App) reorderChannel(delta int) tea.Cmd {
 	// Capture values before the goroutine closure
 	currID := node.Channel.ID
 	targetID := targetNode.Channel.ID
-	currPos := node.Channel.Position
-	targetPos := targetNode.Channel.Position
+	currSortOrder := node.Channel.SortOrder
+	targetSortOrder := targetNode.Channel.SortOrder
 	pServerID := serverID
 
 	return func() tea.Msg {
@@ -1545,7 +1909,7 @@ func (a *App) reorderChannel(delta int) tea.Cmd {
 		req1 := &protocol.ChannelUpdateRequest{
 			ServerID:  pServerID,
 			ChannelID: currID,
-			Position:  &currPos,
+			SortOrder: &currSortOrder,
 		}
 		if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req1); err == nil {
 			_ = conn.Connection.Send(msg)
@@ -1553,7 +1917,7 @@ func (a *App) reorderChannel(delta int) tea.Cmd {
 		req2 := &protocol.ChannelUpdateRequest{
 			ServerID:  pServerID,
 			ChannelID: targetID,
-			Position:  &targetPos,
+			SortOrder: &targetSortOrder,
 		}
 		if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req2); err == nil {
 			_ = conn.Connection.Send(msg)
@@ -1581,10 +1945,40 @@ func (a *App) navigateMessage(delta int) tea.Cmd {
 		a.messageNavIndex = len(messages) - 1
 	}
 
+	// PRE-CALCULATE scroll position BEFORE updating content
+	linePos := a.calculateMessageLinePosition(a.messageNavIndex)
+	viewportHeight := a.chatViewport.Height
+	targetOffset := linePos - (viewportHeight / 3)
+	if targetOffset < 0 {
+		targetOffset = 0
+	}
+
 	// Refresh viewport to show new highlight position
 	a.updateChatContent()
 
+	// IMMEDIATELY apply calculated offset after SetContent
+	// SetYOffset clamps to valid range internally
+	a.chatViewport.SetYOffset(targetOffset)
+
 	return nil
+}
+
+// extractFirstLineWithEllipsis extracts the first line of a message with ellipsis if truncated or multi-line
+func extractFirstLineWithEllipsis(content string, maxLen int) string {
+	lines := strings.Split(content, "\n")
+	firstLine := lines[0]
+
+	// Truncate if exceeds maxLen
+	if len(firstLine) > maxLen {
+		return firstLine[:maxLen] + "..."
+	}
+
+	// Add ellipsis if there are multiple lines
+	if len(lines) > 1 {
+		return firstLine + "..."
+	}
+
+	return firstLine
 }
 
 // copyMessageToClipboard copies the selected message or selection to the system clipboard
@@ -1619,6 +2013,362 @@ func (a *App) copyMessageToClipboard() tea.Cmd {
 	a.statusMessage = fmt.Sprintf("Copied %d characters", len(textToCopy))
 	a.statusError = false
 
+	return nil
+}
+
+// buildFlatMemberList creates a flat list of members in role-grouped order for navigation
+func (a *App) buildFlatMemberList() []*MemberDisplay {
+	if a.activeConn == nil {
+		return nil
+	}
+
+	a.activeConn.mu.RLock()
+	defer a.activeConn.mu.RUnlock()
+
+	var flatList []*MemberDisplay
+
+	// Group members by their highest role position and display order
+	type memberWithRole struct {
+		member       *MemberDisplay
+		pos          int
+		displayOrder int
+	}
+	var membersWithRoles []memberWithRole
+
+	for _, member := range a.activeConn.Members {
+		highestPos := 0
+		displayOrder := 0
+		for _, roleID := range member.Member.RoleIDs {
+			// Roles is a map[uuid.UUID][]*models.Role, iterate over all protocol servers
+			for _, roleList := range a.activeConn.Roles {
+				for _, r := range roleList {
+					if r.ID == roleID && r.Position > highestPos {
+						highestPos = r.Position
+						displayOrder = r.DisplayOrder
+					}
+				}
+			}
+		}
+		membersWithRoles = append(membersWithRoles, memberWithRole{
+			member:       member,
+			pos:          highestPos,
+			displayOrder: displayOrder,
+		})
+	}
+
+	// Sort by DisplayOrder ASC (lower = top), fallback to Position DESC (higher = top)
+	sort.Slice(membersWithRoles, func(i, j int) bool {
+		iOrder := membersWithRoles[i].displayOrder
+		jOrder := membersWithRoles[j].displayOrder
+
+		// If both have display order set, sort by display order ASC
+		if iOrder > 0 && jOrder > 0 {
+			if iOrder != jOrder {
+				return iOrder < jOrder
+			}
+			// Same display order, fallback to username
+			return membersWithRoles[i].member.User.Username < membersWithRoles[j].member.User.Username
+		}
+
+		// If only one has display order, that one comes first
+		if iOrder > 0 {
+			return true
+		}
+		if jOrder > 0 {
+			return false
+		}
+
+		// Neither has display order, use Position DESC (legacy behavior)
+		if membersWithRoles[i].pos != membersWithRoles[j].pos {
+			return membersWithRoles[i].pos > membersWithRoles[j].pos
+		}
+		// Within same role position, sort by username
+		return membersWithRoles[i].member.User.Username < membersWithRoles[j].member.User.Username
+	})
+
+	// Extract sorted members
+	for _, mwr := range membersWithRoles {
+		flatList = append(flatList, mwr.member)
+	}
+
+	return flatList
+}
+
+// navigateMemberList navigates through the member list
+func (a *App) navigateMemberList(delta int) {
+	flatMembers := a.buildFlatMemberList()
+	if len(flatMembers) == 0 {
+		return
+	}
+
+	a.selectedMemberIndex += delta
+
+	// Wrap around
+	if a.selectedMemberIndex < 0 {
+		a.selectedMemberIndex = len(flatMembers) - 1
+	} else if a.selectedMemberIndex >= len(flatMembers) {
+		a.selectedMemberIndex = 0
+	}
+}
+
+// closeMemberContextMenu closes the member context menu
+func (a *App) closeMemberContextMenu() {
+	a.memberContextMenu = nil
+}
+
+// openMemberContextMenu opens the context menu for the selected member
+func (a *App) openMemberContextMenu() tea.Cmd {
+	activeConn := a.getActiveConnection()
+	if activeConn == nil {
+		return nil
+	}
+
+	flatMembers := a.buildFlatMemberList()
+	if a.selectedMemberIndex >= len(flatMembers) {
+		return nil
+	}
+	targetMember := flatMembers[a.selectedMemberIndex]
+
+	// Build actions based on current user's permissions
+	actions := []MemberAction{
+		{Label: "Whisper", Key: "W", Handler: handleWhisperAction, RequiresPerm: 0},
+	}
+
+	// Check current user's permissions
+	currentUser := activeConn.User
+	if currentUser == nil {
+		a.memberContextMenu = &MemberContextMenu{
+			TargetMember:  targetMember,
+			Actions:       actions,
+			SelectedIndex: 0,
+		}
+		return nil
+	}
+
+	// Check if user can moderate this member
+	canModerate := a.canModerate(targetMember)
+
+	// Add moderation actions if user has permission and can moderate this member
+	if canModerate && a.hasPermission(currentUser, models.PermissionKickMembers) {
+		actions = append(actions,
+			MemberAction{Label: "Mute", Key: "M", Handler: handleMuteAction, RequiresPerm: models.PermissionKickMembers},
+			MemberAction{Label: "Kick", Key: "K", Handler: handleKickAction, RequiresPerm: models.PermissionKickMembers},
+			MemberAction{Label: "Timeout", Key: "T", Handler: handleTimeoutAction, RequiresPerm: models.PermissionKickMembers},
+		)
+	}
+
+	if canModerate && a.hasPermission(currentUser, models.PermissionBanMembers) {
+		actions = append(actions,
+			MemberAction{Label: "Ban", Key: "B", Handler: handleBanAction, RequiresPerm: models.PermissionBanMembers},
+		)
+	}
+
+	if a.hasPermission(currentUser, models.PermissionManageRoles) {
+		actions = append(actions,
+			MemberAction{Label: "Assign Role", Key: "R", Handler: handleRoleAction, RequiresPerm: models.PermissionManageRoles},
+		)
+	}
+
+	a.memberContextMenu = &MemberContextMenu{
+		TargetMember:  targetMember,
+		Actions:       actions,
+		SelectedIndex: 0,
+	}
+
+	return nil
+}
+
+// executeMemberAction executes the selected action from the context menu
+func (a *App) executeMemberAction() tea.Cmd {
+	if a.memberContextMenu == nil {
+		return nil
+	}
+
+	action := a.memberContextMenu.Actions[a.memberContextMenu.SelectedIndex]
+	cmd := action.Handler(a, a.memberContextMenu.TargetMember)
+	a.memberContextMenu = nil // Close menu
+	return cmd
+}
+
+// getActiveConnection returns the active server connection
+func (a *App) getActiveConnection() *ServerConnection {
+	return a.activeConn
+}
+
+// hasPermission checks if a user has a specific permission
+func (a *App) hasPermission(user *models.User, perm models.Permission) bool {
+	if user == nil || a.activeConn == nil {
+		return false
+	}
+
+	// Find the user's ServerMember to get their roles
+	var member *models.ServerMember
+	for _, m := range a.activeConn.Members {
+		if m.User.ID == user.ID {
+			member = m.Member
+			break
+		}
+	}
+
+	if member == nil {
+		return false
+	}
+
+	// Check all roles the member has
+	for _, roleID := range member.RoleIDs {
+		for _, roleList := range a.activeConn.Roles {
+			for _, r := range roleList {
+				if r.ID == roleID && r.HasPermission(perm) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// canModerate checks if current user can moderate the target member
+func (a *App) canModerate(targetMember *MemberDisplay) bool {
+	if a.activeConn == nil || a.activeConn.User == nil {
+		return false
+	}
+
+	currentUser := a.activeConn.User
+
+	// Can't moderate yourself
+	if currentUser.ID == targetMember.User.ID {
+		return false
+	}
+
+	// Get highest role positions
+	currentHighest := a.getHighestRolePosition(currentUser)
+	targetHighest := a.getHighestRolePosition(targetMember.User)
+
+	// Can only moderate members with lower role position
+	return currentHighest > targetHighest
+}
+
+// getHighestRolePosition returns the highest role position for a user
+func (a *App) getHighestRolePosition(user *models.User) int {
+	if a.activeConn == nil || user == nil {
+		return 0
+	}
+
+	// Find the user's ServerMember to get their roles
+	var member *models.ServerMember
+	for _, m := range a.activeConn.Members {
+		if m.User.ID == user.ID {
+			member = m.Member
+			break
+		}
+	}
+
+	if member == nil {
+		return 0
+	}
+
+	highest := 0
+	for _, roleID := range member.RoleIDs {
+		for _, roleList := range a.activeConn.Roles {
+			for _, r := range roleList {
+				if r.ID == roleID && r.Position > highest {
+					highest = r.Position
+				}
+			}
+		}
+	}
+
+	return highest
+}
+
+// Action handlers for member context menu
+
+// handleWhisperAction pre-fills the input with a whisper command
+func handleWhisperAction(a *App, member *MemberDisplay) tea.Cmd {
+	// Pre-fill input with "/whisper @username "
+	a.input.SetValue(fmt.Sprintf("/whisper @%s ", member.User.Username))
+	a.focus = FocusInput
+	a.input.Focus()
+	a.statusMessage = "Type your whisper message"
+	a.statusError = false
+	return nil
+}
+
+// handleMuteAction mutes a member
+func handleMuteAction(a *App, member *MemberDisplay) tea.Cmd {
+	// Execute mute command via command handler
+	ch := NewCommandHandler(a)
+	msg, err := ch.Execute(&Command{
+		Name: "mute",
+		Args: []string{fmt.Sprintf("@%s", member.User.Username), "60"}, // 60 min default
+	})
+
+	if err != nil {
+		a.statusMessage = err.Error()
+		a.statusError = true
+	} else {
+		a.statusMessage = msg
+		a.statusError = false
+	}
+	return nil
+}
+
+// handleKickAction kicks a member from the server
+func handleKickAction(a *App, member *MemberDisplay) tea.Cmd {
+	ch := NewCommandHandler(a)
+	msg, err := ch.Execute(&Command{
+		Name: "kick",
+		Args: []string{fmt.Sprintf("@%s", member.User.Username)},
+	})
+
+	if err != nil {
+		a.statusMessage = err.Error()
+		a.statusError = true
+	} else {
+		a.statusMessage = msg
+		a.statusError = false
+	}
+	return nil
+}
+
+// handleBanAction bans a member from the server
+func handleBanAction(a *App, member *MemberDisplay) tea.Cmd {
+	ch := NewCommandHandler(a)
+	msg, err := ch.Execute(&Command{
+		Name: "ban",
+		Args: []string{fmt.Sprintf("@%s", member.User.Username)},
+	})
+
+	if err != nil {
+		a.statusMessage = err.Error()
+		a.statusError = true
+	} else {
+		a.statusMessage = msg
+		a.statusError = false
+	}
+	return nil
+}
+
+// handleTimeoutAction pre-fills the input for timeout
+func handleTimeoutAction(a *App, member *MemberDisplay) tea.Cmd {
+	// Pre-fill input with "/timeout @username " so user can add duration
+	a.input.SetValue(fmt.Sprintf("/timeout @%s ", member.User.Username))
+	a.focus = FocusInput
+	a.input.Focus()
+	a.statusMessage = "Enter timeout duration in minutes"
+	a.statusError = false
+	return nil
+}
+
+// handleRoleAction pre-fills the input for role assignment
+func handleRoleAction(a *App, member *MemberDisplay) tea.Cmd {
+	// Pre-fill input for role assignment
+	a.input.SetValue(fmt.Sprintf("/role assign @%s ", member.User.Username))
+	a.focus = FocusInput
+	a.input.Focus()
+	a.statusMessage = "Enter role name to assign"
+	a.statusError = false
 	return nil
 }
 
@@ -1746,6 +2496,19 @@ func (a *App) closeLinkBrowser() {
 		a.messageNavMode = true
 		a.focus = FocusMessageNav
 	}
+}
+
+// openHelpModal opens the help modal with the provided content
+func (a *App) openHelpModal(content string) {
+	a.helpModalState = &HelpModalState{
+		Content:      content,
+		ScrollOffset: 0,
+	}
+}
+
+// closeHelpModal closes the help modal
+func (a *App) closeHelpModal() {
+	a.helpModalState = nil
 }
 
 // openURL opens a URL in the default browser
@@ -2008,12 +2771,16 @@ func (a *App) getSelectedText() string {
 // selectChannelByID selects a channel by its UUID, requesting message history from the server
 func (a *App) selectChannelByID(channelID uuid.UUID) {
 	channels := a.getCurrentChannels()
+	log.Printf("DEBUG selectChannelByID: Looking for channel %s in %d channels", channelID, len(channels))
 	for i, ch := range channels {
+		log.Printf("DEBUG selectChannelByID: channels[%d] = %s (ID=%s)", i, ch.Name, ch.ID)
 		if ch.ID == channelID {
+			log.Printf("DEBUG selectChannelByID: FOUND at index %d, calling selectChannel(%d)", i, i)
 			a.selectChannel(i)
 			return
 		}
 	}
+	log.Printf("DEBUG selectChannelByID: Channel %s NOT FOUND in channels array!", channelID)
 }
 
 // handleCollapseCategory collapses the current channel's parent category (or current category if on one)
@@ -2081,7 +2848,10 @@ func (a *App) switchToClientServer(index int) {
 	a.currentClientServer = a.clientServers[index]
 
 	// Get or create connection
+	oldConn := a.activeConn
 	a.activeConn = a.connMgr.GetConnection(a.currentClientServer.ID)
+	log.Printf("DEBUG switchToClientServer: Changed activeConn from %p to %p (clientServerID=%s, name=%s)",
+		oldConn, a.activeConn, a.currentClientServer.ID, a.currentClientServer.Name)
 
 	// If not connected, clear stale state and show prompt
 	if a.activeConn == nil || a.activeConn.GetState() != StateReady {
@@ -2126,16 +2896,24 @@ func (a *App) loadChannelsForServer() {
 
 // loadChannelTree builds the channel tree from the current server's channels
 func (a *App) loadChannelTree() {
+	log.Printf("DEBUG loadChannelTree: activeConn=%v, currentServer=%v, view=%v",
+		a.activeConn != nil, a.currentServer != nil, a.view)
 	if a.activeConn == nil || a.currentServer == nil {
+		log.Printf("DEBUG loadChannelTree: Setting channelTree to nil (no activeConn or currentServer)")
 		a.channelTree = nil
 		return
 	}
 
 	// Get channels for current server
 	channels := a.activeConn.GetChannels(a.currentServer.ID)
+	log.Printf("DEBUG loadChannelTree: Got %d channels for server %s",
+		len(channels),
+		func() string { if a.currentServer != nil { return a.currentServer.Name }; return "nil" }())
 
 	// Build tree
 	a.channelTree = BuildChannelTree(channels)
+	log.Printf("DEBUG loadChannelTree: Built channelTree with %d items in FlatList",
+		func() int { if a.channelTree != nil { return len(a.channelTree.FlatList) }; return 0 }())
 
 	// Load collapsed state from config
 	if a.uiConfig != nil && a.uiConfig.CollapsedCategories != nil {
@@ -2311,16 +3089,14 @@ func (a *App) updateChatContent() {
 		// Check if this is a system message (either explicit flag or legacy system author)
 		isSystemMsg := msg.IsSystem || msg.AuthorName == "System"
 
-		// Create highlight style for selected message (Level 1 only)
-		// Note: Manual per-line padding will be applied before background
-		// Level 2: No background - just show cursor inline
-		// The cursor and selection will be rendered within the message content
-
 		// In Level 2, prepare to insert cursor and selection into message content
 		messageContentWithCursor := msg.Content
 		if isInLevel2 && !isSystemMsg {
 			messageContentWithCursor = a.insertCursorIntoMessage(msg.Content)
 		}
+
+		// Note: Reply quotes are now embedded inline in message content (press 'r' to reply)
+		// No separate reply indicator rendering needed
 
 		if msg.ShowHeader && !isSystemMsg {
 			// Render author line with full width background (non-system messages)
@@ -2328,41 +3104,93 @@ func (a *App) updateChatContent() {
 			if msg.IsOwn {
 				authorStyle = a.styles.UsernameSelf
 			}
-			timestamp := msg.CreatedAt.Format("15:04")
+			timestamp := msg.CreatedAt.Format("01/02/06 15:04")
 
 			// Render author name with its style
 			authorText := authorStyle.Render(msg.AuthorName)
-			// Render timestamp with background
+
+			// Add [DM] indicator and recipient for whisper messages
+			dmIndicator := ""
+			if msg.IsWhisper {
+				dmStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Orange)).
+					Bold(true)
+				recipientStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Purple))
+
+				recipientText := ""
+				if msg.RecipientName != "" {
+					recipientText = " " + recipientStyle.Render(msg.RecipientName)
+				}
+				dmIndicator = " " + dmStyle.Render("[DM]") + recipientText
+			}
+
+			// Render timestamp
 			timestampStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Semantic.ChatTimestamp)).
-				Faint(true)
+				Foreground(lipgloss.Color(a.theme.Semantic.ChatTimestamp))
 			timestampText := timestampStyle.Render(timestamp)
 
-			header := fmt.Sprintf("%s  %s", authorText, timestampText)
-
-			// Calculate header width and pad to viewport width
-			headerWidth := lipgloss.Width(header)
-			leftPad := 0 // Left-aligned messages
-			if msg.IsOwn {
-				leftPad = viewportWidth - headerWidth
-				if leftPad < 0 {
-					leftPad = 0
-				}
+			// Add (edited) indicator if message was edited
+			editedIndicator := ""
+			if msg.EditedAt != nil {
+				editedStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Semantic.ChatTimestamp)).
+					Italic(true)
+				editedIndicator = " " + editedStyle.Render("(edited)")
 			}
-			rightPad := viewportWidth - headerWidth - leftPad
-			if rightPad < 0 {
-				rightPad = 0
-			}
-			paddedHeader := strings.Repeat(" ", leftPad) + header + strings.Repeat(" ", rightPad)
 
-			// Apply highlight background if selected
+			header := fmt.Sprintf("%s%s  %s%s", authorText, dmIndicator, timestampText, editedIndicator)
+
+			// Apply alignment and highlighting
 			var headerLine string
 			if isSelected || isInLevel2 {
-				highlightStyle := lipgloss.NewStyle().
-					Background(lipgloss.Color(a.theme.Colors.Selection))
-				headerLine = highlightStyle.Render(paddedHeader)
+				// Build header from PLAIN TEXT (no pre-applied colors)
+				// This prevents ANSI code interference when applying background highlight
+				plainHeader := msg.AuthorName
+				if msg.IsWhisper {
+					// Add plain text [DM] indicator
+					plainHeader += " [DM]"
+					if msg.RecipientName != "" {
+						plainHeader += " " + msg.RecipientName
+					}
+				}
+				plainHeader += "  " + timestamp
+				if msg.EditedAt != nil {
+					plainHeader += " (edited)"
+				}
+
+				// Apply highlight style with background - foreground will be theme color
+				if msg.IsOwn {
+					// Right-align with highlight
+					headerStyle := lipgloss.NewStyle().
+						Background(lipgloss.Color(a.theme.Colors.Selection)).
+						Width(viewportWidth).
+						Align(lipgloss.Right)
+					headerLine = headerStyle.Render(plainHeader)
+				} else {
+					// Left-align with highlight and left padding
+					headerStyle := lipgloss.NewStyle().
+						Background(lipgloss.Color(a.theme.Colors.Selection)).
+						Width(viewportWidth).
+						PaddingLeft(2)
+					headerLine = headerStyle.Render(plainHeader)
+				}
 			} else {
-				headerLine = paddedHeader
+				// No highlight
+				if msg.IsOwn {
+					// Right-align: add left padding
+					headerWidth := lipgloss.Width(header)
+					if headerWidth < viewportWidth {
+						padding := viewportWidth - headerWidth
+						headerLine = strings.Repeat(" ", padding) + header
+					} else {
+						headerLine = header
+					}
+				} else {
+					// Left-align with left padding to match right side visual spacing
+					lineStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
+					headerLine = lineStyle.Render(header)
+				}
 			}
 			content.WriteString(headerLine)
 			content.WriteString("\n")
@@ -2390,39 +3218,50 @@ func (a *App) updateChatContent() {
 			line := barStyle.Render(leftBar) + msgText + barStyle.Render(rightBar)
 			contentLine = lipgloss.NewStyle().Width(viewportWidth).Render(line)
 		} else if msg.IsWhisper {
-			// Whisper: render with distinctive orange/pink color
+			// Whisper: render with alignment based on ownership
+			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth, msg.IsOwn)
+			// Apply whisper styling (orange/italic) to the rendered content
 			whisperStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Orange)).
-				Italic(true).
-				Width(viewportWidth)
-			contentLine = whisperStyle.Render(messageContentWithCursor)
+				Italic(true)
+			contentLine = whisperStyle.Render(contentLine)
 		} else {
 			// Regular messages — highlight @mentions of the current user
-			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth)
+			// Pass alignment based on message ownership
+			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth, msg.IsOwn)
 		}
 
-		// Apply per-line padding and highlight if selected (Level 1 or Level 2)
+		// Apply width and highlighting
 		if isSelected || isInLevel2 {
-			// Split content into lines and pad each line individually
-			lines := strings.Split(contentLine, "\n")
-			var paddedLines []string
-			for _, line := range lines {
-				lineWidth := lipgloss.Width(line)
-				linePadding := viewportWidth - lineWidth
-				if linePadding < 0 {
-					linePadding = 0
-				}
-				paddedLine := line + strings.Repeat(" ", linePadding)
-				paddedLines = append(paddedLines, paddedLine)
+			// Apply highlight with alignment
+			if msg.IsOwn {
+				// Right-align with highlight
+				contentStyle := lipgloss.NewStyle().
+					Background(lipgloss.Color(a.theme.Colors.Selection)).
+					Width(viewportWidth).
+					Align(lipgloss.Right)
+				contentLine = contentStyle.Render(contentLine)
+			} else {
+				// Left-align with highlight and left padding
+				contentStyle := lipgloss.NewStyle().
+					Background(lipgloss.Color(a.theme.Colors.Selection)).
+					Width(viewportWidth).
+					PaddingLeft(2)
+				contentLine = contentStyle.Render(contentLine)
 			}
-			paddedContent := strings.Join(paddedLines, "\n")
-
-			highlightStyle := lipgloss.NewStyle().
-				Background(lipgloss.Color(a.theme.Colors.Selection))
-			contentLine = highlightStyle.Render(paddedContent)
+		} else {
+			// No highlight - apply width for proper formatting
+			contentStyle := lipgloss.NewStyle().Width(viewportWidth)
+			if msg.IsOwn {
+				contentStyle = contentStyle.Align(lipgloss.Right)
+			} else {
+				// Left-align with left padding to match right side visual spacing
+				contentStyle = contentStyle.PaddingLeft(2)
+			}
+			contentLine = contentStyle.Render(contentLine)
 		}
 		content.WriteString(contentLine)
-		content.WriteString("\n")
+		content.WriteString("\n\n") // Add blank line between messages
 	}
 
 	a.chatViewport.SetContent(content.String())
@@ -2440,7 +3279,7 @@ func osc8Link(url, styledText string) string {
 	return "\033]8;;" + url + st + styledText + "\033]8;;" + st
 }
 
-func (a *App) renderMessageContent(text string, width int) string {
+func (a *App) renderMessageContent(text string, width int, rightAlign bool) string {
 	// Determine current user's alias
 	var alias string
 	if a.activeConn != nil && a.activeConn.User != nil {
@@ -2458,11 +3297,30 @@ func (a *App) renderMessageContent(text string, width int) string {
 
 	// renderLine processes a single line (no \n) applying URL and @mention styling.
 	renderLine := func(line string) string {
+		// Check if this is a reply quote line (starts with "↩")
+		if strings.HasPrefix(line, "↩ ") {
+			// Apply gray italic styling to the entire quote line
+			replyStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240")).  // Dim gray (same as input box)
+				Italic(true)
+			return replyStyle.Render(line)
+		}
+
 		var out strings.Builder
 		seg := line
 		for len(seg) > 0 {
 			urlLoc := urlRegex.FindStringIndex(seg)
 			mentionLoc := []int{-1, -1}
+			everyoneLoc := []int{-1, -1}
+
+			// Check for @everyone or @here
+			if idx := strings.Index(strings.ToLower(seg), "@everyone"); idx != -1 {
+				everyoneLoc = []int{idx, idx + len("@everyone")}
+			} else if idx := strings.Index(strings.ToLower(seg), "@here"); idx != -1 {
+				everyoneLoc = []int{idx, idx + len("@here")}
+			}
+
+			// Check for personal mention
 			if alias != "" {
 				token := "@" + alias
 				if idx := strings.Index(strings.ToLower(seg), strings.ToLower(token)); idx != -1 {
@@ -2472,6 +3330,9 @@ func (a *App) renderMessageContent(text string, width int) string {
 
 			useURL := urlLoc != nil
 			useMention := mentionLoc[0] != -1
+			useEveryone := everyoneLoc[0] != -1
+
+			// Determine which match comes first
 			if useURL && useMention {
 				if mentionLoc[0] < urlLoc[0] {
 					useURL = false
@@ -2479,8 +3340,28 @@ func (a *App) renderMessageContent(text string, width int) string {
 					useMention = false
 				}
 			}
+			if useURL && useEveryone {
+				if everyoneLoc[0] < urlLoc[0] {
+					useURL = false
+				} else {
+					useEveryone = false
+				}
+			}
+			if useMention && useEveryone {
+				if everyoneLoc[0] < mentionLoc[0] {
+					useMention = false
+				} else {
+					useEveryone = false
+				}
+			}
 
 			switch {
+			case useEveryone:
+				if everyoneLoc[0] > 0 {
+					out.WriteString(msgStyle.Render(seg[:everyoneLoc[0]]))
+				}
+				out.WriteString(mentionStyle.Render(seg[everyoneLoc[0]:everyoneLoc[1]]))
+				seg = seg[everyoneLoc[1]:]
 			case useMention:
 				if mentionLoc[0] > 0 {
 					out.WriteString(msgStyle.Render(seg[:mentionLoc[0]]))
@@ -2508,8 +3389,11 @@ func (a *App) renderMessageContent(text string, width int) string {
 	// line, which shifts the link far to the right with blank space before it.
 	lines := strings.Split(text, "\n")
 	renderedLines := make([]string, len(lines))
+
+	// Just render each line with styling (mentions, links) - no width/alignment here
+	// Width and alignment will be handled by the caller
 	for i, line := range lines {
-		renderedLines[i] = lipgloss.NewStyle().Width(width).Render(renderLine(line))
+		renderedLines[i] = renderLine(line)
 	}
 	return strings.Join(renderedLines, "\n")
 }
@@ -2639,6 +3523,72 @@ func (a *App) updateViewportSize() {
 	}
 }
 
+// isCursorOverChatViewport checks if mouse coordinates are within chat viewport bounds
+func (a *App) isCursorOverChatViewport(x, y int) bool {
+	// Match layout calculation from views.go:574-583
+	availableWidth := a.width - 1
+	serverIconsWidth := 22
+	channelsWidth := 26
+	membersWidth := 30
+	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
+
+	// Adjust for narrow terminals
+	if chatWidth < 60 {
+		membersWidth = 20
+		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
+	}
+
+	// Chat panel X boundaries
+	chatLeftX := serverIconsWidth + channelsWidth // 48
+	chatRightX := chatLeftX + chatWidth
+
+	// Y boundaries (entire panel height minus status bar)
+	chatTopY := 0
+	chatBottomY := a.height - 2
+
+	return x >= chatLeftX && x < chatRightX && y >= chatTopY && y < chatBottomY
+}
+
+// calculateMessageLinePosition returns the starting line number (0-based) of a message
+// in the rendered chat viewport content
+func (a *App) calculateMessageLinePosition(messageIndex int) int {
+	if a.activeConn == nil || a.currentChannel == nil {
+		return -1
+	}
+
+	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	if messageIndex < 0 || messageIndex >= len(messages) {
+		return -1
+	}
+
+	linePos := 0
+
+	// Count lines for all messages before the target
+	// Must match exactly how updateChatContent() renders messages
+	for i := 0; i < messageIndex; i++ {
+		msg := messages[i]
+
+		// Header line (if shown)
+		if msg.ShowHeader && !(msg.IsSystem || msg.AuthorName == "System") {
+			linePos += 1
+		}
+
+		// Content lines - count actual newlines in content (no word wrapping)
+		// This matches how renderMessageContent() works (splits by \n only)
+		if msg.Content == "" {
+			linePos += 1 // Empty message still takes one line
+		} else {
+			contentLines := strings.Split(msg.Content, "\n")
+			linePos += len(contentLines)
+		}
+
+		// Blank separator: "\n\n" ends the last content line + adds 1 blank line
+		linePos += 1
+	}
+
+	return linePos
+}
+
 // handleSendMessage sends the current input as a message
 func (a *App) handleSendMessage() tea.Cmd {
 	content := strings.TrimSpace(a.input.Value())
@@ -2653,13 +3603,62 @@ func (a *App) handleSendMessage() tea.Cmd {
 		return a.handleSlashCommand(content)
 	}
 
+	// Check if we're editing a message
+	if a.editingMessageID != nil && a.editingChannelID != nil && a.activeConn != nil && a.currentClientServer != nil {
+		messageID := *a.editingMessageID
+		channelID := *a.editingChannelID
+		serverID := a.currentClientServer.ID
+
+		// Clear editing state
+		a.editingMessageID = nil
+		a.editingChannelID = nil
+
+		// Send edit message request
+		payload := &protocol.EditMessagePayload{
+			MessageID: messageID,
+			ChannelID: channelID,
+			Content:   content,
+		}
+
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return func() tea.Msg {
+				return ErrorMsg{Error: fmt.Sprintf("Failed to marshal edit payload: %v", err)}
+			}
+		}
+
+		msg := &protocol.Message{
+			Op:   protocol.OpEditMessage,
+			Data: data,
+		}
+
+		return func() tea.Msg {
+			if err := a.connMgr.SendRaw(serverID, msg); err != nil {
+				return ErrorMsg{Error: fmt.Sprintf("Failed to edit message: %v", err)}
+			}
+			return nil
+		}
+	}
+
 	// Create and send message via connection manager
 	if a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil {
 		serverID := a.currentClientServer.ID
 		channelID := a.currentChannel.ID
 
+		// If replying, embed quote inline in message content
+		var replyToID *uuid.UUID
+		if a.replyTarget != nil {
+			// Prepend quoted message to content (inline, will be styled on display)
+			quotedContent := fmt.Sprintf("↩ %s: %s\n%s", a.replyTarget.AuthorName, a.replyQuote, content)
+			content = quotedContent
+			replyToID = &a.replyTarget.ID
+			// Clear reply state after embedding
+			a.replyTarget = nil
+			a.replyQuote = ""
+		}
+
 		return func() tea.Msg {
-			if err := a.connMgr.SendMessage(serverID, channelID, content); err != nil {
+			if err := a.connMgr.SendMessage(serverID, channelID, content, replyToID); err != nil {
 				return ErrorMsg{Error: fmt.Sprintf("Failed to send message: %v", err)}
 			}
 			return nil
@@ -2685,11 +3684,9 @@ func (a *App) handleSlashCommand(input string) tea.Cmd {
 		return nil
 	}
 
-	// Special handling for help command - display in chat area
+	// Special handling for help command - display in modal overlay
 	if cmd.Name == "help" {
-		a.displayLocalSystemMessage(result)
-		a.statusMessage = ""
-		a.statusError = false
+		a.openHelpModal(result)
 	} else {
 		a.statusMessage = result
 		a.statusError = false
@@ -2809,20 +3806,31 @@ func (a *App) handleTabCompletion() {
 
 	// Available commands
 	commands := []string{
+		"ban",
 		"create-channel",
 		"create-category",
+		"create-group",
+		"create-role",
 		"delete-channel",
 		"delete-category",
-		"rename-channel",
-		"move-channel",
-		"theme",
-		"mute",
-		"unmute",
-		"role",
-		"kick",
-		"ban",
-		"whisper",
+		"delete-group",
 		"help",
+		"kick",
+		"links",
+		"move-channel",
+		"mute",
+		"pin",
+		"rename-channel",
+		"role",
+		"roles",
+		"status",
+		"theme",
+		"timeout",
+		"title",
+		"unban",
+		"unmute",
+		"unpin",
+		"whisper",
 	}
 
 	// Find matching commands
@@ -2882,6 +3890,12 @@ type ConnectionReadyMsg struct {
 // afkCheckMsg is fired periodically to check for AFK inactivity
 type afkCheckMsg struct{ t time.Time }
 
+// exitNavModeMsg signals to exit message navigation mode after key handling
+type exitNavModeMsg struct {
+	setFocus       bool
+	enableEditMode bool
+}
+
 // typingTickMsg drives the typing indicator animation and expiry pruning
 type typingTickMsg time.Time
 
@@ -2933,6 +3947,8 @@ type ProtocolMsg struct {
 func (a *App) SetTheme(theme *themes.Theme) {
 	a.theme = theme
 	a.styles = theme.BuildStyles()
+	// Refresh chat viewport with new theme colors
+	a.updateChatContent()
 }
 
 // SetToken sets the authentication token for the active connection
@@ -3048,7 +4064,10 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	// We also set a.activeConn here to correct any race from connectServerAsync goroutines
 	// (multiple servers connecting in parallel can overwrite a.activeConn from different goroutines).
 	if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
+		oldConn := a.activeConn
 		a.activeConn = sc // ensure activeConn points to the selected server
+		log.Printf("DEBUG handleReady: Changed activeConn from %p to %p (serverID=%s, currentClientServer=%s)",
+			oldConn, a.activeConn, serverID, a.currentClientServer.Name)
 		// Select first protocol server if available
 		if len(payload.Servers) > 0 {
 			a.currentServer = payload.Servers[0]
@@ -3068,6 +4087,17 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 	sc := a.connMgr.GetConnection(serverID)
 	if sc == nil {
 		return nil
+	}
+
+	// Check if this is an error message (OpDispatch with no Type field or empty Type)
+	if msg.Type == "" {
+		var errorPayload protocol.ErrorPayload
+		if err := json.Unmarshal(msg.Data, &errorPayload); err == nil {
+			// Successfully parsed error payload - display it to user
+			a.statusMessage = fmt.Sprintf("Error: %s", errorPayload.Message)
+			log.Printf("Server error [code %d]: %s", errorPayload.Code, errorPayload.Message)
+			return nil
+		}
 	}
 
 	switch msg.Type {
@@ -3134,18 +4164,64 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		log.Printf("Received SERVER_CREATE for %s: %d channels, %d members, %d roles",
 			payload.Server.Name, len(payload.Channels), len(displays), len(payload.Roles))
 
+		// Debug logging for channel selection
+		log.Printf("DEBUG: activeConn=%v, activeConn.ServerID=%v, serverID=%v",
+			a.activeConn != nil,
+			func() uuid.UUID { if a.activeConn != nil { return a.activeConn.ServerID }; return uuid.Nil }(),
+			serverID)
+		log.Printf("DEBUG: currentServer=%v, currentServer.ID=%v, payload.Server.ID=%v",
+			a.currentServer != nil,
+			func() uuid.UUID { if a.currentServer != nil { return a.currentServer.ID }; return uuid.Nil }(),
+			payload.Server.ID)
+
 		// If this is the active connection and current server, update UI
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			log.Printf("DEBUG: First condition passed (activeConn matches)")
 			if a.currentServer != nil && a.currentServer.ID == payload.Server.ID {
+				log.Printf("DEBUG: Second condition passed (currentServer matches), loading channels")
 				a.loadChannelTree()
 				if a.currentChannel == nil && len(payload.Channels) > 0 {
 					// First connection: select the first channel
+					log.Printf("DEBUG: Selecting first channel")
 					a.channelIndex = 0
 					a.selectChannel(0)
 				} else if a.currentChannel != nil {
 					// Reconnect: re-request history for the channel we were viewing
 					// (message history may be stale or empty after a forced disconnect)
+					log.Printf("DEBUG: Re-selecting current channel")
 					a.selectChannelByID(a.currentChannel.ID)
+				}
+			} else {
+				log.Printf("DEBUG: Second condition FAILED - currentServer=%v matches payload=%v",
+					func() uuid.UUID { if a.currentServer != nil { return a.currentServer.ID }; return uuid.Nil }(),
+					payload.Server.ID)
+			}
+		} else {
+			log.Printf("DEBUG: First condition FAILED - activeConn.ServerID=%v vs serverID=%v",
+				func() uuid.UUID { if a.activeConn != nil { return a.activeConn.ServerID }; return uuid.Nil }(),
+				serverID)
+		}
+
+		// FALLBACK: If this is the currently selected client server but conditions above failed,
+		// ensure channels are loaded anyway (fixes race condition on first login)
+		if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
+			if a.channelTree == nil || len(a.channelTree.FlatList) == 0 {
+				log.Printf("DEBUG: FALLBACK - Current client server matches but channelTree not loaded, forcing load")
+				// Set activeConn and currentServer if not already set
+				if a.activeConn == nil {
+					oldConn := a.activeConn
+					a.activeConn = sc
+					log.Printf("DEBUG handleReady FALLBACK: Changed activeConn from %p to %p (serverID=%s)",
+						oldConn, a.activeConn, serverID)
+				}
+				if a.currentServer == nil && len(sc.Servers) > 0 {
+					a.currentServer = sc.Servers[0]
+				}
+				// Force load channels
+				a.loadChannelTree()
+				if a.currentChannel == nil && len(payload.Channels) > 0 {
+					a.channelIndex = 0
+					a.selectChannel(0)
 				}
 			}
 		}
@@ -3177,8 +4253,15 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				a.unreadCounts[serverID] = make(map[uuid.UUID]int)
 			}
 			a.unreadCounts[serverID][payload.Message.ChannelID]++
-			// Check for @mention using the authenticated user's alias
+			// Check for @mention (personal mention or @everyone/@here)
+			hasMention := false
 			if sc.User != nil && containsMention(payload.Message.Content, sc.User.Username) {
+				hasMention = true
+			}
+			if payload.Message.MentionEveryone {
+				hasMention = true
+			}
+			if hasMention {
 				if a.mentionCounts[serverID] == nil {
 					a.mentionCounts[serverID] = make(map[uuid.UUID]int)
 				}
@@ -3227,13 +4310,33 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		// Add historical messages
 		for _, msgDisplay := range payload.Messages {
 			isSystem := msgDisplay.Type == models.MessageTypeSystem
+			isWhisper := msgDisplay.IsWhisper
+
+			// System messages have no author
+			authorName := ""
+			recipientName := ""
+			authorColor := a.theme.Colors.Purple
+			if isWhisper {
+				authorColor = a.theme.Colors.Orange
+			}
+			isOwn := false
+			if msgDisplay.Author != nil {
+				authorName = msgDisplay.Author.Username
+				isOwn = msgDisplay.Author.ID == currentUserID
+			}
+			if msgDisplay.Recipient != nil {
+				recipientName = msgDisplay.Recipient.Username
+			}
+
 			display := &MessageDisplay{
-				Message:     msgDisplay.Message,
-				AuthorName:  msgDisplay.Author.Username,
-				AuthorColor: a.theme.Colors.Purple, // TODO: Use user color from role
-				IsOwn:       msgDisplay.Author.ID == currentUserID,
-				ShowHeader:  !isSystem,
-				IsSystem:    isSystem,
+				Message:       msgDisplay.Message,
+				AuthorName:    authorName,
+				RecipientName: recipientName,
+				AuthorColor:   authorColor,
+				IsOwn:         isOwn,
+				ShowHeader:    !isSystem,
+				IsWhisper:     isWhisper,
+				IsSystem:      isSystem,
 			}
 			sc.Messages[payload.ChannelID] = append(
 				sc.Messages[payload.ChannelID],
@@ -3254,6 +4357,63 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			a.scrollToBottom()
 		}
 
+	case protocol.EventMessageUpdate:
+		// Parse message update payload
+		var payload protocol.MessageUpdatePayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse MESSAGE_UPDATE payload: %v", err)
+			return nil
+		}
+
+		// Update message in connection's message history
+		sc.mu.Lock()
+		if messages, ok := sc.Messages[payload.ChannelID]; ok {
+			for _, msg := range messages {
+				if msg.ID == payload.ID {
+					msg.Content = payload.Content
+					msg.EditedAt = payload.EditedAt
+					break
+				}
+			}
+		}
+		sc.mu.Unlock()
+
+		// Update UI if this is for the active connection and current channel
+		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			if a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
+				a.updateChatContent()
+			}
+		}
+
+	case protocol.EventMessageDelete:
+		// Parse message delete payload
+		var payload protocol.MessageDeletePayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse MESSAGE_DELETE payload: %v", err)
+			return nil
+		}
+
+		// Remove message from connection's message history
+		sc.mu.Lock()
+		if messages, ok := sc.Messages[payload.ChannelID]; ok {
+			// Filter out the deleted message
+			filtered := make([]*MessageDisplay, 0, len(messages))
+			for _, msg := range messages {
+				if msg.ID != payload.ID {
+					filtered = append(filtered, msg)
+				}
+			}
+			sc.Messages[payload.ChannelID] = filtered
+		}
+		sc.mu.Unlock()
+
+		// Update UI if this is for the active connection and current channel
+		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			if a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
+				a.updateChatContent()
+			}
+		}
+
 	case protocol.EventPresenceUpdate:
 		var payload protocol.PresenceUpdateEventPayload
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
@@ -3264,6 +4424,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		for _, m := range sc.Members {
 			if m.User.ID == payload.User.ID {
 				m.User.Status = payload.Status
+				m.User.StatusText = payload.StatusText
 				break
 			}
 		}
@@ -3353,34 +4514,77 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		sc.mu.Unlock()
 
+	case protocol.EventTitleUpdate:
+		var payload protocol.AssignTitlePayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse TITLE_UPDATE payload: %v", err)
+			return nil
+		}
+
+		// Update member title in local state
+		sc.mu.Lock()
+		for _, member := range sc.Members {
+			if member.User != nil && member.User.ID == payload.UserID {
+				if member.Member != nil {
+					member.Member.CustomTitle = payload.Title
+				}
+				break
+			}
+		}
+		sc.mu.Unlock()
+
+		log.Printf("Title updated for user %s: %s", payload.UserID, payload.Title)
+
 	case protocol.EventWhisperCreate:
 		var whisperPayload protocol.WhisperCreatePayload
 		if err := json.Unmarshal(msg.Data, &whisperPayload); err != nil {
 			log.Printf("Failed to parse WHISPER_CREATE payload: %v", err)
 			return nil
 		}
-		var chID uuid.UUID
-		if a.currentChannel != nil {
-			chID = a.currentChannel.ID
+		isOwn := sc.User != nil && whisperPayload.FromUser.ID == sc.User.ID
+		recipientName := ""
+		if whisperPayload.ToUser != nil {
+			recipientName = whisperPayload.ToUser.Username
 		}
 		display := &MessageDisplay{
 			Message: &models.Message{
 				ID:        uuid.New(),
-				ChannelID: chID,
+				ChannelID: whisperPayload.ChannelID,
 				AuthorID:  whisperPayload.FromUser.ID,
-				Content:   "[DM] " + whisperPayload.Content,
+				Content:   whisperPayload.Content,
 				CreatedAt: whisperPayload.Timestamp,
 			},
-			AuthorName:  whisperPayload.FromUser.Username,
-			AuthorColor: a.theme.Colors.Orange,
-			IsOwn:       sc.User != nil && whisperPayload.FromUser.ID == sc.User.ID,
-			ShowHeader:  true,
-			IsWhisper:   true,
+			AuthorName:    whisperPayload.FromUser.Username,
+			RecipientName: recipientName,
+			AuthorColor:   a.theme.Colors.Orange,
+			IsOwn:         isOwn,
+			ShowHeader:    true,
+			IsWhisper:     true,
 		}
-		if a.activeConn != nil && a.currentChannel != nil {
-			a.activeConn.AddMessage(a.currentChannel.ID, display)
-			a.updateChatContent()
-			a.scrollToBottom()
+		if a.activeConn != nil {
+			a.activeConn.AddMessage(whisperPayload.ChannelID, display)
+
+			// Unread tracking: whispers always count as unread/mention if not in current channel
+			isCurrentChannel := a.currentChannel != nil && a.currentChannel.ID == whisperPayload.ChannelID
+			if !isCurrentChannel && !a.mutedChannels[whisperPayload.ChannelID] && !isOwn {
+				// Increment unread count
+				if a.unreadCounts[serverID] == nil {
+					a.unreadCounts[serverID] = make(map[uuid.UUID]int)
+				}
+				a.unreadCounts[serverID][whisperPayload.ChannelID]++
+
+				// Whispers always count as mentions (they're direct messages to you)
+				if a.mentionCounts[serverID] == nil {
+					a.mentionCounts[serverID] = make(map[uuid.UUID]int)
+				}
+				a.mentionCounts[serverID][whisperPayload.ChannelID]++
+			}
+
+			// Only update chat content and scroll if the whisper is in the currently viewed channel
+			if isCurrentChannel {
+				a.updateChatContent()
+				a.scrollToBottom()
+			}
 		}
 
 	case protocol.EventMessagePin:
@@ -3439,15 +4643,11 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("Failed to parse SYSTEM_MESSAGE payload: %v", err)
 			return nil
 		}
-		// Show in whatever channel is currently viewed on this server
-		var chID uuid.UUID
-		if a.currentChannel != nil {
-			chID = a.currentChannel.ID
-		}
+		// Display system message in the specified channel
 		display := &MessageDisplay{
 			Message: &models.Message{
 				ID:        uuid.New(),
-				ChannelID: chID,
+				ChannelID: payload.ChannelID,
 				Content:   payload.Content,
 				CreatedAt: payload.Timestamp,
 			},
@@ -3455,8 +4655,8 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			ShowHeader: false,
 		}
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
-			sc.AddMessage(chID, display)
-			if a.currentChannel != nil && a.currentChannel.ID == chID {
+			sc.AddMessage(payload.ChannelID, display)
+			if a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
 				a.updateChatContent()
 				a.scrollToBottom()
 			}
@@ -3581,6 +4781,229 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				}
 			}
 		}
+
+	case protocol.EventRoleCreate:
+		// Parse role create payload
+		var roleData models.Role
+		if err := json.Unmarshal(msg.Data, &roleData); err != nil {
+			log.Printf("Failed to parse ROLE_CREATE payload: %v", err)
+			return nil
+		}
+
+		sc.mu.Lock()
+		// Add role to server's role list
+		if sc.Roles == nil {
+			sc.Roles = make(map[uuid.UUID][]*models.Role)
+		}
+		if _, ok := sc.Roles[roleData.ServerID]; !ok {
+			sc.Roles[roleData.ServerID] = []*models.Role{}
+		}
+
+		// Check if role already exists (shouldn't happen, but be safe)
+		roleExists := false
+		for _, r := range sc.Roles[roleData.ServerID] {
+			if r.ID == roleData.ID {
+				roleExists = true
+				break
+			}
+		}
+
+		if !roleExists {
+			// CRITICAL FIX: Create heap-allocated copy to avoid dangling pointer
+			// (roleData is stack-allocated and becomes invalid when function returns)
+			roleCopy := roleData
+			sc.Roles[roleData.ServerID] = append(sc.Roles[roleData.ServerID], &roleCopy)
+		}
+		sc.mu.Unlock()
+
+		// If Server Management view is open and showing Roles, refresh the role list
+		if a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.SelectedCategory == 1 { // Roles category (index 1: Categories = ["Channels", "Roles", "Members"])
+				// Reload roles for current server
+				serverID := a.getActiveServerID()
+				if serverID != uuid.Nil && sc != nil && serverID == roleData.ServerID {
+					sc.mu.RLock()
+					if roles, ok := sc.Roles[serverID]; ok {
+						roleList := make([]*models.Role, len(roles))
+						copy(roleList, roles)
+						// Sort by position descending
+						for i := 0; i < len(roleList)-1; i++ {
+							for j := i + 1; j < len(roleList); j++ {
+								if roleList[j].Position > roleList[i].Position {
+									roleList[i], roleList[j] = roleList[j], roleList[i]
+								}
+							}
+						}
+						a.serverManagementState.RoleList = roleList
+						a.statusMessage = fmt.Sprintf("Role '%s' created", roleData.Name)
+					}
+					sc.mu.RUnlock()
+				}
+
+				// Close role form if it was open (role creation successful)
+				if a.serverManagementState.RoleFormOpen {
+					a.serverManagementState.RoleFormOpen = false
+					a.serverManagementState.RoleFormState = nil
+					a.statusMessage = fmt.Sprintf("Created role: %s", roleData.Name)
+				}
+			}
+		}
+
+
+	case protocol.EventRoleUpdate:
+		// Parse role update payload
+		var roleData models.Role
+		if err := json.Unmarshal(msg.Data, &roleData); err != nil {
+			log.Printf("Failed to parse ROLE_UPDATE payload: %v", err)
+			return nil
+		}
+
+		sc.mu.Lock()
+		// Update role in server's role list
+		if sc.Roles != nil {
+			if roles, ok := sc.Roles[roleData.ServerID]; ok {
+				for i, r := range roles {
+					if r.ID == roleData.ID {
+						// CRITICAL FIX: Create heap-allocated copy to avoid dangling pointer
+						roleCopy := roleData
+						sc.Roles[roleData.ServerID][i] = &roleCopy
+						break
+					}
+				}
+			}
+		}
+		sc.mu.Unlock()
+
+		// If Server Management view is open and showing Roles, refresh the role list
+		if a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.SelectedCategory == 1 { // Roles category (index 1: Categories = ["Channels", "Roles", "Members"])
+				// Reload roles for current server
+				serverID := a.getActiveServerID()
+				if serverID != uuid.Nil && sc != nil && serverID == roleData.ServerID {
+					sc.mu.RLock()
+					if roles, ok := sc.Roles[serverID]; ok {
+						roleList := make([]*models.Role, len(roles))
+						copy(roleList, roles)
+						// Sort by position descending
+						for i := 0; i < len(roleList)-1; i++ {
+							for j := i + 1; j < len(roleList); j++ {
+								if roleList[j].Position > roleList[i].Position {
+									roleList[i], roleList[j] = roleList[j], roleList[i]
+								}
+							}
+						}
+						a.serverManagementState.RoleList = roleList
+						a.statusMessage = fmt.Sprintf("Role '%s' updated", roleData.Name)
+					}
+					sc.mu.RUnlock()
+				}
+
+				// Close permissions editor if it was open for this role
+				if a.serverManagementState.PermissionsEditorOpen &&
+					a.serverManagementState.PermissionsEditorRole != nil &&
+					a.serverManagementState.PermissionsEditorRole.ID == roleData.ID {
+					a.serverManagementState.PermissionsEditorOpen = false
+					a.serverManagementState.PermissionsEditorRole = nil
+					a.serverManagementState.PermModifiedBits = 0
+					a.statusMessage = fmt.Sprintf("Updated permissions for role: %s", roleData.Name)
+				}
+			}
+		}
+
+	case protocol.EventRoleDelete:
+		// Parse role delete payload
+		var data struct {
+			ServerID uuid.UUID `json:"server_id"`
+			RoleID   uuid.UUID `json:"role_id"`
+		}
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			log.Printf("Failed to parse ROLE_DELETE payload: %v", err)
+			return nil
+		}
+
+		sc.mu.Lock()
+		// Remove role from server's role list
+		if sc.Roles != nil {
+			if roles, ok := sc.Roles[data.ServerID]; ok {
+				newRoles := make([]*models.Role, 0, len(roles))
+				for _, r := range roles {
+					if r.ID != data.RoleID {
+						newRoles = append(newRoles, r)
+					}
+				}
+				sc.Roles[data.ServerID] = newRoles
+			}
+		}
+		sc.mu.Unlock()
+
+		// If Server Management view is open and showing Roles, refresh the role list
+		if a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.SelectedCategory == 1 { // Roles category (index 1: Categories = ["Channels", "Roles", "Members"])
+				// Reload roles for current server
+				serverID := a.getActiveServerID()
+				if serverID != uuid.Nil && sc != nil && serverID == data.ServerID {
+					sc.mu.RLock()
+					if roles, ok := sc.Roles[serverID]; ok {
+						roleList := make([]*models.Role, len(roles))
+						copy(roleList, roles)
+						// Sort by position descending
+						for i := 0; i < len(roleList)-1; i++ {
+							for j := i + 1; j < len(roleList); j++ {
+								if roleList[j].Position > roleList[i].Position {
+									roleList[i], roleList[j] = roleList[j], roleList[i]
+								}
+							}
+						}
+						a.serverManagementState.RoleList = roleList
+					a.statusMessage = "Role deleted successfully"
+
+						// Adjust selection if needed
+						if a.serverManagementState.SelectedRole >= len(roleList) {
+							a.serverManagementState.SelectedRole = len(roleList) - 1
+							if a.serverManagementState.SelectedRole < 0 {
+								a.serverManagementState.SelectedRole = 0
+							}
+						}
+					}
+					sc.mu.RUnlock()
+				}
+			}
+		}
+
+	case protocol.EventRetentionPolicyUpdate:
+		// Parse retention policy update payload
+		var payload protocol.RetentionPolicyUpdatePayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse RETENTION_POLICY_UPDATE payload: %v", err)
+			return nil
+		}
+
+		// If Server Management view is open and showing Messages, update the policy
+		if a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.Categories[a.serverManagementState.SelectedCategory] == "Messages" {
+				a.serverManagementState.RetentionPolicy = payload.Policy
+				a.statusMessage = "Retention policy updated"
+			}
+		}
+
+	case protocol.EventMessagesPruned:
+		// Parse messages pruned payload
+		var payload protocol.MessagesPrunedPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse MESSAGES_PRUNED payload: %v", err)
+			return nil
+		}
+
+		// If this was a manual prune and Server Management is open, show results
+		if payload.TriggerType == "manual" && a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.Categories[a.serverManagementState.SelectedCategory] == "Messages" {
+				a.serverManagementState.PruneResults = &payload
+				a.serverManagementState.PruneResultsOpen = true
+			}
+		}
+
+		// Update status message
+		a.statusMessage = fmt.Sprintf("Pruned %d messages", payload.TotalDeleted)
 	}
 
 	return nil

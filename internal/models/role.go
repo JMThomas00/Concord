@@ -77,8 +77,9 @@ type Role struct {
 	Name        string     `json:"name"`
 	Color       int        `json:"color"`       // RGB color as integer
 	Permissions Permission `json:"permissions"`
-	Position    int        `json:"position"`    // Higher = more important
-	IsHoisted   bool       `json:"is_hoisted"`  // Show separately in member list
+	Position    int        `json:"position"`      // Higher = more important (permission hierarchy)
+	DisplayOrder int       `json:"display_order"` // Member panel sort order (lower = top)
+	IsHoisted   bool       `json:"is_hoisted"`    // Show separately in member list
 	IsMentionable bool     `json:"is_mentionable"`
 	IsDefault   bool       `json:"is_default"`  // @everyone role
 	CreatedAt   time.Time  `json:"created_at"`
@@ -270,7 +271,7 @@ var PermissionNames = map[Permission]string{
 	PermissionKickMembers:         "Kick Members",
 	PermissionBanMembers:          "Ban Members",
 	PermissionChangeNickname:      "Change Nickname",
-	PermissionManageNicknames:     "Manage Nicknames",
+	PermissionManageNicknames:     "Manage Titles",
 	PermissionSendMessages:        "Send Messages",
 	PermissionSendMessagesThreads: "Send Messages in Threads",
 	PermissionCreateThreads:       "Create Threads",
