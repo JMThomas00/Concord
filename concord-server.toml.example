@@ -1,0 +1,22 @@
+# Concord Server Configuration
+
+# Server network settings
+host = "0.0.0.0"
+port = 8080
+
+# Server name (displayed in client)
+server_name = "Concord Server"
+
+# Database file path
+database_path = "concord.db"
+
+# Maximum concurrent connections
+max_connections = 1000
+
+# Enable debug logging
+debug = false
+
+# Message pruning configuration
+[message_pruning]
+enabled = true
+interval_hours = 24  # Run pruning daily

@@ -55,13 +55,14 @@ type ServerConnection struct {
 	LastError  error             // Last error encountered
 
 	// Per-server data cache
-	User    *models.User            // Authenticated user
-	Token   string                  // Auth token
-	Servers []*models.Server        // Servers from READY message
-	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
-	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
-	Members  []*MemberDisplay        // Members in current server
-	Roles    map[uuid.UUID][]*models.Role    // Roles per protocol server
+	User           *models.User                        // Authenticated user
+	Token          string                              // Auth token
+	Servers        []*models.Server                    // Servers from READY message
+	Channels       map[uuid.UUID][]*models.Channel     // Channels per protocol server
+	Messages       map[uuid.UUID][]*MessageDisplay     // Messages per channel
+	Members        []*MemberDisplay                    // Members in current server
+	Roles          map[uuid.UUID][]*models.Role        // Roles per protocol server
+	PinnedMessages map[uuid.UUID][]*models.Message     // Pinned messages per channel
 
 	// Retry tracking
 	RetryCount     int
@@ -74,13 +75,14 @@ type ServerConnection struct {
 // NewServerConnection creates a new ServerConnection
 func NewServerConnection(serverID uuid.UUID, serverInfo *ClientServerInfo) *ServerConnection {
 	return &ServerConnection{
-		ServerID:   serverID,
-		ServerInfo: serverInfo,
-		State:      StateDisconnected,
-		Channels:   make(map[uuid.UUID][]*models.Channel),
-		Messages:   make(map[uuid.UUID][]*MessageDisplay),
-		Members:    make([]*MemberDisplay, 0),
-		Roles:      make(map[uuid.UUID][]*models.Role),
+		ServerID:       serverID,
+		ServerInfo:     serverInfo,
+		State:          StateDisconnected,
+		Channels:       make(map[uuid.UUID][]*models.Channel),
+		Messages:       make(map[uuid.UUID][]*MessageDisplay),
+		Members:        make([]*MemberDisplay, 0),
+		Roles:          make(map[uuid.UUID][]*models.Role),
+		PinnedMessages: make(map[uuid.UUID][]*models.Message),
 	}
 }
 

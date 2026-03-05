@@ -30,6 +30,10 @@ const (
 	OpBanMember        OpCode = 20 // Ban a member from the server
 	OpMuteMember       OpCode = 21 // Server-mute a member
 	OpWhisper          OpCode = 22 // Send an ephemeral DM to another connected user
+	OpUnbanMember      OpCode = 23 // Unban a member from the server
+	OpTimeoutMember    OpCode = 24 // Timeout a member temporarily
+	OpPinMessage       OpCode = 25 // Pin a message in a channel
+	OpUnpinMessage     OpCode = 26 // Unpin a message from a channel
 
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
@@ -68,6 +72,9 @@ const (
 	EventMessageReactionAdd EventType = "MESSAGE_REACTION_ADD"
 	EventMessageReactionRemove EventType = "MESSAGE_REACTION_REMOVE"
 	EventMessagesHistory  EventType = "MESSAGES_HISTORY"
+	EventMessagePin       EventType = "MESSAGE_PIN"
+	EventMessageUnpin     EventType = "MESSAGE_UNPIN"
+	EventSystemMessage    EventType = "SYSTEM_MESSAGE"
 
 	// User events
 	EventPresenceUpdate   EventType = "PRESENCE_UPDATE"
@@ -222,9 +229,10 @@ type BanMemberRequest struct {
 
 // MuteMemberRequest server-mutes (or unmutes) a member
 type MuteMemberRequest struct {
-	ServerID uuid.UUID `json:"server_id"`
-	UserID   uuid.UUID `json:"user_id"`
-	Mute     bool      `json:"mute"` // true=mute, false=unmute
+	ServerID        uuid.UUID `json:"server_id"`
+	UserID          uuid.UUID `json:"user_id"`
+	Mute            bool      `json:"mute"` // true=mute, false=unmute
+	DurationMinutes int       `json:"duration_minutes,omitempty"`
 }
 
 // WhisperPayload is sent by a client to whisper to another user
@@ -238,6 +246,32 @@ type WhisperCreatePayload struct {
 	FromUser  *models.User `json:"from_user"`
 	Content   string       `json:"content"`
 	Timestamp time.Time    `json:"timestamp"`
+}
+
+// UnbanMemberRequest unbans a member from a server
+type UnbanMemberRequest struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Username string    `json:"username"`
+}
+
+// TimeoutMemberRequest temporarily restricts a member
+type TimeoutMemberRequest struct {
+	ServerID        uuid.UUID `json:"server_id"`
+	UserID          uuid.UUID `json:"user_id"`
+	DurationMinutes int       `json:"duration_minutes"`
+	Reason          string    `json:"reason,omitempty"`
+}
+
+// PinMessageRequest pins a message in a channel
+type PinMessageRequest struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	MessageID uuid.UUID `json:"message_id"`
+}
+
+// UnpinMessageRequest unpins a message from a channel
+type UnpinMessageRequest struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	MessageID uuid.UUID `json:"message_id"`
 }
 
 // --- Server -> Client Payloads ---
@@ -277,9 +311,10 @@ type MessageCreatePayload struct {
 
 // MessageHistoryPayload contains historical messages for a channel
 type MessageHistoryPayload struct {
-	ChannelID uuid.UUID        `json:"channel_id"`
-	Messages  []*MessageDisplay `json:"messages"`
-	HasMore   bool             `json:"has_more"`
+	ChannelID      uuid.UUID         `json:"channel_id"`
+	Messages       []*MessageDisplay `json:"messages"`
+	HasMore        bool              `json:"has_more"`
+	PinnedMessages []*models.Message `json:"pinned_messages,omitempty"`
 }
 
 // MessageDisplay is the client-side message representation
@@ -339,6 +374,18 @@ type ServerMemberUpdatePayload struct {
 	Member   *models.ServerMember `json:"member"`
 	User     *models.User         `json:"user"`
 	Roles    []*models.Role       `json:"roles"`
+}
+
+// MessagePinPayload is dispatched when a message is pinned
+type MessagePinPayload struct {
+	ChannelID uuid.UUID       `json:"channel_id"`
+	Message   *models.Message `json:"message"`
+}
+
+// SystemMessagePayload is dispatched for system messages
+type SystemMessagePayload struct {
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // ChannelCreatePayload is dispatched when a channel is created

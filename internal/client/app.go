@@ -648,6 +648,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }))
 
+	case tea.MouseMsg:
+		// Handle mouse wheel scrolling in chat viewport
+		switch msg.Type {
+		case tea.MouseWheelUp:
+			// Scroll chat viewport up (only when not in message nav mode)
+			if !a.messageNavMode && a.focus == FocusChat {
+				a.chatViewport.LineUp(3) // Scroll up 3 lines
+				return a, nil
+			}
+		case tea.MouseWheelDown:
+			// Scroll chat viewport down (only when not in message nav mode)
+			if !a.messageNavMode && a.focus == FocusChat {
+				a.chatViewport.LineDown(3) // Scroll down 3 lines
+				return a, nil
+			}
+		}
+
 	case tea.KeyMsg:
 		// Any key press resets AFK state
 		a.lastActivityTime = time.Now()
@@ -2295,13 +2312,7 @@ func (a *App) updateChatContent() {
 		isSystemMsg := msg.IsSystem || msg.AuthorName == "System"
 
 		// Create highlight style for selected message (Level 1 only)
-		var highlightStyle lipgloss.Style
-		if isSelected {
-			// Level 1: Full selection background
-			highlightStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color(a.theme.Colors.Selection)).
-				Width(viewportWidth)
-		}
+		// Note: Manual per-line padding will be applied before background
 		// Level 2: No background - just show cursor inline
 		// The cursor and selection will be rendered within the message content
 
@@ -2329,14 +2340,29 @@ func (a *App) updateChatContent() {
 
 			header := fmt.Sprintf("%s  %s", authorText, timestampText)
 
-			// Apply full width background to entire line
-			lineStyle := lipgloss.NewStyle().
-				Width(viewportWidth)
-			headerLine := lineStyle.Render(header)
+			// Calculate header width and pad to viewport width
+			headerWidth := lipgloss.Width(header)
+			leftPad := 0 // Left-aligned messages
+			if msg.IsOwn {
+				leftPad = viewportWidth - headerWidth
+				if leftPad < 0 {
+					leftPad = 0
+				}
+			}
+			rightPad := viewportWidth - headerWidth - leftPad
+			if rightPad < 0 {
+				rightPad = 0
+			}
+			paddedHeader := strings.Repeat(" ", leftPad) + header + strings.Repeat(" ", rightPad)
 
-			// Wrap in highlight if selected (Level 1 or Level 2)
+			// Apply highlight background if selected
+			var headerLine string
 			if isSelected || isInLevel2 {
-				headerLine = highlightStyle.Render(headerLine)
+				highlightStyle := lipgloss.NewStyle().
+					Background(lipgloss.Color(a.theme.Colors.Selection))
+				headerLine = highlightStyle.Render(paddedHeader)
+			} else {
+				headerLine = paddedHeader
 			}
 			content.WriteString(headerLine)
 			content.WriteString("\n")
@@ -2375,9 +2401,25 @@ func (a *App) updateChatContent() {
 			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth)
 		}
 
-		// Wrap content in highlight if selected (Level 1 or Level 2)
+		// Apply per-line padding and highlight if selected (Level 1 or Level 2)
 		if isSelected || isInLevel2 {
-			contentLine = highlightStyle.Render(contentLine)
+			// Split content into lines and pad each line individually
+			lines := strings.Split(contentLine, "\n")
+			var paddedLines []string
+			for _, line := range lines {
+				lineWidth := lipgloss.Width(line)
+				linePadding := viewportWidth - lineWidth
+				if linePadding < 0 {
+					linePadding = 0
+				}
+				paddedLine := line + strings.Repeat(" ", linePadding)
+				paddedLines = append(paddedLines, paddedLine)
+			}
+			paddedContent := strings.Join(paddedLines, "\n")
+
+			highlightStyle := lipgloss.NewStyle().
+				Background(lipgloss.Color(a.theme.Colors.Selection))
+			contentLine = highlightStyle.Render(paddedContent)
 		}
 		content.WriteString(contentLine)
 		content.WriteString("\n")
