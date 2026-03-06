@@ -591,7 +591,7 @@ func (a *App) renderServerManagementView() string {
 	// Title bar
 	titleBar := lipgloss.NewStyle().
 		Width(totalWidth).
-		Background(lipgloss.Color(a.theme.Colors.Orange)).
+		Background(lipgloss.Color(a.theme.Colors.Purple)).
 		Foreground(lipgloss.Color(a.theme.Colors.Background)).
 		Bold(true).
 		Render("  Server Settings  •  Esc: Back")
@@ -604,7 +604,7 @@ func (a *App) renderCategorySidebar(width, height int, s *ServerManagementState)
 	var buf strings.Builder
 
 	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Orange)).
+		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
 		Bold(true).
 		Width(width - 2)
 	buf.WriteString(headerStyle.Render("SERVER SETTINGS"))
@@ -622,13 +622,13 @@ func (a *App) renderCategorySidebar(width, height int, s *ServerManagementState)
 		if selected && !s.FocusOnForm {
 			line = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Orange)).
+				Background(lipgloss.Color(a.theme.Colors.Purple)).
 				Bold(true).
 				Width(width - 2).
 				Render(prefix + category)
 		} else if selected {
 			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Orange)).
+				Foreground(lipgloss.Color(a.theme.Colors.Purple)).
 				Bold(true).
 				Width(width - 2).
 				Render(prefix + category)
@@ -646,7 +646,7 @@ func (a *App) renderCategorySidebar(width, height int, s *ServerManagementState)
 		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Orange)).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Render(buf.String())
 }
 
@@ -674,7 +674,7 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 		}
 	}
 	statsStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Orange))
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	buf.WriteString(statsStyle.Render(fmt.Sprintf("%d channels · %d categories", len(s.ChannelList), categoryCount)))
 	buf.WriteString("\n\n")
 
@@ -697,7 +697,7 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 		if selected {
 			line = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Orange)).
+				Background(lipgloss.Color(a.theme.Colors.Cyan)).
 				Bold(true).
 				Width(width - 4).
 				Render(prefix + channelName)
@@ -749,7 +749,7 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 	// Stats - count total members across all roles
 	totalMembers := len(a.serverManagementState.MemberList)
 	statsStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Orange))
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	buf.WriteString(statsStyle.Render(fmt.Sprintf("%d roles · %d total members", len(s.RoleList), totalMembers)))
 	buf.WriteString("\n\n")
 
@@ -790,7 +790,7 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 		if selected {
 			line = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Orange)).
+				Background(lipgloss.Color(a.theme.Colors.Cyan)).
 				Bold(true).
 				Width(width - 4).
 				Render(prefix + roleLine)
@@ -847,7 +847,7 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 		}
 	}
 	statsStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Orange))
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	buf.WriteString(statsStyle.Render(fmt.Sprintf("%d members · %d online", len(s.MemberList), onlineCount)))
 	buf.WriteString("\n\n")
 
@@ -902,7 +902,7 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 		if selected {
 			line = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Orange)).
+				Background(lipgloss.Color(a.theme.Colors.Cyan)).
 				Bold(true).
 				Width(width - 4).
 				Render(prefix + memberLine)
