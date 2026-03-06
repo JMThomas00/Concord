@@ -335,7 +335,7 @@ func (a *App) renderThemeContent(s *SettingsState, width int) string {
 	// Scrollable theme list - show current selection area
 	visibleStart := 0
 	visibleEnd := len(s.AvailableThemes)
-	const maxVisible = 12
+	const maxVisible = 20
 	
 	if len(s.AvailableThemes) > maxVisible {
 		halfVisible := maxVisible / 2
@@ -402,10 +402,6 @@ func (a *App) renderThemeContent(s *SettingsState, width int) string {
 		buf.WriteString(moreStyle.Render(fmt.Sprintf("  ↓ %d more", len(s.AvailableThemes)-visibleEnd)))
 		buf.WriteString("\n")
 	}
-
-	buf.WriteString("\n")
-	buf.WriteString(strings.Repeat("─", width-4))
-	buf.WriteString("\n\n")
 
 	// Navigation help
 	helpStyle := lipgloss.NewStyle().
