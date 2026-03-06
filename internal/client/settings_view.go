@@ -238,51 +238,179 @@ func (a *App) renderSettingsView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, titleBar, content)
 }
 
-// renderThemeContent renders the theme selection panel
+// renderThemeContent renders the theme selection panel with live preview
 func (a *App) renderThemeContent(s *SettingsState, width int) string {
 	var buf strings.Builder
 
+	// Header
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Bold(true)
 	buf.WriteString(headerStyle.Render("Theme Selection"))
+	buf.WriteString("\n")
+
+	// Subtitle
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	buf.WriteString(subtitleStyle.Render("Choose your terminal color theme"))
 	buf.WriteString("\n\n")
 
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	if s.FocusOnForm {
-		buf.WriteString(helpStyle.Render("↑↓ select  •  Enter save  •  Tab back"))
-	} else {
-		buf.WriteString(helpStyle.Render("Tab to enter"))
+	// Get current theme for preview
+	currentTheme := a.theme
+	
+	// Preview section
+	previewHeaderStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Bold(true)
+	variantText := ""
+	if currentTheme.Meta.Variant != "" {
+		variantText = fmt.Sprintf(" (%s)", currentTheme.Meta.Variant)
+	}
+	buf.WriteString(previewHeaderStyle.Render(fmt.Sprintf("Preview: %s%s", currentTheme.Meta.Name, variantText)))
+	buf.WriteString("\n")
+
+	// Author
+	if currentTheme.Meta.Author != "" {
+		authorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		buf.WriteString(authorStyle.Render(fmt.Sprintf("by %s", currentTheme.Meta.Author)))
+		buf.WriteString("\n")
+	}
+	buf.WriteString("\n")
+
+	// Color swatches (2 rows of 3)
+	colors := []struct{ color, name string }{
+		{currentTheme.Colors.Purple, currentTheme.Colors.Purple},
+		{currentTheme.Colors.Cyan, currentTheme.Colors.Cyan},
+		{currentTheme.Colors.Green, currentTheme.Colors.Green},
+		{currentTheme.Colors.Orange, currentTheme.Colors.Orange},
+		{currentTheme.Colors.Red, currentTheme.Colors.Red},
+		{currentTheme.Colors.Yellow, currentTheme.Colors.Yellow},
+	}
+
+	// First row of swatches
+	for i := 0; i < 3; i++ {
+		swatch := lipgloss.NewStyle().
+			Background(lipgloss.Color(colors[i].color)).
+			Foreground(lipgloss.Color(colors[i].color)).
+			Render("   ")
+		buf.WriteString(swatch)
+		buf.WriteString(" ")
+		buf.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			Render(colors[i].name))
+		if i < 2 {
+			buf.WriteString("  ")
+		}
+	}
+	buf.WriteString("\n")
+
+	// Second row of swatches
+	for i := 3; i < 6; i++ {
+		swatch := lipgloss.NewStyle().
+			Background(lipgloss.Color(colors[i].color)).
+			Foreground(lipgloss.Color(colors[i].color)).
+			Render("   ")
+		buf.WriteString(swatch)
+		buf.WriteString(" ")
+		buf.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			Render(colors[i].name))
+		if i < 5 {
+			buf.WriteString("  ")
+		}
 	}
 	buf.WriteString("\n\n")
 
-	// Show theme list
-	for i, slug := range s.AvailableThemes {
-		displayName := themes.GetThemeDisplayName(slug)
+	// Theme count
+	themeCountStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	buf.WriteString(themeCountStyle.Render(fmt.Sprintf("%d themes available", len(s.AvailableThemes))))
+	buf.WriteString("\n\n")
+
+	// Separator
+	buf.WriteString(strings.Repeat("─", width-4))
+	buf.WriteString("\n\n")
+
+	// Scrollable theme list - show current selection area
+	visibleStart := 0
+	visibleEnd := len(s.AvailableThemes)
+	const maxVisible = 12
+	
+	if len(s.AvailableThemes) > maxVisible {
+		halfVisible := maxVisible / 2
+		visibleStart = s.SelectedTheme - halfVisible
+		visibleEnd = s.SelectedTheme + halfVisible
+
+		if visibleStart < 0 {
+			visibleStart = 0
+			visibleEnd = maxVisible
+		}
+		if visibleEnd > len(s.AvailableThemes) {
+			visibleEnd = len(s.AvailableThemes)
+			visibleStart = visibleEnd - maxVisible
+			if visibleStart < 0 {
+				visibleStart = 0
+			}
+		}
+	}
+
+	// Show "↑ X more" if not at top
+	if visibleStart > 0 {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		buf.WriteString(moreStyle.Render(fmt.Sprintf("  ↑ %d more", visibleStart)))
+		buf.WriteString("\n")
+	}
+
+	// Show visible themes
+	for i := visibleStart; i < visibleEnd; i++ {
+		displayName := themes.GetThemeDisplayName(s.AvailableThemes[i])
 
 		var line string
-		if i == s.SelectedTheme && s.FocusOnForm {
-			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).
-				Bold(true).
-				Width(width - 4).
-				Render("▶ " + displayName)
-		} else if i == s.SelectedTheme {
-			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-				Width(width - 4).
-				Render("  " + displayName)
+		prefix := "  "
+		if i == s.SelectedTheme {
+			prefix = "⚑ "
+			if s.FocusOnForm {
+				line = lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Background)).
+					Background(lipgloss.Color(a.theme.Colors.Cyan)).
+					Bold(true).
+					Width(width - 4).
+					Render(prefix + displayName)
+			} else {
+				line = lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+					Bold(true).
+					Width(width - 4).
+					Render(prefix + displayName)
+			}
 		} else {
 			line = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 				Width(width - 4).
-				Render("  " + displayName)
+				Render(prefix + displayName)
 		}
 		buf.WriteString(line)
 		buf.WriteString("\n")
 	}
+
+	// Show "↓ X more" if not at bottom
+	if visibleEnd < len(s.AvailableThemes) {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		buf.WriteString(moreStyle.Render(fmt.Sprintf("  ↓ %d more", len(s.AvailableThemes)-visibleEnd)))
+		buf.WriteString("\n")
+	}
+
+	buf.WriteString("\n")
+	buf.WriteString(strings.Repeat("─", width-4))
+	buf.WriteString("\n\n")
+
+	// Navigation help
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	buf.WriteString(helpStyle.Render("Navigation: ↑↓ select · Enter apply · Esc cancel · Tab back to sections"))
 
 	return buf.String()
 }
