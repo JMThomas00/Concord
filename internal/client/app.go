@@ -136,6 +136,7 @@ type App struct {
 	pingResults         map[uuid.UUID]*PingResult
 	editingServerID     *uuid.UUID // Set when editing an existing server
 	editingServerIndex  int        // Index in clientServers of the server being edited
+	deleteConfirmServerID *uuid.UUID // Server awaiting delete confirmation
 
 	// Status message
 	statusMessage string

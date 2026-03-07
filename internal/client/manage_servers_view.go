@@ -12,6 +12,11 @@ import (
 
 // renderManageServersView renders the Manage Servers modal dialog
 func (a *App) renderManageServersView() string {
+	// If delete confirmation dialog is shown, render it on top
+	if a.deleteConfirmServerID != nil {
+		return a.renderDeleteServerConfirmation()
+	}
+
 	width := a.width
 	height := a.height
 
@@ -98,6 +103,93 @@ func (a *App) renderManageServersView() string {
 	return paddedModal
 }
 
+// renderDeleteServerConfirmation renders the delete confirmation dialog
+func (a *App) renderDeleteServerConfirmation() string {
+	// Find the server being deleted
+	var serverName string
+	if a.deleteConfirmServerID != nil {
+		for _, cs := range a.clientServers {
+			if cs.ID == *a.deleteConfirmServerID {
+				serverName = cs.Name
+				break
+			}
+		}
+	}
+
+	// Dialog dimensions
+	dialogWidth := 60
+	dialogHeight := 10
+
+	// Calculate centering
+	leftPadding := (a.width - dialogWidth) / 2
+	topPadding := (a.height - dialogHeight) / 2
+
+	if leftPadding < 0 {
+		leftPadding = 0
+	}
+	if topPadding < 0 {
+		topPadding = 0
+	}
+
+	// Build dialog content
+	var content strings.Builder
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Red)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	content.WriteString(titleStyle.Render("Delete Server"))
+	content.WriteString("\n\n")
+
+	// Message
+	msgStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	message := fmt.Sprintf("Are you sure you want to delete \"%s\"?", serverName)
+	content.WriteString(msgStyle.Render(message))
+	content.WriteString("\n")
+
+	warningStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center).
+		Italic(true)
+
+	content.WriteString(warningStyle.Render("This action cannot be undone."))
+	content.WriteString("\n\n")
+
+	// Buttons
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	content.WriteString(helpStyle.Render("[Y] Yes, delete  •  [N] Cancel"))
+
+	// Wrap in dialog box
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Red)).
+		Padding(1, 2).
+		Width(dialogWidth).
+		Height(dialogHeight)
+
+	dialog := dialogStyle.Render(content.String())
+
+	// Center the dialog on screen
+	centeredDialog := lipgloss.NewStyle().
+		PaddingLeft(leftPadding).
+		PaddingTop(topPadding).
+		Render(dialog)
+
+	return centeredDialog
+}
+
 // renderServerRow renders a single server row with status indicator
 func (a *App) renderServerRow(server *ClientServerInfo, selected bool) string {
 	// Status indicator
@@ -114,7 +206,11 @@ func (a *App) renderServerRow(server *ClientServerInfo, selected bool) string {
 				statusText = fmt.Sprintf("(✓ %dms)", result.Latency.Milliseconds())
 			} else {
 				statusIcon = "○"
-				statusText = fmt.Sprintf("(✗ %s)", result.Error)
+				if result.Attempts > 0 {
+					statusText = fmt.Sprintf("(✗ %d attempts)", result.Attempts)
+				} else {
+					statusText = fmt.Sprintf("(✗ failed)")
+				}
 			}
 		} else {
 			statusIcon = "○"
@@ -175,6 +271,12 @@ func (a *App) handleManageServersKey(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.String() {
 	case "esc":
+		// If delete confirmation is shown, cancel it
+		if a.deleteConfirmServerID != nil {
+			a.deleteConfirmServerID = nil
+			return nil
+		}
+
 		// Return to previous view (main if logged in, login otherwise)
 		if a.activeConn != nil && a.activeConn.GetState() == StateReady {
 			a.view = ViewMain
@@ -259,52 +361,80 @@ func (a *App) handleManageServersKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "d", "D":
-		// Delete selected server
+		// Show delete confirmation dialog
 		if a.manageServersFocus < len(servers) {
 			server := servers[a.manageServersFocus]
+			serverID := server.ID
+			a.deleteConfirmServerID = &serverID
+		}
+		return nil
 
-			// Remove from config
-			a.configMgr.RemoveServer(server.ID)
+	case "y", "Y":
+		// Confirm delete (when confirmation dialog is shown)
+		if a.deleteConfirmServerID != nil {
+			serverID := *a.deleteConfirmServerID
+			a.deleteConfirmServerID = nil
 
-			// Remove from in-memory client servers list
-			for i, cs := range a.clientServers {
-				if cs.ID == server.ID {
-					a.clientServers = append(a.clientServers[:i], a.clientServers[i+1:]...)
+			// Find the server to delete
+			var serverToDelete *ClientServerInfo
+			for _, cs := range a.clientServers {
+				if cs.ID == serverID {
+					serverToDelete = cs
 					break
 				}
 			}
 
-			// If deleted server was active or current, clear state
-			if a.activeConn != nil && a.activeConn.ServerID == server.ID {
-				oldConn := a.activeConn
-				a.activeConn = nil
-				log.Printf("DEBUG handleManageServersKey (delete): Changed activeConn from %p to nil (deleted serverID=%s)",
-					oldConn, server.ID)
-				a.currentServer = nil
-				a.currentChannel = nil
-			}
-			if a.currentClientServer != nil && a.currentClientServer.ID == server.ID {
-				if len(a.clientServers) > 0 {
-					a.currentClientServer = a.clientServers[0]
-				} else {
-					a.currentClientServer = nil
+			if serverToDelete != nil {
+				// Remove from config
+				a.configMgr.RemoveServer(serverID)
+
+				// Remove from in-memory client servers list
+				for i, cs := range a.clientServers {
+					if cs.ID == serverID {
+						a.clientServers = append(a.clientServers[:i], a.clientServers[i+1:]...)
+						break
+					}
+				}
+
+				// If deleted server was active or current, clear state
+				if a.activeConn != nil && a.activeConn.ServerID == serverID {
+					oldConn := a.activeConn
+					a.activeConn = nil
+					log.Printf("DEBUG handleManageServersKey (delete): Changed activeConn from %p to nil (deleted serverID=%s)",
+						oldConn, serverID)
+					a.currentServer = nil
+					a.currentChannel = nil
+				}
+				if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
+					if len(a.clientServers) > 0 {
+						a.currentClientServer = a.clientServers[0]
+					} else {
+						a.currentClientServer = nil
+					}
+				}
+
+				// Adjust server index if needed
+				if a.serverIndex >= len(a.clientServers) && a.serverIndex > 0 {
+					a.serverIndex--
+				}
+
+				// Adjust manage servers focus if needed
+				if a.manageServersFocus >= len(a.clientServers) && a.manageServersFocus > 0 {
+					a.manageServersFocus--
+				}
+
+				// Clear ping result
+				if a.pingResults != nil {
+					delete(a.pingResults, serverID)
 				}
 			}
+		}
+		return nil
 
-			// Adjust server index if needed
-			if a.serverIndex >= len(a.clientServers) && a.serverIndex > 0 {
-				a.serverIndex--
-			}
-
-			// Adjust manage servers focus if needed
-			if a.manageServersFocus >= len(a.clientServers) && a.manageServersFocus > 0 {
-				a.manageServersFocus--
-			}
-
-			// Clear ping result
-			if a.pingResults != nil {
-				delete(a.pingResults, server.ID)
-			}
+	case "n", "N":
+		// Cancel delete confirmation
+		if a.deleteConfirmServerID != nil {
+			a.deleteConfirmServerID = nil
 		}
 		return nil
 

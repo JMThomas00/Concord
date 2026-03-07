@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -275,7 +276,7 @@ func (cm *ConnectionManager) GetConnection(serverID uuid.UUID) *ServerConnection
 	return cm.connections[serverID]
 }
 
-// GetAllConnections returns all server connections (thread-safe)
+// GetAllConnections returns all server connections sorted by Order (thread-safe)
 func (cm *ConnectionManager) GetAllConnections() []*ServerConnection {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -284,6 +285,17 @@ func (cm *ConnectionManager) GetAllConnections() []*ServerConnection {
 	for _, conn := range cm.connections {
 		connections = append(connections, conn)
 	}
+
+	// Sort by Order field for stable display order
+	// Use ID as secondary sort key for stable ordering when Order values are equal
+	sort.Slice(connections, func(i, j int) bool {
+		if connections[i].ServerInfo.Order == connections[j].ServerInfo.Order {
+			// Secondary sort by ID (lexicographic) for stable ordering
+			return connections[i].ServerInfo.ID.String() < connections[j].ServerInfo.ID.String()
+		}
+		return connections[i].ServerInfo.Order < connections[j].ServerInfo.Order
+	})
+
 	return connections
 }
 
