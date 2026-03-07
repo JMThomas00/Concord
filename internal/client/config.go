@@ -106,6 +106,14 @@ func (cm *ConfigManager) LoadServers() (*ServersConfig, error) {
 		return nil, fmt.Errorf("failed to parse servers config: %w", err)
 	}
 
+	// Ensure all servers have an Order field set (for backward compatibility)
+	for i, srv := range config.Servers {
+		if srv.Order == 0 && i > 0 {
+			// Order not set, assign based on array position
+			srv.Order = i
+		}
+	}
+
 	return &config, nil
 }
 
