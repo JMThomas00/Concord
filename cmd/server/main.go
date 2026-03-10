@@ -20,6 +20,7 @@ func main() {
 	adminEmail := flag.String("admin-email", "", "Grant admin role to this email on startup")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	hybridMode := flag.Bool("hybrid", false, "Enable hybrid dashboard with live logs")
+	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
 	flag.Parse()
 
 	// Parse and initialize logger early
@@ -49,7 +50,34 @@ func main() {
 	// Load configuration
 	var config *server.Config
 	if isFirstRun {
-		config = runFirstRunSetup()
+		// Show ToS first
+		if !runToSSetup() {
+			fmt.Fprintln(os.Stderr, "\nYou must accept the Terms of Service to run a Concord server.")
+			os.Exit(1)
+		}
+
+		// ToS accepted, proceed with setup
+		config = runFirstRunSetup(nil)
+		config.TermsAccepted = true
+	} else if *reconfigure {
+		// Load existing config to pre-populate setup
+		existingConfig := server.DefaultConfig()
+		configFileToLoad := configFilename
+		if *configPath != "" {
+			configFileToLoad = *configPath
+		}
+
+		if _, err := os.Stat(configFileToLoad); err == nil {
+			if err := loadConfig(configFileToLoad, existingConfig); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to load existing config: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		// Run setup with existing values
+		fmt.Println("\n🔧 Reconfiguring server settings...\n")
+		config = runFirstRunSetup(existingConfig)
+		config.TermsAccepted = existingConfig.TermsAccepted // Preserve ToS acceptance
 	} else {
 		config = server.DefaultConfig()
 		if *configPath != "" {
@@ -72,6 +100,11 @@ func main() {
 	}
 	if *dbPath != "" {
 		config.DatabasePath = *dbPath
+	}
+
+	// Clear screen for clean server startup (only in normal mode)
+	if !*hybridMode {
+		fmt.Print("\033[2J\033[H")
 	}
 
 	// Print beautiful startup banner and information (only in normal mode)

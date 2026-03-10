@@ -26,7 +26,7 @@ func InitLogger(level log.Level) {
 		ReportCaller:    false, // Don't show caller by default (cleaner output)
 		ReportTimestamp: true,
 		TimeFormat:      time.Kitchen, // "3:04PM"
-		Prefix:          "Concord 🎭",
+		Prefix:          "Concord",
 	})
 
 	Logger.SetLevel(level)

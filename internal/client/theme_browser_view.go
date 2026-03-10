@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/concord-chat/concord/internal/models"
@@ -144,13 +145,12 @@ type RoleFormState struct {
 
 // ChannelFormState holds state for channel/category creation/editing
 type ChannelFormState struct {
-	Mode              string      // "create" or "edit"
-	EditingChannelID  *uuid.UUID  // Channel being edited (nil for create)
-	NameInput         string
-	NameCursor        int
-	TypeIndex         int         // 0=Text Channel, 1=Category
-	CategoryID        *uuid.UUID  // Pre-filled based on selection
-	FocusField        int         // 0=name, 1=type, 2=submit, 3=cancel
+	Mode              string          // "create" or "edit"
+	EditingChannelID  *uuid.UUID      // Channel being edited (nil for create)
+	NameTextInput     textinput.Model // Text input for channel name
+	TypeIndex         int             // 0=Text Channel, 1=Category
+	CategoryID        *uuid.UUID      // Pre-filled based on selection
+	FocusField        int             // 0=name, 1=type, 2=submit, 3=cancel
 	ErrorMsg          string
 }
 

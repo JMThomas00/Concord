@@ -34,9 +34,10 @@ type LocalIdentity struct {
 
 // AppConfig represents UI preferences stored in ~/.concord/config.json
 type AppConfig struct {
-	Version  int            `json:"version"`
-	UI       UIConfig       `json:"ui"`
-	Identity *LocalIdentity `json:"identity,omitempty"`
+	Version       int            `json:"version"`
+	UI            UIConfig       `json:"ui"`
+	Identity      *LocalIdentity `json:"identity,omitempty"`
+	TermsAccepted bool           `json:"terms_accepted"` // Whether user has accepted Terms of Service
 }
 
 // UIConfig holds UI-related preferences

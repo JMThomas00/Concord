@@ -27,7 +27,8 @@ import (
 type View int
 
 const (
-	ViewIdentitySetup View = iota // First-run: set up local identity
+	ViewToS           View = iota // First-run: Terms of Service acceptance
+	ViewIdentitySetup               // First-run: set up local identity
 	ViewLogin
 	ViewRegister
 	ViewMain
@@ -105,6 +106,9 @@ type App struct {
 	input         textarea.Model
 	chatViewport  viewport.Model
 	sidebarScroll int
+
+	// Terms of Service acceptance state
+	tosState *ToSState
 
 	// Login/Register form
 	loginEmail           textinput.Model
@@ -445,14 +449,20 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	}
 
 	// Determine startup view
-	startView := ViewIdentitySetup
-	if identity != nil {
+	var startView View
+
+	// Check ToS acceptance first
+	if !appConfig.TermsAccepted {
+		startView = ViewToS
+	} else if identity != nil {
 		servers := configMgr.GetClientServers()
 		if len(servers) == 0 {
 			startView = ViewAddServer
 		} else {
 			startView = ViewLogin
 		}
+	} else {
+		startView = ViewIdentitySetup
 	}
 
 	// Initialize identity setup form inputs
@@ -514,6 +524,11 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 
 	// Pre-fill login form with saved credentials or defaults
 	app.initLoginView()
+
+	// Initialize ToS view if needed
+	if startView == ViewToS {
+		app.initToSView()
+	}
 
 	return app
 }
@@ -911,6 +926,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Update focused component
 	switch a.view {
+	case ViewToS:
+		var cmd tea.Cmd
+		a.tosState.viewport, cmd = a.tosState.viewport.Update(msg)
+		a.tosState.updateScrollState()
+		cmds = append(cmds, cmd)
 	case ViewIdentitySetup:
 		cmd := a.updateIdentitySetupForm(msg)
 		cmds = append(cmds, cmd)
@@ -941,6 +961,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) View() string {
 	var baseView string
 	switch a.view {
+	case ViewToS:
+		baseView = a.renderToSView()
 	case ViewIdentitySetup:
 		baseView = a.renderIdentitySetupView()
 	case ViewLogin:
@@ -984,6 +1006,9 @@ func (a *App) View() string {
 // handleKeyPress handles keyboard input
 func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Route to view-specific handlers first
+	if a.view == ViewToS {
+		return a.handleToSKey(msg)
+	}
 	if a.view == ViewIdentitySetup {
 		return a.handleIdentitySetupKey(msg)
 	}
@@ -4706,6 +4731,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 					a.channelTree.AddChannel(payload.Channel)
 					a.channelTree.RebuildFlatList(a.collapsedCategories)
 				}
+
+				// Refresh Server Management view if open
+				if a.view == ViewServerManagement && a.serverManagementState != nil {
+					if a.serverManagementState.SelectedCategory == 0 {
+						a.loadChannelListForManagement(a.currentServer.ID)
+					}
+				}
 			}
 		}
 
@@ -4734,6 +4766,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				if a.channelTree != nil {
 					a.channelTree.UpdateChannel(payload.Channel)
 					a.channelTree.RebuildFlatList(a.collapsedCategories)
+				}
+
+				// Refresh Server Management view if open
+				if a.view == ViewServerManagement && a.serverManagementState != nil {
+					if a.serverManagementState.SelectedCategory == 0 {
+						a.loadChannelListForManagement(a.currentServer.ID)
+					}
 				}
 			}
 		}
@@ -4778,6 +4817,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 						} else {
 							a.currentChannel = nil
 						}
+					}
+				}
+
+				// Refresh Server Management view if open
+				if a.view == ViewServerManagement && a.serverManagementState != nil {
+					if a.serverManagementState.SelectedCategory == 0 {
+						a.loadChannelListForManagement(a.currentServer.ID)
 					}
 				}
 			}
