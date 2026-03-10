@@ -4,11 +4,29 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/google/uuid"
 )
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SERVER SETTINGS PAGE LAYOUT GUIDE
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// When creating new Server Settings pages, follow the +2 Padding Pattern
+// documented in internal/client/SETTINGS_PAGE_TEMPLATE.md
+//
+// Quick Reference:
+//   - Count your top section lines, add +2 for padding
+//   - Example: 5 lines (header+subtitle+stats+blank+sep) → pageTopExtra = 3
+//   - Bottom: 2 help lines → pageBottomExtra = 1
+//   - ALWAYS use .Padding(0, 1) on content pages (NOT on sidebars)
+//
+// See SETTINGS_PAGE_TEMPLATE.md for complete examples and patterns.
+// ═══════════════════════════════════════════════════════════════════════════
 
 // openServerManagement transitions the app into the Server Management view
 func (a *App) openServerManagement(returnTo View, categoryIndex int) {
@@ -65,10 +83,10 @@ func (a *App) loadChannelListForManagement(serverID uuid.UUID) {
 	defer a.activeConn.mu.RUnlock()
 
 	if channels, ok := a.activeConn.Channels[serverID]; ok {
-		// Filter out categories and DM channels - show only text channels
+		// Include text channels AND categories (not DMs)
 		var channelList []*models.Channel
 		for _, ch := range channels {
-			if ch.Type == models.ChannelTypeText {
+			if ch.Type == models.ChannelTypeText || ch.Type == models.ChannelTypeCategory {
 				channelList = append(channelList, ch)
 			}
 		}
@@ -139,6 +157,9 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if s.DeleteConfirmOpen {
 		return a.handleDeleteConfirmKey(msg)
+	}
+	if s.MoveDialogOpen {
+		return a.handleMoveDialogKey(msg)
 	}
 	if s.FilterPanelOpen {
 		return a.handleFilterPanelKey(msg)
@@ -303,13 +324,87 @@ func (a *App) loadCategoryData(categoryIndex int) {
 }
 
 // Navigation helpers
+// buildChannelDisplayOrder creates a list of channel indices in display order
+// (matching the hierarchical rendering order)
+func (a *App) buildChannelDisplayOrder() []int {
+	s := a.serverManagementState
+	var displayOrder []int
+
+	// Separate categories and channels
+	var categories []*models.Channel
+	channelsByCategory := make(map[uuid.UUID][]*models.Channel)
+	var topLevelChannels []*models.Channel
+
+	for _, ch := range s.ChannelList {
+		if ch.Type == models.ChannelTypeCategory {
+			categories = append(categories, ch)
+		} else if ch.CategoryID == uuid.Nil {
+			topLevelChannels = append(topLevelChannels, ch)
+		} else {
+			channelsByCategory[ch.CategoryID] = append(channelsByCategory[ch.CategoryID], ch)
+		}
+	}
+
+	// Add top-level channels first
+	for _, ch := range topLevelChannels {
+		for i, listCh := range s.ChannelList {
+			if listCh.ID == ch.ID {
+				displayOrder = append(displayOrder, i)
+				break
+			}
+		}
+	}
+
+	// Add categories and their channels
+	for _, category := range categories {
+		// Add category
+		for i, listCh := range s.ChannelList {
+			if listCh.ID == category.ID {
+				displayOrder = append(displayOrder, i)
+				break
+			}
+		}
+
+		// Add channels in this category
+		if channels, ok := channelsByCategory[category.ID]; ok {
+			for _, ch := range channels {
+				for i, listCh := range s.ChannelList {
+					if listCh.ID == ch.ID {
+						displayOrder = append(displayOrder, i)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return displayOrder
+}
+
 func (a *App) navigateUpInCategory() {
 	s := a.serverManagementState
 	switch s.SelectedCategory {
 	case 0: // Channels
-		if s.SelectedChannel > 0 {
-			s.SelectedChannel--
+		// Build display order
+		displayOrder := a.buildChannelDisplayOrder()
+		if len(displayOrder) == 0 {
+			return
 		}
+
+		// Find current position in display order
+		currentDisplayPos := -1
+		for i, idx := range displayOrder {
+			if idx == s.SelectedChannel {
+				currentDisplayPos = i
+				break
+			}
+		}
+
+		// Move up in display order
+		if currentDisplayPos > 0 {
+			s.SelectedChannel = displayOrder[currentDisplayPos-1]
+		}
+
 	case 1: // Roles
 		if s.SelectedRole > 0 {
 			s.SelectedRole--
@@ -329,9 +424,26 @@ func (a *App) navigateDownInCategory() {
 	s := a.serverManagementState
 	switch s.SelectedCategory {
 	case 0: // Channels
-		if s.SelectedChannel < len(s.ChannelList)-1 {
-			s.SelectedChannel++
+		// Build display order
+		displayOrder := a.buildChannelDisplayOrder()
+		if len(displayOrder) == 0 {
+			return
 		}
+
+		// Find current position in display order
+		currentDisplayPos := -1
+		for i, idx := range displayOrder {
+			if idx == s.SelectedChannel {
+				currentDisplayPos = i
+				break
+			}
+		}
+
+		// Move down in display order
+		if currentDisplayPos >= 0 && currentDisplayPos < len(displayOrder)-1 {
+			s.SelectedChannel = displayOrder[currentDisplayPos+1]
+		}
+
 	case 1: // Roles
 		if s.SelectedRole < len(s.RoleList)-1 {
 			s.SelectedRole++
@@ -352,19 +464,41 @@ func (a *App) handleCreateAction() {
 	s := a.serverManagementState
 	switch s.SelectedCategory {
 	case 0: // Create Channel
+		// Initialize textinput
+		nameInput := textinput.New()
+		nameInput.Placeholder = "channel-name"
+		nameInput.CharLimit = 50
+		nameInput.Width = 40
+		nameInput.Focus()
+
+		// Detect parent category if creating within a selected group
+		var parentCategoryID *uuid.UUID
+		if s.SelectedChannel >= 0 && s.SelectedChannel < len(s.ChannelList) {
+			selectedCh := s.ChannelList[s.SelectedChannel]
+			if selectedCh.Type == models.ChannelTypeCategory {
+				id := selectedCh.ID
+				parentCategoryID = &id
+			} else if selectedCh.CategoryID != uuid.Nil {
+				id := selectedCh.CategoryID
+				parentCategoryID = &id
+			}
+		}
+
 		s.ChannelFormOpen = true
 		s.ChannelFormState = &ChannelFormState{
-			Mode:       "create",
-			TypeIndex:  0,
-			FocusField: 0,
+			Mode:          "create",
+			NameTextInput: nameInput,
+			TypeIndex:     0,
+			CategoryID:    parentCategoryID,
+			FocusField:    0,
 		}
 	case 1: // Create Role
 		s.RoleFormOpen = true
 		s.RoleFormState = &RoleFormState{
-			Mode:       "create",
+			Mode:        "create",
 			PresetIndex: 0,
-			ColorIndex: 0,
-			FocusField: 0,
+			ColorIndex:  0,
+			FocusField:  0,
 		}
 	}
 }
@@ -374,13 +508,38 @@ func (a *App) handleEditAction() {
 	switch s.SelectedCategory {
 	case 0: // Edit Channel
 		if s.SelectedChannel >= 0 && s.SelectedChannel < len(s.ChannelList) {
-			ch := s.ChannelList[s.SelectedChannel]
+			selectedCh := s.ChannelList[s.SelectedChannel]
+
+			// Initialize textinput with current name
+			nameInput := textinput.New()
+			nameInput.SetValue(selectedCh.Name)
+			nameInput.CharLimit = 50
+			nameInput.Width = 40
+			nameInput.Focus()
+
+			// Determine type index
+			typeIndex := 0
+			if selectedCh.Type == models.ChannelTypeCategory {
+				typeIndex = 1
+			}
+
+			// Get category ID
+			var catID *uuid.UUID
+			if selectedCh.CategoryID != uuid.Nil {
+				id := selectedCh.CategoryID
+				catID = &id
+			}
+
+			// Get channel ID
+			chID := selectedCh.ID
+
 			s.ChannelFormOpen = true
 			s.ChannelFormState = &ChannelFormState{
 				Mode:             "edit",
-				EditingChannelID: &ch.ID,
-				NameInput:        ch.Name,
-				TypeIndex:        0, // Text channel
+				EditingChannelID: &chID,
+				NameTextInput:    nameInput,
+				TypeIndex:        typeIndex,
+				CategoryID:       catID,
 				FocusField:       0,
 			}
 		}
@@ -431,7 +590,30 @@ func (a *App) handleDeleteAction() {
 }
 
 func (a *App) handleMoveChannelAction() {
-	// TODO: Implement move channel dialog
+	s := a.serverManagementState
+
+	if s.SelectedChannel < 0 || s.SelectedChannel >= len(s.ChannelList) {
+		return
+	}
+
+	selectedChannel := s.ChannelList[s.SelectedChannel]
+
+	// Build category list
+	var categoryList []*models.Channel
+	if a.channelTree != nil {
+		for _, node := range a.channelTree.FlatList {
+			if node.IsCategory && node.Channel.ID != selectedChannel.ID {
+				categoryList = append(categoryList, node.Channel)
+			}
+		}
+	}
+
+	s.MoveDialogOpen = true
+	s.MoveDialogState = &MoveDialogState{
+		Channel:       selectedChannel,
+		CategoryList:  categoryList,
+		SelectedIndex: 0, // Start at "Top Level (no group)"
+	}
 }
 
 func (a *App) handlePermissionsAction() {
@@ -481,11 +663,128 @@ func (a *App) handleCreateChannelOverride() {
 
 // Placeholder key handlers for forms/dialogs
 func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement channel form key handling
-	if msg.String() == "esc" {
+	state := a.serverManagementState.ChannelFormState
+
+	switch msg.String() {
+	case "esc":
 		a.serverManagementState.ChannelFormOpen = false
 		a.serverManagementState.ChannelFormState = nil
+		return nil
+
+	case "tab":
+		state.FocusField = (state.FocusField + 1) % 4
+		// Update textinput focus
+		if state.FocusField == 0 {
+			state.NameTextInput.Focus()
+		} else {
+			state.NameTextInput.Blur()
+		}
+		return nil
+
+	case "shift+tab":
+		state.FocusField--
+		if state.FocusField < 0 {
+			state.FocusField = 3
+		}
+		if state.FocusField == 0 {
+			state.NameTextInput.Focus()
+		} else {
+			state.NameTextInput.Blur()
+		}
+		return nil
+
+	case "up", "down":
+		if state.FocusField == 1 {
+			state.TypeIndex = 1 - state.TypeIndex // Toggle 0<->1
+		}
+		return nil
+
+	case "enter":
+		if state.FocusField == 2 { // Submit
+			return a.handleChannelFormSubmit()
+		} else if state.FocusField == 3 { // Cancel
+			a.serverManagementState.ChannelFormOpen = false
+			a.serverManagementState.ChannelFormState = nil
+		}
+		return nil
 	}
+
+	// Forward to textinput when name field has focus
+	if state.FocusField == 0 {
+		var cmd tea.Cmd
+		state.NameTextInput, cmd = state.NameTextInput.Update(msg)
+		return cmd
+	}
+
+	return nil
+}
+
+func (a *App) handleChannelFormSubmit() tea.Cmd {
+	state := a.serverManagementState.ChannelFormState
+
+	// Validation
+	name := strings.TrimSpace(state.NameTextInput.Value())
+	if name == "" {
+		state.ErrorMsg = "Channel name is required"
+		return nil
+	}
+	if len(name) > 100 {
+		state.ErrorMsg = "Name must be 1-100 characters"
+		return nil
+	}
+
+	// Connection check
+	if a.activeConn == nil || a.currentServer == nil {
+		state.ErrorMsg = "Not connected to server"
+		return nil
+	}
+
+	// Determine type
+	var channelType models.ChannelType
+	if state.TypeIndex == 0 {
+		channelType = models.ChannelTypeText
+	} else {
+		channelType = models.ChannelTypeCategory
+	}
+
+	serverID := a.currentServer.ID
+	var req interface{}
+	var opCode protocol.OpCode
+
+	if state.Mode == "create" {
+		req = &protocol.ChannelCreateRequest{
+			ServerID:   serverID,
+			Name:       name,
+			Type:       channelType,
+			CategoryID: state.CategoryID,
+		}
+		opCode = protocol.OpChannelCreate
+	} else {
+		req = &protocol.ChannelUpdateRequest{
+			ServerID:  serverID,
+			ChannelID: *state.EditingChannelID,
+			Name:      &name,
+		}
+		opCode = protocol.OpChannelUpdate
+	}
+
+	// Build and send protocol message
+	msg, err := protocol.NewMessage(opCode, req)
+	if err != nil {
+		state.ErrorMsg = fmt.Sprintf("Failed to build request: %v", err)
+		return nil
+	}
+
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		state.ErrorMsg = fmt.Sprintf("Failed to send: %v", err)
+		return nil
+	}
+
+	// Close form on success
+	a.serverManagementState.ChannelFormOpen = false
+	a.serverManagementState.ChannelFormState = nil
+	a.statusMessage = "Request sent..."
+
 	return nil
 }
 
@@ -508,12 +807,125 @@ func (a *App) handlePermissionsEditorKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (a *App) handleDeleteConfirmKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement delete confirmation key handling
-	if msg.String() == "esc" || msg.String() == "n" {
+	switch msg.String() {
+	case "esc", "n", "N":
 		a.serverManagementState.DeleteConfirmOpen = false
 		a.serverManagementState.DeleteConfirmChannel = nil
 		a.serverManagementState.DeleteConfirmRole = nil
+		return nil
+
+	case "y", "Y", "enter":
+		return a.handleDeleteConfirmed()
 	}
+	return nil
+}
+
+func (a *App) handleDeleteConfirmed() tea.Cmd {
+	s := a.serverManagementState
+
+	if a.activeConn == nil || a.currentServer == nil {
+		return nil
+	}
+
+	if s.DeleteConfirmChannel != nil {
+		req := &protocol.ChannelDeleteRequest{
+			ServerID:  a.currentServer.ID,
+			ChannelID: s.DeleteConfirmChannel.ID,
+		}
+
+		msg, err := protocol.NewMessage(protocol.OpChannelDelete, req)
+		if err != nil {
+			a.statusMessage = fmt.Sprintf("Failed: %v", err)
+			return nil
+		}
+
+		if err := a.activeConn.Connection.Send(msg); err != nil {
+			a.statusMessage = fmt.Sprintf("Failed: %v", err)
+			return nil
+		}
+
+		a.statusMessage = fmt.Sprintf("Deleting channel #%s...", s.DeleteConfirmChannel.Name)
+	}
+
+	s.DeleteConfirmOpen = false
+	s.DeleteConfirmChannel = nil
+
+	return nil
+}
+
+func (a *App) handleMoveDialogKey(msg tea.KeyMsg) tea.Cmd {
+	state := a.serverManagementState.MoveDialogState
+
+	switch msg.String() {
+	case "esc":
+		a.serverManagementState.MoveDialogOpen = false
+		a.serverManagementState.MoveDialogState = nil
+		return nil
+
+	case "up", "k":
+		if state.SelectedIndex > 0 {
+			state.SelectedIndex--
+		}
+		return nil
+
+	case "down", "j":
+		maxIndex := len(state.CategoryList) // +1 for "Top Level" is implicit in rendering
+		if state.SelectedIndex < maxIndex {
+			state.SelectedIndex++
+		}
+		return nil
+
+	case "enter":
+		return a.handleMoveDialogSubmit()
+	}
+
+	return nil
+}
+
+func (a *App) handleMoveDialogSubmit() tea.Cmd {
+	state := a.serverManagementState.MoveDialogState
+
+	if a.activeConn == nil || a.currentServer == nil {
+		return nil
+	}
+
+	// Determine new category ID
+	var newCategoryID *uuid.UUID
+	if state.SelectedIndex == 0 {
+		// Moving to top level - set CategoryID to uuid.Nil
+		nilUUID := uuid.Nil
+		newCategoryID = &nilUUID
+	} else {
+		// Moving to a category
+		categoryIdx := state.SelectedIndex - 1
+		if categoryIdx < len(state.CategoryList) {
+			id := state.CategoryList[categoryIdx].ID
+			newCategoryID = &id
+		}
+	}
+
+	// Build update request
+	req := &protocol.ChannelUpdateRequest{
+		ServerID:   a.currentServer.ID,
+		ChannelID:  state.Channel.ID,
+		CategoryID: newCategoryID,
+	}
+
+	msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req)
+	if err != nil {
+		a.statusMessage = fmt.Sprintf("Failed: %v", err)
+		return nil
+	}
+
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		a.statusMessage = fmt.Sprintf("Failed: %v", err)
+		return nil
+	}
+
+	a.serverManagementState.MoveDialogOpen = false
+	a.serverManagementState.MoveDialogState = nil
+	a.statusMessage = "Moving channel..."
+
 	return nil
 }
 
@@ -596,7 +1008,14 @@ func (a *App) renderServerManagementView() string {
 		Bold(true).
 		Render("  Server Settings  •  Esc: Back")
 
-	return lipgloss.JoinVertical(lipgloss.Left, titleBar, content)
+	baseView := lipgloss.JoinVertical(lipgloss.Left, titleBar, content)
+
+	// Show delete confirmation dialog if active
+	if s.DeleteConfirmOpen {
+		return a.renderDeleteConfirmDialog()
+	}
+
+	return baseView
 }
 
 // renderCategorySidebar renders the category list sidebar
@@ -652,19 +1071,29 @@ func (a *App) renderCategorySidebar(width, height int, s *ServerManagementState)
 
 // renderChannelsCategory renders the Channels management category
 func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState) string {
-	var buf strings.Builder
+	// Check if a form/dialog is open and render it instead
+	if s.ChannelFormOpen && s.ChannelFormState != nil {
+		return a.renderChannelFormPage(width, height, s)
+	}
+	if s.MoveDialogOpen && s.MoveDialogState != nil {
+		return a.renderMoveChannelPage(width, height, s)
+	}
+
+	layout := calculateSettingsLayout(width, height, 3, 1) // 3 = stats + 2 padding lines, 1 = extra help line
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 
 	// Header
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Bold(true)
-	buf.WriteString(headerStyle.Render("Channel Management"))
-	buf.WriteString("\n")
+	top.writeLine(headerStyle.Render("Channel Management"))
 
+	// Subtitle
 	descStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(descStyle.Render("Manage text, voice channels, and categories"))
-	buf.WriteString("\n")
+	top.writeLine(descStyle.Render("Manage text, voice channels, and categories"))
 
 	// Stats
 	categoryCount := 0
@@ -675,23 +1104,145 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 	}
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(statsStyle.Render(fmt.Sprintf("%d channels · %d categories", len(s.ChannelList), categoryCount)))
-	buf.WriteString("\n\n")
+	top.writeLine(statsStyle.Render(fmt.Sprintf("%d channels · %d categories", len(s.ChannelList), categoryCount)))
+	top.writeBlank()
 
-	// Separator
-	buf.WriteString(strings.Repeat("─", width-4))
-	buf.WriteString("\n\n")
+	// Top section separator
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
-	// Channel list
-	for i, ch := range s.ChannelList {
-		selected := s.FocusOnForm && i == s.SelectedChannel
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 
-		prefix := "  "
-		if selected {
-			prefix = "⚑ "
+	// Build display list (flattened hierarchical view for rendering)
+	type displayItem struct {
+		channel *models.Channel
+		indent  int
+		listIdx int // Index in s.ChannelList
+	}
+	var displayList []displayItem
+
+	// Organize by category
+	var categories []*models.Channel
+	channelsByCategory := make(map[uuid.UUID][]*models.Channel)
+	var topLevelChannels []*models.Channel
+
+	for _, ch := range s.ChannelList {
+		if ch.Type == models.ChannelTypeCategory {
+			categories = append(categories, ch)
+		} else if ch.CategoryID == uuid.Nil {
+			topLevelChannels = append(topLevelChannels, ch)
+		} else {
+			channelsByCategory[ch.CategoryID] = append(channelsByCategory[ch.CategoryID], ch)
+		}
+	}
+
+	// Build display list: top-level channels first
+	for _, ch := range topLevelChannels {
+		listIdx := -1
+		for j, listCh := range s.ChannelList {
+			if listCh.ID == ch.ID {
+				listIdx = j
+				break
+			}
+		}
+		displayList = append(displayList, displayItem{channel: ch, indent: 0, listIdx: listIdx})
+	}
+
+	// Then categories with their children
+	for _, category := range categories {
+		catIdx := -1
+		for j, listCh := range s.ChannelList {
+			if listCh.ID == category.ID {
+				catIdx = j
+				break
+			}
+		}
+		displayList = append(displayList, displayItem{channel: category, indent: 0, listIdx: catIdx})
+
+		// Add channels in this category (indented)
+		if channels, ok := channelsByCategory[category.ID]; ok {
+			for _, ch := range channels {
+				chIdx := -1
+				for j, listCh := range s.ChannelList {
+					if listCh.ID == ch.ID {
+						chIdx = j
+						break
+					}
+				}
+				displayList = append(displayList, displayItem{channel: ch, indent: 1, listIdx: chIdx})
+			}
+		}
+	}
+
+	// Calculate scrollable area
+	maxVisible := layout.middleLines - 2
+	if maxVisible < 3 {
+		maxVisible = 3
+	}
+
+	visibleStart := 0
+	visibleEnd := len(displayList)
+
+	// Find selected item in display list
+	selectedDisplayIdx := -1
+	for i, item := range displayList {
+		if item.listIdx == s.SelectedChannel {
+			selectedDisplayIdx = i
+			break
+		}
+	}
+
+	// Calculate viewport with selected item centered
+	if len(displayList) > maxVisible && selectedDisplayIdx >= 0 {
+		halfVisible := maxVisible / 2
+		visibleStart = selectedDisplayIdx - halfVisible
+		visibleEnd = selectedDisplayIdx + halfVisible
+
+		if visibleStart < 0 {
+			visibleStart = 0
+			visibleEnd = maxVisible
+		}
+		if visibleEnd > len(displayList) {
+			visibleEnd = len(displayList)
+			visibleStart = visibleEnd - maxVisible
+			if visibleStart < 0 {
+				visibleStart = 0
+			}
+		}
+	}
+
+	// Show "↑ X more" if not at top
+	if visibleStart > 0 {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↑ %d more", visibleStart)))
+	}
+
+	// Render visible items
+	for i := visibleStart; i < visibleEnd; i++ {
+		item := displayList[i]
+		ch := item.channel
+		selected := s.FocusOnForm && item.listIdx == s.SelectedChannel
+
+		var prefix string
+		if item.indent == 0 {
+			prefix = "  "
+			if selected {
+				prefix = "▶ "
+			}
+		} else {
+			prefix = "    "
+			if selected {
+				prefix = "  ▶ "
+			}
 		}
 
-		channelName := fmt.Sprintf("# %s", ch.Name)
+		var channelName string
+		if ch.Type == models.ChannelTypeCategory {
+			channelName = fmt.Sprintf("▼ %s", ch.Name)
+		} else {
+			channelName = fmt.Sprintf("# %s", ch.Name)
+		}
 
 		var line string
 		if selected {
@@ -699,71 +1250,129 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
 				Background(lipgloss.Color(a.theme.Colors.Cyan)).
 				Bold(true).
-				Width(width - 4).
+				Width(layout.interiorWidth).
 				Render(prefix + channelName)
 		} else {
-			line = lipgloss.NewStyle().
+			line = prefix + lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-				Width(width - 4).
-				Render(prefix + channelName)
+				Render(channelName)
 		}
-		buf.WriteString(line)
-		buf.WriteString("\n")
+		middle.writeLine(line)
 	}
 
-	// Footer help
-	buf.WriteString("\n")
-	buf.WriteString(strings.Repeat("─", width-4))
-	buf.WriteString("\n\n")
+	// Show "↓ X more" if not at bottom
+	if visibleEnd < len(displayList) {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↓ %d more", len(displayList)-visibleEnd)))
+	}
+
+	// Fill remaining middle section space
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
 
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(helpStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
-	buf.WriteString("\n")
-	buf.WriteString(helpStyle.Render("Actions: C create · E edit · M move · D delete"))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
+	bottom.writeLine(helpStyle.Render("Actions: C create · E edit · M move · D delete"))
+
+	// Fill remaining bottom section space
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
 
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Render(buf.String())
+		Padding(0, 1).
+		Render(content)
 }
 
 // renderRolesCategory renders the Roles management category
 func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) string {
-	var buf strings.Builder
+	layout := calculateSettingsLayout(width, height, 3, 1) // 3 = stats + 2 padding lines, 1 = extra help line
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 
 	// Header
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Bold(true)
-	buf.WriteString(headerStyle.Render("Role Management"))
-	buf.WriteString("\n")
+	top.writeLine(headerStyle.Render("Role Management"))
 
+	// Subtitle
 	descStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(descStyle.Render("Configure server roles and permissions"))
-	buf.WriteString("\n")
+	top.writeLine(descStyle.Render("Configure server roles and permissions"))
 
-	// Stats - count total members across all roles
+	// Stats
 	totalMembers := len(a.serverManagementState.MemberList)
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(statsStyle.Render(fmt.Sprintf("%d roles · %d total members", len(s.RoleList), totalMembers)))
-	buf.WriteString("\n\n")
+	top.writeLine(statsStyle.Render(fmt.Sprintf("%d roles · %d total members", len(s.RoleList), totalMembers)))
+	top.writeBlank()
 
-	// Separator
-	buf.WriteString(strings.Repeat("─", width-4))
-	buf.WriteString("\n\n")
+	// Top section separator
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
-	// Role list
-	for i, role := range s.RoleList {
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Calculate scrollable area
+	maxVisible := layout.middleLines - 2
+	if maxVisible < 3 {
+		maxVisible = 3
+	}
+
+	visibleStart := 0
+	visibleEnd := len(s.RoleList)
+
+	// Calculate viewport with selected item centered
+	if len(s.RoleList) > maxVisible && s.SelectedRole >= 0 {
+		halfVisible := maxVisible / 2
+		visibleStart = s.SelectedRole - halfVisible
+		visibleEnd = s.SelectedRole + halfVisible
+
+		if visibleStart < 0 {
+			visibleStart = 0
+			visibleEnd = maxVisible
+		}
+		if visibleEnd > len(s.RoleList) {
+			visibleEnd = len(s.RoleList)
+			visibleStart = visibleEnd - maxVisible
+			if visibleStart < 0 {
+				visibleStart = 0
+			}
+		}
+	}
+
+	// Show "↑ X more" if not at top
+	if visibleStart > 0 {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↑ %d more", visibleStart)))
+	}
+
+	// Render visible roles
+	for i := visibleStart; i < visibleEnd; i++ {
+		role := s.RoleList[i]
 		selected := s.FocusOnForm && i == s.SelectedRole
 
 		prefix := "  "
 		if selected {
-			prefix = "⚑ "
+			prefix = "▶ "
 		}
 
 		// Count members with this role
@@ -792,54 +1401,74 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
 				Background(lipgloss.Color(a.theme.Colors.Cyan)).
 				Bold(true).
-				Width(width - 4).
+				Width(layout.interiorWidth).
 				Render(prefix + roleLine)
 		} else {
-			line = lipgloss.NewStyle().
+			line = prefix + lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-				Width(width - 4).
-				Render(prefix + roleLine)
+				Render(roleLine)
 		}
-		buf.WriteString(line)
-		buf.WriteString("\n")
+		middle.writeLine(line)
 	}
 
-	// Footer help
-	buf.WriteString("\n")
-	buf.WriteString(strings.Repeat("─", width-4))
-	buf.WriteString("\n\n")
+	// Show "↓ X more" if not at bottom
+	if visibleEnd < len(s.RoleList) {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↓ %d more", len(s.RoleList)-visibleEnd)))
+	}
+
+	// Fill remaining middle section space
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
 
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(helpStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
-	buf.WriteString("\n")
-	buf.WriteString(helpStyle.Render("Actions: C create · E edit · P permissions · D delete"))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
+	bottom.writeLine(helpStyle.Render("Actions: C create · E edit · P permissions · D delete"))
+
+	// Fill remaining bottom section space
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
 
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Render(buf.String())
+		Padding(0, 1).
+		Render(content)
 }
 
 // renderMembersCategory renders the Members management category
 func (a *App) renderMembersCategory(width, height int, s *ServerManagementState) string {
-	var buf strings.Builder
+	layout := calculateSettingsLayout(width, height, 4, 1) // 4 = stats + filter + 2 padding lines, 1 = extra help line
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 
 	// Header
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Bold(true)
-	buf.WriteString(headerStyle.Render("Member Management"))
-	buf.WriteString("\n")
+	top.writeLine(headerStyle.Render("Member Management"))
 
+	// Subtitle
 	descStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(descStyle.Render("View members, assign roles, and moderate users"))
-	buf.WriteString("\n")
+	top.writeLine(descStyle.Render("View members, assign roles, and moderate users"))
 
-	// Stats - count online members
+	// Stats
 	onlineCount := 0
 	for _, member := range s.MemberList {
 		if member.User != nil && member.User.Status == models.StatusOnline {
@@ -848,23 +1477,60 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 	}
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(statsStyle.Render(fmt.Sprintf("%d members · %d online", len(s.MemberList), onlineCount)))
-	buf.WriteString("\n\n")
+	top.writeLine(statsStyle.Render(fmt.Sprintf("%d members · %d online", len(s.MemberList), onlineCount)))
 
 	// Filter bar
 	filterStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	filterText := fmt.Sprintf("Filters: Role: %s | Status: %s | Sort: %s",
 		s.FilterRole, strings.Title(s.FilterOnline), s.SortBy)
-	buf.WriteString(filterStyle.Render(filterText))
-	buf.WriteString("\n")
+	top.writeLine(filterStyle.Render(filterText))
+	top.writeBlank()
 
-	// Separator
-	buf.WriteString(strings.Repeat("─", width-4))
-	buf.WriteString("\n")
+	// Top section separator
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
-	// Member list (table format)
-	for i, member := range s.MemberList {
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Calculate scrollable area
+	maxVisible := layout.middleLines - 2
+	if maxVisible < 3 {
+		maxVisible = 3
+	}
+
+	visibleStart := 0
+	visibleEnd := len(s.MemberList)
+
+	// Calculate viewport with selected item centered
+	if len(s.MemberList) > maxVisible && s.SelectedMember >= 0 {
+		halfVisible := maxVisible / 2
+		visibleStart = s.SelectedMember - halfVisible
+		visibleEnd = s.SelectedMember + halfVisible
+
+		if visibleStart < 0 {
+			visibleStart = 0
+			visibleEnd = maxVisible
+		}
+		if visibleEnd > len(s.MemberList) {
+			visibleEnd = len(s.MemberList)
+			visibleStart = visibleEnd - maxVisible
+			if visibleStart < 0 {
+				visibleStart = 0
+			}
+		}
+	}
+
+	// Show "↑ X more" if not at top
+	if visibleStart > 0 {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↑ %d more", visibleStart)))
+	}
+
+	// Render visible members
+	for i := visibleStart; i < visibleEnd; i++ {
+		member := s.MemberList[i]
 		if member.User == nil {
 			continue
 		}
@@ -873,7 +1539,7 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 
 		prefix := "  "
 		if selected {
-			prefix = "⚑ "
+			prefix = "▶ "
 		}
 
 		// Status indicator
@@ -888,7 +1554,7 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 			roleName = member.HighestRole.Name
 		}
 
-		// Join date (placeholder - would need actual data)
+		// Join date
 		joinDate := "2026-02-22"
 		if member.Member != nil && !member.Member.JoinedAt.IsZero() {
 			joinDate = member.Member.JoinedAt.Format("2006-01-02")
@@ -904,75 +1570,102 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
 				Background(lipgloss.Color(a.theme.Colors.Cyan)).
 				Bold(true).
-				Width(width - 4).
+				Width(layout.interiorWidth).
 				Render(prefix + memberLine)
 		} else {
-			line = lipgloss.NewStyle().
+			line = prefix + lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-				Width(width - 4).
-				Render(prefix + memberLine)
+				Render(memberLine)
 		}
-		buf.WriteString(line)
-		buf.WriteString("\n")
+		middle.writeLine(line)
 	}
 
-	// Footer help
-	buf.WriteString("\n")
-	buf.WriteString(strings.Repeat("─", width-4))
-	buf.WriteString("\n\n")
+	// Show "↓ X more" if not at bottom
+	if visibleEnd < len(s.MemberList) {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↓ %d more", len(s.MemberList)-visibleEnd)))
+	}
+
+	// Fill remaining middle section space
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
 
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	buf.WriteString(helpStyle.Render("Navigation: ↑↓ navigate · Esc close"))
-	buf.WriteString("\n")
-	buf.WriteString(helpStyle.Render("Actions: Shift+R assign role · Shift+K kick · Shift+B ban · F filters · S search"))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ navigate · Esc close"))
+	bottom.writeLine(helpStyle.Render("Actions: Shift+R assign role · Shift+K kick · Shift+B ban · F filters · S search"))
+
+	// Fill remaining bottom section space
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
 
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Render(buf.String())
+		Padding(0, 1).
+		Render(content)
 }
 
 // renderMessagesCategory renders the Messages/Retention management category
 func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState) string {
-	var buf strings.Builder
+	layout := calculateSettingsLayout(width, height, 2, 1) // 2 = 2 padding lines, 1 = extra help line
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 
 	// Header
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Bold(true)
-	buf.WriteString(headerStyle.Render("Message Retention Settings"))
-	buf.WriteString("\n\n")
+	top.writeLine(headerStyle.Render("Message Retention Settings"))
+
+	// Subtitle
+	descStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(descStyle.Render("Configure message retention policies and channel overrides"))
+	top.writeBlank()
+
+	// Top section separator
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 
 	// Server Default Policy section
 	sectionStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
 		Bold(true)
-	buf.WriteString(sectionStyle.Render("Server Default Policy"))
-	buf.WriteString("\n")
+	middle.writeLine(sectionStyle.Render("Server Default Policy"))
 
 	policyStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		PaddingLeft(2)
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
 	if s.RetentionPolicy == nil {
-		buf.WriteString(policyStyle.Render("No retention policy configured. Messages will be kept indefinitely."))
+		middle.writeLine(policyStyle.Render("  No retention policy configured. Messages kept indefinitely."))
 	} else {
-		// Show configured policy
-		buf.WriteString(policyStyle.Render(fmt.Sprintf("Time-based: %d days", s.RetentionPolicy.TimeRetentionDays)))
-		buf.WriteString("\n")
-		buf.WriteString(policyStyle.Render(fmt.Sprintf("Count-based: %d messages max", s.RetentionPolicy.MaxMessageCount)))
+		middle.writeLine(policyStyle.Render(fmt.Sprintf("  Time-based: %d days", s.RetentionPolicy.TimeRetentionDays)))
+		middle.writeLine(policyStyle.Render(fmt.Sprintf("  Count-based: %d messages max", s.RetentionPolicy.MaxMessageCount)))
 	}
-	buf.WriteString("\n\n")
+	middle.writeBlank()
 
 	// Channel Overrides section
-	buf.WriteString(sectionStyle.Render("Channel Overrides"))
-	buf.WriteString("\n")
+	middle.writeLine(sectionStyle.Render("Channel Overrides"))
 
 	if s.ChannelOverrides == nil || len(s.ChannelOverrides) == 0 {
-		buf.WriteString(policyStyle.Render("No channel-specific overrides configured."))
+		middle.writeLine(policyStyle.Render("  No channel-specific overrides configured."))
 	} else {
 		for i, override := range s.ChannelOverrides {
 			selected := s.FocusOnForm && i == s.SelectedOverride
@@ -982,36 +1675,698 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 				override.MaxMessageCount)
 
 			if selected {
-				buf.WriteString(lipgloss.NewStyle().
-					Background(lipgloss.Color(a.theme.Colors.Selection)).
-					Render("  " + overrideText))
+				line := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Background)).
+					Background(lipgloss.Color(a.theme.Colors.Cyan)).
+					Bold(true).
+					Width(layout.interiorWidth).
+					Render("▶ " + overrideText)
+				middle.writeLine(line)
 			} else {
-				buf.WriteString(policyStyle.Render(overrideText))
+				middle.writeLine(policyStyle.Render("  " + overrideText))
 			}
-			buf.WriteString("\n")
 		}
 	}
-	buf.WriteString("\n")
+	middle.writeBlank()
 
 	// Actions section
-	buf.WriteString(sectionStyle.Render("Actions"))
-	buf.WriteString("\n")
-
+	middle.writeLine(sectionStyle.Render("Actions"))
 	actionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-		PaddingLeft(2)
-	buf.WriteString(actionStyle.Render("E - Edit server default policy"))
-	buf.WriteString("\n")
-	buf.WriteString(actionStyle.Render("N - Create channel override"))
-	buf.WriteString("\n")
-	buf.WriteString(actionStyle.Render("D - Delete selected override"))
-	buf.WriteString("\n")
-	buf.WriteString(actionStyle.Render("P - Prune messages now (manual cleanup)"))
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	middle.writeLine(actionStyle.Render("  E - Edit server default policy"))
+	middle.writeLine(actionStyle.Render("  N - Create channel override"))
+	middle.writeLine(actionStyle.Render("  D - Delete selected override"))
+	middle.writeLine(actionStyle.Render("  P - Prune messages now (manual cleanup)"))
+
+	// Fill remaining middle section space
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select override · Esc close"))
+	bottom.writeLine(helpStyle.Render("Actions: E edit policy · N new override · D delete · P prune"))
+
+	// Fill remaining bottom section space
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
 
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Render(buf.String())
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderChannelFormPage renders the channel create/edit form as a full page
+func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState) string {
+	state := s.ChannelFormState
+	if state == nil {
+		return ""
+	}
+
+	// Use same layout calculation as channel list
+	layout := calculateSettingsLayout(width, height, 2, 0) // 2 = 2 padding lines, 0 = bottom is correct
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+
+	title := "Create Channel / Channel Group"
+	if state.Mode == "edit" {
+		if state.TypeIndex == 0 {
+			title = "Edit Channel"
+		} else {
+			title = "Edit Channel Group"
+		}
+	}
+	top.writeLine(headerStyle.Render(title))
+
+	// Subtitle
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+
+	subtitle := "Create a new text channel or channel group"
+	if state.Mode == "edit" {
+		subtitle = "Edit channel settings"
+	}
+	top.writeLine(subtitleStyle.Render(subtitle))
+	top.writeBlank()
+
+	// Top section separator
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Error message if present
+	if state.ErrorMsg != "" {
+		errorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Red)).
+			Bold(true)
+		middle.writeLine(errorStyle.Render("⚠ " + state.ErrorMsg))
+		middle.writeBlank()
+	}
+
+	// Name field
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	middle.writeLine(labelStyle.Render("▸ Name:"))
+
+	// Render textinput with focus indicator
+	inputView := state.NameTextInput.View()
+	if state.FocusField == 0 {
+		inputStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan))
+		middle.writeLine(inputStyle.Render("  " + inputView))
+	} else {
+		middle.writeLine("  " + inputView)
+	}
+	middle.writeBlank()
+
+	// Type selection
+	middle.writeLine(labelStyle.Render("▸ Type:"))
+
+	// Text Channel option
+	textChannelPrefix := "  ( ) "
+	if state.TypeIndex == 0 {
+		textChannelPrefix = "  (●) "
+	}
+	textChannelLine := textChannelPrefix + "Text Channel"
+	if state.FocusField == 1 {
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Render(textChannelLine))
+	} else {
+		middle.writeLine(textChannelLine)
+	}
+
+	// Channel Group option
+	channelGroupPrefix := "  ( ) "
+	if state.TypeIndex == 1 {
+		channelGroupPrefix = "  (●) "
+	}
+	channelGroupLine := channelGroupPrefix + "Channel Group"
+	if state.FocusField == 1 {
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Render(channelGroupLine))
+	} else {
+		middle.writeLine(channelGroupLine)
+	}
+	middle.writeBlank()
+
+	// Show parent group if applicable
+	if state.CategoryID != nil && a.activeConn != nil {
+		a.activeConn.mu.RLock()
+		if a.currentServer != nil {
+			if channels, ok := a.activeConn.Channels[a.currentServer.ID]; ok {
+				for _, ch := range channels {
+					if ch.ID == *state.CategoryID {
+						parentStyle := lipgloss.NewStyle().
+							Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+							Italic(true)
+						middle.writeLine(parentStyle.Render(fmt.Sprintf("Parent group: %s", ch.Name)))
+						middle.writeBlank()
+						break
+					}
+				}
+			}
+		}
+		a.activeConn.mu.RUnlock()
+	}
+
+	// Buttons
+	createLabel := "Create"
+	if state.Mode == "edit" {
+		createLabel = "Save"
+	}
+
+	var createButton, cancelButton string
+	if state.FocusField == 2 {
+		createButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Green)).
+			Bold(true).
+			Padding(0, 2).
+			Render(createLabel)
+	} else {
+		createButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Green)).
+			Render("[" + createLabel + "]")
+	}
+
+	if state.FocusField == 3 {
+		cancelButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Red)).
+			Bold(true).
+			Padding(0, 2).
+			Render("Cancel")
+	} else {
+		cancelButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Red)).
+			Render("[Cancel]")
+	}
+
+	middle.writeLine("  " + createButton + "  " + cancelButton)
+
+	// Fill remaining middle section space
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+
+	// Bottom section separator
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// Navigation help
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Tab: Navigate · ↑↓: Select type · Enter: Submit · Esc: Cancel"))
+
+	// Fill remaining bottom section space
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderMoveChannelPage renders the move channel form as a full page
+func (a *App) renderMoveChannelPage(width, height int, s *ServerManagementState) string {
+	state := s.MoveDialogState
+	if state == nil {
+		return ""
+	}
+
+	// Use same layout calculation as channel list
+	layout := calculateSettingsLayout(width, height, 2, 0) // 2 = 2 padding lines, 0 = bottom is correct
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	top.writeLine(headerStyle.Render(fmt.Sprintf("Move Channel: #%s", state.Channel.Name)))
+
+	// Subtitle
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(subtitleStyle.Render("Select a new parent group or move to top level"))
+	top.writeBlank()
+
+	// Top section separator
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Instructions
+	instructionStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true)
+	middle.writeLine(instructionStyle.Render("Select destination:"))
+	middle.writeBlank()
+
+	// Top Level option (index 0)
+	topLevelText := "  Top Level (no group)"
+	if state.SelectedIndex == 0 {
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Cyan)).
+			Bold(true).
+			Width(layout.interiorWidth).
+			Render("▶ Top Level (no group)"))
+	} else {
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+			Render(topLevelText))
+	}
+
+	// Category list
+	for i, category := range state.CategoryList {
+		categoryText := fmt.Sprintf("  ▼ %s", category.Name)
+		listIndex := i + 1 // +1 because 0 is "Top Level"
+
+		if state.SelectedIndex == listIndex {
+			middle.writeLine(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Background)).
+				Background(lipgloss.Color(a.theme.Colors.Cyan)).
+				Bold(true).
+				Width(layout.interiorWidth).
+				Render(fmt.Sprintf("▶ ▼ %s", category.Name)))
+		} else {
+			middle.writeLine(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Render(categoryText))
+		}
+	}
+
+	// Fill remaining middle section space
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+
+	// Bottom section separator
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// Navigation help
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("↑↓: Navigate · Enter: Confirm · Esc: Cancel"))
+
+	// Fill remaining bottom section space
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderChannelFormDialog renders the channel create/edit form dialog
+func (a *App) renderChannelFormDialog() string {
+	state := a.serverManagementState.ChannelFormState
+	if state == nil {
+		return ""
+	}
+
+	dialogWidth := 70
+
+	var content strings.Builder
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	title := "Create Channel / Channel Group"
+	if state.Mode == "edit" {
+		if state.TypeIndex == 0 {
+			title = "Edit Channel"
+		} else {
+			title = "Edit Channel Group"
+		}
+	}
+	content.WriteString(titleStyle.Render(title))
+	content.WriteString("\n\n")
+
+	// Error message if present
+	if state.ErrorMsg != "" {
+		errorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Red)).
+			Width(dialogWidth - 4).
+			Align(lipgloss.Center)
+		content.WriteString(errorStyle.Render(state.ErrorMsg))
+		content.WriteString("\n\n")
+	}
+
+	// Name field
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+
+	content.WriteString(labelStyle.Render("Name:"))
+	content.WriteString("\n")
+
+	// Render textinput with focus indicator
+	inputView := state.NameTextInput.View()
+	if state.FocusField == 0 {
+		inputView = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Padding(0, 1).
+			Render(inputView)
+	} else {
+		inputView = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(a.theme.Colors.Comment)).
+			Padding(0, 1).
+			Render(inputView)
+	}
+	content.WriteString(inputView)
+	content.WriteString("\n\n")
+
+	// Type radio buttons
+	content.WriteString(labelStyle.Render("Type:"))
+	content.WriteString("\n")
+
+	typeTextStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	if state.FocusField == 1 {
+		typeTextStyle = typeTextStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	}
+
+	radioText := "( ) Text Channel"
+	if state.TypeIndex == 0 {
+		radioText = "(•) Text Channel"
+	}
+	content.WriteString(typeTextStyle.Render("  " + radioText))
+	content.WriteString("\n")
+
+	radioCat := "( ) Channel Group"
+	if state.TypeIndex == 1 {
+		radioCat = "(•) Channel Group"
+	}
+	content.WriteString(typeTextStyle.Render("  " + radioCat))
+	content.WriteString("\n\n")
+
+	// Parent group indicator (if creating within a category)
+	if state.CategoryID != nil && state.Mode == "create" {
+		// Find category name
+		var categoryName string
+		if a.channelTree != nil {
+			for _, node := range a.channelTree.FlatList {
+				if node.IsCategory && node.Channel.ID == *state.CategoryID {
+					categoryName = node.Channel.Name
+					break
+				}
+			}
+		}
+
+		if categoryName != "" {
+			parentStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Italic(true)
+			content.WriteString(parentStyle.Render(fmt.Sprintf("Parent group: %s", strings.ToUpper(categoryName))))
+			content.WriteString("\n\n")
+		}
+	}
+
+	// Buttons
+	buttonRowStyle := lipgloss.NewStyle().
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	createStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Padding(0, 2)
+	cancelStyle := createStyle.Copy()
+
+	if state.FocusField == 2 {
+		createStyle = createStyle.
+			Background(lipgloss.Color(a.theme.Colors.Cyan)).
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Bold(true)
+	}
+	if state.FocusField == 3 {
+		cancelStyle = cancelStyle.
+			Background(lipgloss.Color(a.theme.Colors.Red)).
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Bold(true)
+	}
+
+	buttonText := "[Create]"
+	if state.Mode == "edit" {
+		buttonText = "[Save]"
+	}
+
+	buttons := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		createStyle.Render(buttonText),
+		"  ",
+		cancelStyle.Render("[Cancel]"),
+	)
+	content.WriteString(buttonRowStyle.Render(buttons))
+	content.WriteString("\n\n")
+
+	// Help text
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+	content.WriteString(helpStyle.Render("[Tab] Next  [↑↓] Toggle Type  [Enter] Confirm  [Esc] Cancel"))
+
+	// Wrap in dialog box
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogStyle.Render(content.String())
+
+	// Center on screen (overlay on top of server management view)
+	return lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
+// renderMoveDialog renders the move channel dialog
+func (a *App) renderMoveDialog() string {
+	state := a.serverManagementState.MoveDialogState
+	if state == nil {
+		return ""
+	}
+
+	dialogWidth := 60
+
+	var content strings.Builder
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	title := fmt.Sprintf("Move Channel: #%s", state.Channel.Name)
+	content.WriteString(titleStyle.Render(title))
+	content.WriteString("\n\n")
+
+	// Instructions
+	descStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+	content.WriteString(descStyle.Render("Select destination:"))
+	content.WriteString("\n\n")
+
+	// List of destinations
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Purple)).
+		Bold(true).
+		Width(dialogWidth - 6)
+
+	normalStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Width(dialogWidth - 6)
+
+	// Option 0: Top Level
+	topLevelText := "  Top Level (no group)"
+	if state.SelectedIndex == 0 {
+		content.WriteString(selectedStyle.Render(topLevelText))
+	} else {
+		content.WriteString(normalStyle.Render(topLevelText))
+	}
+	content.WriteString("\n")
+
+	// Categories
+	for i, category := range state.CategoryList {
+		itemIndex := i + 1 // +1 because 0 is "Top Level"
+		itemText := fmt.Sprintf("  %s", strings.ToUpper(category.Name))
+
+		if state.SelectedIndex == itemIndex {
+			content.WriteString(selectedStyle.Render(itemText))
+		} else {
+			content.WriteString(normalStyle.Render(itemText))
+		}
+		content.WriteString("\n")
+	}
+
+	content.WriteString("\n")
+
+	// Help text
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+	content.WriteString(helpStyle.Render("[↑↓] Navigate  [Enter] Confirm  [Esc] Cancel"))
+
+	// Wrap in dialog
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogStyle.Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
+// renderDeleteConfirmDialog renders the delete confirmation dialog
+func (a *App) renderDeleteConfirmDialog() string {
+	s := a.serverManagementState
+
+	dialogWidth := 50
+
+	var content strings.Builder
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Red)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	content.WriteString(titleStyle.Render("⚠ Confirm Deletion"))
+	content.WriteString("\n\n")
+
+	// Warning message
+	msgStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	var warningText string
+	if s.DeleteConfirmChannel != nil {
+		warningText = fmt.Sprintf("Delete channel #%s?\n\nThis action cannot be undone.", s.DeleteConfirmChannel.Name)
+	} else if s.DeleteConfirmRole != nil {
+		warningText = fmt.Sprintf("Delete role %s?\n\nThis action cannot be undone.", s.DeleteConfirmRole.Name)
+	}
+
+	content.WriteString(msgStyle.Render(warningText))
+	content.WriteString("\n\n")
+
+	// Buttons
+	buttonRowStyle := lipgloss.NewStyle().
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	confirmBtn := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Red)).
+		Bold(true).
+		Padding(0, 2).
+		Render("[Yes, Delete]")
+
+	cancelBtn := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Comment)).
+		Padding(0, 2).
+		Render("[No, Cancel]")
+
+	buttons := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
+	content.WriteString(buttonRowStyle.Render(buttons))
+	content.WriteString("\n\n")
+
+	// Help text
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+	content.WriteString(helpStyle.Render("[Y] Confirm  [N/Esc] Cancel"))
+
+	// Wrap in dialog
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Red)).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogStyle.Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
 }

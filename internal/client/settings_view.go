@@ -31,6 +31,51 @@ const (
 	settingsBorderChars = 2  // RoundedBorder adds 2 chars to width (left + right)
 )
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SETTINGS PAGE LAYOUT GUIDE - READ BEFORE CREATING NEW PAGES
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// For a complete template and examples, see: SETTINGS_PAGE_TEMPLATE.md
+//
+// CRITICAL RULE: The +2 Padding Pattern
+// -------------------------------------
+// ALL settings pages MUST allocate +2 extra lines in the top section beyond
+// what they actually write. This padding is REQUIRED for proper border alignment.
+//
+// Formula:
+//   pageTopExtra = (lines you write) - 4 (base) + 2 (padding)
+//
+// Examples:
+//   - 4 lines written (header+subtitle+blank+sep) → pageTopExtra = 2
+//   - 5 lines written (header+subtitle+stats+blank+sep) → pageTopExtra = 3
+//   - 6 lines written (header+subtitle+stats+filter+blank+sep) → pageTopExtra = 4
+//
+// Bottom Section:
+//   - 1 help line → pageBottomExtra = 0  (separator + help = 2 lines)
+//   - 2 help lines → pageBottomExtra = 1  (separator + blank + 2 help = 4 lines)
+//
+// Content Pages Pattern (NOT sidebars):
+//   return lipgloss.NewStyle().
+//       Width(width).Height(height).
+//       Border(lipgloss.RoundedBorder()).
+//       BorderForeground(...).
+//       Padding(0, 1).  // ← REQUIRED for content pages!
+//       Render(content)
+//
+// Sidebar Pattern (different!):
+//   return lipgloss.NewStyle().
+//       Width(width).Height(height).
+//       Border(lipgloss.RoundedBorder()).
+//       BorderForeground(...).
+//       Render(buf.String())  // ← NO Padding() on sidebars!
+//
+// Why This Works:
+//   The +2 padding ensures all pages have consistent top section heights,
+//   preventing overflow that would cause lipgloss to truncate and cut off
+//   top borders. Without it, borders misalign when switching between pages.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+
 // settingsLayout calculates exact section heights for a settings page.
 type settingsLayout struct {
 	topLines      int  // Top section content lines (before middle separator)
