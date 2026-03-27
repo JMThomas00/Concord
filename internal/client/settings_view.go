@@ -243,8 +243,9 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 		// Cancel and return to previous view
-		// Restore original theme if in Theme category
-		if s.SelectedCategory == 0 && s.OriginalTheme != "" {
+		// Restore original theme ONLY if currently IN the theme form (not just category selected)
+		// If user has Tab'd back to categories, theme is already applied - don't revert
+		if s.SelectedCategory == 0 && s.FocusOnForm && s.OriginalTheme != "" {
 			a.applyAndSaveTheme(s.OriginalTheme)
 		}
 		returnTo := s.PreviousView
@@ -295,6 +296,12 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "tab":
+		// When leaving theme form, auto-apply the selected theme
+		if s.FocusOnForm && s.SelectedCategory == 0 {
+			chosen := s.AvailableThemes[s.SelectedTheme]
+			a.applyAndSaveTheme(chosen)
+			a.statusMessage = fmt.Sprintf("Theme set to %q", themes.GetThemeDisplayName(chosen))
+		}
 		// Toggle between category list and form content
 		s.FocusOnForm = !s.FocusOnForm
 
@@ -305,10 +312,12 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		} else {
 			// Confirm action in form
 			switch s.SelectedCategory {
-			case 0: // Theme category - save theme
+			case 0: // Theme category - save theme and return to categories
 				chosen := s.AvailableThemes[s.SelectedTheme]
 				a.applyAndSaveTheme(chosen)
 				a.statusMessage = fmt.Sprintf("Theme set to %q", themes.GetThemeDisplayName(chosen))
+				// Go back to categories list after applying
+				s.FocusOnForm = false
 			}
 		}
 
@@ -864,7 +873,7 @@ func (a *App) renderThemeContent(s *SettingsState, width, height int) string {
 	// Navigation help
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Enter apply · Esc cancel · Tab back to sections"))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ preview · Enter apply · Tab apply & back · Esc cancel"))
 
 	// Fill remaining bottom section space
 	bottom.pad()

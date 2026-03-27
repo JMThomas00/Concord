@@ -987,7 +987,6 @@ func TestGetServerMembers(t *testing.T) {
 }
 
 func TestUpdateServerMemberTitle(t *testing.T) {
-	t.Skip("GetServerMember doesn't retrieve custom_title field yet")
 	db, cleanup := createTestDB(t)
 	defer cleanup()
 

@@ -18,6 +18,8 @@ func main() {
 	port := flag.Int("port", 0, "Port to bind to (overrides config)")
 	dbPath := flag.String("db", "", "Path to database file (overrides config)")
 	adminEmail := flag.String("admin-email", "", "Grant admin role to this email on startup")
+	fixAdmin := flag.Bool("fix-admin", false, "Repair broken Admin role (permissions, is_hoisted)")
+	cleanupDuplicates := flag.Bool("cleanup-duplicates", false, "Merge and remove duplicate roles")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	hybridMode := flag.Bool("hybrid", false, "Enable hybrid dashboard with live logs")
 	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
@@ -124,6 +126,42 @@ func main() {
 			server.Logger.Fatal("Failed to grant admin role", "email", *adminEmail, "error", err)
 		}
 		server.AuthLog.Info("Admin role granted", "email", *adminEmail)
+		db.Close()
+	}
+
+	// Handle --fix-admin: repair broken Admin role
+	if *fixAdmin {
+		db, err := database.New(config.DatabasePath)
+		if err != nil {
+			server.Logger.Fatal("Failed to open database for fix-admin", "error", err)
+		}
+		// Get default server
+		srv, _, err := db.EnsureDefaultServer("Concord Server")
+		if err != nil {
+			server.Logger.Fatal("Failed to get server for fix-admin", "error", err)
+		}
+		if err := db.FixAdminRole(srv.ID); err != nil {
+			server.Logger.Fatal("Failed to fix Admin role", "error", err)
+		}
+		server.AuthLog.Info("Admin role repaired (permissions + is_hoisted + position)")
+		db.Close()
+	}
+
+	// Handle --cleanup-duplicates: merge and remove duplicate roles
+	if *cleanupDuplicates {
+		db, err := database.New(config.DatabasePath)
+		if err != nil {
+			server.Logger.Fatal("Failed to open database for cleanup-duplicates", "error", err)
+		}
+		// Get default server
+		srv, _, err := db.EnsureDefaultServer("Concord Server")
+		if err != nil {
+			server.Logger.Fatal("Failed to get server for cleanup-duplicates", "error", err)
+		}
+		if err := db.CleanupDuplicateRoles(srv.ID); err != nil {
+			server.Logger.Fatal("Failed to cleanup duplicate roles", "error", err)
+		}
+		server.AuthLog.Info("Duplicate roles cleaned up successfully")
 		db.Close()
 	}
 

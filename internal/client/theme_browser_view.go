@@ -73,9 +73,10 @@ type ServerManagementState struct {
 	RoleFormState    *RoleFormState
 
 	// Role delete confirmation dialog
-	DeleteConfirmOpen    bool
-	DeleteConfirmRole    *models.Role
-	DeleteConfirmChannel *models.Channel
+	DeleteConfirmOpen         bool
+	DeleteConfirmRole         *models.Role
+	DeleteConfirmChannel      *models.Channel
+	DeleteConfirmFocusedButton int // 0 = Yes/Delete, 1 = No/Cancel
 
 	// Permissions editor state (full-page modal)
 	PermissionsEditorOpen bool         // Is permissions editor open?
@@ -102,6 +103,31 @@ type ServerManagementState struct {
 	SearchInputOpen   bool
 	SearchInputValue  string
 	SearchInputCursor int
+
+	// Member role assignment
+	RoleAssignOpen        bool
+	RoleAssignMember      *MemberDisplay      // Member being assigned roles
+	RoleAssignSelections  map[uuid.UUID]bool  // Role ID -> selected state
+	RoleAssignFocus       int                 // Focused role index in list
+
+	// Member moderation
+	KickConfirmOpen       bool
+	KickConfirmMember     *MemberDisplay
+	KickConfirmFocusedBtn int // 0 = Yes, 1 = No
+
+	BanConfirmOpen        bool
+	BanConfirmMember      *MemberDisplay
+	BanConfirmFocusedBtn  int // 0 = Yes, 1 = No
+
+	UnmuteConfirmOpen     bool
+	UnmuteConfirmMember   *MemberDisplay
+	UnmuteConfirmFocusedBtn int // 0 = Yes, 1 = No
+
+	MuteDurationOpen      bool
+	MuteDurationMember    *MemberDisplay
+	MuteDurationFocus     int    // Radio button/field index
+	MuteDurationCustom    string // Custom duration text input
+	MuteDurationReason    string // Optional reason
 
 	// Channels category state
 	ChannelList         []*models.Channel

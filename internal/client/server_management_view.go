@@ -2,6 +2,9 @@ package client
 
 import (
 	"fmt"
+	"log"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -90,6 +93,16 @@ func (a *App) loadChannelListForManagement(serverID uuid.UUID) {
 				channelList = append(channelList, ch)
 			}
 		}
+
+		// Sort by SortOrder ascending
+		for i := 0; i < len(channelList)-1; i++ {
+			for j := i + 1; j < len(channelList); j++ {
+				if channelList[j].SortOrder < channelList[i].SortOrder {
+					channelList[i], channelList[j] = channelList[j], channelList[i]
+				}
+			}
+		}
+
 		a.serverManagementState.ChannelList = channelList
 	}
 }
@@ -104,16 +117,12 @@ func (a *App) loadRoleListForManagement(serverID uuid.UUID) {
 	defer a.activeConn.mu.RUnlock()
 
 	if roles, ok := a.activeConn.Roles[serverID]; ok {
-		// Sort by position descending (higher position = higher in list)
+		// Sort alphabetically by name
 		roleList := make([]*models.Role, len(roles))
 		copy(roleList, roles)
-		for i := 0; i < len(roleList)-1; i++ {
-			for j := i + 1; j < len(roleList); j++ {
-				if roleList[j].Position > roleList[i].Position {
-					roleList[i], roleList[j] = roleList[j], roleList[i]
-				}
-			}
-		}
+		sort.Slice(roleList, func(i, j int) bool {
+			return roleList[i].Name < roleList[j].Name
+		})
 		a.serverManagementState.RoleList = roleList
 	}
 }
@@ -128,6 +137,111 @@ func (a *App) loadMemberListForManagement() {
 	defer a.activeConn.mu.RUnlock()
 
 	a.serverManagementState.MemberList = a.activeConn.Members
+	a.applyMemberFilters()
+}
+
+// applyMemberFilters applies current filters and sorting to the member list
+func (a *App) applyMemberFilters() {
+	s := a.serverManagementState
+	if s == nil || a.activeConn == nil {
+		return
+	}
+
+	a.activeConn.mu.RLock()
+	allMembers := a.activeConn.Members
+	a.activeConn.mu.RUnlock()
+
+	// Filter by role
+	var filtered []*MemberDisplay
+	for _, member := range allMembers {
+		// Role filter
+		if s.FilterRole != "All" && s.FilterRole != "" {
+			if member.HighestRole == nil || member.HighestRole.Name != s.FilterRole {
+				continue
+			}
+		}
+
+		// Status filter
+		if s.FilterOnline != "all" && member.User != nil {
+			if s.FilterOnline == "online" && member.User.Status != models.StatusOnline {
+				continue
+			}
+			if s.FilterOnline == "offline" && member.User.Status == models.StatusOnline {
+				continue
+			}
+		}
+
+		// Search filter
+		if s.SearchQuery != "" && member.User != nil {
+			if !strings.Contains(strings.ToLower(member.User.Username), strings.ToLower(s.SearchQuery)) {
+				continue
+			}
+		}
+
+		filtered = append(filtered, member)
+	}
+
+	// Sort
+	switch s.SortBy {
+	case "name":
+		sort.Slice(filtered, func(i, j int) bool {
+			if filtered[i].User == nil || filtered[j].User == nil {
+				return false
+			}
+			return strings.ToLower(filtered[i].User.Username) < strings.ToLower(filtered[j].User.Username)
+		})
+
+	case "joined":
+		sort.Slice(filtered, func(i, j int) bool {
+			if filtered[i].Member == nil || filtered[j].Member == nil {
+				return false
+			}
+			return filtered[i].Member.JoinedAt.Before(filtered[j].Member.JoinedAt)
+		})
+
+	case "role":
+		sort.Slice(filtered, func(i, j int) bool {
+			// Sort by role position (higher position = higher in list)
+			posI := 0
+			posJ := 0
+			if filtered[i].HighestRole != nil {
+				posI = filtered[i].HighestRole.Position
+			}
+			if filtered[j].HighestRole != nil {
+				posJ = filtered[j].HighestRole.Position
+			}
+			return posI > posJ
+		})
+
+	case "kicks":
+		sort.Slice(filtered, func(i, j int) bool {
+			return filtered[i].KickCount > filtered[j].KickCount
+		})
+
+	default:
+		// Default to role sorting
+		sort.Slice(filtered, func(i, j int) bool {
+			posI := 0
+			posJ := 0
+			if filtered[i].HighestRole != nil {
+				posI = filtered[i].HighestRole.Position
+			}
+			if filtered[j].HighestRole != nil {
+				posJ = filtered[j].HighestRole.Position
+			}
+			return posI > posJ
+		})
+	}
+
+	s.MemberList = filtered
+
+	// Reset selection if out of bounds
+	if s.SelectedMember >= len(s.MemberList) {
+		s.SelectedMember = len(s.MemberList) - 1
+	}
+	if s.SelectedMember < 0 && len(s.MemberList) > 0 {
+		s.SelectedMember = 0
+	}
 }
 
 // loadRetentionPolicyForManagement loads retention policy for Messages category
@@ -135,6 +249,182 @@ func (a *App) loadRetentionPolicyForManagement(serverID uuid.UUID) {
 	// For now, set to nil - will be loaded from server when implemented
 	a.serverManagementState.RetentionPolicy = nil
 	a.serverManagementState.ChannelOverrides = nil
+}
+
+// Permission list item for rendering
+type permissionItem struct {
+	Name     string
+	Bit      models.Permission
+	Category string
+}
+
+// getPermissionList returns all permissions organized by category
+func getPermissionList() []permissionItem {
+	return []permissionItem{
+		// General Permissions
+		{Name: "View Channels", Bit: models.PermissionViewChannels, Category: "General"},
+		{Name: "Manage Channels", Bit: models.PermissionManageChannels, Category: "General"},
+		{Name: "Manage Roles", Bit: models.PermissionManageRoles, Category: "General"},
+		{Name: "Manage Server", Bit: models.PermissionManageServer, Category: "General"},
+		{Name: "Create Invite", Bit: models.PermissionCreateInvite, Category: "General"},
+		{Name: "Kick Members", Bit: models.PermissionKickMembers, Category: "General"},
+		{Name: "Ban Members", Bit: models.PermissionBanMembers, Category: "General"},
+		{Name: "Change Nickname", Bit: models.PermissionChangeNickname, Category: "General"},
+		{Name: "Manage Titles", Bit: models.PermissionManageNicknames, Category: "General"},
+
+		// Text Channel Permissions
+		{Name: "Send Messages", Bit: models.PermissionSendMessages, Category: "Text Channels"},
+		{Name: "Send Messages in Threads", Bit: models.PermissionSendMessagesThreads, Category: "Text Channels"},
+		{Name: "Create Threads", Bit: models.PermissionCreateThreads, Category: "Text Channels"},
+		{Name: "Embed Links", Bit: models.PermissionEmbedLinks, Category: "Text Channels"},
+		{Name: "Attach Files", Bit: models.PermissionAttachFiles, Category: "Text Channels"},
+		{Name: "Add Reactions", Bit: models.PermissionAddReactions, Category: "Text Channels"},
+		{Name: "Use External Emoji", Bit: models.PermissionUseExternalEmoji, Category: "Text Channels"},
+		{Name: "Mention Everyone", Bit: models.PermissionMentionEveryone, Category: "Text Channels"},
+		{Name: "Manage Messages", Bit: models.PermissionManageMessages, Category: "Text Channels"},
+		{Name: "Read Message History", Bit: models.PermissionReadMessageHistory, Category: "Text Channels"},
+		{Name: "Pin Messages", Bit: models.PermissionPinMessages, Category: "Text Channels"},
+
+		// Voice Channel Permissions
+		{Name: "Connect", Bit: models.PermissionConnect, Category: "Voice Channels"},
+		{Name: "Speak", Bit: models.PermissionSpeak, Category: "Voice Channels"},
+		{Name: "Mute Members", Bit: models.PermissionMuteMembers, Category: "Voice Channels"},
+		{Name: "Deafen Members", Bit: models.PermissionDeafenMembers, Category: "Voice Channels"},
+		{Name: "Move Members", Bit: models.PermissionMoveMembers, Category: "Voice Channels"},
+		{Name: "Use Voice Activity", Bit: models.PermissionUseVAD, Category: "Voice Channels"},
+
+		// Administrator (Special)
+		{Name: "Administrator (All Permissions)", Bit: models.PermissionAdministrator, Category: "Special"},
+	}
+}
+
+// getPermissionDescription returns the description and command examples for a permission
+func getPermissionDescription(permName string) (description string, commands string) {
+	descriptions := map[string]struct {
+		desc string
+		cmds string
+	}{
+		// General Permissions
+		"View Channels": {
+			desc: "See channels and categories in the server",
+			cmds: "Implicit - all members have this by default",
+		},
+		"Manage Channels": {
+			desc: "Create, edit, delete, and reorder channels and categories",
+			cmds: "/create-channel <name> [category], /delete-channel <name>, /rename-channel <old> <new>, /move-channel <channel> <category>",
+		},
+		"Manage Roles": {
+			desc: "Create, edit, delete roles and assign or remove roles from members",
+			cmds: "/roles, /create-role <name> [preset], /role assign|remove @user <role>",
+		},
+		"Manage Server": {
+			desc: "Change server name, settings, retention policies (Not Implemented)",
+			cmds: "Server settings UI - future feature",
+		},
+		"Create Invite": {
+			desc: "Generate invite links for others to join the server (Not Implemented)",
+			cmds: "/invite create - future feature",
+		},
+		"Kick Members": {
+			desc: "Remove members from the server (they can rejoin)",
+			cmds: "/kick @user [reason]",
+		},
+		"Ban Members": {
+			desc: "Permanently ban members from the server",
+			cmds: "/ban @user [reason], /unban @user",
+		},
+		"Change Nickname": {
+			desc: "Change your own title in this server (Not Implemented)",
+			cmds: "/title <new title> - future feature",
+		},
+		"Manage Titles": {
+			desc: "Change other members' titles",
+			cmds: "/title @user <new title>",
+		},
+
+		// Text Channel Permissions
+		"Send Messages": {
+			desc: "Send text messages in channels",
+			cmds: "Implicit - all members can send messages",
+		},
+		"Send Messages in Threads": {
+			desc: "Reply to threads (Not Implemented)",
+			cmds: "Thread system - future feature",
+		},
+		"Create Threads": {
+			desc: "Create discussion threads from messages (Not Implemented)",
+			cmds: "Thread system - future feature",
+		},
+		"Embed Links": {
+			desc: "Post URLs that auto-embed (images, videos, etc.)",
+			cmds: "Implicit - URL rendering is automatic (OSC 8 hyperlinks)",
+		},
+		"Attach Files": {
+			desc: "Upload files/images to messages (Not Implemented)",
+			cmds: "File upload system - future feature",
+		},
+		"Add Reactions": {
+			desc: "React to messages with emoji (Not Implemented)",
+			cmds: "Reaction system - future feature",
+		},
+		"Use External Emoji": {
+			desc: "Use emoji from other servers (Not Implemented)",
+			cmds: "Custom emoji system - future feature",
+		},
+		"Mention Everyone": {
+			desc: "Use @everyone and @here to ping all members",
+			cmds: "@everyone, @here in messages",
+		},
+		"Manage Messages": {
+			desc: "Delete any message, pin/unpin messages",
+			cmds: "/delete-message <id>, /pin <message-id>, /unpin <message-id>",
+		},
+		"Read Message History": {
+			desc: "View past messages in channels (scrollback)",
+			cmds: "Implicit - message history is always accessible",
+		},
+		"Pin Messages": {
+			desc: "Pin important messages to channel header",
+			cmds: "/pin <message-id>, /unpin <message-id>",
+		},
+
+		// Voice Channel Permissions
+		"Connect": {
+			desc: "Join voice channels (Not Implemented)",
+			cmds: "Voice system - future feature",
+		},
+		"Speak": {
+			desc: "Transmit audio in voice channels (Not Implemented)",
+			cmds: "Voice system - future feature",
+		},
+		"Mute Members": {
+			desc: "Server-mute members (text mute only; voice mute not implemented)",
+			cmds: "/mute @user [duration] [reason]",
+		},
+		"Deafen Members": {
+			desc: "Server-deafen members (they can't hear) (Not Implemented)",
+			cmds: "Voice system - future feature",
+		},
+		"Move Members": {
+			desc: "Move members between voice channels (Not Implemented)",
+			cmds: "Voice system - future feature",
+		},
+		"Use Voice Activity": {
+			desc: "Use voice activity detection instead of push-to-talk (Not Implemented)",
+			cmds: "Voice system - future feature",
+		},
+
+		// Special
+		"Administrator (All Permissions)": {
+			desc: "Grants all permissions automatically (including future ones)",
+			cmds: "Server owner always has this; role assignment via /role assign @user Admin",
+		},
+	}
+
+	if info, exists := descriptions[permName]; exists {
+		return info.desc, info.cmds
+	}
+	return "No description available", ""
 }
 
 // handleServerManagementKey processes key events when in ViewServerManagement
@@ -161,6 +451,21 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	if s.MoveDialogOpen {
 		return a.handleMoveDialogKey(msg)
 	}
+	if s.RoleAssignOpen {
+		return a.handleRoleAssignKey(msg)
+	}
+	if s.KickConfirmOpen {
+		return a.handleKickConfirmKey(msg)
+	}
+	if s.BanConfirmOpen {
+		return a.handleBanConfirmKey(msg)
+	}
+	if s.UnmuteConfirmOpen {
+		return a.handleUnmuteConfirmKey(msg)
+	}
+	if s.MuteDurationOpen {
+		return a.handleMuteDurationKey(msg)
+	}
 	if s.FilterPanelOpen {
 		return a.handleFilterPanelKey(msg)
 	}
@@ -180,6 +485,19 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 		returnTo := s.PreviousView
 		a.serverManagementState = nil
 		a.view = returnTo
+
+	// IMPORTANT: Shift+up/down must be BEFORE regular up/down to take priority
+	case "shift+up":
+		// Reorder up (Channels only) - only when focused on content
+		if s.FocusOnForm && s.SelectedCategory == 0 {
+			a.handleReorderUp()
+		}
+
+	case "shift+down":
+		// Reorder down (Channels only) - only when focused on content
+		if s.FocusOnForm && s.SelectedCategory == 0 {
+			a.handleReorderDown()
+		}
 
 	case "up", "k":
 		if !s.FocusOnForm {
@@ -233,8 +551,8 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 			a.handleDeleteAction()
 		}
 
-	case "m", "M":
-		// Move action (Channels only)
+	case "m":
+		// Move action (Channels only) - lowercase m
 		if s.FocusOnForm && s.SelectedCategory == 0 {
 			a.handleMoveChannelAction()
 		}
@@ -249,32 +567,20 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 
-	case "shift+up":
-		// Reorder up (Channels and Roles)
-		if s.FocusOnForm && (s.SelectedCategory == 0 || s.SelectedCategory == 1) {
-			a.handleReorderUp()
-		}
-
-	case "shift+down":
-		// Reorder down (Channels and Roles)
-		if s.FocusOnForm && (s.SelectedCategory == 0 || s.SelectedCategory == 1) {
-			a.handleReorderDown()
-		}
-
-	case "shift+r", "shift+R":
-		// Assign role (Members)
+	case "R":
+		// Assign role (Members) - Shift+R
 		if s.FocusOnForm && s.SelectedCategory == 2 {
 			a.handleAssignRoleAction()
 		}
 
-	case "shift+k", "shift+K":
-		// Kick member (Members)
+	case "K":
+		// Kick member (Members) - Shift+K
 		if s.FocusOnForm && s.SelectedCategory == 2 {
 			a.handleKickMemberAction()
 		}
 
-	case "shift+b", "shift+B":
-		// Ban member (Members)
+	case "B":
+		// Ban/Unban member toggle (Members) - Shift+B
 		if s.FocusOnForm && s.SelectedCategory == 2 {
 			a.handleBanMemberAction()
 		}
@@ -284,6 +590,20 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 		if s.FocusOnForm && s.SelectedCategory == 2 {
 			s.FilterPanelOpen = true
 			s.FilterPanelFocus = 0
+		}
+
+	case "M":
+		// Mute/Unmute toggle (Members) - Shift+M
+		if s.FocusOnForm && s.SelectedCategory == 2 {
+			// Check if selected member is muted
+			if len(s.MemberList) > 0 && s.SelectedMember >= 0 && s.SelectedMember < len(s.MemberList) {
+				member := s.MemberList[s.SelectedMember]
+				if member != nil && member.IsMuted {
+					a.handleUnmuteMemberAction()
+				} else {
+					a.handleMuteMemberAction()
+				}
+			}
 		}
 
 	case "s", "S":
@@ -495,10 +815,12 @@ func (a *App) handleCreateAction() {
 	case 1: // Create Role
 		s.RoleFormOpen = true
 		s.RoleFormState = &RoleFormState{
-			Mode:        "create",
-			PresetIndex: 0,
-			ColorIndex:  0,
-			FocusField:  0,
+			Mode:          "create",
+			PresetIndex:   0,
+			ColorIndex:    0,
+			IsHoisted:     true,  // Default to showing separately in members list
+			IsMentionable: true,  // Default to allowing @mentions
+			FocusField:    0,
 		}
 	}
 }
@@ -546,14 +868,43 @@ func (a *App) handleEditAction() {
 	case 1: // Edit Role
 		if s.SelectedRole >= 0 && s.SelectedRole < len(s.RoleList) {
 			role := s.RoleList[s.SelectedRole]
+
+			// Map color RGB value back to index
+			colorIndex := 0 // Default to Gold
+			colorValues := map[int]int{
+				0xFFD700: 0, // Gold
+				0x5865F2: 1, // Blue
+				0xED4245: 2, // Red
+				0x57F287: 3, // Green
+				0x9B59B6: 4, // Purple
+			}
+			if idx, ok := colorValues[role.Color]; ok {
+				colorIndex = idx
+			}
+
+			// Detect preset based on permissions (or default to Custom)
+			presetIndex := 3 // Custom
+			if role.Permissions == models.PermissionsText {
+				presetIndex = 0 // Members
+			} else if role.Permissions == models.PermissionsModerator {
+				presetIndex = 1 // Moderator
+			} else if role.Permissions == models.PermissionsAdmin {
+				presetIndex = 2 // Admin
+			}
+
 			s.RoleFormOpen = true
 			s.RoleFormState = &RoleFormState{
-				Mode:          "edit",
-				EditingRoleID: &role.ID,
-				NameInput:     role.Name,
-				ColorIndex:    0,
-				PresetIndex:   3, // Custom
-				FocusField:    0,
+				Mode:               "edit",
+				EditingRoleID:      &role.ID,
+				NameInput:          role.Name,
+				NameCursor:         len(role.Name),
+				ColorIndex:         colorIndex,
+				PresetIndex:        presetIndex,
+				IsHoisted:          role.IsHoisted,
+				IsMentionable:      role.IsMentionable,
+				DisplayOrder:       fmt.Sprintf("%d", role.DisplayOrder),
+				DisplayOrderCursor: len(fmt.Sprintf("%d", role.DisplayOrder)),
+				FocusField:         0,
 			}
 		}
 	case 3: // Edit server default retention policy
@@ -572,6 +923,7 @@ func (a *App) handleDeleteAction() {
 			ch := s.ChannelList[s.SelectedChannel]
 			s.DeleteConfirmOpen = true
 			s.DeleteConfirmChannel = ch
+			s.DeleteConfirmFocusedButton = 0 // Start with "Yes, Delete" focused
 		}
 	case 1: // Delete Role
 		if s.SelectedRole >= 0 && s.SelectedRole < len(s.RoleList) {
@@ -580,6 +932,7 @@ func (a *App) handleDeleteAction() {
 			if role.Name != "@everyone" && role.Name != "everyone" {
 				s.DeleteConfirmOpen = true
 				s.DeleteConfirmRole = role
+				s.DeleteConfirmFocusedButton = 0 // Start with "Yes, Delete" focused
 			}
 		}
 	case 3: // Delete channel override
@@ -629,23 +982,369 @@ func (a *App) handlePermissionsAction() {
 }
 
 func (a *App) handleReorderUp() {
-	// TODO: Implement reorder up
+	s := a.serverManagementState
+
+	// Handle Channels category (index 0)
+	if s.SelectedCategory == 0 {
+		if s.SelectedChannel < 0 || s.SelectedChannel >= len(s.ChannelList) {
+			return
+		}
+
+		currentChannel := s.ChannelList[s.SelectedChannel]
+
+		// Find siblings (channels at same level: same CategoryID) with their indices
+		type sibling struct {
+			channel *models.Channel
+			index   int
+		}
+		var siblings []sibling
+		for i, ch := range s.ChannelList {
+			// Categories swap with categories; channels within same category swap together
+			if ch.Type == models.ChannelTypeCategory && currentChannel.Type == models.ChannelTypeCategory {
+				siblings = append(siblings, sibling{ch, i})
+			} else if ch.Type != models.ChannelTypeCategory && currentChannel.Type != models.ChannelTypeCategory {
+				// Both are regular channels - check if they share the same category
+				if ch.CategoryID == currentChannel.CategoryID {
+					siblings = append(siblings, sibling{ch, i})
+				}
+			}
+		}
+
+		if len(siblings) < 2 {
+			return // Nothing to swap with
+		}
+
+		// Find current position in siblings
+		currentIdx := -1
+		for i, sib := range siblings {
+			if sib.channel.ID == currentChannel.ID {
+				currentIdx = i
+				break
+			}
+		}
+
+		if currentIdx <= 0 {
+			return // Already at top
+		}
+
+		// Normalize sibling SortOrder to distinct values (i*10) before swapping,
+		// so equal-SortOrder channels (all new channels default to 0) still sort correctly.
+		for i, sib := range siblings {
+			sib.channel.SortOrder = i * 10
+		}
+
+		// Get target (previous sibling)
+		targetSib := siblings[currentIdx-1]
+		targetChannel := targetSib.channel
+
+		// Swap SortOrder values
+		currentChannel.SortOrder, targetChannel.SortOrder = targetChannel.SortOrder, currentChannel.SortOrder
+
+		// Send protocol messages to persist changes
+		serverID := a.getActiveServerID()
+		if a.activeConn != nil && serverID != uuid.Nil {
+			req1 := &protocol.ChannelUpdateRequest{
+				ServerID:  serverID,
+				ChannelID: currentChannel.ID,
+				SortOrder: &currentChannel.SortOrder,
+			}
+			if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req1); err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+
+			req2 := &protocol.ChannelUpdateRequest{
+				ServerID:  serverID,
+				ChannelID: targetChannel.ID,
+				SortOrder: &targetChannel.SortOrder,
+			}
+			if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req2); err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+
+			// Reload the channel list to reflect the new order
+			a.loadChannelListForManagement(serverID)
+			// Rebuild channel tree so main view shows updated order
+			a.loadChannelTree()
+			// Update selection to find where the moved channel ended up
+			for i, ch := range s.ChannelList {
+				if ch.ID == currentChannel.ID {
+					s.SelectedChannel = i
+					break
+				}
+			}
+		}
+		return
+	}
+
+	// Roles category (index 1) does not support reordering - roles are sorted alphabetically
 }
 
 func (a *App) handleReorderDown() {
-	// TODO: Implement reorder down
+	s := a.serverManagementState
+
+	// Handle Channels category (index 0)
+	if s.SelectedCategory == 0 {
+		if s.SelectedChannel < 0 || s.SelectedChannel >= len(s.ChannelList) {
+			return
+		}
+
+		currentChannel := s.ChannelList[s.SelectedChannel]
+
+		// Find siblings (channels at same level: same CategoryID) with their indices
+		type sibling struct {
+			channel *models.Channel
+			index   int
+		}
+		var siblings []sibling
+		for i, ch := range s.ChannelList {
+			// Categories swap with categories; channels within same category swap together
+			if ch.Type == models.ChannelTypeCategory && currentChannel.Type == models.ChannelTypeCategory {
+				siblings = append(siblings, sibling{ch, i})
+			} else if ch.Type != models.ChannelTypeCategory && currentChannel.Type != models.ChannelTypeCategory {
+				// Both are regular channels - check if they share the same category
+				if ch.CategoryID == currentChannel.CategoryID {
+					siblings = append(siblings, sibling{ch, i})
+				}
+			}
+		}
+
+		if len(siblings) < 2 {
+			return // Nothing to swap with
+		}
+
+		// Find current position in siblings
+		currentIdx := -1
+		for i, sib := range siblings {
+			if sib.channel.ID == currentChannel.ID {
+				currentIdx = i
+				break
+			}
+		}
+
+		if currentIdx < 0 || currentIdx >= len(siblings)-1 {
+			return // Already at bottom
+		}
+
+		// Normalize sibling SortOrder to distinct values (i*10) before swapping,
+		// so equal-SortOrder channels (all new channels default to 0) still sort correctly.
+		for i, sib := range siblings {
+			sib.channel.SortOrder = i * 10
+		}
+
+		// Get target (next sibling)
+		targetSib := siblings[currentIdx+1]
+		targetChannel := targetSib.channel
+
+		// Swap SortOrder values
+		currentChannel.SortOrder, targetChannel.SortOrder = targetChannel.SortOrder, currentChannel.SortOrder
+
+		// Send protocol messages to persist changes
+		serverID := a.getActiveServerID()
+		if a.activeConn != nil && serverID != uuid.Nil {
+			req1 := &protocol.ChannelUpdateRequest{
+				ServerID:  serverID,
+				ChannelID: currentChannel.ID,
+				SortOrder: &currentChannel.SortOrder,
+			}
+			if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req1); err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+
+			req2 := &protocol.ChannelUpdateRequest{
+				ServerID:  serverID,
+				ChannelID: targetChannel.ID,
+				SortOrder: &targetChannel.SortOrder,
+			}
+			if msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req2); err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+
+			// Reload the channel list to reflect the new order
+			a.loadChannelListForManagement(serverID)
+			// Rebuild channel tree so main view shows updated order
+			a.loadChannelTree()
+			// Update selection to find where the moved channel ended up
+			for i, ch := range s.ChannelList {
+				if ch.ID == currentChannel.ID {
+					s.SelectedChannel = i
+					break
+				}
+			}
+		}
+		return
+	}
+
+	// Handle Roles category (index 1)
+	if s.SelectedCategory == 1 {
+		if s.SelectedRole < 0 || s.SelectedRole >= len(s.RoleList) {
+			return
+		}
+		if len(s.RoleList) < 2 {
+			return // Nothing to swap with
+		}
+		if s.SelectedRole >= len(s.RoleList)-1 {
+			return // Already at bottom
+		}
+
+		currentRole := s.RoleList[s.SelectedRole]
+		targetRole := s.RoleList[s.SelectedRole+1]
+
+		// Don't allow moving @everyone role itself (but allow other roles to swap past it)
+		if currentRole.IsDefault {
+			return
+		}
+
+		// Normalize DisplayOrder to distinct values (i*10) before swapping
+		for i, role := range s.RoleList {
+			role.DisplayOrder = i * 10
+		}
+
+		// Swap DisplayOrder values
+		currentRole.DisplayOrder, targetRole.DisplayOrder = targetRole.DisplayOrder, currentRole.DisplayOrder
+
+		// Update selection (moved down by 1)
+		s.SelectedRole++
+
+		// Send protocol messages to persist changes
+		serverID := a.getActiveServerID()
+		channelID := uuid.Nil
+		if a.currentChannel != nil {
+			channelID = a.currentChannel.ID
+		}
+		if a.activeConn != nil && serverID != uuid.Nil {
+			req1 := &protocol.UpdateRoleRequest{
+				ServerID:      serverID,
+				ChannelID:     channelID,
+				RoleID:        currentRole.ID,
+				Name:          currentRole.Name,
+				Permissions:   uint64(currentRole.Permissions),
+				Color:         currentRole.Color,
+				DisplayOrder:  &currentRole.DisplayOrder,
+				IsHoisted:     currentRole.IsHoisted,
+				IsMentionable: currentRole.IsMentionable,
+			}
+			if msg, err := protocol.NewMessage(protocol.OpUpdateRole, req1); err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+
+			req2 := &protocol.UpdateRoleRequest{
+				ServerID:      serverID,
+				ChannelID:     channelID,
+				RoleID:        targetRole.ID,
+				Name:          targetRole.Name,
+				Permissions:   uint64(targetRole.Permissions),
+				Color:         targetRole.Color,
+				DisplayOrder:  &targetRole.DisplayOrder,
+				IsHoisted:     targetRole.IsHoisted,
+				IsMentionable: targetRole.IsMentionable,
+			}
+			if msg, err := protocol.NewMessage(protocol.OpUpdateRole, req2); err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+
+			// Reload the role list to reflect the new order
+			a.loadRoleListForManagement(serverID)
+			// Update selection to find where the moved role ended up
+			for i, role := range s.RoleList {
+				if role.ID == currentRole.ID {
+					s.SelectedRole = i
+					break
+				}
+			}
+		}
+		return
+	}
 }
 
 func (a *App) handleAssignRoleAction() {
-	// TODO: Implement assign role
+	s := a.serverManagementState
+	if s == nil || len(s.MemberList) == 0 || s.SelectedMember < 0 || s.SelectedMember >= len(s.MemberList) {
+		return
+	}
+
+	member := s.MemberList[s.SelectedMember]
+	if member == nil || member.Member == nil {
+		return
+	}
+
+	// Initialize role assignment state
+	s.RoleAssignOpen = true
+	s.RoleAssignMember = member
+	s.RoleAssignSelections = make(map[uuid.UUID]bool)
+	s.RoleAssignFocus = 0
+
+	// Pre-populate with member's current roles
+	if member.Member.RoleIDs != nil {
+		for _, roleID := range member.Member.RoleIDs {
+			s.RoleAssignSelections[roleID] = true
+		}
+	}
 }
 
 func (a *App) handleKickMemberAction() {
-	// TODO: Implement kick member
+	s := a.serverManagementState
+	if s == nil || len(s.MemberList) == 0 || s.SelectedMember < 0 || s.SelectedMember >= len(s.MemberList) {
+		return
+	}
+
+	member := s.MemberList[s.SelectedMember]
+	if member == nil || member.User == nil {
+		return
+	}
+
+	s.KickConfirmOpen = true
+	s.KickConfirmMember = member
+	s.KickConfirmFocusedBtn = 0
 }
 
 func (a *App) handleBanMemberAction() {
-	// TODO: Implement ban member
+	s := a.serverManagementState
+	if s == nil || len(s.MemberList) == 0 || s.SelectedMember < 0 || s.SelectedMember >= len(s.MemberList) {
+		return
+	}
+
+	member := s.MemberList[s.SelectedMember]
+	if member == nil || member.User == nil {
+		return
+	}
+
+	s.BanConfirmOpen = true
+	s.BanConfirmMember = member
+	s.BanConfirmFocusedBtn = 0
+}
+
+func (a *App) handleMuteMemberAction() {
+	s := a.serverManagementState
+	if s == nil || len(s.MemberList) == 0 || s.SelectedMember < 0 || s.SelectedMember >= len(s.MemberList) {
+		return
+	}
+
+	member := s.MemberList[s.SelectedMember]
+	if member == nil || member.User == nil {
+		return
+	}
+
+	s.MuteDurationOpen = true
+	s.MuteDurationMember = member
+	s.MuteDurationFocus = 0
+	s.MuteDurationCustom = ""
+	s.MuteDurationReason = ""
+}
+
+func (a *App) handleUnmuteMemberAction() {
+	s := a.serverManagementState
+	if s == nil || len(s.MemberList) == 0 || s.SelectedMember < 0 || s.SelectedMember >= len(s.MemberList) {
+		return
+	}
+
+	member := s.MemberList[s.SelectedMember]
+	if member == nil || member.User == nil {
+		return
+	}
+
+	s.UnmuteConfirmOpen = true
+	s.UnmuteConfirmMember = member
+	s.UnmuteConfirmFocusedBtn = 0
 }
 
 func (a *App) handlePruneAction() {
@@ -752,11 +1451,17 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 	var opCode protocol.OpCode
 
 	if state.Mode == "create" {
+		// Categories are always top-level (no parent)
+		var categoryID *uuid.UUID
+		if channelType == models.ChannelTypeText {
+			categoryID = state.CategoryID
+		}
+
 		req = &protocol.ChannelCreateRequest{
 			ServerID:   serverID,
 			Name:       name,
 			Type:       channelType,
-			CategoryID: state.CategoryID,
+			CategoryID: categoryID,
 		}
 		opCode = protocol.OpChannelCreate
 	} else {
@@ -789,33 +1494,256 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 }
 
 func (a *App) handleRoleFormKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement role form key handling
-	if msg.String() == "esc" {
+	state := a.serverManagementState.RoleFormState
+	if state == nil {
+		return nil
+	}
+
+	switch msg.String() {
+	case "esc":
 		a.serverManagementState.RoleFormOpen = false
 		a.serverManagementState.RoleFormState = nil
+		return nil
+
+	case "tab":
+		state.FocusField = (state.FocusField + 1) % 8 // 8 fields total (0-7)
+		return nil
+
+	case "shift+tab":
+		state.FocusField--
+		if state.FocusField < 0 {
+			state.FocusField = 7
+		}
+		return nil
+
+	case "up":
+		if state.FocusField == 1 {
+			// Permission Preset navigation
+			state.PresetIndex--
+			if state.PresetIndex < 0 {
+				state.PresetIndex = 3
+			}
+		}
+		return nil
+
+	case "down":
+		if state.FocusField == 1 {
+			// Permission Preset navigation
+			state.PresetIndex = (state.PresetIndex + 1) % 4
+		}
+		return nil
+
+	case " ", "space":
+		// Toggle checkboxes
+		if state.FocusField == 3 {
+			state.IsHoisted = !state.IsHoisted
+		} else if state.FocusField == 4 {
+			state.IsMentionable = !state.IsMentionable
+		}
+		return nil
+
+	case "enter":
+		if state.FocusField == 6 { // Submit button
+			return a.handleRoleFormSubmit()
+		} else if state.FocusField == 7 { // Cancel button
+			a.serverManagementState.RoleFormOpen = false
+			a.serverManagementState.RoleFormState = nil
+		}
+		return nil
+
+	case "backspace":
+		if state.FocusField == 0 && state.NameCursor > 0 {
+			// Delete character in name field
+			state.NameInput = state.NameInput[:state.NameCursor-1] + state.NameInput[state.NameCursor:]
+			state.NameCursor--
+		} else if state.FocusField == 5 && state.DisplayOrderCursor > 0 {
+			// Delete character in display order field
+			state.DisplayOrder = state.DisplayOrder[:state.DisplayOrderCursor-1] + state.DisplayOrder[state.DisplayOrderCursor:]
+			state.DisplayOrderCursor--
+		}
+		return nil
+
+	case "left":
+		if state.FocusField == 0 && state.NameCursor > 0 {
+			state.NameCursor--
+		} else if state.FocusField == 2 {
+			// Color navigation
+			state.ColorIndex--
+			if state.ColorIndex < 0 {
+				state.ColorIndex = 4
+			}
+		} else if state.FocusField == 5 && state.DisplayOrderCursor > 0 {
+			state.DisplayOrderCursor--
+		}
+		return nil
+
+	case "right":
+		if state.FocusField == 0 && state.NameCursor < len(state.NameInput) {
+			state.NameCursor++
+		} else if state.FocusField == 2 {
+			// Color navigation
+			state.ColorIndex = (state.ColorIndex + 1) % 5
+		} else if state.FocusField == 5 && state.DisplayOrderCursor < len(state.DisplayOrder) {
+			state.DisplayOrderCursor++
+		}
+		return nil
 	}
+
+	// Handle text input for name field
+	if state.FocusField == 0 {
+		key := msg.String()
+		if len(key) == 1 && len(state.NameInput) < 50 {
+			state.NameInput = state.NameInput[:state.NameCursor] + key + state.NameInput[state.NameCursor:]
+			state.NameCursor++
+		}
+	}
+
+	// Handle text input for display order field (numeric only)
+	if state.FocusField == 5 {
+		key := msg.String()
+		if len(key) == 1 && key >= "0" && key <= "9" && len(state.DisplayOrder) < 5 {
+			state.DisplayOrder = state.DisplayOrder[:state.DisplayOrderCursor] + key + state.DisplayOrder[state.DisplayOrderCursor:]
+			state.DisplayOrderCursor++
+		}
+	}
+
 	return nil
 }
 
 func (a *App) handlePermissionsEditorKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement permissions editor key handling
-	if msg.String() == "esc" {
-		a.serverManagementState.PermissionsEditorOpen = false
-		a.serverManagementState.PermissionsEditorRole = nil
+	s := a.serverManagementState
+
+	// Get total permission count
+	permList := getPermissionList()
+
+	switch msg.String() {
+	case "esc":
+		// Cancel - discard changes
+		s.PermissionsEditorOpen = false
+		s.PermissionsEditorRole = nil
+		s.PermModifiedBits = 0
+		s.PermSelectedIndex = 0
+		s.PermScrollOffset = 0
+		return nil
+
+	case "enter":
+		// Save changes
+		if s.PermissionsEditorRole == nil {
+			return nil
+		}
+
+		serverID := a.getActiveServerID()
+		channelID := uuid.Nil
+		if a.currentChannel != nil {
+			channelID = a.currentChannel.ID
+		}
+
+		role := s.PermissionsEditorRole
+		req := &protocol.UpdateRoleRequest{
+			ServerID:      serverID,
+			ChannelID:     channelID,
+			RoleID:        role.ID,
+			Name:          role.Name,
+			Permissions:   s.PermModifiedBits,
+			Color:         role.Color,
+			DisplayOrder:  &role.DisplayOrder,
+			IsHoisted:     role.IsHoisted,
+			IsMentionable: role.IsMentionable,
+		}
+
+		if msg, err := protocol.NewMessage(protocol.OpUpdateRole, req); err == nil {
+			if a.activeConn != nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+		}
+
+		// Close editor
+		s.PermissionsEditorOpen = false
+		s.PermissionsEditorRole = nil
+		s.PermModifiedBits = 0
+		s.PermSelectedIndex = 0
+		s.PermScrollOffset = 0
+		return nil
+
+	case "up", "k":
+		if s.PermSelectedIndex > 0 {
+			s.PermSelectedIndex--
+		}
+		return nil
+
+	case "down", "j":
+		if s.PermSelectedIndex < len(permList)-1 {
+			s.PermSelectedIndex++
+		}
+		return nil
+
+	case " ", "space":
+		// Toggle selected permission
+		if s.PermSelectedIndex >= 0 && s.PermSelectedIndex < len(permList) {
+			perm := permList[s.PermSelectedIndex]
+			s.PermModifiedBits ^= uint64(perm.Bit) // XOR to toggle
+		}
+		return nil
+
+	case "a", "A":
+		// Enable all permissions
+		s.PermModifiedBits = 0
+		for _, perm := range permList {
+			s.PermModifiedBits |= uint64(perm.Bit)
+		}
+		return nil
+
+	case "n", "N":
+		// Disable all permissions
+		s.PermModifiedBits = 0
+		return nil
 	}
+
 	return nil
 }
 
 func (a *App) handleDeleteConfirmKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+
 	switch msg.String() {
-	case "esc", "n", "N":
-		a.serverManagementState.DeleteConfirmOpen = false
-		a.serverManagementState.DeleteConfirmChannel = nil
-		a.serverManagementState.DeleteConfirmRole = nil
+	case "tab", "right":
+		// Next button
+		s.DeleteConfirmFocusedButton = (s.DeleteConfirmFocusedButton + 1) % 2
 		return nil
 
-	case "y", "Y", "enter":
+	case "shift+tab", "left":
+		// Previous button
+		s.DeleteConfirmFocusedButton--
+		if s.DeleteConfirmFocusedButton < 0 {
+			s.DeleteConfirmFocusedButton = 1
+		}
+		return nil
+
+	case "enter":
+		// Confirm focused button
+		if s.DeleteConfirmFocusedButton == 0 {
+			// Yes, Delete
+			return a.handleDeleteConfirmed()
+		} else {
+			// No, Cancel
+			s.DeleteConfirmOpen = false
+			s.DeleteConfirmChannel = nil
+			s.DeleteConfirmRole = nil
+			s.DeleteConfirmFocusedButton = 0 // Reset to default
+			return nil
+		}
+
+	case "y", "Y":
+		// Quick confirm
 		return a.handleDeleteConfirmed()
+
+	case "n", "N", "esc":
+		// Quick cancel
+		s.DeleteConfirmOpen = false
+		s.DeleteConfirmChannel = nil
+		s.DeleteConfirmRole = nil
+		s.DeleteConfirmFocusedButton = 0 // Reset to default
+		return nil
 	}
 	return nil
 }
@@ -845,10 +1773,39 @@ func (a *App) handleDeleteConfirmed() tea.Cmd {
 		}
 
 		a.statusMessage = fmt.Sprintf("Deleting channel #%s...", s.DeleteConfirmChannel.Name)
+	} else if s.DeleteConfirmRole != nil {
+		// Handle role deletion
+		// Get current channel for the command context
+		var channelID uuid.UUID
+		if a.currentChannel != nil {
+			channelID = a.currentChannel.ID
+		}
+
+		req := &protocol.DeleteRoleRequest{
+			ServerID:  a.currentServer.ID,
+			ChannelID: channelID,
+			RoleID:    s.DeleteConfirmRole.ID,
+		}
+
+		msg, err := protocol.NewMessage(protocol.OpDeleteRole, req)
+		if err != nil {
+			a.statusMessage = fmt.Sprintf("Failed: %v", err)
+			return nil
+		}
+
+		if err := a.activeConn.Connection.Send(msg); err != nil {
+			a.statusMessage = fmt.Sprintf("Failed: %v", err)
+			return nil
+		}
+
+		a.statusMessage = fmt.Sprintf("Deleting role %s...", s.DeleteConfirmRole.Name)
+		// Role list will be updated automatically when EventRoleDelete is received
 	}
 
 	s.DeleteConfirmOpen = false
 	s.DeleteConfirmChannel = nil
+	s.DeleteConfirmRole = nil
+	s.DeleteConfirmFocusedButton = 0 // Reset to default
 
 	return nil
 }
@@ -930,19 +1887,616 @@ func (a *App) handleMoveDialogSubmit() tea.Cmd {
 }
 
 func (a *App) handleFilterPanelKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement filter panel key handling
-	if msg.String() == "esc" {
-		a.serverManagementState.FilterPanelOpen = false
+	s := a.serverManagementState
+	if s == nil {
+		return nil
 	}
+
+	// Get available roles to calculate option count
+	var availableRoles []*models.Role
+	if a.activeConn != nil {
+		serverID := a.getActiveServerID()
+		a.activeConn.mu.RLock()
+		if roles, ok := a.activeConn.Roles[serverID]; ok {
+			for _, role := range roles {
+				if !role.IsDefault {
+					availableRoles = append(availableRoles, role)
+				}
+			}
+		}
+		a.activeConn.mu.RUnlock()
+	}
+
+	// Calculate total options: 1 (All) + roles + 3 (statuses) + 4 (sort options)
+	roleCount := 1 + len(availableRoles)
+	statusCount := 3
+	sortCount := 4
+	totalOptions := roleCount + statusCount + sortCount
+
+	switch msg.String() {
+	case "up", "k":
+		if s.FilterPanelFocus > 0 {
+			s.FilterPanelFocus--
+		}
+
+	case "down", "j":
+		if s.FilterPanelFocus < totalOptions-1 {
+			s.FilterPanelFocus++
+		}
+
+	case "enter", " ":
+		// Apply filter based on focused option
+		if s.FilterPanelFocus == 0 {
+			// "All" role option
+			s.FilterRole = "All"
+		} else if s.FilterPanelFocus < roleCount {
+			// Individual role
+			if s.FilterPanelFocus-1 < len(availableRoles) {
+				s.FilterRole = availableRoles[s.FilterPanelFocus-1].Name
+			}
+		} else if s.FilterPanelFocus < roleCount+statusCount {
+			// Status filter
+			statusIdx := s.FilterPanelFocus - roleCount
+			statuses := []string{"all", "online", "offline"}
+			if statusIdx < len(statuses) {
+				s.FilterOnline = statuses[statusIdx]
+			}
+		} else {
+			// Sort option
+			sortIdx := s.FilterPanelFocus - roleCount - statusCount
+			sortOptions := []string{"name", "joined", "role", "kicks"}
+			if sortIdx < len(sortOptions) {
+				s.SortBy = sortOptions[sortIdx]
+			}
+		}
+		// Re-filter and re-sort members
+		a.applyMemberFilters()
+
+	case "esc":
+		s.FilterPanelOpen = false
+	}
+
 	return nil
 }
 
 func (a *App) handleSearchInputKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement search input key handling
-	if msg.String() == "esc" {
-		a.serverManagementState.SearchInputOpen = false
+	s := a.serverManagementState
+	if s == nil {
+		return nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		// Clear search and close
+		s.SearchInputOpen = false
+		s.SearchQuery = ""
+		a.applyMemberFilters()
+
+	case "enter":
+		// Apply search and close input
+		s.SearchQuery = s.SearchInputValue
+		s.SearchInputOpen = false
+		a.applyMemberFilters()
+
+	case "backspace":
+		if len(s.SearchInputValue) > 0 {
+			s.SearchInputValue = s.SearchInputValue[:len(s.SearchInputValue)-1]
+			if s.SearchInputCursor > 0 {
+				s.SearchInputCursor--
+			}
+		}
+
+	case "left":
+		if s.SearchInputCursor > 0 {
+			s.SearchInputCursor--
+		}
+
+	case "right":
+		if s.SearchInputCursor < len(s.SearchInputValue) {
+			s.SearchInputCursor++
+		}
+
+	default:
+		// Handle regular character input
+		if len(msg.String()) == 1 {
+			s.SearchInputValue += msg.String()
+			s.SearchInputCursor = len(s.SearchInputValue)
+		}
+	}
+
+	return nil
+}
+
+func (a *App) handleRoleAssignKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	if s == nil {
+		return nil
+	}
+
+	// Get available roles
+	var availableRoles []*models.Role
+	if a.activeConn != nil {
+		serverID := a.getActiveServerID()
+		a.activeConn.mu.RLock()
+		if roles, ok := a.activeConn.Roles[serverID]; ok {
+			availableRoles = roles
+		}
+		a.activeConn.mu.RUnlock()
+	}
+
+	// Sort roles by position (descending)
+	sort.Slice(availableRoles, func(i, j int) bool {
+		return availableRoles[i].Position > availableRoles[j].Position
+	})
+
+	switch msg.String() {
+	case "up", "k":
+		if s.RoleAssignFocus > 0 {
+			s.RoleAssignFocus--
+		}
+
+	case "down", "j":
+		if s.RoleAssignFocus < len(availableRoles)-1 {
+			s.RoleAssignFocus++
+		}
+
+	case " ": // Space to toggle
+		if s.RoleAssignFocus >= 0 && s.RoleAssignFocus < len(availableRoles) {
+			role := availableRoles[s.RoleAssignFocus]
+			if !role.IsDefault { // Can't toggle @everyone
+				s.RoleAssignSelections[role.ID] = !s.RoleAssignSelections[role.ID]
+			}
+		}
+
+	case "enter":
+		// Save changes: compare current selections with member's roles
+		if s.RoleAssignMember == nil || s.RoleAssignMember.Member == nil {
+			s.RoleAssignOpen = false
+			return nil
+		}
+
+		// Get current role IDs
+		currentRoles := make(map[uuid.UUID]bool)
+		for _, roleID := range s.RoleAssignMember.Member.RoleIDs {
+			currentRoles[roleID] = true
+		}
+
+		// Find roles to add and remove
+		var toAdd []uuid.UUID
+		var toRemove []uuid.UUID
+
+		for _, role := range availableRoles {
+			if role.IsDefault {
+				continue // Skip @everyone
+			}
+
+			isSelected := s.RoleAssignSelections[role.ID]
+			hadRole := currentRoles[role.ID]
+
+			if isSelected && !hadRole {
+				toAdd = append(toAdd, role.ID)
+			} else if !isSelected && hadRole {
+				toRemove = append(toRemove, role.ID)
+			}
+		}
+
+		// Send role assign/remove messages
+		serverID := a.getActiveServerID()
+
+		// Build role name map
+		roleNames := make(map[uuid.UUID]string)
+		for _, role := range availableRoles {
+			roleNames[role.ID] = role.Name
+		}
+
+		for _, roleID := range toAdd {
+			roleName, ok := roleNames[roleID]
+			if !ok {
+				continue
+			}
+			req := &protocol.RoleAssignRequest{
+				ServerID: serverID,
+				UserID:   s.RoleAssignMember.User.ID,
+				RoleName: roleName,
+			}
+			msg, err := protocol.NewMessage(protocol.OpRoleAssign, req)
+			if err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+		}
+
+		for _, roleID := range toRemove {
+			roleName, ok := roleNames[roleID]
+			if !ok {
+				continue
+			}
+			req := &protocol.RoleRemoveRequest{
+				ServerID: serverID,
+				UserID:   s.RoleAssignMember.User.ID,
+				RoleName: roleName,
+			}
+			msg, err := protocol.NewMessage(protocol.OpRoleRemove, req)
+			if err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+			}
+		}
+
+		if len(toAdd) > 0 || len(toRemove) > 0 {
+			a.statusMessage = fmt.Sprintf("Updated roles for %s", s.RoleAssignMember.User.Username)
+		}
+
+		s.RoleAssignOpen = false
+
+	case "esc":
+		s.RoleAssignOpen = false
+	}
+
+	return nil
+}
+
+func (a *App) handleKickConfirmKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	if s == nil {
+		return nil
+	}
+
+	switch msg.String() {
+	case "tab", "right":
+		s.KickConfirmFocusedBtn = (s.KickConfirmFocusedBtn + 1) % 2
+	case "shift+tab", "left":
+		s.KickConfirmFocusedBtn--
+		if s.KickConfirmFocusedBtn < 0 {
+			s.KickConfirmFocusedBtn = 1
+		}
+	case "enter":
+		if s.KickConfirmFocusedBtn == 0 && s.KickConfirmMember != nil {
+			// Confirm kick
+			serverID := a.getActiveServerID()
+			channelID := uuid.Nil
+			if a.currentChannel != nil {
+				channelID = a.currentChannel.ID
+				log.Printf("DEBUG: Kicking from Server Settings - channelID: %s (channel: %s)", channelID, a.currentChannel.Name)
+			} else {
+				log.Printf("DEBUG: Kicking from Server Settings - currentChannel is nil!")
+			}
+			req := &protocol.KickMemberRequest{
+				ServerID:  serverID,
+				ChannelID: channelID, // Send to the channel the user was in
+				UserID:    s.KickConfirmMember.User.ID,
+			}
+			msg, err := protocol.NewMessage(protocol.OpKickMember, req)
+			if err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+				a.statusMessage = fmt.Sprintf("Kicked %s from server", s.KickConfirmMember.User.Username)
+			}
+		}
+		s.KickConfirmOpen = false
+	case "y", "Y":
+		// Quick confirm
+		if s.KickConfirmMember != nil {
+			serverID := a.getActiveServerID()
+			channelID := uuid.Nil
+			if a.currentChannel != nil {
+				channelID = a.currentChannel.ID
+				log.Printf("DEBUG: Kicking from Server Settings (quick) - channelID: %s (channel: %s)", channelID, a.currentChannel.Name)
+			} else {
+				log.Printf("DEBUG: Kicking from Server Settings (quick) - currentChannel is nil!")
+			}
+			req := &protocol.KickMemberRequest{
+				ServerID:  serverID,
+				ChannelID: channelID, // Send to the channel the user was in
+				UserID:    s.KickConfirmMember.User.ID,
+			}
+			msg, err := protocol.NewMessage(protocol.OpKickMember, req)
+			if err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+				a.statusMessage = fmt.Sprintf("Kicked %s from server", s.KickConfirmMember.User.Username)
+			}
+		}
+		s.KickConfirmOpen = false
+	case "n", "N", "esc":
+		s.KickConfirmOpen = false
 	}
 	return nil
+}
+
+func (a *App) handleBanConfirmKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	if s == nil {
+		return nil
+	}
+
+	switch msg.String() {
+	case "tab", "right":
+		s.BanConfirmFocusedBtn = (s.BanConfirmFocusedBtn + 1) % 2
+	case "shift+tab", "left":
+		s.BanConfirmFocusedBtn--
+		if s.BanConfirmFocusedBtn < 0 {
+			s.BanConfirmFocusedBtn = 1
+		}
+	case "enter":
+		if s.BanConfirmFocusedBtn == 0 && s.BanConfirmMember != nil {
+			serverID := a.getActiveServerID()
+			channelID := uuid.Nil
+			if a.currentChannel != nil {
+				channelID = a.currentChannel.ID
+			}
+			if s.BanConfirmMember.IsBanned {
+				// Unban
+				req := &protocol.UnbanMemberRequest{
+					ServerID:  serverID,
+					ChannelID: channelID,
+					Username:  s.BanConfirmMember.User.Username,
+				}
+				msg, err := protocol.NewMessage(protocol.OpUnbanMember, req)
+				if err == nil {
+					_ = a.activeConn.Connection.Send(msg)
+					a.statusMessage = fmt.Sprintf("Unbanned %s", s.BanConfirmMember.User.Username)
+				}
+			} else {
+				// Ban
+				req := &protocol.BanMemberRequest{
+					ServerID:  serverID,
+					ChannelID: channelID,
+					UserID:    s.BanConfirmMember.User.ID,
+					Reason:    "Banned from member management",
+				}
+				msg, err := protocol.NewMessage(protocol.OpBanMember, req)
+				if err == nil {
+					_ = a.activeConn.Connection.Send(msg)
+					a.statusMessage = fmt.Sprintf("Banned %s from server", s.BanConfirmMember.User.Username)
+				}
+			}
+		}
+		s.BanConfirmOpen = false
+	case "y", "Y":
+		// Quick confirm
+		if s.BanConfirmMember != nil {
+			serverID := a.getActiveServerID()
+			channelID := uuid.Nil
+			if a.currentChannel != nil {
+				channelID = a.currentChannel.ID
+			}
+			if s.BanConfirmMember.IsBanned {
+				req := &protocol.UnbanMemberRequest{
+					ServerID:  serverID,
+					ChannelID: channelID,
+					Username:  s.BanConfirmMember.User.Username,
+				}
+				msg, err := protocol.NewMessage(protocol.OpUnbanMember, req)
+				if err == nil {
+					_ = a.activeConn.Connection.Send(msg)
+					a.statusMessage = fmt.Sprintf("Unbanned %s", s.BanConfirmMember.User.Username)
+				}
+			} else {
+				req := &protocol.BanMemberRequest{
+					ServerID:  serverID,
+					ChannelID: channelID,
+					UserID:    s.BanConfirmMember.User.ID,
+					Reason:    "Banned from member management",
+				}
+				msg, err := protocol.NewMessage(protocol.OpBanMember, req)
+				if err == nil {
+					_ = a.activeConn.Connection.Send(msg)
+					a.statusMessage = fmt.Sprintf("Banned %s from server", s.BanConfirmMember.User.Username)
+				}
+			}
+		}
+		s.BanConfirmOpen = false
+	case "n", "N", "esc":
+		s.BanConfirmOpen = false
+	}
+	return nil
+}
+
+func (a *App) handleUnmuteConfirmKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	if s == nil {
+		return nil
+	}
+
+	switch msg.String() {
+	case "tab", "right":
+		s.UnmuteConfirmFocusedBtn = (s.UnmuteConfirmFocusedBtn + 1) % 2
+	case "shift+tab", "left":
+		s.UnmuteConfirmFocusedBtn--
+		if s.UnmuteConfirmFocusedBtn < 0 {
+			s.UnmuteConfirmFocusedBtn = 1
+		}
+	case "enter":
+		if s.UnmuteConfirmFocusedBtn == 0 && s.UnmuteConfirmMember != nil {
+			serverID := a.getActiveServerID()
+			channelID := uuid.Nil
+			if a.currentChannel != nil {
+				channelID = a.currentChannel.ID
+			}
+			req := &protocol.MuteMemberRequest{
+				ServerID:  serverID,
+				ChannelID: channelID,
+				UserID:    s.UnmuteConfirmMember.User.ID,
+				Mute:      false, // Unmute
+			}
+			msg, err := protocol.NewMessage(protocol.OpMuteMember, req)
+			if err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+				a.statusMessage = fmt.Sprintf("Unmuted %s", s.UnmuteConfirmMember.User.Username)
+			}
+		}
+		s.UnmuteConfirmOpen = false
+	case "y", "Y":
+		// Quick confirm
+		if s.UnmuteConfirmMember != nil {
+			serverID := a.getActiveServerID()
+			channelID := uuid.Nil
+			if a.currentChannel != nil {
+				channelID = a.currentChannel.ID
+			}
+			req := &protocol.MuteMemberRequest{
+				ServerID:  serverID,
+				ChannelID: channelID,
+				UserID:    s.UnmuteConfirmMember.User.ID,
+				Mute:      false, // Unmute
+			}
+			msg, err := protocol.NewMessage(protocol.OpMuteMember, req)
+			if err == nil {
+				_ = a.activeConn.Connection.Send(msg)
+				a.statusMessage = fmt.Sprintf("Unmuted %s", s.UnmuteConfirmMember.User.Username)
+			}
+		}
+		s.UnmuteConfirmOpen = false
+	case "n", "N", "esc":
+		s.UnmuteConfirmOpen = false
+	}
+	return nil
+}
+
+func (a *App) handleMuteDurationKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	if s == nil {
+		return nil
+	}
+
+	// Mute duration page has: 4 radio buttons (1h, 24h, 7d, permanent) + custom field + reason field = 6 fields total
+	totalFields := 6
+
+	switch msg.String() {
+	case "up":
+		// Arrow keys always work for navigation
+		if s.MuteDurationFocus > 0 {
+			s.MuteDurationFocus--
+		}
+	case "k":
+		// Vim keys don't work when focus is on text input fields
+		if s.MuteDurationFocus != 4 && s.MuteDurationFocus != 5 {
+			if s.MuteDurationFocus > 0 {
+				s.MuteDurationFocus--
+			}
+		}
+	case "down":
+		// Arrow keys always work for navigation
+		if s.MuteDurationFocus < totalFields-1 {
+			s.MuteDurationFocus++
+		}
+	case "j":
+		// Vim keys don't work when focus is on text input fields
+		if s.MuteDurationFocus != 4 && s.MuteDurationFocus != 5 {
+			if s.MuteDurationFocus < totalFields-1 {
+				s.MuteDurationFocus++
+			}
+		}
+	case "enter":
+		// Apply mute
+		if s.MuteDurationMember == nil {
+			s.MuteDurationOpen = false
+			return nil
+		}
+
+		serverID := a.getActiveServerID()
+		channelID := uuid.Nil
+		if a.currentChannel != nil {
+			channelID = a.currentChannel.ID
+		}
+		var durationMinutes int
+
+		// Check if custom duration is filled first (regardless of focus)
+		if s.MuteDurationCustom != "" {
+			durationMinutes = parseDuration(s.MuteDurationCustom)
+			if durationMinutes == 0 {
+				a.statusMessage = "Invalid duration format. Use format like: 30m, 5h, 2d"
+				return nil
+			}
+		} else {
+			// Use preset duration based on focus
+			switch s.MuteDurationFocus {
+			case 0: // 1 hour
+				durationMinutes = 60
+			case 1: // 24 hours
+				durationMinutes = 60 * 24
+			case 2: // 7 days
+				durationMinutes = 60 * 24 * 7
+			case 3: // Permanent
+				durationMinutes = 0
+			default:
+				// If focused on reason field and no custom duration, treat as permanent
+				durationMinutes = 0
+			}
+		}
+
+		req := &protocol.MuteMemberRequest{
+			ServerID:  serverID,
+			ChannelID: channelID,
+			UserID:    s.MuteDurationMember.User.ID,
+			Mute:      true,
+			Duration:  durationMinutes,
+		}
+		msg, err := protocol.NewMessage(protocol.OpMuteMember, req)
+		if err == nil {
+			_ = a.activeConn.Connection.Send(msg)
+			if durationMinutes == 0 {
+				a.statusMessage = fmt.Sprintf("Permanently muted %s", s.MuteDurationMember.User.Username)
+			} else {
+				a.statusMessage = fmt.Sprintf("Muted %s for %d minutes", s.MuteDurationMember.User.Username, durationMinutes)
+			}
+		}
+		s.MuteDurationOpen = false
+
+	case "esc":
+		s.MuteDurationOpen = false
+
+	default:
+		// Handle text input for custom duration and reason fields
+		if s.MuteDurationFocus == 4 {
+			// Custom duration field
+			if msg.String() == "backspace" {
+				if len(s.MuteDurationCustom) > 0 {
+					s.MuteDurationCustom = s.MuteDurationCustom[:len(s.MuteDurationCustom)-1]
+				}
+			} else if len(msg.String()) == 1 {
+				s.MuteDurationCustom += msg.String()
+			}
+		} else if s.MuteDurationFocus == 5 {
+			// Reason field
+			if msg.String() == "backspace" {
+				if len(s.MuteDurationReason) > 0 {
+					s.MuteDurationReason = s.MuteDurationReason[:len(s.MuteDurationReason)-1]
+				}
+			} else if len(msg.String()) == 1 {
+				s.MuteDurationReason += msg.String()
+			}
+		}
+	}
+	return nil
+}
+
+// parseDuration parses duration strings like "30m", "5h", "2d" into minutes
+func parseDuration(dur string) int {
+	if len(dur) < 2 {
+		return 0
+	}
+
+	// Extract number and unit
+	numStr := dur[:len(dur)-1]
+	unit := dur[len(dur)-1:]
+
+	num := 0
+	for _, c := range numStr {
+		if c >= '0' && c <= '9' {
+			num = num*10 + int(c-'0')
+		} else {
+			return 0 // Invalid number
+		}
+	}
+
+	switch unit {
+	case "m":
+		return num
+	case "h":
+		return num * 60
+	case "d":
+		return num * 60 * 24
+	default:
+		return 0
+	}
 }
 
 func (a *App) handleRetentionFormKey(msg tea.KeyMsg) tea.Cmd {
@@ -992,7 +2546,13 @@ func (a *App) renderServerManagementView() string {
 	case 1: // Roles
 		contentPanel = a.renderRolesCategory(contentWidth, totalHeight-2, s)
 	case 2: // Members
-		contentPanel = a.renderMembersCategory(contentWidth, totalHeight-2, s)
+		if s.RoleAssignOpen {
+			contentPanel = a.renderMembersRoleAssignPage(contentWidth, totalHeight-2, s)
+		} else if s.FilterPanelOpen {
+			contentPanel = a.renderMembersFilterPage(contentWidth, totalHeight-2, s)
+		} else {
+			contentPanel = a.renderMembersCategory(contentWidth, totalHeight-2, s)
+		}
 	case 3: // Messages
 		contentPanel = a.renderMessagesCategory(contentWidth, totalHeight-2, s)
 	}
@@ -1009,6 +2569,20 @@ func (a *App) renderServerManagementView() string {
 		Render("  Server Settings  •  Esc: Back")
 
 	baseView := lipgloss.JoinVertical(lipgloss.Left, titleBar, content)
+
+	// Show moderation dialogs/pages if active
+	if s.KickConfirmOpen {
+		return a.renderKickConfirmDialog()
+	}
+	if s.BanConfirmOpen {
+		return a.renderBanConfirmDialog()
+	}
+	if s.UnmuteConfirmOpen {
+		return a.renderUnmuteConfirmDialog()
+	}
+	if s.MuteDurationOpen {
+		return a.renderMuteDurationPage()
+	}
 
 	// Show delete confirmation dialog if active
 	if s.DeleteConfirmOpen {
@@ -1301,6 +2875,14 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 
 // renderRolesCategory renders the Roles management category
 func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) string {
+	// Check if a form is open and render it instead
+	if s.RoleFormOpen && s.RoleFormState != nil {
+		return a.renderRoleFormPage(width, height, s)
+	}
+	if s.PermissionsEditorOpen {
+		return a.renderPermissionsEditorPage(width, height, s)
+	}
+
 	layout := calculateSettingsLayout(width, height, 3, 1) // 3 = stats + 2 padding lines, 1 = extra help line
 
 	// ── TOP SECTION ──
@@ -1317,8 +2899,13 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	top.writeLine(descStyle.Render("Configure server roles and permissions"))
 
-	// Stats
-	totalMembers := len(a.serverManagementState.MemberList)
+	// Stats - get total members from activeConn (source of truth)
+	totalMembers := 0
+	if a.activeConn != nil {
+		a.activeConn.mu.RLock()
+		totalMembers = len(a.activeConn.Members)
+		a.activeConn.mu.RUnlock()
+	}
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	top.writeLine(statsStyle.Render(fmt.Sprintf("%d roles · %d total members", len(s.RoleList), totalMembers)))
@@ -1377,18 +2964,34 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 
 		// Count members with this role
 		memberCount := 0
-		for _, member := range a.serverManagementState.MemberList {
-			if member.HighestRole != nil && member.HighestRole.ID == role.ID {
-				memberCount++
-			}
-			// Also count @everyone
-			if role.Name == "@everyone" || role.Name == "everyone" {
-				memberCount = totalMembers
-				break
+		// @everyone role = all members
+		if role.IsDefault || role.Name == "@everyone" || role.Name == "everyone" {
+			memberCount = totalMembers
+		} else {
+			// Count members who have this role in their RoleIDs
+			if a.activeConn != nil {
+				a.activeConn.mu.RLock()
+				for _, member := range a.activeConn.Members {
+					if member.Member != nil {
+						for _, roleID := range member.Member.RoleIDs {
+							if roleID == role.ID {
+								memberCount++
+								break
+							}
+						}
+					}
+				}
+				a.activeConn.mu.RUnlock()
 			}
 		}
 
-		roleLine := fmt.Sprintf("%s (%d member", role.Name, memberCount)
+		// Display "Members" instead of "everyone" for consistency
+		displayName := role.Name
+		if role.IsDefault || role.Name == "@everyone" || role.Name == "everyone" {
+			displayName = "Members"
+		}
+
+		roleLine := fmt.Sprintf("%s (%d member", displayName, memberCount)
 		if memberCount != 1 {
 			roleLine += "s)"
 		} else {
@@ -1428,7 +3031,7 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Esc close"))
 	bottom.writeLine(helpStyle.Render("Actions: C create · E edit · P permissions · D delete"))
 
 	// Fill remaining bottom section space
@@ -1470,21 +3073,46 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 
 	// Stats
 	onlineCount := 0
+	bannedCount := 0
 	for _, member := range s.MemberList {
 		if member.User != nil && member.User.Status == models.StatusOnline {
 			onlineCount++
 		}
+		if member.IsBanned {
+			bannedCount++
+		}
 	}
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(statsStyle.Render(fmt.Sprintf("%d members · %d online", len(s.MemberList), onlineCount)))
+	top.writeLine(statsStyle.Render(fmt.Sprintf("%d members · %d online · %d banned", len(s.MemberList), onlineCount, bannedCount)))
 
-	// Filter bar
+	// Filter bar or search input
 	filterStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	filterText := fmt.Sprintf("Filters: Role: %s | Status: %s | Sort: %s",
-		s.FilterRole, strings.Title(s.FilterOnline), s.SortBy)
-	top.writeLine(filterStyle.Render(filterText))
+
+	if s.SearchInputOpen {
+		// Show search input
+		searchPrompt := "Search: "
+		searchText := s.SearchInputValue
+		cursor := ""
+		if len(searchText) == 0 {
+			cursor = "_"
+		}
+		searchLine := searchPrompt + searchText + cursor
+		searchStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan))
+		top.writeLine(searchStyle.Render(searchLine + "  (Esc to cancel, Enter to apply)"))
+	} else if s.SearchQuery != "" {
+		// Show active search query
+		filterText := fmt.Sprintf("Filters: Role: %s | Status: %s | Sort: %s | Search: \"%s\"",
+			s.FilterRole, strings.Title(s.FilterOnline), s.SortBy, s.SearchQuery)
+		top.writeLine(filterStyle.Render(filterText))
+	} else {
+		// Show normal filters
+		filterText := fmt.Sprintf("Filters: Role: %s | Status: %s | Sort: %s",
+			s.FilterRole, strings.Title(s.FilterOnline), s.SortBy)
+		top.writeLine(filterStyle.Render(filterText))
+	}
 	top.writeBlank()
 
 	// Top section separator
@@ -1521,6 +3149,19 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 		}
 	}
 
+	// Table header
+	tableHeaderStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Bold(true)
+	headerLine := fmt.Sprintf("%-18s  ●  %-15s %-12s %-8s %-7s %-6s",
+		"Username", "Role(s)", "Joined", "Banned", "Muted", "Kicks")
+	middle.writeLine(tableHeaderStyle.Render(headerLine))
+
+	// Table separator
+	sepStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	middle.writeLine(sepStyle.Render(strings.Repeat("─", layout.interiorWidth)))
+
 	// Show "↑ X more" if not at top
 	if visibleStart > 0 {
 		moreStyle := lipgloss.NewStyle().
@@ -1537,21 +3178,27 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 
 		selected := s.FocusOnForm && i == s.SelectedMember
 
+		// Selection indicator
 		prefix := "  "
 		if selected {
 			prefix = "▶ "
 		}
 
 		// Status indicator
-		statusDot := "○"
+		statusDot := "○" // offline
 		if member.User.Status == models.StatusOnline {
-			statusDot = "●"
+			statusDot = "●" // online
+		} else if member.User.Status == models.StatusIdle {
+			statusDot = "◑" // idle/AFK
 		}
 
-		// Role name
+		// Role name (truncate if needed)
 		roleName := "@everyone"
 		if member.HighestRole != nil {
 			roleName = member.HighestRole.Name
+		}
+		if len(roleName) > 15 {
+			roleName = roleName[:12] + "..."
 		}
 
 		// Join date
@@ -1560,9 +3207,26 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 			joinDate = member.Member.JoinedAt.Format("2006-01-02")
 		}
 
-		// Format: username  status  role  joined
-		memberLine := fmt.Sprintf("%-20s %s %-15s %s",
-			member.User.Username, statusDot, roleName, joinDate)
+		// Moderation status
+		bannedStr := "No"
+		if member.IsBanned {
+			bannedStr = "Yes"
+		}
+		mutedStr := "No"
+		if member.IsMuted {
+			mutedStr = "Yes"
+		}
+		kickStr := fmt.Sprintf("%d", member.KickCount)
+
+		// Format table row: username  status  role  joined  banned  muted  kicks
+		// Truncate username if needed to fit
+		username := member.User.Username
+		if len(username) > 18 {
+			username = username[:15] + "..."
+		}
+
+		memberLine := fmt.Sprintf("%-18s  %s  %-15s %-12s %-8s %-7s %-6s",
+			username, statusDot, roleName, joinDate, bannedStr, mutedStr, kickStr)
 
 		var line string
 		if selected {
@@ -1573,9 +3237,9 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 				Width(layout.interiorWidth).
 				Render(prefix + memberLine)
 		} else {
-			line = prefix + lipgloss.NewStyle().
+			line = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-				Render(memberLine)
+				Render(prefix + memberLine)
 		}
 		middle.writeLine(line)
 	}
@@ -1597,8 +3261,8 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ navigate · Esc close"))
-	bottom.writeLine(helpStyle.Render("Actions: Shift+R assign role · Shift+K kick · Shift+B ban · F filters · S search"))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Esc back"))
+	bottom.writeLine(helpStyle.Render("Actions: Shift+R role · Shift+K kick · Shift+B ban/unban · Shift+M mute/unmute · F filter · S search"))
 
 	// Fill remaining bottom section space
 	bottom.pad()
@@ -1615,6 +3279,297 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderMembersFilterPage renders the filter configuration sub-page
+func (a *App) renderMembersFilterPage(width, height int, s *ServerManagementState) string {
+	layout := calculateSettingsLayout(width, height, 2, 0) // 4 top lines + 2 padding, 2 bottom lines
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	top.writeLine(headerStyle.Render("Filter Members"))
+
+	// Subtitle
+	descStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(descStyle.Render("Configure member list filters"))
+
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Get available roles from active server
+	var availableRoles []*models.Role
+	if a.activeConn != nil {
+		serverID := a.getActiveServerID()
+		a.activeConn.mu.RLock()
+		if roles, ok := a.activeConn.Roles[serverID]; ok {
+			availableRoles = roles
+		}
+		a.activeConn.mu.RUnlock()
+	}
+
+	// Sort roles by position (descending, so highest position first)
+	sort.Slice(availableRoles, func(i, j int) bool {
+		return availableRoles[i].Position > availableRoles[j].Position
+	})
+
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	normalStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+
+	// Filter by Role
+	middle.writeLine(labelStyle.Render("Filter by Role:"))
+	middle.writeBlank()
+
+	// "All" option
+	allFocused := s.FilterPanelFocus == 0
+	allText := "  ( ) All"
+	if s.FilterRole == "All" {
+		allText = "  (●) All"
+	}
+	if allFocused {
+		middle.writeLine(selectedStyle.Render(allText))
+	} else {
+		middle.writeLine(normalStyle.Render(allText))
+	}
+
+	// Individual role options
+	roleIdx := 1
+	for _, role := range availableRoles {
+		if role.IsDefault {
+			continue // Skip @everyone
+		}
+		roleFocused := s.FilterPanelFocus == roleIdx
+		roleText := fmt.Sprintf("  ( ) %s", role.Name)
+		if s.FilterRole == role.Name {
+			roleText = fmt.Sprintf("  (●) %s", role.Name)
+		}
+		if roleFocused {
+			middle.writeLine(selectedStyle.Render(roleText))
+		} else {
+			middle.writeLine(normalStyle.Render(roleText))
+		}
+		roleIdx++
+	}
+
+	middle.writeBlank()
+
+	// Filter by Status
+	statusBaseIdx := roleIdx
+	middle.writeLine(labelStyle.Render("Filter by Status:"))
+	middle.writeBlank()
+
+	statuses := []struct {
+		label string
+		value string
+	}{
+		{"All", "all"},
+		{"Online", "online"},
+		{"Offline", "offline"},
+	}
+
+	for i, status := range statuses {
+		statusSelected := s.FilterPanelFocus == statusBaseIdx+i
+		statusText := fmt.Sprintf("  ( ) %s", status.label)
+		if s.FilterOnline == status.value {
+			statusText = fmt.Sprintf("  (●) %s", status.label)
+		}
+		if statusSelected {
+			middle.writeLine(selectedStyle.Render(statusText))
+		} else {
+			middle.writeLine(normalStyle.Render(statusText))
+		}
+	}
+
+	middle.writeBlank()
+
+	// Sort by
+	sortBaseIdx := statusBaseIdx + len(statuses)
+	middle.writeLine(labelStyle.Render("Sort by:"))
+	middle.writeBlank()
+
+	sortOptions := []struct {
+		label string
+		value string
+	}{
+		{"Username", "name"},
+		{"Join Date", "joined"},
+		{"Role", "role"},
+		{"Kick Count", "kicks"},
+	}
+
+	for i, sortOpt := range sortOptions {
+		sortSelected := s.FilterPanelFocus == sortBaseIdx+i
+		sortText := fmt.Sprintf("  ( ) %s", sortOpt.label)
+		if s.SortBy == sortOpt.value {
+			sortText = fmt.Sprintf("  (●) %s", sortOpt.label)
+		}
+		if sortSelected {
+			middle.writeLine(selectedStyle.Render(sortText))
+		} else {
+			middle.writeLine(normalStyle.Render(sortText))
+		}
+	}
+
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Enter apply · Esc cancel"))
+
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderMembersRoleAssignPage renders the role assignment sub-page
+func (a *App) renderMembersRoleAssignPage(width, height int, s *ServerManagementState) string {
+	layout := calculateSettingsLayout(width, height, 2, 0) // 4 top lines + 2 padding, 2 bottom lines
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+
+	memberName := "Unknown"
+	if s.RoleAssignMember != nil && s.RoleAssignMember.User != nil {
+		memberName = s.RoleAssignMember.User.Username
+	}
+	top.writeLine(headerStyle.Render(fmt.Sprintf("Assign Roles - %s", memberName)))
+
+	// Subtitle
+	descStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(descStyle.Render("Check/uncheck roles to assign or remove"))
+
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Get available roles from active server
+	var availableRoles []*models.Role
+	if a.activeConn != nil {
+		serverID := a.getActiveServerID()
+		a.activeConn.mu.RLock()
+		if roles, ok := a.activeConn.Roles[serverID]; ok {
+			availableRoles = roles
+		}
+		a.activeConn.mu.RUnlock()
+	}
+
+	// Sort roles by position (descending, so highest position first)
+	sort.Slice(availableRoles, func(i, j int) bool {
+		return availableRoles[i].Position > availableRoles[j].Position
+	})
+
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	normalStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	commentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+
+	middle.writeLine(labelStyle.Render("Available Roles:"))
+	middle.writeBlank()
+
+	// Render role checkboxes
+	for i, role := range availableRoles {
+		if role.IsDefault {
+			// Show @everyone as unmodifiable
+			roleText := fmt.Sprintf("  [✓] %s (default role)", role.Name)
+			middle.writeLine(commentStyle.Render(roleText))
+			continue
+		}
+
+		isFocused := i == s.RoleAssignFocus
+		isChecked := s.RoleAssignSelections[role.ID]
+
+		checkbox := "[ ]"
+		if isChecked {
+			checkbox = "[✓]"
+		}
+
+		roleColor := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(fmt.Sprintf("#%06x", role.Color)))
+
+		roleText := fmt.Sprintf("  %s ", checkbox)
+		roleName := roleColor.Render(role.Name)
+
+		if isFocused {
+			line := selectedStyle.Render(roleText) + " " + roleName
+			middle.writeLine(line)
+		} else {
+			middle.writeLine(normalStyle.Render(roleText) + " " + roleName)
+		}
+	}
+
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Space toggle · Enter save · Esc cancel"))
+
+	bottom.pad()
+
+	// ── ASSEMBLE ──
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Padding(0, 1).
 		Render(content)
 }
@@ -2290,6 +4245,329 @@ func (a *App) renderMoveDialog() string {
 		Render(dialog)
 }
 
+// renderDialogButton renders a button with consistent styling
+func (a *App) renderDialogButton(label string, focused bool, color lipgloss.Color, destructive bool) string {
+	if focused {
+		// Focused button: filled background
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(color).
+			Bold(true).
+			Padding(0, 2).
+			Render(label)
+	} else if destructive {
+		// Unfocused destructive button: colored text, no border
+		return lipgloss.NewStyle().
+			Foreground(color).
+			Padding(0, 2).
+			Render(label)
+	} else {
+		// Unfocused normal button: normal text, no border
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+			Padding(0, 2).
+			Render(label)
+	}
+}
+
+// renderKickConfirmDialog renders the kick confirmation dialog
+func (a *App) renderKickConfirmDialog() string {
+	s := a.serverManagementState
+	dialogWidth := 50
+
+	var content strings.Builder
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Red)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	content.WriteString(titleStyle.Render("▲  Confirm Kick"))
+	content.WriteString("\n\n")
+
+	// Message
+	msgStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	memberName := "Unknown"
+	if s.KickConfirmMember != nil && s.KickConfirmMember.User != nil {
+		memberName = s.KickConfirmMember.User.Username
+	}
+
+	content.WriteString(msgStyle.Render(fmt.Sprintf("Kick %s from the server?\n\nThey can rejoin with an invite.", memberName)))
+	content.WriteString("\n\n")
+
+	// Buttons
+	confirmBtn := a.renderDialogButton("Yes, Kick", s.KickConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Red), true)
+	cancelBtn := a.renderDialogButton("No, Cancel", s.KickConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
+
+	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
+	buttonRowStyle := lipgloss.NewStyle().Width(dialogWidth - 4).Align(lipgloss.Center)
+	content.WriteString(buttonRowStyle.Render(buttonRow))
+	content.WriteString("\n\n")
+
+	// Help text
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+	content.WriteString(helpStyle.Render("[Tab/←→] Switch  [Enter] Confirm  [Y] Yes  [N/Esc] Cancel"))
+
+	// Wrap in dialog box
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Red)).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogStyle.Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
+// renderBanConfirmDialog renders the ban/unban confirmation dialog
+func (a *App) renderBanConfirmDialog() string {
+	s := a.serverManagementState
+	dialogWidth := 50
+
+	var content strings.Builder
+
+	memberName := "Unknown"
+	isBanned := false
+	if s.BanConfirmMember != nil && s.BanConfirmMember.User != nil {
+		memberName = s.BanConfirmMember.User.Username
+		isBanned = s.BanConfirmMember.IsBanned
+	}
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Red)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	if isBanned {
+		content.WriteString(titleStyle.Render("▲  Confirm Unban"))
+	} else {
+		content.WriteString(titleStyle.Render("▲  Confirm Ban"))
+	}
+	content.WriteString("\n\n")
+
+	// Message
+	msgStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	if isBanned {
+		content.WriteString(msgStyle.Render(fmt.Sprintf("Unban %s?\n\nThey will be able to rejoin the server.", memberName)))
+	} else {
+		content.WriteString(msgStyle.Render(fmt.Sprintf("Ban %s from the server?\n\nThey will not be able to rejoin.", memberName)))
+	}
+	content.WriteString("\n\n")
+
+	// Buttons
+	var confirmBtn, cancelBtn string
+	if isBanned {
+		confirmBtn = a.renderDialogButton("Yes, Unban", s.BanConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Green), true)
+	} else {
+		confirmBtn = a.renderDialogButton("Yes, Ban", s.BanConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Red), true)
+	}
+	cancelBtn = a.renderDialogButton("No, Cancel", s.BanConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
+
+	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
+	buttonRowStyle := lipgloss.NewStyle().Width(dialogWidth - 4).Align(lipgloss.Center)
+	content.WriteString(buttonRowStyle.Render(buttonRow))
+	content.WriteString("\n\n")
+
+	// Help text
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+	content.WriteString(helpStyle.Render("[Tab/←→] Switch  [Enter] Confirm  [Y] Yes  [N/Esc] Cancel"))
+
+	// Wrap in dialog box
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Red)).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogStyle.Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
+// renderUnmuteConfirmDialog renders the unmute confirmation dialog
+func (a *App) renderUnmuteConfirmDialog() string {
+	s := a.serverManagementState
+	dialogWidth := 50
+
+	var content strings.Builder
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Green)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	content.WriteString(titleStyle.Render("▲  Confirm Unmute"))
+	content.WriteString("\n\n")
+
+	// Message
+	msgStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+
+	memberName := "Unknown"
+	if s.UnmuteConfirmMember != nil && s.UnmuteConfirmMember.User != nil {
+		memberName = s.UnmuteConfirmMember.User.Username
+	}
+
+	content.WriteString(msgStyle.Render(fmt.Sprintf("Unmute %s?\n\nThey will be able to send messages again.", memberName)))
+	content.WriteString("\n\n")
+
+	// Buttons
+	confirmBtn := a.renderDialogButton("Yes, Unmute", s.UnmuteConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Green), true)
+	cancelBtn := a.renderDialogButton("No, Cancel", s.UnmuteConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
+
+	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
+	buttonRowStyle := lipgloss.NewStyle().Width(dialogWidth - 4).Align(lipgloss.Center)
+	content.WriteString(buttonRowStyle.Render(buttonRow))
+	content.WriteString("\n\n")
+
+	// Help text
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Width(dialogWidth - 4).
+		Align(lipgloss.Center)
+	content.WriteString(helpStyle.Render("[Tab/←→] Switch  [Enter] Confirm  [Y] Yes  [N/Esc] Cancel"))
+
+	// Wrap in dialog box
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Green)).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogStyle.Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
+// renderMuteDurationPage renders the mute duration selection page
+func (a *App) renderMuteDurationPage() string {
+	s := a.serverManagementState
+	dialogWidth := 60
+
+	var content strings.Builder
+
+	memberName := "Unknown"
+	if s.MuteDurationMember != nil && s.MuteDurationMember.User != nil {
+		memberName = s.MuteDurationMember.User.Username
+	}
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Yellow)).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+
+	content.WriteString(titleStyle.Render(fmt.Sprintf("Mute %s", memberName)))
+	content.WriteString("\n\n")
+
+	// Duration options
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	content.WriteString(labelStyle.Render("Select Duration:"))
+	content.WriteString("\n\n")
+
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+
+	options := []string{"1 Hour", "24 Hours", "7 Days", "Permanent"}
+	for i, opt := range options {
+		line := fmt.Sprintf("  ( ) %s", opt)
+		if i == s.MuteDurationFocus {
+			content.WriteString(selectedStyle.Render(line))
+		} else {
+			content.WriteString(normalStyle.Render(line))
+		}
+		content.WriteString("\n")
+	}
+
+	content.WriteString("\n")
+	content.WriteString(labelStyle.Render("Custom Duration:"))
+	content.WriteString("\n")
+	customLine := fmt.Sprintf("  [%s]  (e.g., 30m, 5h, 2d)", s.MuteDurationCustom)
+	if s.MuteDurationFocus == 4 {
+		content.WriteString(selectedStyle.Render(customLine))
+	} else {
+		content.WriteString(normalStyle.Render(customLine))
+	}
+	content.WriteString("\n\n")
+
+	content.WriteString(labelStyle.Render("Reason (optional):"))
+	content.WriteString("\n")
+	reasonLine := fmt.Sprintf("  [%s]", s.MuteDurationReason)
+	if s.MuteDurationFocus == 5 {
+		content.WriteString(selectedStyle.Render(reasonLine))
+	} else {
+		content.WriteString(normalStyle.Render(reasonLine))
+	}
+	content.WriteString("\n\n")
+
+	// Help text
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true).
+		Align(lipgloss.Center).
+		Width(dialogWidth - 4)
+	content.WriteString(helpStyle.Render("[↑↓] Navigate  [Enter] Confirm  [Esc] Cancel"))
+
+	// Wrap in dialog box
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Yellow)).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogStyle.Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
 // renderDeleteConfirmDialog renders the delete confirmation dialog
 func (a *App) renderDeleteConfirmDialog() string {
 	s := a.serverManagementState
@@ -2305,7 +4583,7 @@ func (a *App) renderDeleteConfirmDialog() string {
 		Align(lipgloss.Center).
 		Width(dialogWidth - 4)
 
-	content.WriteString(titleStyle.Render("⚠ Confirm Deletion"))
+	content.WriteString(titleStyle.Render("▲  Confirm Deletion"))
 	content.WriteString("\n\n")
 
 	// Warning message
@@ -2324,24 +4602,42 @@ func (a *App) renderDeleteConfirmDialog() string {
 	content.WriteString(msgStyle.Render(warningText))
 	content.WriteString("\n\n")
 
-	// Buttons
+	// Buttons (with focus support)
 	buttonRowStyle := lipgloss.NewStyle().
 		Width(dialogWidth - 4).
 		Align(lipgloss.Center)
 
-	confirmBtn := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Red)).
-		Bold(true).
-		Padding(0, 2).
-		Render("[Yes, Delete]")
+	// Button 0: Yes, Delete (focused = filled background, unfocused = normal text)
+	var confirmBtn string
+	if s.DeleteConfirmFocusedButton == 0 {
+		confirmBtn = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Red)).
+			Bold(true).
+			Padding(0, 2).
+			Render("Yes, Delete")
+	} else {
+		confirmBtn = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Red)).
+			Padding(0, 2).
+			Render("Yes, Delete")
+	}
 
-	cancelBtn := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Comment)).
-		Padding(0, 2).
-		Render("[No, Cancel]")
+	// Button 1: No, Cancel (focused = filled background, unfocused = normal text)
+	var cancelBtn string
+	if s.DeleteConfirmFocusedButton == 1 {
+		cancelBtn = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Comment)).
+			Bold(true).
+			Padding(0, 2).
+			Render("No, Cancel")
+	} else {
+		cancelBtn = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+			Padding(0, 2).
+			Render("No, Cancel")
+	}
 
 	buttons := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
 	content.WriteString(buttonRowStyle.Render(buttons))
@@ -2353,7 +4649,7 @@ func (a *App) renderDeleteConfirmDialog() string {
 		Italic(true).
 		Width(dialogWidth - 4).
 		Align(lipgloss.Center)
-	content.WriteString(helpStyle.Render("[Y] Confirm  [N/Esc] Cancel"))
+	content.WriteString(helpStyle.Render("[Tab/←→] Switch  [Enter] Confirm  [Y] Yes  [N/Esc] Cancel"))
 
 	// Wrap in dialog
 	dialogStyle := lipgloss.NewStyle().
@@ -2369,4 +4665,570 @@ func (a *App) renderDeleteConfirmDialog() string {
 		Height(a.height).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(dialog)
+}
+
+// renderRoleFormPage renders the role create/edit form as a full page
+func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) string {
+	state := s.RoleFormState
+	if state == nil {
+		return ""
+	}
+
+	layout := calculateSettingsLayout(width, height, 2, 0)
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+
+	title := "Create New Role"
+	if state.Mode == "edit" {
+		title = "Edit Role"
+	}
+	top.writeLine(headerStyle.Render(title))
+
+	// Subtitle (optional)
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	subtitle := "Configure role permissions and appearance"
+	top.writeLine(subtitleStyle.Render(subtitle))
+	top.writeBlank()
+
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Error message if present
+	if state.ErrorMsg != "" {
+		errorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Red)).
+			Bold(true)
+		middle.writeLine(errorStyle.Render("⚠ " + state.ErrorMsg))
+		middle.writeBlank()
+	}
+
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+
+	// Field 0: Role Name
+	middle.writeLine(labelStyle.Render("▸ Role Name:"))
+	nameDisplay := state.NameInput
+	if nameDisplay == "" {
+		nameDisplay = "[]"
+	}
+	if state.FocusField == 0 {
+		// Show cursor
+		before := nameDisplay[:state.NameCursor]
+		after := nameDisplay[state.NameCursor:]
+		nameDisplay = before + "█" + after
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Render("  " + nameDisplay))
+	} else {
+		middle.writeLine("  " + nameDisplay)
+	}
+	middle.writeBlank()
+
+	// Field 1: Permission Preset
+	middle.writeLine(labelStyle.Render("▸ Permission Preset:"))
+	presets := []string{
+		"Members - Basic chat permissions",
+		"Moderator - Moderation + chat",
+		"Admin - All permissions",
+		"Custom - Select manually",
+	}
+	for i, preset := range presets {
+		prefix := "  ( ) "
+		if state.PresetIndex == i {
+			prefix = "  (●) "
+		}
+		line := prefix + preset
+		if state.FocusField == 1 {
+			middle.writeLine(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+				Render(line))
+		} else {
+			middle.writeLine(line)
+		}
+	}
+	middle.writeBlank()
+
+	// Field 2: Color
+	middle.writeLine(labelStyle.Render("▸ Color:"))
+	colors := []struct {
+		name  string
+		value string
+	}{
+		{"Gold", a.theme.Colors.Yellow},
+		{"Blue", a.theme.Colors.Cyan},
+		{"Red", a.theme.Colors.Red},
+		{"Green", a.theme.Colors.Green},
+		{"Purple", a.theme.Colors.Purple},
+	}
+	var colorLine string
+	for i, color := range colors {
+		prefix := " ○ "
+		if state.ColorIndex == i {
+			prefix = " ● "
+		}
+		coloredCircle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(color.value)).
+			Render(prefix)
+
+		// Highlight the selected color name when focused
+		colorName := color.name
+		if state.FocusField == 2 && state.ColorIndex == i {
+			colorName = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+				Render(colorName)
+		}
+
+		colorLine += coloredCircle + colorName
+	}
+	middle.writeLine("  " + colorLine)
+	middle.writeBlank()
+
+	// Field 3: IsHoisted
+	hoistedPrefix := "  ☐ "
+	if state.IsHoisted {
+		hoistedPrefix = "  ☑ "
+	}
+	hoistedLine := hoistedPrefix + "Show separately in members list"
+	if state.FocusField == 3 {
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Render(hoistedLine))
+	} else {
+		middle.writeLine(hoistedLine)
+	}
+
+	// Field 4: IsMentionable
+	mentionablePrefix := "  ☐ "
+	if state.IsMentionable {
+		mentionablePrefix = "  ☑ "
+	}
+	mentionableLine := mentionablePrefix + "Allow anyone to @mention this role"
+	if state.FocusField == 4 {
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Render(mentionableLine))
+	} else {
+		middle.writeLine(mentionableLine)
+	}
+	middle.writeBlank()
+
+	// Field 5: Display Order
+	middle.writeLine(labelStyle.Render("▸ Display Order (member panel sorting):"))
+	orderDisplay := state.DisplayOrder
+	if orderDisplay == "" {
+		orderDisplay = "[0]"
+	}
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Italic(true)
+	helpText := helpStyle.Render("  (Lower numbers appear first: 1=top, 2=next, etc.)")
+
+	if state.FocusField == 5 {
+		before := orderDisplay[:state.DisplayOrderCursor]
+		after := orderDisplay[state.DisplayOrderCursor:]
+		orderDisplay = before + "█" + after
+		middle.writeLine(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Render("  " + orderDisplay) + helpText)
+	} else {
+		middle.writeLine("  " + orderDisplay + helpText)
+	}
+	middle.writeBlank()
+
+	// Buttons
+	createLabel := "Create"
+	if state.Mode == "edit" {
+		createLabel = "Save"
+	}
+
+	var createButton, cancelButton string
+	if state.FocusField == 6 {
+		createButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Green)).
+			Bold(true).
+			Padding(0, 2).
+			Render(createLabel)
+	} else {
+		createButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Green)).
+			Render("[" + createLabel + "]")
+	}
+
+	if state.FocusField == 7 {
+		cancelButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Red)).
+			Bold(true).
+			Padding(0, 2).
+			Render("Cancel")
+	} else {
+		cancelButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Red)).
+			Render("[Cancel]")
+	}
+
+	buttonsLine := "  " + createButton + "  " + cancelButton
+	middle.writeLine(buttonsLine)
+
+	// Fill remaining middle section space
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	footerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(footerStyle.Render("Tab/↑↓: Navigate · ←→: Color · Space: Toggle · Enter: Submit · Esc: Cancel"))
+
+	// Fill remaining bottom section space
+	bottom.pad()
+
+	// Assemble sections
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderPermissionsEditorPage renders the permissions editor as a full settings page
+func (a *App) renderPermissionsEditorPage(width, height int, s *ServerManagementState) string {
+	if s.PermissionsEditorRole == nil {
+		return "No role selected"
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// STEP 1: Calculate Layout
+	// ═══════════════════════════════════════════════════════════════
+	// Top: header + subtitle + blank + description + commands + blank + separator = 7 lines + 2 padding
+	// Bottom: separator + blank + 2 help lines = 4 lines
+	layout := calculateSettingsLayout(width, height, 5, 1)
+
+	// ═══════════════════════════════════════════════════════════════
+	// STEP 2: Build TOP Section
+	// ═══════════════════════════════════════════════════════════════
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	top.writeLine(headerStyle.Render(fmt.Sprintf("Edit Permissions: %s", s.PermissionsEditorRole.Name)))
+
+	// Subtitle
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(subtitleStyle.Render("Configure role permissions and appearance"))
+
+	// Blank line
+	top.writeBlank()
+
+	// Get selected permission details
+	permList := getPermissionList()
+	selectedPermName := ""
+	if s.PermSelectedIndex >= 0 && s.PermSelectedIndex < len(permList) {
+		selectedPermName = permList[s.PermSelectedIndex].Name
+	}
+
+	// Description of selected permission
+	if selectedPermName != "" {
+		description, commands := getPermissionDescription(selectedPermName)
+
+		descStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+		top.writeLine(descStyle.Render(description))
+
+		// Commands/examples
+		if commands != "" {
+			cmdStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Italic(true)
+			top.writeLine(cmdStyle.Render(commands))
+		} else {
+			top.writeBlank()
+		}
+	} else {
+		// Fallback if no permission selected
+		top.writeLine("Select a permission to see its description")
+		top.writeBlank()
+	}
+
+	// Blank line before separator
+	top.writeBlank()
+
+	// Separator
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ═══════════════════════════════════════════════════════════════
+	// STEP 3: Build MIDDLE Section (Scrollable Permissions List)
+	// ═══════════════════════════════════════════════════════════════
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// permList already declared in top section, reuse it here
+
+	// Calculate scrollable viewport
+	maxVisible := layout.middleLines - 2 // Leave room for padding
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+
+	// Calculate scroll window to keep selected item centered
+	visibleStart := 0
+	visibleEnd := len(permList)
+
+	if len(permList) > maxVisible {
+		halfVisible := maxVisible / 2
+		visibleStart = s.PermSelectedIndex - halfVisible
+		visibleEnd = s.PermSelectedIndex + halfVisible
+
+		if visibleStart < 0 {
+			visibleStart = 0
+			visibleEnd = maxVisible
+		}
+		if visibleEnd > len(permList) {
+			visibleEnd = len(permList)
+			visibleStart = visibleEnd - maxVisible
+			if visibleStart < 0 {
+				visibleStart = 0
+			}
+		}
+	}
+
+	// Show "↑ X more" if scrolled down
+	if visibleStart > 0 {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↑ %d more", visibleStart)))
+	}
+
+	// Render permissions grouped by category
+	currentCategory := ""
+	for i := visibleStart; i < visibleEnd; i++ {
+		perm := permList[i]
+
+		// Category header
+		if perm.Category != currentCategory {
+			currentCategory = perm.Category
+			categoryStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment))
+			middle.writeLine(categoryStyle.Render(fmt.Sprintf("── %s ──", currentCategory)))
+		}
+
+		// Check if this permission is enabled
+		isEnabled := (s.PermModifiedBits & uint64(perm.Bit)) != 0
+		checkbox := "[ ]"
+		if isEnabled {
+			checkbox = "[✓]"
+		}
+
+		// Selection indicator
+		prefix := "  "
+		if i == s.PermSelectedIndex {
+			prefix = "▶ "
+		}
+
+		// Build line
+		line := fmt.Sprintf("%s%s %s", prefix, checkbox, perm.Name)
+
+		// Style based on selection
+		if i == s.PermSelectedIndex {
+			selectedStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Background)).
+				Background(lipgloss.Color(a.theme.Colors.Cyan)).
+				Bold(true).
+				Width(layout.interiorWidth)
+			middle.writeLine(selectedStyle.Render(line))
+		} else {
+			normalStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+			middle.writeLine(normalStyle.Render(line))
+		}
+	}
+
+	// Show "↓ X more" if not at bottom
+	if visibleEnd < len(permList) {
+		moreStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↓ %d more", len(permList)-visibleEnd)))
+	}
+
+	// Fill remaining space
+	middle.pad()
+
+	// ═══════════════════════════════════════════════════════════════
+	// STEP 4: Build BOTTOM Section (Help Text)
+	// ═══════════════════════════════════════════════════════════════
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+
+	// Separator
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// Blank line
+	bottom.writeBlank()
+
+	// Help text (2 lines)
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Space: toggle · A: all · N: none"))
+	bottom.writeLine(helpStyle.Render("Actions: Enter: save · Esc: cancel (discard changes)"))
+
+	// Fill remaining space
+	bottom.pad()
+
+	// ═══════════════════════════════════════════════════════════════
+	// STEP 5: Assemble All Sections
+	// ═══════════════════════════════════════════════════════════════
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		top.String(),
+		middle.String(),
+		bottom.String(),
+	)
+
+	// ═══════════════════════════════════════════════════════════════
+	// STEP 6: Render with Border and Padding
+	// ═══════════════════════════════════════════════════════════════
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+func (a *App) handleRoleFormSubmit() tea.Cmd {
+	state := a.serverManagementState.RoleFormState
+	if state == nil {
+		return nil
+	}
+
+	// Validation
+	name := strings.TrimSpace(state.NameInput)
+	if name == "" {
+		state.ErrorMsg = "Role name is required"
+		return nil
+	}
+	if len(name) > 50 {
+		state.ErrorMsg = "Role name must be 1-50 characters"
+		return nil
+	}
+
+	// Connection check
+	if a.activeConn == nil || a.currentServer == nil {
+		state.ErrorMsg = "Not connected to server"
+		return nil
+	}
+
+	// Map preset to permissions
+	var permissions uint64
+	switch state.PresetIndex {
+	case 0: // Text Only
+		permissions = uint64(models.PermissionsText)
+	case 1: // Moderator
+		permissions = uint64(models.PermissionsModerator)
+	case 2: // Admin
+		permissions = uint64(models.PermissionsAdmin)
+	case 3: // Custom
+		permissions = state.CustomPermissions
+	}
+
+	// Map color index to RGB value
+	colorValues := []int{
+		0xFFD700, // Gold
+		0x5865F2, // Blue
+		0xED4245, // Red
+		0x57F287, // Green
+		0x9B59B6, // Purple
+	}
+	color := colorValues[state.ColorIndex]
+
+	// Parse display order (optional, 0 if empty)
+	displayOrder := 0
+	if state.DisplayOrder != "" {
+		parsed, err := strconv.Atoi(state.DisplayOrder)
+		if err != nil {
+			state.ErrorMsg = "Display order must be a number"
+			return nil
+		}
+		displayOrder = parsed
+	}
+
+	serverID := a.currentServer.ID
+	channelID := uuid.Nil
+	if a.currentChannel != nil {
+		channelID = a.currentChannel.ID
+	}
+
+	var req interface{}
+	var opCode protocol.OpCode
+
+	if state.Mode == "create" {
+		req = &protocol.CreateRoleRequest{
+			ServerID:      serverID,
+			ChannelID:     channelID,
+			Name:          name,
+			Permissions:   permissions,
+			Color:         color,
+			DisplayOrder:  &displayOrder,
+			IsHoisted:     state.IsHoisted,
+			IsMentionable: state.IsMentionable,
+		}
+		opCode = protocol.OpCreateRole
+	} else {
+		// Edit mode
+		if state.EditingRoleID == nil {
+			state.ErrorMsg = "Invalid role ID"
+			return nil
+		}
+		req = &protocol.UpdateRoleRequest{
+			ServerID:      serverID,
+			ChannelID:     channelID,
+			RoleID:        *state.EditingRoleID,
+			Name:          name,
+			Permissions:   permissions,
+			Color:         color,
+			DisplayOrder:  &displayOrder,
+			IsHoisted:     state.IsHoisted,
+			IsMentionable: state.IsMentionable,
+		}
+		opCode = protocol.OpUpdateRole
+	}
+
+	// Build and send protocol message
+	msg, err := protocol.NewMessage(opCode, req)
+	if err != nil {
+		state.ErrorMsg = fmt.Sprintf("Failed to build request: %v", err)
+		return nil
+	}
+
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		state.ErrorMsg = fmt.Sprintf("Failed to send: %v", err)
+		return nil
+	}
+
+	// Close form on success
+	a.serverManagementState.RoleFormOpen = false
+	a.serverManagementState.RoleFormState = nil
+	a.statusMessage = "Request sent..."
+
+	return nil
 }
