@@ -1,0 +1,51 @@
+[meta]
+name        = "Terminal Default"
+author      = "Concord"
+variant     = "auto"
+description = "Uses your terminal's native color palette and background"
+
+[colors]
+background   = ""
+current_line = "8"
+selection    = "8"
+foreground   = ""
+comment      = "8"
+red          = "1"
+orange       = "3"
+yellow       = "3"
+green        = "2"
+cyan         = "6"
+purple       = "5"
+pink         = "13"
+
+[semantic]
+sidebar_bg       = ""
+sidebar_fg       = ""
+sidebar_selected = "5"
+sidebar_hover    = "8"
+
+chat_bg             = ""
+chat_fg             = ""
+chat_timestamp      = "8"
+chat_username_self  = "6"
+chat_username_other = "5"
+chat_mention        = "3"
+
+input_bg           = ""
+input_fg           = ""
+input_border       = "8"
+input_border_focus = "5"
+
+status_online  = "2"
+status_idle    = "3"
+status_dnd     = "1"
+status_offline = "8"
+
+error   = "1"
+warning = "3"
+success = "2"
+info    = "6"
+
+scrollbar       = "8"
+scrollbar_hover = "5"
+border          = "8"

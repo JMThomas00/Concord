@@ -392,15 +392,31 @@ func (a *App) renderThemeBrowserView() string {
 			Foreground(lipgloss.Color(t.Colors.Comment)).
 			Render("  by " + t.Meta.Author))
 	}
-	prevBuf.WriteString("\n\n")
+	prevBuf.WriteString("\n")
+	if t.Meta.Description != "" {
+		prevBuf.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(t.Colors.Comment)).
+			Italic(true).
+			Render(t.Meta.Description))
+		prevBuf.WriteString("\n")
+	}
+	prevBuf.WriteString("\n")
 
 	// Color swatches
 	swatchLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Colors.Comment)).Render
 	swatch := func(color, label string) string {
-		block := lipgloss.NewStyle().
-			Background(lipgloss.Color(color)).
-			Foreground(lipgloss.Color(color)).
-			Render("  ")
+		var block string
+		if color == "" {
+			// Empty color means "terminal default" — show a placeholder instead of invisible blank
+			block = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(t.Colors.Comment)).
+				Render("··")
+		} else {
+			block = lipgloss.NewStyle().
+				Background(lipgloss.Color(color)).
+				Foreground(lipgloss.Color(color)).
+				Render("  ")
+		}
 		return block + " " + swatchLabel(label)
 	}
 	swatches := []string{

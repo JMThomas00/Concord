@@ -18,9 +18,10 @@ type Theme struct {
 
 // ThemeMeta contains metadata about the theme
 type ThemeMeta struct {
-	Name    string `toml:"name"`
-	Author  string `toml:"author"`
-	Variant string `toml:"variant"` // "dark" or "light"
+	Name        string `toml:"name"`
+	Author      string `toml:"author"`
+	Variant     string `toml:"variant"`     // "dark", "light", or "auto"
+	Description string `toml:"description"` // optional one-line description shown in theme browser
 }
 
 // ThemeColors contains the base color palette
