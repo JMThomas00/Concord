@@ -479,6 +479,9 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	if s.SearchInputOpen {
 		return a.handleSearchInputKey(msg)
 	}
+	if s.RemoveExemptPickerOpen {
+		return a.handleRemoveExemptKey(msg)
+	}
 	if s.OverrideChannelPickerOpen {
 		return a.handleChannelPickerKey(msg)
 	}
@@ -957,22 +960,13 @@ func (a *App) handleDeleteAction() {
 				s.DeleteConfirmFocusedButton = 0 // Start with "Yes, Delete" focused
 			}
 		}
-	case 3: // Remove channel override (un-exempt the channel)
-		if len(s.ChannelOverrides) > 0 && s.SelectedOverride >= 0 && s.SelectedOverride < len(s.ChannelOverrides) {
-			override := s.ChannelOverrides[s.SelectedOverride]
-			if override.ChannelID != nil {
-				serverID := a.getActiveServerID()
-				req := &protocol.DeleteRetentionPolicyRequest{
-					ServerID:  serverID,
-					ChannelID: *override.ChannelID,
-				}
-				pmsg, err := protocol.NewMessage(protocol.OpDeleteRetentionPolicy, req)
-				if err == nil {
-					_ = a.activeConn.Connection.Send(pmsg)
-					a.statusMessage = "Channel exemption removed"
-				}
-			}
+	case 3: // Open the remove-exempt picker
+		if len(s.ChannelOverrides) == 0 {
+			a.statusMessage = "No exempt channels to remove"
+			return
 		}
+		s.RemoveExemptPickerOpen = true
+		s.RemoveExemptSelected = s.SelectedOverride // pre-select the currently highlighted row
 	}
 }
 
@@ -2601,6 +2595,95 @@ func (a *App) handleChannelPickerKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+func (a *App) handleRemoveExemptKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	switch msg.String() {
+	case "up":
+		if s.RemoveExemptSelected > 0 {
+			s.RemoveExemptSelected--
+		}
+	case "down":
+		if s.RemoveExemptSelected < len(s.ChannelOverrides)-1 {
+			s.RemoveExemptSelected++
+		}
+	case "enter":
+		if len(s.ChannelOverrides) > 0 && s.RemoveExemptSelected < len(s.ChannelOverrides) {
+			override := s.ChannelOverrides[s.RemoveExemptSelected]
+			if override.ChannelID != nil {
+				serverID := a.getActiveServerID()
+				req := &protocol.DeleteRetentionPolicyRequest{
+					ServerID:  serverID,
+					ChannelID: *override.ChannelID,
+				}
+				pmsg, err := protocol.NewMessage(protocol.OpDeleteRetentionPolicy, req)
+				if err == nil {
+					_ = a.activeConn.Connection.Send(pmsg)
+					chName := a.resolveChannelName(*override.ChannelID)
+					a.statusMessage = fmt.Sprintf("#%s exemption removed", chName)
+				}
+			}
+		}
+		s.RemoveExemptPickerOpen = false
+	case "esc":
+		s.RemoveExemptPickerOpen = false
+	}
+	return nil
+}
+
+// renderRemoveExemptPage renders the remove-channel-exemption picker as a full settings page
+func (a *App) renderRemoveExemptPage(width, height int, s *ServerManagementState) string {
+	layout := calculateSettingsLayout(width, height, 2, 0)
+
+	// ── TOP ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("Remove Channel Exemption"))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("Select a channel to remove its exemption — it will be pruned normally"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Red)).Bold(true)
+	exemptBadge := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Render(" (exempt)")
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+
+	if len(s.ChannelOverrides) == 0 {
+		middle.writeLine(dimStyle.Render("  No exempt channels to remove"))
+	} else {
+		for i, override := range s.ChannelOverrides {
+			chName := "unknown"
+			if override.ChannelID != nil {
+				chName = a.resolveChannelName(*override.ChannelID)
+			}
+			if i == s.RemoveExemptSelected {
+				middle.writeLine(selectedStyle.Render(fmt.Sprintf("  # %s (exempt)", chName)))
+			} else {
+				middle.writeLine(normalStyle.Render(fmt.Sprintf("  # %s", chName)) + exemptBadge)
+			}
+		}
+	}
+	middle.pad()
+
+	// ── BOTTOM ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("↑↓ navigate · [Enter] remove exemption · [Esc] cancel"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().
+		Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
+}
+
 func (a *App) handleRetentionFormKey(msg tea.KeyMsg) tea.Cmd {
 	s := a.serverManagementState
 	form := s.RetentionFormState
@@ -2752,7 +2835,9 @@ func (a *App) renderServerManagementView() string {
 			contentPanel = a.renderMembersCategory(contentWidth, totalHeight-2, s)
 		}
 	case 3: // Messages
-		if s.OverrideChannelPickerOpen {
+		if s.RemoveExemptPickerOpen {
+			contentPanel = a.renderRemoveExemptPage(contentWidth, totalHeight-2, s)
+		} else if s.OverrideChannelPickerOpen {
 			contentPanel = a.renderChannelPickerPage(contentWidth, totalHeight-2, s)
 		} else if s.RetentionFormState != nil {
 			contentPanel = a.renderRetentionFormPage(contentWidth, totalHeight-2, s)

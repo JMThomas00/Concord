@@ -146,10 +146,14 @@ type ServerManagementState struct {
 	ChannelOverrides     []*models.MessageRetentionPolicy
 	SelectedOverride     int
 
-	// Channel override picker
+	// Channel override picker (add exempt)
 	OverrideChannelPickerOpen bool
 	OverrideChannelList       []*models.Channel
 	OverrideChannelSelected   int
+
+	// Remove exempt picker
+	RemoveExemptPickerOpen bool
+	RemoveExemptSelected   int
 }
 
 // RoleFormState holds state for the role creation/edit modal
