@@ -2752,7 +2752,15 @@ func (a *App) renderServerManagementView() string {
 			contentPanel = a.renderMembersCategory(contentWidth, totalHeight-2, s)
 		}
 	case 3: // Messages
-		contentPanel = a.renderMessagesCategory(contentWidth, totalHeight-2, s)
+		if s.OverrideChannelPickerOpen {
+			contentPanel = a.renderChannelPickerPage(contentWidth, totalHeight-2, s)
+		} else if s.RetentionFormState != nil {
+			contentPanel = a.renderRetentionFormPage(contentWidth, totalHeight-2, s)
+		} else if s.PruneConfirmOpen {
+			contentPanel = a.renderPruneConfirmPage(contentWidth, totalHeight-2, s)
+		} else {
+			contentPanel = a.renderMessagesCategory(contentWidth, totalHeight-2, s)
+		}
 	}
 
 	// ── Assemble ───────────────────────────────────────────────────
@@ -2785,17 +2793,6 @@ func (a *App) renderServerManagementView() string {
 	// Show delete confirmation dialog if active
 	if s.DeleteConfirmOpen {
 		return a.renderDeleteConfirmDialog()
-	}
-
-	// Messages category dialogs
-	if s.OverrideChannelPickerOpen {
-		return a.renderChannelPickerPage()
-	}
-	if s.RetentionFormState != nil {
-		return a.renderRetentionFormPage()
-	}
-	if s.PruneConfirmOpen {
-		return a.renderPruneConfirmPage()
 	}
 
 	return baseView
@@ -3897,167 +3894,168 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 		Padding(0, 1).Render(content)
 }
 
-// renderRetentionFormPage renders the Edit Server Default Policy dialog (full-screen centered)
-func (a *App) renderRetentionFormPage() string {
-	s := a.serverManagementState
+// renderRetentionFormPage renders the Edit Server Default Policy as a full settings page
+func (a *App) renderRetentionFormPage(width, height int, s *ServerManagementState) string {
 	form := s.RetentionFormState
 	if form == nil {
 		return ""
 	}
 
-	dialogWidth := 56
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + blank + 2 help lines = 4 lines → pageBottomExtra = 1
+	layout := calculateSettingsLayout(width, height, 2, 1)
+
+	// ── TOP ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("Edit Server Default Policy"))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("Leave fields empty to disable the limit"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Background)).
 		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true).
-		Align(lipgloss.Center).Width(dialogWidth - 4)
-
-	var content strings.Builder
-
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true).
-		Align(lipgloss.Center).Width(dialogWidth - 4)
-	content.WriteString(titleStyle.Render("Edit Server Default Policy"))
-	content.WriteString("\n\n")
 
 	renderField := func(label, value string, fieldIdx int) {
-		content.WriteString(labelStyle.Render(label))
-		content.WriteString("\n")
+		middle.writeLine(labelStyle.Render(label))
 		display := fmt.Sprintf("  [%s]", value)
-		if len(value) == 0 {
-			display = fmt.Sprintf("  [%s]", "")
-		}
 		if form.FocusField == fieldIdx {
-			content.WriteString(selectedStyle.Render(display))
+			middle.writeLine(selectedStyle.Render(display))
 		} else {
-			content.WriteString(normalStyle.Render(display))
+			middle.writeLine(normalStyle.Render(display))
 		}
-		content.WriteString("\n\n")
+		middle.writeBlank()
 	}
 
 	renderField("Time Retention (days):", form.TimeRetentionDays, 0)
 	renderField("System Message Retention (days):", form.SystemTimeRetentionDays, 1)
 	renderField("Max Messages Per Channel:", form.MaxMessageCount, 2)
 
-	// Buttons
-	saveBtn := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).
-		Render("[S] Save")
-	cancelBtn := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Red)).
-		Render("[Esc] Cancel")
-	content.WriteString(fmt.Sprintf("%s  %s\n\n", saveBtn, cancelBtn))
+	saveBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).Render("[S] Save")
+	cancelBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel")
+	middle.writeLine(fmt.Sprintf("%s  %s", saveBtn, cancelBtn))
+	middle.pad()
 
-	content.WriteString(helpStyle.Render("Leave fields empty to disable. Use Tab/Shift+Tab to navigate."))
+	// ── BOTTOM ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+	bottom.writeLine(helpStyle.Render("Tab / Shift+Tab · navigate fields"))
+	bottom.writeLine(helpStyle.Render("[S] save · [Esc] cancel"))
+	bottom.pad()
 
-	dialog := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Yellow)).
-		Padding(1, 2).Width(dialogWidth).
-		Render(content.String())
-
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(a.width).Height(a.height).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(dialog)
+		Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
 }
 
-// renderPruneConfirmPage renders the Confirm Message Pruning dialog (full-screen centered)
-func (a *App) renderPruneConfirmPage() string {
-	dialogWidth := 62
-	var content strings.Builder
+// renderPruneConfirmPage renders the Confirm Message Pruning as a full settings page
+func (a *App) renderPruneConfirmPage(width, height int, s *ServerManagementState) string {
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + 1 help line = 2 lines → pageBottomExtra = 0
+	layout := calculateSettingsLayout(width, height, 2, 0)
 
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true).
-		Align(lipgloss.Center).Width(dialogWidth - 4)
-	content.WriteString(titleStyle.Render("⚠ Confirm Message Pruning"))
-	content.WriteString("\n\n")
+	// ── TOP ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true).
+		Render("⚠ Confirm Message Pruning"))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("This action is permanent and cannot be undone"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
+	// ── MIDDLE ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 	bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	content.WriteString(bodyStyle.Render("This will permanently delete old messages according to the\nconfigured retention policies across all channels."))
-	content.WriteString("\n\n")
+	middle.writeLine(bodyStyle.Render("This will permanently delete old messages according to the"))
+	middle.writeLine(bodyStyle.Render("configured retention policies across all channels."))
+	middle.writeBlank()
+	middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).
+		Render("Pinned messages will be preserved."))
+	middle.writeBlank()
+	middle.writeLine(bodyStyle.Render("Are you sure you want to continue?"))
+	middle.writeBlank()
+	confirmBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).Render("[Enter] Yes, prune now")
+	cancelBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel")
+	middle.writeLine(fmt.Sprintf("%s  %s", confirmBtn, cancelBtn))
+	middle.pad()
 
-	preserveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green))
-	content.WriteString(preserveStyle.Render("Pinned messages will be preserved."))
-	content.WriteString("\n\n")
+	// ── BOTTOM ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("[Enter] confirm prune · [Esc] cancel"))
+	bottom.pad()
 
-	content.WriteString(bodyStyle.Render("Are you sure you want to continue?"))
-	content.WriteString("\n\n")
-
-	confirmBtn := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).
-		Render("[Enter] Yes, prune now")
-	cancelBtn := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Red)).
-		Render("[Esc] Cancel")
-	content.WriteString(fmt.Sprintf("%s  %s", confirmBtn, cancelBtn))
-
-	dialog := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Yellow)).
-		Padding(1, 2).Width(dialogWidth).
-		Render(content.String())
-
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(a.width).Height(a.height).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(dialog)
+		Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
 }
 
-// renderChannelPickerPage renders the channel picker for adding an exempt channel
-func (a *App) renderChannelPickerPage() string {
-	s := a.serverManagementState
-	dialogWidth := 50
-	var content strings.Builder
+// renderChannelPickerPage renders the exempt channel picker as a full settings page
+func (a *App) renderChannelPickerPage(width, height int, s *ServerManagementState) string {
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + 1 help line = 2 lines → pageBottomExtra = 0
+	layout := calculateSettingsLayout(width, height, 2, 0)
 
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true).
-		Align(lipgloss.Center).Width(dialogWidth - 4)
-	content.WriteString(titleStyle.Render("Exempt Channel from Pruning"))
-	content.WriteString("\n\n")
+	// ── TOP ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("Exempt Channel from Pruning"))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("Selected channel will keep all messages when a prune is executed"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
-	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	content.WriteString(descStyle.Render("Select a channel to keep all messages on prune:"))
-	content.WriteString("\n\n")
-
+	// ── MIDDLE ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Background)).
 		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
 	if len(s.OverrideChannelList) == 0 {
-		content.WriteString(descStyle.Render("  No channels available"))
+		middle.writeLine(dimStyle.Render("  No channels available to exempt"))
 	} else {
 		for i, ch := range s.OverrideChannelList {
 			line := fmt.Sprintf("  # %s", ch.Name)
 			if i == s.OverrideChannelSelected {
-				content.WriteString(selectedStyle.Render(line))
+				middle.writeLine(selectedStyle.Render(line))
 			} else {
-				content.WriteString(normalStyle.Render(line))
+				middle.writeLine(normalStyle.Render(line))
 			}
-			content.WriteString("\n")
 		}
 	}
-	content.WriteString("\n")
+	middle.pad()
 
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true).
-		Align(lipgloss.Center).Width(dialogWidth - 4)
-	content.WriteString(helpStyle.Render("[↑↓] Navigate  [Enter] Exempt channel  [Esc] Cancel"))
+	// ── BOTTOM ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("↑↓ navigate · [Enter] exempt channel · [Esc] cancel"))
+	bottom.pad()
 
-	dialog := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Yellow)).
-		Padding(1, 2).Width(dialogWidth).
-		Render(content.String())
-
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(a.width).Height(a.height).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(dialog)
+		Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
 }
 
 // renderChannelFormPage renders the channel create/edit form as a full page
