@@ -198,6 +198,7 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 			a.editingServerID = nil
 			// Return to appropriate view based on context
 			if a.settingsState != nil {
+				a.settingsState.ServerFormOpen = false
 				a.view = ViewSettings
 			} else if a.serverManagementState != nil {
 				a.view = ViewServerManagement
@@ -216,6 +217,7 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 		a.editingServerID = nil
 		// Return to appropriate view based on context
 		if a.settingsState != nil {
+			a.settingsState.ServerFormOpen = false
 			a.view = ViewSettings
 		} else if a.serverManagementState != nil {
 			a.view = ViewServerManagement
@@ -249,6 +251,7 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 
 	// Return to appropriate view based on context
 	if a.settingsState != nil {
+		a.settingsState.ServerFormOpen = false
 		a.view = ViewSettings
 	} else if a.serverManagementState != nil {
 		a.view = ViewServerManagement

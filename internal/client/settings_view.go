@@ -234,6 +234,11 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 
+	// Route to server form when it's open
+	if s.ServerFormOpen {
+		return a.handleSettingsServerFormKey(msg)
+	}
+
 	switch msg.String() {
 	case "esc":
 		// If delete confirmation is shown, cancel it
@@ -363,16 +368,16 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "ctrl+n":
 		if s.SelectedCategory == 3 {
-			// Open add server dialog
+			// Open add server form as sub-page
 			a.editingServerID = nil
 			a.initAddServerForm()
 			a.addServerName.Focus()
-			a.view = ViewAddServer
+			s.ServerFormOpen = true
 		}
 
 	case "e":
 		if s.FocusOnForm && s.SelectedCategory == 3 {
-			// Edit selected server
+			// Edit selected server as sub-page
 			servers := a.connMgr.GetAllConnections()
 			if s.SelectedServer >= 0 && s.SelectedServer < len(servers) {
 				srv := servers[s.SelectedServer]
@@ -394,7 +399,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				a.addServerPort.SetValue(fmt.Sprintf("%d", srv.ServerInfo.Port))
 				a.addServerUseTLS = srv.ServerInfo.UseTLS
 				a.addServerName.Focus()
-				a.view = ViewAddServer
+				s.ServerFormOpen = true
 			}
 		}
 
@@ -494,6 +499,129 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// handleSettingsServerFormKey handles key events when the server add/edit form is open
+func (a *App) handleSettingsServerFormKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.settingsState
+	if s == nil {
+		return nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		s.ServerFormOpen = false
+		a.addServerError = ""
+		a.editingServerID = nil
+		return nil
+	case "tab":
+		a.cycleAddServerFocus()
+	case "shift+tab":
+		a.cycleAddServerFocusReverse()
+	case "space":
+		if a.addServerFocus == 3 {
+			a.addServerUseTLS = !a.addServerUseTLS
+		}
+	case "enter":
+		if a.addServerFocus == 3 {
+			a.addServerUseTLS = !a.addServerUseTLS
+		} else {
+			return a.handleAddServerSubmit()
+		}
+	}
+
+	return a.updateAddServerForm(msg)
+}
+
+// renderServerFormPage renders the Add/Edit Server form as a full settings sub-page
+func (a *App) renderServerFormPage(width, height int) string {
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + blank + 2 help lines = 4 lines → pageBottomExtra = 1
+	layout := calculateSettingsLayout(width, height, 2, 1)
+
+	title := "Add New Server"
+	if a.editingServerID != nil {
+		title = "Edit Server"
+	}
+
+	// ── TOP ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render(title))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("Tab / Shift+Tab to navigate fields · Space to toggle TLS"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+
+	// Error message
+	if a.addServerError != "" {
+		middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).
+			Render("✗ " + a.addServerError))
+		middle.writeBlank()
+	}
+
+	// Server Name
+	middle.writeLine(labelStyle.Render("Server Name:"))
+	middle.writeLine("  " + a.addServerName.View())
+	middle.writeBlank()
+
+	// Address
+	middle.writeLine(labelStyle.Render("Address:"))
+	middle.writeLine("  " + a.addServerAddress.View())
+	middle.writeBlank()
+
+	// Port
+	middle.writeLine(labelStyle.Render("Port:"))
+	middle.writeLine("  " + a.addServerPort.View())
+	middle.writeBlank()
+
+	// TLS toggle
+	middle.writeLine(labelStyle.Render("Use TLS (WSS):"))
+	tlsValue := "[ ] No"
+	if a.addServerUseTLS {
+		tlsValue = "[✓] Yes"
+	}
+	if a.addServerFocus == 3 {
+		middle.writeLine("  " + selectedStyle.Render(tlsValue))
+	} else {
+		middle.writeLine("  " + normalStyle.Render(tlsValue))
+	}
+	middle.writeBlank()
+
+	saveLabel := "Add Server"
+	if a.editingServerID != nil {
+		saveLabel = "Save Changes"
+	}
+	saveBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).
+		Render("[Enter] " + saveLabel)
+	cancelBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel")
+	middle.writeLine(fmt.Sprintf("%s  %s", saveBtn, cancelBtn))
+	middle.pad()
+
+	// ── BOTTOM ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+	bottom.writeLine(helpStyle.Render("Tab / Shift+Tab · navigate fields"))
+	bottom.writeLine(helpStyle.Render("Space · toggle TLS · Enter · submit · Esc · cancel"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().
+		Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
+}
+
 // renderSettingsView renders the Settings view
 func (a *App) renderSettingsView() string {
 	s := a.settingsState
@@ -575,7 +703,11 @@ func (a *App) renderSettingsView() string {
 	case 2: // Display category
 		contentBuf.WriteString(a.renderDisplayContent(contentWidth, contentHeight))
 	case 3: // Manage Servers category
-		contentBuf.WriteString(a.renderManageServersContent(s, contentWidth, contentHeight))
+		if s.ServerFormOpen {
+			contentBuf.WriteString(a.renderServerFormPage(contentWidth, contentHeight))
+		} else {
+			contentBuf.WriteString(a.renderManageServersContent(s, contentWidth, contentHeight))
+		}
 	default:
 		contentBuf.WriteString("Coming soon...")
 	}
