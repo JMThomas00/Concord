@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
@@ -138,6 +139,16 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		member, err := h.db.GetServerMember(c.ServerIDs[0], c.UserID)
 		if err == nil && member.IsMuted {
 			c.sendError(protocol.ErrorCodeForbidden, "You are muted on this server")
+			return
+		}
+	}
+
+	// Check if channel is locked (requires ManageMessages permission to post)
+	channel, err := h.db.GetChannelByID(payload.ChannelID)
+	if err == nil && channel.IsLocked && channel.ServerID != uuid.Nil {
+		// Check if user has ManageMessages permission to bypass lock
+		if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionManageMessages); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "This channel is locked. Only users with Manage Messages permission can post.")
 			return
 		}
 	}
@@ -417,6 +428,9 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 	if req.SortOrder != nil {
 		channel.SortOrder = *req.SortOrder
 		channel.Position = *req.SortOrder // Keep in sync
+	}
+	if req.IsLocked != nil {
+		channel.IsLocked = *req.IsLocked
 	}
 
 	if err := h.db.UpdateChannel(channel); err != nil {
@@ -713,24 +727,46 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	// Send warning message to the channel where the command was issued
-	warningMsg := fmt.Sprintf("⚠️ %s will be kicked in 5 seconds...", target.Username)
-	h.sendSystemMessage(req.ChannelID, warningMsg)
+	log.Printf("DEBUG HandleKickMember: target=%s, channelID=%s, channelID==Nil=%v", target.Username, req.ChannelID, req.ChannelID == uuid.Nil)
+
+	// Send warning message to the channel where the command was issued (if specified)
+	if req.ChannelID != uuid.Nil {
+		warningMsg := fmt.Sprintf("⚠️ %s will be kicked in 5 seconds...", target.Username)
+		h.sendSystemMessage(req.ChannelID, warningMsg)
+	} else {
+		log.Printf("DEBUG HandleKickMember: Skipping warning message - channelID is nil")
+	}
 
 	// Wait 5 seconds
 	time.Sleep(5 * time.Second)
 
-	if err := h.db.RemoveServerMember(req.UserID, req.ServerID); err != nil {
-		c.sendError(protocol.ErrorCodeServerError, "Failed to kick member")
+	// Increment kick count (member stays in server_members table for tracking)
+	if err := h.db.IncrementMemberKickCount(req.UserID, req.ServerID); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update kick count")
 		return
 	}
-	// Notify server of removal
-	removePayload := &protocol.ServerMemberRemovePayload{ServerID: req.ServerID, User: target}
-	h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberRemove, removePayload, nil)
 
-	// Send funny system message to the channel where the command was issued
-	kickMsg := getRandomMessage(kickMessages, target.Username)
-	h.sendSystemMessage(req.ChannelID, kickMsg)
+	// Get updated member and broadcast update (don't remove from server_members)
+	member, err := h.db.GetServerMember(req.ServerID, req.UserID)
+	if err == nil {
+		roles, _ := h.db.GetMemberRoles(req.ServerID, req.UserID)
+		log.Printf("DEBUG HandleKickMember: Broadcasting update - IsBanned=%v, KickCount=%d", member.IsBanned, member.KickCount)
+		updatePayload := &protocol.ServerMemberUpdatePayload{
+			ServerID: req.ServerID,
+			Member:   member,
+			User:     target,
+			Roles:    roles,
+		}
+		h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberUpdate, updatePayload, nil)
+	} else {
+		log.Printf("DEBUG HandleKickMember: ERROR getting updated member: %v", err)
+	}
+
+	// Send funny system message to the channel where the command was issued (if specified)
+	if req.ChannelID != uuid.Nil {
+		kickMsg := getRandomMessage(kickMessages, target.Username)
+		h.sendSystemMessage(req.ChannelID, kickMsg)
+	}
 
 	// Force-close the kicked user's connection
 	h.hub.mu.RLock()
@@ -769,14 +805,34 @@ func (h *Handlers) HandleBanMember(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to ban member")
 		return
 	}
-	_ = h.db.RemoveServerMember(req.UserID, req.ServerID)
-	removePayload := &protocol.ServerMemberRemovePayload{ServerID: req.ServerID, User: target}
-	h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberRemove, removePayload, nil)
+
+	// Mark member as banned (don't remove from server_members)
+	if err := h.db.SetMemberBanned(req.UserID, req.ServerID, true); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update ban status")
+		return
+	}
+
+	// Get updated member and broadcast update (not removal)
+	member, err := h.db.GetServerMember(req.ServerID, req.UserID)
+	if err == nil {
+		// Populate full member data for client display
+		roles, _ := h.db.GetMemberRoles(req.ServerID, req.UserID)
+		updatePayload := &protocol.ServerMemberUpdatePayload{
+			ServerID: req.ServerID,
+			Member:   member,
+			User:     target,
+			Roles:    roles,
+		}
+		h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberUpdate, updatePayload, nil)
+	}
 
 	// Send funny ban message to the channel where the command was issued
-	banMsg := getRandomMessage(banMessages, target.Username)
-	h.sendSystemMessage(req.ChannelID, banMsg)
+	if req.ChannelID != uuid.Nil {
+		banMsg := getRandomMessage(banMessages, target.Username)
+		h.sendSystemMessage(req.ChannelID, banMsg)
+	}
 
+	// Disconnect the banned user
 	h.hub.mu.RLock()
 	banned, ok := h.hub.clients[req.UserID]
 	h.hub.mu.RUnlock()
@@ -807,6 +863,10 @@ func (h *Handlers) HandleMuteMember(c *Client, msg *protocol.Message) {
 		var muteMsg string
 		if req.Mute {
 			muteMsg = getRandomMessage(muteMessages, target.Username)
+			// Append duration info if specified
+			if req.Duration > 0 {
+				muteMsg += fmt.Sprintf(" (%d minutes)", req.Duration)
+			}
 		} else {
 			muteMsg = getRandomMessage(unmuteMessages, target.Username)
 		}
@@ -815,6 +875,7 @@ func (h *Handlers) HandleMuteMember(c *Client, msg *protocol.Message) {
 
 	// If duration is specified, add timed mute
 	if req.Mute && req.Duration > 0 {
+		DBLog.Info("Adding timed mute", "user_id", req.UserID, "duration", req.Duration, "channel_id", req.ChannelID)
 		if err := h.db.AddMute(req.ServerID, req.UserID, req.ChannelID, c.UserID, req.Duration); err != nil {
 			DBLog.Error("Failed to add timed mute", "server_id", req.ServerID, "user_id", req.UserID, "duration", req.Duration, "error", err)
 		}
@@ -904,9 +965,31 @@ func (h *Handlers) HandleUnbanMember(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	// Mark member as unbanned
+	if err := h.db.SetMemberBanned(target.ID, req.ServerID, false); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update ban status")
+		return
+	}
+
+	// Get updated member and broadcast update
+	member, err := h.db.GetServerMember(req.ServerID, target.ID)
+	if err == nil {
+		// Populate full member data for client display
+		roles, _ := h.db.GetMemberRoles(req.ServerID, target.ID)
+		updatePayload := &protocol.ServerMemberUpdatePayload{
+			ServerID: req.ServerID,
+			Member:   member,
+			User:     target,
+			Roles:    roles,
+		}
+		h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberUpdate, updatePayload, nil)
+	}
+
 	// Send system message to the channel where the command was issued
-	unbanMsg := fmt.Sprintf("✅ %s has been unbanned. Welcome back!", target.Username)
-	h.sendSystemMessage(req.ChannelID, unbanMsg)
+	if req.ChannelID != uuid.Nil {
+		unbanMsg := fmt.Sprintf("✅ %s has been unbanned. Welcome back!", target.Username)
+		h.sendSystemMessage(req.ChannelID, unbanMsg)
+	}
 }
 
 // HandleCreateRole handles role creation requests
@@ -1034,9 +1117,16 @@ func (h *Handlers) HandleUpdateRole(c *Client, msg *protocol.Message) {
 		}
 	}
 
+	// Check if permission change would leave zero admins
+	newPerms := models.Permission(req.Permissions)
+	if err := h.db.CanModifyRolePermissions(req.RoleID, req.ServerID, newPerms); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
 	// Update role fields
 	role.Name = req.Name
-	role.Permissions = models.Permission(req.Permissions)
+	role.Permissions = newPerms
 	role.Color = req.Color
 	role.IsHoisted = req.IsHoisted
 	role.IsMentionable = req.IsMentionable
@@ -1082,6 +1172,12 @@ func (h *Handlers) HandleDeleteRole(c *Client, msg *protocol.Message) {
 	// Verify role belongs to correct server
 	if role.ServerID != req.ServerID {
 		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
+		return
+	}
+
+	// Check if deletion would leave zero admins
+	if err := h.db.CanDeleteRole(req.RoleID, req.ServerID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
 		return
 	}
 
@@ -1552,7 +1648,12 @@ func (h *Handlers) HandleGetRetentionPolicy(c *Client, msg *protocol.Message) {
 	}
 
 	// Send response (policy can be nil if not configured)
+	// When requesting server default, also include all channel overrides
 	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy}
+	if req.ChannelID == nil {
+		overrides, _ := h.db.ListChannelOverrides(req.ServerID)
+		payload.ChannelOverrides = overrides
+	}
 	h.hub.SendToUser(c.UserID, protocol.EventRetentionPolicyUpdate, payload)
 }
 
@@ -1584,8 +1685,9 @@ func (h *Handlers) HandleSetRetentionPolicy(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	// Broadcast update to all users on this server
-	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy}
+	// Broadcast update to all users on this server (include all overrides for full picture)
+	overrides, _ := h.db.ListChannelOverrides(req.ServerID)
+	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy, ChannelOverrides: overrides}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventRetentionPolicyUpdate, payload, nil)
 }
 
@@ -1609,9 +1711,10 @@ func (h *Handlers) HandleDeleteRetentionPolicy(c *Client, msg *protocol.Message)
 		return
 	}
 
-	// Broadcast revert to server default
+	// Broadcast updated state (server default + remaining overrides)
 	serverDefault, _ := h.db.GetRetentionPolicyDirect(req.ServerID, nil)
-	payload := &protocol.RetentionPolicyUpdatePayload{Policy: serverDefault}
+	remainingOverrides, _ := h.db.ListChannelOverrides(req.ServerID)
+	payload := &protocol.RetentionPolicyUpdatePayload{Policy: serverDefault, ChannelOverrides: remainingOverrides}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventRetentionPolicyUpdate, payload, nil)
 }
 

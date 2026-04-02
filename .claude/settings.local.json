@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git config:*)"
+      "Bash(git config:*)",
+      "Bash(powershell -Command \"Get-Service | Where-Object {$_.Name -like '*ollama*' -or $_.Name -like '*openclaw*'} | Select-Object Name, DisplayName, Status, StartType | Format-Table -AutoSize\")",
+      "Bash(powershell.exe -NoProfile -Command \"Get-Service | Where-Object { \\\\$_.Name -like '*ollama*' -or \\\\$_.Name -like '*openclaw*' } | Select-Object Name, Status, StartType | Format-Table -AutoSize\")",
+      "Bash(git add:*)"
     ]
   }
 }

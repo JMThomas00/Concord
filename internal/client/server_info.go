@@ -15,6 +15,7 @@ type ClientServerInfo struct {
 	Address          string             `json:"address"`           // Server address (hostname or IP)
 	Port             int                `json:"port"`              // Server port
 	UseTLS           bool               `json:"use_tls"`           // Whether to use TLS/WSS
+	Order            int                `json:"order"`             // Display order in server list
 	AddedAt          time.Time          `json:"added_at"`          // When server was added
 	LastConnected    *time.Time         `json:"last_connected,omitempty"` // Last successful connection
 	SavedCredentials *SavedCredentials  `json:"saved_credentials,omitempty"` // Saved login credentials

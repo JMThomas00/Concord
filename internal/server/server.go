@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +31,8 @@ type Config struct {
 	MaxConnections int                  `toml:"max_connections"`
 	Debug          bool                 `toml:"debug"`
 	MessagePruning MessagePruningConfig `toml:"message_pruning"`
+	TermsAccepted  bool                 `toml:"terms_accepted"` // Whether ToS has been accepted
+	AdminEmail     string               `toml:"admin_email"`    // Admin email for auto-granting admin role
 }
 
 // MessagePruningConfig configures automatic message pruning
@@ -460,6 +463,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			AuthLog.Error("Failed to auto-grant admin to first user", "email", user.Email, "error", err)
 		} else {
 			AuthLog.Info("First registrant granted Admin role", "email", user.Email)
+		}
+	}
+
+	// Auto-grant admin to user matching configured admin email
+	if s.config.AdminEmail != "" && strings.EqualFold(user.Email, s.config.AdminEmail) {
+		if err := s.db.EnsureAdminRole(user.Email); err != nil {
+			AuthLog.Error("Failed to grant admin role to configured admin email", "email", user.Email, "error", err)
+		} else {
+			AuthLog.Info("Admin role granted to user matching configured admin email", "email", user.Email)
 		}
 	}
 

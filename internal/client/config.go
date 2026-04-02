@@ -34,9 +34,10 @@ type LocalIdentity struct {
 
 // AppConfig represents UI preferences stored in ~/.concord/config.json
 type AppConfig struct {
-	Version  int            `json:"version"`
-	UI       UIConfig       `json:"ui"`
-	Identity *LocalIdentity `json:"identity,omitempty"`
+	Version       int            `json:"version"`
+	UI            UIConfig       `json:"ui"`
+	Identity      *LocalIdentity `json:"identity,omitempty"`
+	TermsAccepted bool           `json:"terms_accepted"` // Whether user has accepted Terms of Service
 }
 
 // UIConfig holds UI-related preferences
@@ -104,6 +105,14 @@ func (cm *ConfigManager) LoadServers() (*ServersConfig, error) {
 	var config ServersConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse servers config: %w", err)
+	}
+
+	// Ensure all servers have an Order field set (for backward compatibility)
+	for i, srv := range config.Servers {
+		if srv.Order == 0 && i > 0 {
+			// Order not set, assign based on array position
+			srv.Order = i
+		}
 	}
 
 	return &config, nil

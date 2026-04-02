@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/concord-chat/concord/internal/models"
@@ -72,9 +73,10 @@ type ServerManagementState struct {
 	RoleFormState    *RoleFormState
 
 	// Role delete confirmation dialog
-	DeleteConfirmOpen    bool
-	DeleteConfirmRole    *models.Role
-	DeleteConfirmChannel *models.Channel
+	DeleteConfirmOpen         bool
+	DeleteConfirmRole         *models.Role
+	DeleteConfirmChannel      *models.Channel
+	DeleteConfirmFocusedButton int // 0 = Yes/Delete, 1 = No/Cancel
 
 	// Permissions editor state (full-page modal)
 	PermissionsEditorOpen bool         // Is permissions editor open?
@@ -102,6 +104,31 @@ type ServerManagementState struct {
 	SearchInputValue  string
 	SearchInputCursor int
 
+	// Member role assignment
+	RoleAssignOpen        bool
+	RoleAssignMember      *MemberDisplay      // Member being assigned roles
+	RoleAssignSelections  map[uuid.UUID]bool  // Role ID -> selected state
+	RoleAssignFocus       int                 // Focused role index in list
+
+	// Member moderation
+	KickConfirmOpen       bool
+	KickConfirmMember     *MemberDisplay
+	KickConfirmFocusedBtn int // 0 = Yes, 1 = No
+
+	BanConfirmOpen        bool
+	BanConfirmMember      *MemberDisplay
+	BanConfirmFocusedBtn  int // 0 = Yes, 1 = No
+
+	UnmuteConfirmOpen     bool
+	UnmuteConfirmMember   *MemberDisplay
+	UnmuteConfirmFocusedBtn int // 0 = Yes, 1 = No
+
+	MuteDurationOpen      bool
+	MuteDurationMember    *MemberDisplay
+	MuteDurationFocus     int    // Radio button/field index
+	MuteDurationCustom    string // Custom duration text input
+	MuteDurationReason    string // Optional reason
+
 	// Channels category state
 	ChannelList         []*models.Channel
 	SelectedChannel     int
@@ -118,6 +145,15 @@ type ServerManagementState struct {
 	PruneResults         *protocol.MessagesPrunedPayload
 	ChannelOverrides     []*models.MessageRetentionPolicy
 	SelectedOverride     int
+
+	// Channel override picker (add exempt)
+	OverrideChannelPickerOpen bool
+	OverrideChannelList       []*models.Channel
+	OverrideChannelSelected   int
+
+	// Remove exempt picker
+	RemoveExemptPickerOpen bool
+	RemoveExemptSelected   int
 }
 
 // RoleFormState holds state for the role creation/edit modal
@@ -144,13 +180,12 @@ type RoleFormState struct {
 
 // ChannelFormState holds state for channel/category creation/editing
 type ChannelFormState struct {
-	Mode              string      // "create" or "edit"
-	EditingChannelID  *uuid.UUID  // Channel being edited (nil for create)
-	NameInput         string
-	NameCursor        int
-	TypeIndex         int         // 0=Text Channel, 1=Category
-	CategoryID        *uuid.UUID  // Pre-filled based on selection
-	FocusField        int         // 0=name, 1=type, 2=submit, 3=cancel
+	Mode              string          // "create" or "edit"
+	EditingChannelID  *uuid.UUID      // Channel being edited (nil for create)
+	NameTextInput     textinput.Model // Text input for channel name
+	TypeIndex         int             // 0=Text Channel, 1=Category
+	CategoryID        *uuid.UUID      // Pre-filled based on selection
+	FocusField        int             // 0=name, 1=type, 2=submit, 3=cancel
 	ErrorMsg          string
 }
 
@@ -357,15 +392,31 @@ func (a *App) renderThemeBrowserView() string {
 			Foreground(lipgloss.Color(t.Colors.Comment)).
 			Render("  by " + t.Meta.Author))
 	}
-	prevBuf.WriteString("\n\n")
+	prevBuf.WriteString("\n")
+	if t.Meta.Description != "" {
+		prevBuf.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(t.Colors.Comment)).
+			Italic(true).
+			Render(t.Meta.Description))
+		prevBuf.WriteString("\n")
+	}
+	prevBuf.WriteString("\n")
 
 	// Color swatches
 	swatchLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Colors.Comment)).Render
 	swatch := func(color, label string) string {
-		block := lipgloss.NewStyle().
-			Background(lipgloss.Color(color)).
-			Foreground(lipgloss.Color(color)).
-			Render("  ")
+		var block string
+		if color == "" {
+			// Empty color means "terminal default" — show a placeholder instead of invisible blank
+			block = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(t.Colors.Comment)).
+				Render("··")
+		} else {
+			block = lipgloss.NewStyle().
+				Background(lipgloss.Color(color)).
+				Foreground(lipgloss.Color(color)).
+				Render("  ")
+		}
 		return block + " " + swatchLabel(label)
 	}
 	swatches := []string{

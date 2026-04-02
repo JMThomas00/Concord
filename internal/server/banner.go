@@ -17,9 +17,8 @@ const banner = `
    ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝           
    🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇         
    
-   Concord Server v0.1.0                                                
-   Terminal Chat Reimagined                                             
-                                                                        
+   Concord Server v0.1.0
+   Terminal Chat Reimagined
 
 `
 
@@ -49,7 +48,6 @@ func PrintStartupInfo(addr string, dbPath string) {
 		Foreground(lipgloss.Color("86")). // Green checkmark
 		Bold(true)
 
-	fmt.Println()
 	fmt.Println(headerStyle.Render("📦 Initializing components..."))
 	fmt.Printf("  %s %-15s %s\n",
 		labelStyle.Render("💾"),

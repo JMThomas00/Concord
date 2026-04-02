@@ -66,6 +66,26 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to migrate message soft delete: %w", err)
 	}
 
+	if err := wrapper.MigrateChannelIsLocked(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate channel is_locked: %w", err)
+	}
+
+	if err := wrapper.MigrateMemberKickCount(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate member kick_count: %w", err)
+	}
+
+	if err := wrapper.MigrateServerMembersIsBanned(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate member is_banned: %w", err)
+	}
+
+	if err := wrapper.MigrateMutesServerWide(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate mutes server-wide: %w", err)
+	}
+
 	return wrapper, nil
 }
 
@@ -120,6 +140,7 @@ func (db *DB) initSchema() error {
 		position INTEGER DEFAULT 0,
 		category_id TEXT REFERENCES channels(id),
 		is_nsfw INTEGER DEFAULT 0,
+		is_locked INTEGER DEFAULT 0,
 		rate_limit_per_user INTEGER DEFAULT 0,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
@@ -467,15 +488,18 @@ func (db *DB) MigrateServerMemberCustomTitle() error {
 	}
 
 	if count > 0 {
+		log.Println("[MIGRATION] custom_title column already exists in server_members table")
 		return nil // Already migrated
 	}
 
 	// Add column
+	log.Println("[MIGRATION] Adding custom_title column to server_members table...")
 	_, err = db.Exec(`ALTER TABLE server_members ADD COLUMN custom_title TEXT DEFAULT ''`)
 	if err != nil {
 		return fmt.Errorf("failed to add custom_title column: %w", err)
 	}
 
+	log.Println("[MIGRATION] Successfully added custom_title column to server_members table")
 	return nil
 }
 
@@ -575,6 +599,171 @@ func (db *DB) MigrateMessageSoftDelete() error {
 		_, err = db.Exec(`ALTER TABLE messages ADD COLUMN deleted_by TEXT REFERENCES users(id)`)
 		if err != nil {
 			return fmt.Errorf("failed to add deleted_by column: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// MigrateChannelIsLocked adds the is_locked column to the channels table
+func (db *DB) MigrateChannelIsLocked() error {
+	// Check if is_locked column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('channels')
+		WHERE name='is_locked'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for is_locked column: %w", err)
+	}
+
+	if count == 0 {
+		// Add is_locked column
+		_, err = db.Exec(`ALTER TABLE channels ADD COLUMN is_locked INTEGER DEFAULT 0`)
+		if err != nil {
+			return fmt.Errorf("failed to add is_locked column: %w", err)
+		}
+		log.Println("Migration: Added is_locked column to channels table")
+	}
+
+	return nil
+}
+
+// MigrateMemberKickCount adds kick_count column to server_members table
+func (db *DB) MigrateMemberKickCount() error {
+	// Check if kick_count column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('server_members')
+		WHERE name='kick_count'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for kick_count column: %w", err)
+	}
+
+	if count > 0 {
+		log.Println("[MIGRATION] kick_count column already exists in server_members table")
+		return nil // Already migrated
+	}
+
+	// Add column
+	log.Println("[MIGRATION] Adding kick_count column to server_members table...")
+	_, err = db.Exec(`ALTER TABLE server_members ADD COLUMN kick_count INTEGER DEFAULT 0`)
+	if err != nil {
+		return fmt.Errorf("failed to add kick_count column: %w", err)
+	}
+
+	log.Println("[MIGRATION] Successfully added kick_count column to server_members table")
+	return nil
+}
+
+// MigrateMutesServerWide makes mutes.channel_id nullable for server-wide mutes
+func (db *DB) MigrateMutesServerWide() error {
+	// Check if mutes table has the right schema
+	// SQLite doesn't support ALTER COLUMN, so we need to recreate the table
+	var hasNotNull int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('mutes')
+		WHERE name='channel_id' AND "notnull"=1
+	`).Scan(&hasNotNull)
+	if err != nil {
+		return fmt.Errorf("failed to check mutes table schema: %w", err)
+	}
+
+	if hasNotNull == 0 {
+		log.Println("[MIGRATION] mutes table already supports server-wide mutes")
+		return nil // Already migrated
+	}
+
+	log.Println("[MIGRATION] Migrating mutes table to support server-wide mutes...")
+
+	// Create new table with nullable channel_id
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS mutes_new (
+			id TEXT PRIMARY KEY,
+			server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			channel_id TEXT REFERENCES channels(id) ON DELETE CASCADE,
+			muted_by TEXT NOT NULL REFERENCES users(id),
+			muted_at DATETIME NOT NULL,
+			muted_until DATETIME,
+			reason TEXT,
+			duration INTEGER NOT NULL,
+			issued_by TEXT NOT NULL REFERENCES users(id),
+			issued_at DATETIME NOT NULL,
+			expires_at DATETIME NOT NULL,
+			UNIQUE(server_id, user_id, channel_id)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create mutes_new table: %w", err)
+	}
+
+	// Copy existing data
+	_, err = db.Exec(`
+		INSERT INTO mutes_new (id, server_id, user_id, channel_id, muted_by, muted_at, duration, issued_by, issued_at, expires_at)
+		SELECT id, server_id, user_id, channel_id, issued_by, issued_at, duration, issued_by, issued_at, expires_at
+		FROM mutes
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to copy mutes data: %w", err)
+	}
+
+	// Drop old table
+	_, err = db.Exec(`DROP TABLE mutes`)
+	if err != nil {
+		return fmt.Errorf("failed to drop old mutes table: %w", err)
+	}
+
+	// Rename new table
+	_, err = db.Exec(`ALTER TABLE mutes_new RENAME TO mutes`)
+	if err != nil {
+		return fmt.Errorf("failed to rename mutes_new table: %w", err)
+	}
+
+	log.Println("[MIGRATION] Successfully migrated mutes table to support server-wide mutes")
+	return nil
+}
+
+// MigrateServerMembersIsBanned adds is_banned column to server_members table
+func (db *DB) MigrateServerMembersIsBanned() error {
+	// Check if is_banned column exists
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('server_members')
+		WHERE name='is_banned'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check for is_banned column: %w", err)
+	}
+
+	if count == 0 {
+		// Add is_banned column
+		_, err = db.Exec(`ALTER TABLE server_members ADD COLUMN is_banned INTEGER DEFAULT 0`)
+		if err != nil {
+			return fmt.Errorf("failed to add is_banned column: %w", err)
+		}
+		log.Println("Migration: Added is_banned column to server_members table")
+
+		// Sync existing bans: create server_member records for banned users that don't have one
+		// This handles the case where users were banned before the migration
+		_, err = db.Exec(`
+			INSERT OR IGNORE INTO server_members (user_id, server_id, joined_at, is_banned)
+			SELECT user_id, server_id, banned_at, 1
+			FROM bans
+			WHERE NOT EXISTS (
+				SELECT 1 FROM server_members sm
+				WHERE sm.user_id = bans.user_id AND sm.server_id = bans.server_id
+			)
+		`)
+		if err != nil {
+			log.Printf("Warning: Failed to sync bans to server_members: %v", err)
+		} else {
+			log.Println("Migration: Synced existing bans to server_members table")
 		}
 	}
 
@@ -852,10 +1041,10 @@ func (db *DB) CreateChannel(channel *models.Channel) error {
 
 	_, err = db.Exec(`
 		INSERT INTO channels (id, server_id, name, topic, type, position, sort_order, category_id,
-			is_nsfw, rate_limit_per_user, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		channel.ID.String(), serverID, channel.Name, channel.Topic, channel.Type,
-		channel.Position, channel.SortOrder, categoryID, channel.IsNSFW, channel.RateLimitPerUser,
+		channel.Position, channel.SortOrder, categoryID, channel.IsNSFW, channel.IsLocked, channel.RateLimitPerUser,
 		channel.CreatedAt, channel.UpdatedAt)
 	return err
 }
@@ -864,7 +1053,7 @@ func (db *DB) CreateChannel(channel *models.Channel) error {
 func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 	rows, err := db.Query(`
 		SELECT id, server_id, name, topic, type, position, sort_order, category_id,
-			is_nsfw, rate_limit_per_user, created_at, updated_at
+			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at
 		FROM channels WHERE server_id = ?
 		ORDER BY sort_order`, serverID.String())
 	if err != nil {
@@ -879,7 +1068,7 @@ func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 		var categoryID sql.NullString
 
 		err := rows.Scan(&idStr, &serverIDStr, &ch.Name, &ch.Topic, &ch.Type,
-			&ch.Position, &ch.SortOrder, &categoryID, &ch.IsNSFW, &ch.RateLimitPerUser,
+			&ch.Position, &ch.SortOrder, &categoryID, &ch.IsNSFW, &ch.IsLocked, &ch.RateLimitPerUser,
 			&ch.CreatedAt, &ch.UpdatedAt)
 		if err != nil {
 			return nil, err
@@ -906,10 +1095,10 @@ func (db *DB) GetChannelByID(channelID uuid.UUID) (*models.Channel, error) {
 
 	err := db.QueryRow(`
 		SELECT id, server_id, name, topic, type, position, sort_order, category_id,
-			is_nsfw, rate_limit_per_user, created_at, updated_at
+			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at
 		FROM channels WHERE id = ?`, channelID.String()).
 		Scan(&idStr, &serverIDStr, &ch.Name, &topic, &ch.Type, &ch.Position, &ch.SortOrder,
-			&categoryID, &ch.IsNSFW, &ch.RateLimitPerUser, &ch.CreatedAt, &ch.UpdatedAt)
+			&categoryID, &ch.IsNSFW, &ch.IsLocked, &ch.RateLimitPerUser, &ch.CreatedAt, &ch.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("channel not found")
@@ -941,10 +1130,10 @@ func (db *DB) UpdateChannel(channel *models.Channel) error {
 	_, err := db.Exec(`
 		UPDATE channels
 		SET name = ?, topic = ?, category_id = ?, position = ?, sort_order = ?, is_nsfw = ?,
-			rate_limit_per_user = ?, updated_at = ?
+			is_locked = ?, rate_limit_per_user = ?, updated_at = ?
 		WHERE id = ?`,
 		channel.Name, channel.Topic, categoryID, channel.Position, channel.SortOrder, channel.IsNSFW,
-		channel.RateLimitPerUser, time.Now(), channel.ID.String())
+		channel.IsLocked, channel.RateLimitPerUser, time.Now(), channel.ID.String())
 
 	return err
 }
@@ -1031,13 +1220,14 @@ func (db *DB) GetChildChannelIDs(categoryID uuid.UUID) ([]uuid.UUID, error) {
 func (db *DB) GetServerMember(serverID, userID uuid.UUID) (*models.ServerMember, error) {
 	var member models.ServerMember
 	var serverIDStr, userIDStr string
-	var nickname sql.NullString
+	var nickname, customTitle sql.NullString
 
 	err := db.QueryRow(`
-		SELECT server_id, user_id, nickname, joined_at, is_muted, is_deafened
+		SELECT server_id, user_id, nickname, custom_title, joined_at, is_muted, is_deafened,
+		       COALESCE(is_banned, 0), COALESCE(kick_count, 0)
 		FROM server_members WHERE server_id = ? AND user_id = ?`,
 		serverID.String(), userID.String()).
-		Scan(&serverIDStr, &userIDStr, &nickname, &member.JoinedAt, &member.IsMuted, &member.IsDeafened)
+		Scan(&serverIDStr, &userIDStr, &nickname, &customTitle, &member.JoinedAt, &member.IsMuted, &member.IsDeafened, &member.IsBanned, &member.KickCount)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("member not found")
@@ -1051,6 +1241,11 @@ func (db *DB) GetServerMember(serverID, userID uuid.UUID) (*models.ServerMember,
 	if nickname.Valid {
 		member.Nickname = nickname.String
 	}
+	if customTitle.Valid {
+		member.CustomTitle = customTitle.String
+	}
+
+	log.Printf("DEBUG GetServerMember: userID=%s, IsBanned=%v, KickCount=%d", member.UserID, member.IsBanned, member.KickCount)
 
 	// Query roles
 	rows, err := db.Query(`
@@ -1778,10 +1973,44 @@ func (db *DB) RemoveServerMember(userID, serverID uuid.UUID) error {
 	return err
 }
 
+// SetMemberBanned sets the is_banned field for a server member
+func (db *DB) SetMemberBanned(userID, serverID uuid.UUID, banned bool) error {
+	bannedInt := 0
+	if banned {
+		bannedInt = 1
+	}
+	_, err := db.Exec(`UPDATE server_members SET is_banned = ? WHERE user_id = ? AND server_id = ?`,
+		bannedInt, userID.String(), serverID.String())
+	return err
+}
+
+// IncrementMemberKickCount increments the kick_count for a server member
+func (db *DB) IncrementMemberKickCount(userID, serverID uuid.UUID) error {
+	result, err := db.Exec(`UPDATE server_members SET kick_count = kick_count + 1 WHERE user_id = ? AND server_id = ?`,
+		userID.String(), serverID.String())
+	if err != nil {
+		log.Printf("DEBUG IncrementMemberKickCount: ERROR updating kick_count: %v", err)
+		return err
+	}
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("DEBUG IncrementMemberKickCount: userID=%s, rows affected=%d", userID, rowsAffected)
+
+	// Read back the new value to verify
+	var kickCount int
+	err = db.QueryRow(`SELECT kick_count FROM server_members WHERE user_id = ? AND server_id = ?`,
+		userID.String(), serverID.String()).Scan(&kickCount)
+	if err == nil {
+		log.Printf("DEBUG IncrementMemberKickCount: New kick_count value in DB: %d", kickCount)
+	}
+
+	return nil
+}
+
 // GetServerMembers retrieves all members of a server, including their role IDs
 func (db *DB) GetServerMembers(serverID uuid.UUID) ([]*models.ServerMember, error) {
 	rows, err := db.Query(`
-		SELECT user_id, server_id, nickname, joined_at, is_muted, is_deafened
+		SELECT user_id, server_id, nickname, custom_title, joined_at, is_muted, is_deafened,
+		       COALESCE(is_banned, 0), COALESCE(kick_count, 0)
 		FROM server_members WHERE server_id = ?`, serverID.String())
 	if err != nil {
 		return nil, err
@@ -1794,7 +2023,7 @@ func (db *DB) GetServerMembers(serverID uuid.UUID) ([]*models.ServerMember, erro
 		m := &models.ServerMember{}
 		var userIDStr, serverIDStr string
 
-		err := rows.Scan(&userIDStr, &serverIDStr, &m.Nickname, &m.JoinedAt, &m.IsMuted, &m.IsDeafened)
+		err := rows.Scan(&userIDStr, &serverIDStr, &m.Nickname, &m.CustomTitle, &m.JoinedAt, &m.IsMuted, &m.IsDeafened, &m.IsBanned, &m.KickCount)
 		if err != nil {
 			return nil, err
 		}
@@ -2355,10 +2584,12 @@ func (db *DB) AddMute(serverID, userID, channelID, issuedBy uuid.UUID, duration 
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(duration) * time.Minute)
 
+	log.Printf("DEBUG AddMute: userID=%s, issuedBy=%s, duration=%d minutes, expiresAt=%s", userID, issuedBy, duration, expiresAt.Format("15:04:05"))
+
 	_, err := db.Exec(`
-		INSERT INTO mutes (id, server_id, user_id, channel_id, duration, issued_by, issued_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id.String(), serverID.String(), userID.String(), channelID.String(), duration, issuedBy.String(), now, expiresAt)
+		INSERT INTO mutes (id, server_id, user_id, channel_id, muted_by, muted_at, muted_until, reason, duration, issued_by, issued_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.String(), serverID.String(), userID.String(), channelID.String(), issuedBy.String(), now, &expiresAt, "", duration, issuedBy.String(), now, expiresAt)
 	return err
 }
 
@@ -2388,7 +2619,10 @@ func (db *DB) RemoveMute(serverID, userID uuid.UUID) error {
 
 // CleanupExpiredMutes removes expired mutes and returns the users that were unmuted
 func (db *DB) CleanupExpiredMutes() ([]struct{ ServerID, UserID, ChannelID uuid.UUID }, error) {
-	rows, err := db.Query(`SELECT server_id, user_id, channel_id FROM mutes WHERE expires_at <= ?`, time.Now())
+	now := time.Now()
+	log.Printf("DEBUG CleanupExpiredMutes: Checking for mutes expired before %s", now.Format("15:04:05"))
+
+	rows, err := db.Query(`SELECT server_id, user_id, channel_id FROM mutes WHERE expires_at <= ?`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -2404,10 +2638,15 @@ func (db *DB) CleanupExpiredMutes() ([]struct{ ServerID, UserID, ChannelID uuid.
 		userID, _ := uuid.Parse(userIDStr)
 		channelID, _ := uuid.Parse(channelIDStr)
 		unmuted = append(unmuted, struct{ ServerID, UserID, ChannelID uuid.UUID }{serverID, userID, channelID})
+		log.Printf("DEBUG CleanupExpiredMutes: Found expired mute for userID=%s", userID)
+	}
+
+	if len(unmuted) > 0 {
+		log.Printf("DEBUG CleanupExpiredMutes: Deleting %d expired mutes", len(unmuted))
 	}
 
 	// Delete expired mutes
-	_, err = db.Exec(`DELETE FROM mutes WHERE expires_at <= ?`, time.Now())
+	_, err = db.Exec(`DELETE FROM mutes WHERE expires_at <= ?`, now)
 	return unmuted, err
 }
 
@@ -2519,4 +2758,372 @@ func (db *DB) GetMessageCountsByChannel(serverID uuid.UUID, since time.Time) (ma
 	}
 
 	return counts, rows.Err()
+}
+
+// FixAdminRole repairs the Admin role if it exists with wrong permissions/settings
+func (db *DB) FixAdminRole(serverID uuid.UUID) error {
+	roles, err := db.GetServerRoles(serverID)
+	if err != nil {
+		return err
+	}
+	
+	var adminRole *models.Role
+	for _, r := range roles {
+		if r.Name == "Admin" {
+			adminRole = r
+			break
+		}
+	}
+	
+	if adminRole == nil {
+		return fmt.Errorf("no Admin role found to fix")
+	}
+	
+	// Fix the role settings
+	// Note: PermissionsAdmin (1<<63) is stored as negative int64 in SQLite due to two's complement
+	// but the bit pattern is preserved and converts back correctly when read
+	adminPerms := models.PermissionsAdmin
+	_, err = db.Exec(`
+		UPDATE roles
+		SET permissions = ?,
+		    is_hoisted = 1,
+		    is_mentionable = 1,
+		    position = 100,
+		    updated_at = ?
+		WHERE id = ?`,
+		int64(adminPerms),
+		time.Now(),
+		adminRole.ID.String())
+
+	return err
+}
+
+// CleanupDuplicateRoles finds roles with duplicate names and merges them
+// Keeps the newest role, transfers all members from old roles to it, then deletes old roles
+func (db *DB) CleanupDuplicateRoles(serverID uuid.UUID) error {
+	// Find all roles for this server
+	rows, err := db.Query(`
+		SELECT id, name, created_at
+		FROM roles
+		WHERE server_id = ?
+		ORDER BY name, created_at DESC`, serverID.String())
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// Group roles by name
+	type roleInfo struct {
+		ID        uuid.UUID
+		CreatedAt time.Time
+	}
+	rolesByName := make(map[string][]roleInfo)
+
+	for rows.Next() {
+		var idStr, name string
+		var createdAt time.Time
+		if err := rows.Scan(&idStr, &name, &createdAt); err != nil {
+			return err
+		}
+		id, _ := uuid.Parse(idStr)
+		rolesByName[name] = append(rolesByName[name], roleInfo{ID: id, CreatedAt: createdAt})
+	}
+
+	// Process duplicates
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for name, roles := range rolesByName {
+		if len(roles) <= 1 {
+			continue // No duplicates
+		}
+
+		// Keep the newest role (first in list due to ORDER BY created_at DESC)
+		keepRole := roles[0]
+		oldRoles := roles[1:]
+
+		fmt.Printf("Found %d duplicate(s) for role '%s', keeping newest (id=%s)\n",
+			len(oldRoles), name, keepRole.ID.String()[:8])
+
+		// Transfer all members from old roles to the kept role
+		for _, oldRole := range oldRoles {
+			// Get all users with this old role
+			memberRows, err := tx.Query(`
+				SELECT user_id, server_id FROM member_roles WHERE role_id = ?`,
+				oldRole.ID.String())
+			if err != nil {
+				return err
+			}
+
+			type memberInfo struct {
+				UserID   string
+				ServerID string
+			}
+			var members []memberInfo
+			for memberRows.Next() {
+				var m memberInfo
+				memberRows.Scan(&m.UserID, &m.ServerID)
+				members = append(members, m)
+			}
+			memberRows.Close()
+
+			// Assign them to the kept role (ignore duplicates)
+			for _, m := range members {
+				_, err := tx.Exec(`
+					INSERT OR IGNORE INTO member_roles (user_id, server_id, role_id)
+					VALUES (?, ?, ?)`, m.UserID, m.ServerID, keepRole.ID.String())
+				if err != nil {
+					return err
+				}
+			}
+
+			// Delete the old role
+			_, err = tx.Exec(`DELETE FROM roles WHERE id = ?`, oldRole.ID.String())
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("  - Merged and deleted old role (id=%s)\n", oldRole.ID.String()[:8])
+		}
+	}
+
+	return tx.Commit()
+}
+
+// CountUsersWithAdminPermission returns the number of users with any admin role
+func (db *DB) CountUsersWithAdminPermission(serverID uuid.UUID) (int, error) {
+	adminPerm := models.PermissionAdministrator
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(DISTINCT ur.user_id)
+		FROM member_roles ur
+		JOIN roles r ON ur.role_id = r.id
+		JOIN server_members sm ON ur.user_id = sm.user_id AND r.server_id = sm.server_id
+		WHERE r.server_id = ?
+		AND (r.permissions & ?) != 0`,
+		serverID.String(), int64(adminPerm)).Scan(&count)
+	return count, err
+}
+
+// CountUsersWithAdminPermissionExcludingUser counts admins excluding a specific user
+func (db *DB) CountUsersWithAdminPermissionExcludingUser(serverID, excludeUserID uuid.UUID) (int, error) {
+	adminPerm := models.PermissionAdministrator
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(DISTINCT ur.user_id)
+		FROM member_roles ur
+		JOIN roles r ON ur.role_id = r.id
+		JOIN server_members sm ON ur.user_id = sm.user_id AND r.server_id = sm.server_id
+		WHERE r.server_id = ?
+		AND ur.user_id != ?
+		AND (r.permissions & ?) != 0`,
+		serverID.String(), excludeUserID.String(), int64(adminPerm)).Scan(&count)
+	return count, err
+}
+
+// CountUsersWithAdminPermissionExcludingRole counts admins excluding a specific role
+func (db *DB) CountUsersWithAdminPermissionExcludingRole(serverID, excludeRoleID uuid.UUID) (int, error) {
+	adminPerm := models.PermissionAdministrator
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(DISTINCT ur.user_id)
+		FROM member_roles ur
+		JOIN roles r ON ur.role_id = r.id
+		JOIN server_members sm ON ur.user_id = sm.user_id AND r.server_id = sm.server_id
+		WHERE r.server_id = ?
+		AND ur.role_id != ?
+		AND (r.permissions & ?) != 0`,
+		serverID.String(), excludeRoleID.String(), int64(adminPerm)).Scan(&count)
+	return count, err
+}
+
+// UserHasOtherAdminRoles checks if a user has admin permissions via other roles
+func (db *DB) UserHasOtherAdminRoles(userID, excludeRoleID, serverID uuid.UUID) (bool, error) {
+	adminPerm := models.PermissionAdministrator
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM member_roles ur
+		JOIN roles r ON ur.role_id = r.id
+		WHERE ur.user_id = ?
+		AND r.server_id = ?
+		AND ur.role_id != ?
+		AND (r.permissions & ?) != 0`,
+		userID.String(), serverID.String(), excludeRoleID.String(),
+		int64(adminPerm)).Scan(&count)
+	return count > 0, err
+}
+
+// CanDeleteRole checks if a role can be safely deleted without leaving zero admins
+func (db *DB) CanDeleteRole(roleID, serverID uuid.UUID) error {
+	// Get the role
+	role, err := db.GetRoleByID(roleID)
+	if err != nil {
+		return err
+	}
+
+	// If it's not an admin role, deletion is safe
+	if !role.HasPermission(models.PermissionAdministrator) {
+		return nil
+	}
+
+	// Count other admins (excluding this role)
+	otherAdminCount, err := db.CountUsersWithAdminPermissionExcludingRole(serverID, roleID)
+	if err != nil {
+		return err
+	}
+
+	if otherAdminCount == 0 {
+		return fmt.Errorf("cannot delete the last admin role - server must have at least one admin")
+	}
+
+	return nil
+}
+
+// CanModifyRolePermissions checks if role permissions can be safely modified
+func (db *DB) CanModifyRolePermissions(roleID, serverID uuid.UUID, newPerms models.Permission) error {
+	role, err := db.GetRoleByID(roleID)
+	if err != nil {
+		return err
+	}
+
+	// If removing Administrator permission (check using bitwise AND)
+	hasAdmin := role.Permissions&models.PermissionAdministrator != 0
+	willHaveAdmin := newPerms&models.PermissionAdministrator != 0
+
+	if hasAdmin && !willHaveAdmin {
+		// Check if other admin roles exist with assigned members
+		otherAdminCount, err := db.CountUsersWithAdminPermissionExcludingRole(serverID, roleID)
+		if err != nil {
+			return err
+		}
+
+		if otherAdminCount == 0 {
+			return fmt.Errorf("cannot remove admin permissions - server must have at least one admin")
+		}
+	}
+
+	return nil
+}
+
+// CanRemoveRoleFromUser checks if a role can be safely removed from a user
+func (db *DB) CanRemoveRoleFromUser(userID, roleID, serverID uuid.UUID) error {
+	role, err := db.GetRoleByID(roleID)
+	if err != nil {
+		return err
+	}
+
+	// If it's not an admin role, removal is safe
+	if !role.HasPermission(models.PermissionAdministrator) {
+		return nil
+	}
+
+	// Check if user has other admin roles
+	hasOtherAdminRoles, err := db.UserHasOtherAdminRoles(userID, roleID, serverID)
+	if err != nil {
+		return err
+	}
+	if hasOtherAdminRoles {
+		return nil // User will still be admin via another role
+	}
+
+	// Check if other users have admin permissions
+	otherAdminCount, err := db.CountUsersWithAdminPermissionExcludingUser(serverID, userID)
+	if err != nil {
+		return err
+	}
+
+	if otherAdminCount == 0 {
+		return fmt.Errorf("cannot remove the last admin from the server - assign another admin first")
+	}
+
+	return nil
+}
+
+// --- Member Moderation Operations ---
+
+// MuteServerMember adds a server-wide mute for a user (channel_id = NULL)
+func (db *DB) MuteServerMember(serverID, userID, mutedBy uuid.UUID, durationMinutes int, reason string) error {
+	id := uuid.New()
+	now := time.Now()
+	var expiresAt *time.Time
+
+	if durationMinutes > 0 {
+		exp := now.Add(time.Duration(durationMinutes) * time.Minute)
+		expiresAt = &exp
+	} // nil = permanent mute
+
+	_, err := db.Exec(`
+		INSERT OR REPLACE INTO mutes (id, server_id, user_id, channel_id, muted_by, muted_at, muted_until, reason, duration, issued_by, issued_at, expires_at)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.String(), serverID.String(), userID.String(), mutedBy.String(), now, expiresAt, reason, durationMinutes, mutedBy.String(), now, expiresAt)
+	return err
+}
+
+// UnmuteServerMember removes a server-wide mute for a user
+func (db *DB) UnmuteServerMember(serverID, userID uuid.UUID) error {
+	_, err := db.Exec(`
+		DELETE FROM mutes
+		WHERE server_id = ? AND user_id = ? AND channel_id IS NULL`,
+		serverID.String(), userID.String())
+	return err
+}
+
+// IsMutedServer checks if a user has an active server-wide mute
+func (db *DB) IsMutedServer(serverID, userID uuid.UUID) (bool, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM mutes
+		WHERE server_id = ? AND user_id = ? AND channel_id IS NULL
+		AND (muted_until IS NULL OR muted_until > ?)`,
+		serverID.String(), userID.String(), time.Now()).Scan(&count)
+	return count > 0, err
+}
+
+// GetServerMuteExpiry returns the expiry time for a server-wide mute, or nil if not muted
+func (db *DB) GetServerMuteExpiry(serverID, userID uuid.UUID) (*time.Time, error) {
+	var mutedUntil sql.NullTime
+	err := db.QueryRow(`
+		SELECT muted_until FROM mutes
+		WHERE server_id = ? AND user_id = ? AND channel_id IS NULL
+		AND (muted_until IS NULL OR muted_until > ?)`,
+		serverID.String(), userID.String(), time.Now()).Scan(&mutedUntil)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !mutedUntil.Valid {
+		return nil, nil // Permanent mute represented as nil
+	}
+	return &mutedUntil.Time, nil
+}
+
+// IncrementKickCount increments the kick counter for a member
+func (db *DB) IncrementKickCount(serverID, userID uuid.UUID) error {
+	_, err := db.Exec(`
+		UPDATE server_members
+		SET kick_count = kick_count + 1
+		WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String())
+	return err
+}
+
+// GetMemberKickCount returns the kick count for a member
+func (db *DB) GetMemberKickCount(serverID, userID uuid.UUID) (int, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COALESCE(kick_count, 0) FROM server_members
+		WHERE server_id = ? AND user_id = ?`,
+		serverID.String(), userID.String()).Scan(&count)
+
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return count, err
 }

@@ -27,7 +27,8 @@ import (
 type View int
 
 const (
-	ViewIdentitySetup View = iota // First-run: set up local identity
+	ViewToS           View = iota // First-run: Terms of Service acceptance
+	ViewIdentitySetup               // First-run: set up local identity
 	ViewLogin
 	ViewRegister
 	ViewMain
@@ -106,6 +107,9 @@ type App struct {
 	chatViewport  viewport.Model
 	sidebarScroll int
 
+	// Terms of Service acceptance state
+	tosState *ToSState
+
 	// Login/Register form
 	loginEmail           textinput.Model
 	loginPassword        textinput.Model
@@ -136,6 +140,7 @@ type App struct {
 	pingResults         map[uuid.UUID]*PingResult
 	editingServerID     *uuid.UUID // Set when editing an existing server
 	editingServerIndex  int        // Index in clientServers of the server being edited
+	deleteConfirmServerID *uuid.UUID // Server awaiting delete confirmation
 
 	// Status message
 	statusMessage string
@@ -258,6 +263,9 @@ type MemberDisplay struct {
 	Member      *models.ServerMember
 	HighestRole *models.Role // highest hoisted role (nil = regular member)
 	AvatarColor string       // hex color for circle avatar
+	IsBanned    bool         // Is user banned from server
+	IsMuted     bool         // Is user server-muted
+	KickCount   int          // Number of times kicked
 }
 
 // avatarPalette is a set of colors used as fallback avatar colors when a member has no hoisted role
@@ -295,6 +303,9 @@ func buildMemberDisplay(member *models.ServerMember, user *models.User, roleMap 
 		Member:      member,
 		HighestRole: highestRole,
 		AvatarColor: avatarColor,
+		IsBanned:    member.IsBanned,
+		IsMuted:     member.IsMuted,
+		KickCount:   member.KickCount,
 	}
 }
 
@@ -444,14 +455,20 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	}
 
 	// Determine startup view
-	startView := ViewIdentitySetup
-	if identity != nil {
+	var startView View
+
+	// Check ToS acceptance first
+	if !appConfig.TermsAccepted {
+		startView = ViewToS
+	} else if identity != nil {
 		servers := configMgr.GetClientServers()
 		if len(servers) == 0 {
 			startView = ViewAddServer
 		} else {
 			startView = ViewLogin
 		}
+	} else {
+		startView = ViewIdentitySetup
 	}
 
 	// Initialize identity setup form inputs
@@ -513,6 +530,11 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 
 	// Pre-fill login form with saved credentials or defaults
 	app.initLoginView()
+
+	// Initialize ToS view if needed
+	if startView == ViewToS {
+		app.initToSView()
+	}
 
 	return app
 }
@@ -910,6 +932,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Update focused component
 	switch a.view {
+	case ViewToS:
+		var cmd tea.Cmd
+		a.tosState.viewport, cmd = a.tosState.viewport.Update(msg)
+		a.tosState.updateScrollState()
+		cmds = append(cmds, cmd)
 	case ViewIdentitySetup:
 		cmd := a.updateIdentitySetupForm(msg)
 		cmds = append(cmds, cmd)
@@ -940,6 +967,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) View() string {
 	var baseView string
 	switch a.view {
+	case ViewToS:
+		baseView = a.renderToSView()
 	case ViewIdentitySetup:
 		baseView = a.renderIdentitySetupView()
 	case ViewLogin:
@@ -983,6 +1012,9 @@ func (a *App) View() string {
 // handleKeyPress handles keyboard input
 func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Route to view-specific handlers first
+	if a.view == ViewToS {
+		return a.handleToSKey(msg)
+	}
 	if a.view == ViewIdentitySetup {
 		return a.handleIdentitySetupKey(msg)
 	}
@@ -1555,17 +1587,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorWithSelection(0, -1) // dy = -1
 		}
-		if a.view == ViewMain && a.focus == FocusChannelList {
-			return a.reorderChannel(-1)
-		}
 
 	case "shift+down":
 		// Level 2: Select text while moving cursor down
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorWithSelection(0, 1) // dy = 1
-		}
-		if a.view == ViewMain && a.focus == FocusChannelList {
-			return a.reorderChannel(1)
 		}
 
 	case "shift+left":
@@ -1788,13 +1814,13 @@ func (a *App) navigateChannelList(delta int) {
 		return
 	}
 
-	// Find current channel in flat list
+	// Find current channel in flat list (including categories)
 	currentIdx := -1
 	for i, node := range a.channelTree.FlatList {
 		log.Printf("DEBUG navigateChannelList: FlatList[%d]: IsCategory=%v, ChannelName=%s",
 			i, node.IsCategory,
 			func() string { if node.Channel != nil { return node.Channel.Name }; return "nil" }())
-		if !node.IsCategory && a.currentChannel != nil && node.Channel.ID == a.currentChannel.ID {
+		if a.currentChannel != nil && node.Channel.ID == a.currentChannel.ID {
 			currentIdx = i
 			log.Printf("DEBUG navigateChannelList: Found current channel at index %d", i)
 			break
@@ -1802,37 +1828,22 @@ func (a *App) navigateChannelList(delta int) {
 	}
 	log.Printf("DEBUG navigateChannelList: currentIdx=%d, delta=%d", currentIdx, delta)
 
-	// Navigate to next/previous channel (skip categories)
-	newIdx := currentIdx
-	iterations := 0
-	for {
-		newIdx += delta
-		iterations++
-		log.Printf("DEBUG navigateChannelList: iteration %d, newIdx=%d (before wrap)", iterations, newIdx)
+	// Navigate to next/previous item (including categories)
+	newIdx := currentIdx + delta
 
-		// Wrap around
-		if newIdx < 0 {
-			newIdx = len(a.channelTree.FlatList) - 1
-			log.Printf("DEBUG navigateChannelList: Wrapped to end, newIdx=%d", newIdx)
-		} else if newIdx >= len(a.channelTree.FlatList) {
-			newIdx = 0
-			log.Printf("DEBUG navigateChannelList: Wrapped to start, newIdx=%d", newIdx)
-		}
+	// Wrap around
+	if newIdx < 0 {
+		newIdx = len(a.channelTree.FlatList) - 1
+		log.Printf("DEBUG navigateChannelList: Wrapped to end, newIdx=%d", newIdx)
+	} else if newIdx >= len(a.channelTree.FlatList) {
+		newIdx = 0
+		log.Printf("DEBUG navigateChannelList: Wrapped to start, newIdx=%d", newIdx)
+	}
 
-		// Stop if we've wrapped around back to start
-		if newIdx == currentIdx {
-			log.Printf("DEBUG navigateChannelList: Wrapped back to start, breaking")
-			break
-		}
-
-		// Found a channel (not a category)
-		if !a.channelTree.FlatList[newIdx].IsCategory {
-			log.Printf("DEBUG navigateChannelList: Found channel at index %d, selecting it", newIdx)
-			a.selectChannelByID(a.channelTree.FlatList[newIdx].Channel.ID)
-			break
-		} else {
-			log.Printf("DEBUG navigateChannelList: Index %d is a category, skipping", newIdx)
-		}
+	// Select the item at newIdx (could be channel or category)
+	if newIdx >= 0 && newIdx < len(a.channelTree.FlatList) {
+		log.Printf("DEBUG navigateChannelList: Selecting item at index %d", newIdx)
+		a.selectChannelByID(a.channelTree.FlatList[newIdx].Channel.ID)
 	}
 }
 
@@ -2795,12 +2806,24 @@ func (a *App) handleCollapseCategory() {
 		return
 	}
 
+	// If current node IS a category, collapse it
+	if node.IsCategory {
+		categoryID := node.Channel.ID
+		a.collapsedCategories[categoryID] = true
+		a.channelTree.RebuildFlatList(a.collapsedCategories)
+		a.saveCollapsedState()
+		return
+	}
+
 	// If current channel has a parent category, collapse it
 	if node.Parent != nil && node.Parent.IsCategory {
 		categoryID := node.Parent.Channel.ID
 		a.collapsedCategories[categoryID] = true
 		a.channelTree.RebuildFlatList(a.collapsedCategories)
 		a.saveCollapsedState()
+
+		// Move selection to the category since the child is now hidden
+		a.currentChannel = node.Parent.Channel
 	}
 }
 
@@ -2813,6 +2836,15 @@ func (a *App) handleExpandCategory() {
 	// Find current channel's node
 	node := a.channelTree.NodeMap[a.currentChannel.ID]
 	if node == nil {
+		return
+	}
+
+	// If current node IS a category, expand it
+	if node.IsCategory {
+		categoryID := node.Channel.ID
+		a.collapsedCategories[categoryID] = false
+		a.channelTree.RebuildFlatList(a.collapsedCategories)
+		a.saveCollapsedState()
 		return
 	}
 
@@ -3199,24 +3231,37 @@ func (a *App) updateChatContent() {
 		// Render message content
 		var contentLine string
 		if isSystemMsg {
-			// Render as a centered announcement: ─── message text ───
-			barStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-				Faint(true)
+			// Render as a centered announcement with fixed-length bars: ─── message text ───
+			// Simplified approach: fixed 5 bars on each side
+
 			textStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-				Italic(true).
+				Foreground(lipgloss.Color(a.theme.Colors.Green)).
 				Bold(true)
-			msgText := textStyle.Render(" " + msg.Content + " ")
-			msgVisLen := lipgloss.Width(msgText)
-			remaining := viewportWidth - msgVisLen
-			if remaining < 0 {
-				remaining = 0
+			barStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment))
+
+			// Fixed bars: 5 on each side
+			leftBar := "───── "
+			rightBar := " ─────"
+
+			// Truncate message if too long (leave room for bars + padding)
+			msgContent := msg.Content
+			maxMsgLen := viewportWidth - 20 // Reserve ~10 chars per side for bars and padding
+			if maxMsgLen < 30 {
+				maxMsgLen = 30
 			}
-			leftBar := strings.Repeat("─", remaining/2)
-			rightBar := strings.Repeat("─", remaining-remaining/2)
-			line := barStyle.Render(leftBar) + msgText + barStyle.Render(rightBar)
-			contentLine = lipgloss.NewStyle().Width(viewportWidth).Render(line)
+
+			// Simple rune-based truncation
+			msgRunes := []rune(msgContent)
+			if len(msgRunes) > maxMsgLen {
+				msgContent = string(msgRunes[:maxMsgLen-1]) + "…"
+			}
+
+			// Build the line: bars + message + bars (with space padding)
+			line := barStyle.Render(leftBar) + textStyle.Render(msgContent) + barStyle.Render(rightBar)
+
+			// Center the line in the viewport
+			contentLine = lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, line)
 		} else if msg.IsWhisper {
 			// Whisper: render with alignment based on ownership
 			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth, msg.IsOwn)
@@ -4460,6 +4505,17 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		sc.mu.Unlock()
 
+		// If Server Management view is open and showing Members, refresh the member list
+		if a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.SelectedCategory == 2 { // Members category
+				serverID := a.getActiveServerID()
+				if serverID != uuid.Nil && sc != nil && serverID == payload.ServerID {
+					log.Printf("DEBUG: Refreshing member list in Server Management view")
+					a.loadMemberListForManagement()
+				}
+			}
+		}
+
 	case protocol.EventServerMemberRemove:
 		var payload protocol.ServerMemberRemovePayload
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
@@ -4480,6 +4536,10 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
 			log.Printf("Failed to parse SERVER_MEMBER_UPDATE payload: %v", err)
 			return nil
+		}
+		if payload.Member != nil {
+			log.Printf("DEBUG EventServerMemberUpdate received: UserID=%s, IsBanned=%v, KickCount=%d",
+				payload.Member.UserID, payload.Member.IsBanned, payload.Member.KickCount)
 		}
 		// Rebuild role map from payload roles
 		roleMap := make(map[uuid.UUID]*models.Role, len(payload.Roles))
@@ -4506,13 +4566,30 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 
 		sc.mu.Lock()
+		found := false
 		for i, m := range sc.Members {
 			if m.User != nil && m.User.ID == payload.User.ID {
 				sc.Members[i] = buildMemberDisplay(payload.Member, payload.User, roleMap)
+				found = true
 				break
 			}
 		}
+		// If member not found (e.g., was previously banned/removed), add them back
+		if !found && payload.User != nil {
+			sc.Members = append(sc.Members, buildMemberDisplay(payload.Member, payload.User, roleMap))
+		}
 		sc.mu.Unlock()
+
+		// If Server Management view is open and showing Members, refresh the member list
+		if a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.SelectedCategory == 2 { // Members category
+				serverID := a.getActiveServerID()
+				if serverID != uuid.Nil && sc != nil && serverID == payload.ServerID {
+					log.Printf("DEBUG: Refreshing member list in Server Management view")
+					a.loadMemberListForManagement()
+				}
+			}
+		}
 
 	case protocol.EventTitleUpdate:
 		var payload protocol.AssignTitlePayload
@@ -4705,6 +4782,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 					a.channelTree.AddChannel(payload.Channel)
 					a.channelTree.RebuildFlatList(a.collapsedCategories)
 				}
+
+				// Refresh Server Management view if open
+				if a.view == ViewServerManagement && a.serverManagementState != nil {
+					if a.serverManagementState.SelectedCategory == 0 {
+						a.loadChannelListForManagement(a.currentServer.ID)
+					}
+				}
 			}
 		}
 
@@ -4733,6 +4817,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				if a.channelTree != nil {
 					a.channelTree.UpdateChannel(payload.Channel)
 					a.channelTree.RebuildFlatList(a.collapsedCategories)
+				}
+
+				// Refresh Server Management view if open
+				if a.view == ViewServerManagement && a.serverManagementState != nil {
+					if a.serverManagementState.SelectedCategory == 0 {
+						a.loadChannelListForManagement(a.currentServer.ID)
+					}
 				}
 			}
 		}
@@ -4777,6 +4868,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 						} else {
 							a.currentChannel = nil
 						}
+					}
+				}
+
+				// Refresh Server Management view if open
+				if a.view == ViewServerManagement && a.serverManagementState != nil {
+					if a.serverManagementState.SelectedCategory == 0 {
+						a.loadChannelListForManagement(a.currentServer.ID)
 					}
 				}
 			}
@@ -4981,7 +5079,20 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		// If Server Management view is open and showing Messages, update the policy
 		if a.view == ViewServerManagement && a.serverManagementState != nil {
 			if a.serverManagementState.Categories[a.serverManagementState.SelectedCategory] == "Messages" {
-				a.serverManagementState.RetentionPolicy = payload.Policy
+				// Server default has nil ChannelID
+				if payload.Policy == nil || payload.Policy.ChannelID == nil {
+					a.serverManagementState.RetentionPolicy = payload.Policy
+				}
+				// Always apply the full override list when provided
+				if payload.ChannelOverrides != nil {
+					a.serverManagementState.ChannelOverrides = payload.ChannelOverrides
+					if a.serverManagementState.SelectedOverride >= len(payload.ChannelOverrides) {
+						a.serverManagementState.SelectedOverride = len(payload.ChannelOverrides) - 1
+					}
+					if a.serverManagementState.SelectedOverride < 0 {
+						a.serverManagementState.SelectedOverride = 0
+					}
+				}
 				a.statusMessage = "Retention policy updated"
 			}
 		}

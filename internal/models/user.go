@@ -94,6 +94,8 @@ type ServerMember struct {
 	JoinedAt    time.Time   `json:"joined_at"`
 	IsMuted     bool        `json:"is_muted"`
 	IsDeafened  bool        `json:"is_deafened"`
+	IsBanned    bool        `json:"is_banned"`
+	KickCount   int         `json:"kick_count"`
 }
 
 // NewServerMember creates a new server membership

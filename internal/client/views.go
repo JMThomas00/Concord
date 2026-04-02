@@ -682,10 +682,19 @@ func (a *App) renderServerList(width, height int) string {
 // renderChannelList renders the channel list pane (bottom 60% of sidebar)
 // renderCategoryRow renders a category row in the channel list
 func (a *App) renderCategoryRow(node *ChannelTreeNode, width int) string {
+	// Check if this category is currently selected
+	isSelected := a.currentChannel != nil && a.currentChannel.ID == node.Channel.ID
+
 	// Collapse indicator
 	indicator := "▼"
 	if a.collapsedCategories[node.Channel.ID] {
 		indicator = "▶"
+	}
+
+	// Selection prefix
+	selectionPrefix := " "
+	if isSelected {
+		selectionPrefix = ">"
 	}
 
 	// Category name (uppercase, bold, comment color)
@@ -697,12 +706,25 @@ func (a *App) renderCategoryRow(node *ChannelTreeNode, width int) string {
 		name = name[:maxLen-3] + "..."
 	}
 
+	fullText := fmt.Sprintf("%s %s", indicator, name)
+
+	// Apply style based on selection
 	categoryStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 		Bold(true).
 		PaddingLeft(1)
 
-	return categoryStyle.Render(fmt.Sprintf("%s %s", indicator, name))
+	selectedCategoryStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Colors.Selection)).
+		Bold(true).
+		Width(width - 2).
+		PaddingLeft(1)
+
+	if isSelected {
+		return selectedCategoryStyle.Render(selectionPrefix + fullText)
+	}
+	return categoryStyle.Render(selectionPrefix + fullText)
 }
 
 // renderChannelRow renders a channel row in the channel list
@@ -716,7 +738,13 @@ func (a *App) renderChannelRow(node *ChannelTreeNode, width int) string {
 	// Channel prefix
 	prefix := "# "
 	if node.Channel.Type == models.ChannelTypeVoice {
-		prefix = "🔊 "
+		prefix = "♪ "
+	}
+
+	// Add lock icon for locked channels
+	lockIcon := ""
+	if node.Channel.IsLocked {
+		lockIcon = "⊗ "
 	}
 
 	// Build unread badge (right-aligned suffix)
@@ -740,7 +768,7 @@ func (a *App) renderChannelRow(node *ChannelTreeNode, width int) string {
 	}
 
 	// Channel name
-	channelName := prefix + node.Channel.Name
+	channelName := prefix + lockIcon + node.Channel.Name
 
 	// Truncate if needed (leave room for badge)
 	maxLen := width - len(indent) - 4 - len(badge)
@@ -953,7 +981,7 @@ func (a *App) renderChatPanel(width, height int) string {
 			if displayCount > 3 {
 				displayCount = 3
 			}
-			pinBuf.WriteString(pinHeaderStyle.Render(fmt.Sprintf("📌 %d pinned message(s)  (/unpin N to remove)", len(pinnedMsgs))))
+			pinBuf.WriteString(pinHeaderStyle.Render(fmt.Sprintf("★ %d pinned message(s)  (/unpin N to remove)", len(pinnedMsgs))))
 			pinBuf.WriteString("\n")
 			for i := 0; i < displayCount; i++ {
 				pm := pinnedMsgs[i]
@@ -1332,7 +1360,8 @@ func (a *App) renderUserList(width, height int) string {
 			}
 		}
 
-		// Sort roleSectionOrder by DisplayOrder ASC, fallback to Position DESC
+		// Sort roleSectionOrder by DisplayOrder ASC (lower number = higher priority/top)
+		// If DisplayOrder is equal, sort by role name alphabetically for consistency
 		for i := 1; i < len(roleSectionOrder); i++ {
 			for j := i; j > 0; j-- {
 				curr := roleSectionMap[roleSectionOrder[j]]
@@ -1341,19 +1370,14 @@ func (a *App) renderUserList(width, height int) string {
 				currOrder := curr.role.DisplayOrder
 				prevOrder := prev.role.DisplayOrder
 
+				// Sort by DisplayOrder ASC (0 is highest priority, shows at top)
+				// If equal, sort by name alphabetically
 				shouldSwap := false
-				// If both have display order, sort by display order ASC (lower = top)
-				if currOrder > 0 && prevOrder > 0 {
-					shouldSwap = currOrder < prevOrder
-				} else if currOrder > 0 {
-					// Current has display order, previous doesn't - current comes first
+				if currOrder < prevOrder {
 					shouldSwap = true
-				} else if prevOrder > 0 {
-					// Previous has display order, current doesn't - keep previous first
-					shouldSwap = false
-				} else {
-					// Neither has display order, use Position DESC (legacy behavior)
-					shouldSwap = curr.role.Position > prev.role.Position
+				} else if currOrder == prevOrder {
+					// Secondary sort: alphabetical by role name
+					shouldSwap = curr.role.Name < prev.role.Name
 				}
 
 				if shouldSwap {

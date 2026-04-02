@@ -37,6 +37,7 @@ const (
 	OpCreateRole       OpCode = 27 // Create a new role
 	OpUpdateRole       OpCode = 28 // Update an existing role
 	OpDeleteRole       OpCode = 29 // Delete a role
+	OpUnmuteMember     OpCode = 32 // Unmute a server-muted member
 	OpEditMessage      OpCode = 30 // Edit message content
 	OpDeleteMessage    OpCode = 31 // Delete message (soft-delete)
 	OpGetRetentionPolicy    OpCode = 40 // Get retention policy for server/channel
@@ -101,6 +102,13 @@ const (
 	EventRoleUpdate       EventType = "ROLE_UPDATE"
 	EventRoleDelete       EventType = "ROLE_DELETE"
 	EventTitleUpdate      EventType = "TITLE_UPDATE"
+
+	// Moderation events
+	EventMemberKicked     EventType = "MEMBER_KICKED"
+	EventMemberBanned     EventType = "MEMBER_BANNED"
+	EventMemberUnbanned   EventType = "MEMBER_UNBANNED"
+	EventMemberMuted      EventType = "MEMBER_MUTED"
+	EventMemberUnmuted    EventType = "MEMBER_UNMUTED"
 
 	// Retention policy events
 	EventRetentionPolicyUpdate EventType = "RETENTION_POLICY_UPDATE"
@@ -215,6 +223,7 @@ type ChannelUpdateRequest struct {
 	CategoryID *uuid.UUID `json:"category_id,omitempty"`
 	Position   *int       `json:"position,omitempty"`   // Deprecated - kept for compatibility
 	SortOrder  *int       `json:"sort_order,omitempty"` // NEW: Use for all ordering operations
+	IsLocked   *bool      `json:"is_locked,omitempty"`
 }
 
 // ChannelDeleteRequest is sent by clients to delete a channel
@@ -284,6 +293,13 @@ type UnbanMemberRequest struct {
 	ServerID  uuid.UUID `json:"server_id"`
 	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
 	Username  string    `json:"username"`    // Username to unban (can't use UserID since they're not a member)
+}
+
+// UnmuteMemberRequest unmutes a server-muted member
+type UnmuteMemberRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 // CreateRoleRequest creates a new role on a server
@@ -543,7 +559,8 @@ type PruneMessagesRequest struct {
 
 // RetentionPolicyUpdatePayload is dispatched when a retention policy changes
 type RetentionPolicyUpdatePayload struct {
-	Policy *models.MessageRetentionPolicy `json:"policy"`
+	Policy           *models.MessageRetentionPolicy   `json:"policy"`
+	ChannelOverrides []*models.MessageRetentionPolicy `json:"channel_overrides,omitempty"`
 }
 
 // MessagesPrunedPayload is dispatched when messages are pruned

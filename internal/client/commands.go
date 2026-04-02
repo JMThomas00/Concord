@@ -103,6 +103,10 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleStatus(cmd.Args)
 	case "title":
 		return ch.handleTitle(cmd.Args)
+	case "lock":
+		return ch.handleLockChannel(true)
+	case "unlock":
+		return ch.handleLockChannel(false)
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}
@@ -346,6 +350,42 @@ func (ch *CommandHandler) handleMoveChannel(args []string) (string, error) {
 	return fmt.Sprintf("Moving channel to group '%s'...", categoryName), nil
 }
 
+func (ch *CommandHandler) handleLockChannel(lock bool) (string, error) {
+	if ch.app.activeConn == nil || ch.app.currentServer == nil {
+		return "", errors.New("not connected to a server")
+	}
+
+	if ch.app.currentChannel == nil {
+		return "", errors.New("no channel selected")
+	}
+
+	// Only allow locking text channels (not categories, voice, or DMs)
+	if ch.app.currentChannel.Type != models.ChannelTypeText {
+		return "", errors.New("can only lock/unlock text channels")
+	}
+
+	isLocked := lock
+	req := &protocol.ChannelUpdateRequest{
+		ServerID:  ch.app.currentServer.ID,
+		ChannelID: ch.app.currentChannel.ID,
+		IsLocked:  &isLocked,
+	}
+
+	msg, err := protocol.NewMessage(protocol.OpChannelUpdate, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create message: %w", err)
+	}
+
+	if err := ch.app.activeConn.Connection.Send(msg); err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+
+	if lock {
+		return "Channel locked. Only users with Manage Messages permission can post.", nil
+	}
+	return "Channel unlocked. All users can post.", nil
+}
+
 func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 	level := ch.app.currentUserRoleLevel()
 
@@ -368,6 +408,8 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 			"/delete-group <name>       - Delete an empty channel group",
 			"/rename-channel <name>     - Rename the current channel",
 			"/move-channel <group>      - Move current channel to a channel group",
+			"/lock                      - Lock current channel (only mods/admins can post)",
+			"/unlock                    - Unlock current channel (all users can post)",
 			"/mute @user [minutes]      - Server-mute a member",
 			"/unmute @user              - Server-unmute a member",
 			"/kick @user [reason]       - Kick a member from the server",

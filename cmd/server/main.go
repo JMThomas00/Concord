@@ -18,8 +18,11 @@ func main() {
 	port := flag.Int("port", 0, "Port to bind to (overrides config)")
 	dbPath := flag.String("db", "", "Path to database file (overrides config)")
 	adminEmail := flag.String("admin-email", "", "Grant admin role to this email on startup")
+	fixAdmin := flag.Bool("fix-admin", false, "Repair broken Admin role (permissions, is_hoisted)")
+	cleanupDuplicates := flag.Bool("cleanup-duplicates", false, "Merge and remove duplicate roles")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	hybridMode := flag.Bool("hybrid", false, "Enable hybrid dashboard with live logs")
+	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
 	flag.Parse()
 
 	// Parse and initialize logger early
@@ -49,7 +52,34 @@ func main() {
 	// Load configuration
 	var config *server.Config
 	if isFirstRun {
-		config = runFirstRunSetup()
+		// Show ToS first
+		if !runToSSetup() {
+			fmt.Fprintln(os.Stderr, "\nYou must accept the Terms of Service to run a Concord server.")
+			os.Exit(1)
+		}
+
+		// ToS accepted, proceed with setup
+		config = runFirstRunSetup(nil)
+		config.TermsAccepted = true
+	} else if *reconfigure {
+		// Load existing config to pre-populate setup
+		existingConfig := server.DefaultConfig()
+		configFileToLoad := configFilename
+		if *configPath != "" {
+			configFileToLoad = *configPath
+		}
+
+		if _, err := os.Stat(configFileToLoad); err == nil {
+			if err := loadConfig(configFileToLoad, existingConfig); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to load existing config: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		// Run setup with existing values
+		fmt.Println("\n🔧 Reconfiguring server settings...\n")
+		config = runFirstRunSetup(existingConfig)
+		config.TermsAccepted = existingConfig.TermsAccepted // Preserve ToS acceptance
 	} else {
 		config = server.DefaultConfig()
 		if *configPath != "" {
@@ -74,6 +104,11 @@ func main() {
 		config.DatabasePath = *dbPath
 	}
 
+	// Clear screen for clean server startup (only in normal mode)
+	if !*hybridMode {
+		fmt.Print("\033[2J\033[H")
+	}
+
 	// Print beautiful startup banner and information (only in normal mode)
 	if !*hybridMode {
 		server.PrintBanner()
@@ -91,6 +126,42 @@ func main() {
 			server.Logger.Fatal("Failed to grant admin role", "email", *adminEmail, "error", err)
 		}
 		server.AuthLog.Info("Admin role granted", "email", *adminEmail)
+		db.Close()
+	}
+
+	// Handle --fix-admin: repair broken Admin role
+	if *fixAdmin {
+		db, err := database.New(config.DatabasePath)
+		if err != nil {
+			server.Logger.Fatal("Failed to open database for fix-admin", "error", err)
+		}
+		// Get default server
+		srv, _, err := db.EnsureDefaultServer("Concord Server")
+		if err != nil {
+			server.Logger.Fatal("Failed to get server for fix-admin", "error", err)
+		}
+		if err := db.FixAdminRole(srv.ID); err != nil {
+			server.Logger.Fatal("Failed to fix Admin role", "error", err)
+		}
+		server.AuthLog.Info("Admin role repaired (permissions + is_hoisted + position)")
+		db.Close()
+	}
+
+	// Handle --cleanup-duplicates: merge and remove duplicate roles
+	if *cleanupDuplicates {
+		db, err := database.New(config.DatabasePath)
+		if err != nil {
+			server.Logger.Fatal("Failed to open database for cleanup-duplicates", "error", err)
+		}
+		// Get default server
+		srv, _, err := db.EnsureDefaultServer("Concord Server")
+		if err != nil {
+			server.Logger.Fatal("Failed to get server for cleanup-duplicates", "error", err)
+		}
+		if err := db.CleanupDuplicateRoles(srv.ID); err != nil {
+			server.Logger.Fatal("Failed to cleanup duplicate roles", "error", err)
+		}
+		server.AuthLog.Info("Duplicate roles cleaned up successfully")
 		db.Close()
 	}
 

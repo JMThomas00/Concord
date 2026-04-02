@@ -28,6 +28,7 @@ type Channel struct {
 	SortOrder   int         `json:"sort_order"`   // NEW: Use for all ordering operations
 	CategoryID  uuid.UUID   `json:"category_id,omitempty"` // Parent category
 	IsNSFW      bool        `json:"is_nsfw"`
+	IsLocked    bool        `json:"is_locked"`             // Restrict posting to users with ManageMessages permission
 	RateLimitPerUser int    `json:"rate_limit_per_user,omitempty"` // Slowmode in seconds
 	CreatedAt   time.Time   `json:"created_at"`
 	UpdatedAt   time.Time   `json:"updated_at"`
