@@ -5079,7 +5079,20 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		// If Server Management view is open and showing Messages, update the policy
 		if a.view == ViewServerManagement && a.serverManagementState != nil {
 			if a.serverManagementState.Categories[a.serverManagementState.SelectedCategory] == "Messages" {
-				a.serverManagementState.RetentionPolicy = payload.Policy
+				// Server default has nil ChannelID
+				if payload.Policy == nil || payload.Policy.ChannelID == nil {
+					a.serverManagementState.RetentionPolicy = payload.Policy
+				}
+				// Always apply the full override list when provided
+				if payload.ChannelOverrides != nil {
+					a.serverManagementState.ChannelOverrides = payload.ChannelOverrides
+					if a.serverManagementState.SelectedOverride >= len(payload.ChannelOverrides) {
+						a.serverManagementState.SelectedOverride = len(payload.ChannelOverrides) - 1
+					}
+					if a.serverManagementState.SelectedOverride < 0 {
+						a.serverManagementState.SelectedOverride = 0
+					}
+				}
 				a.statusMessage = "Retention policy updated"
 			}
 		}

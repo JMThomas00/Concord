@@ -1648,7 +1648,12 @@ func (h *Handlers) HandleGetRetentionPolicy(c *Client, msg *protocol.Message) {
 	}
 
 	// Send response (policy can be nil if not configured)
+	// When requesting server default, also include all channel overrides
 	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy}
+	if req.ChannelID == nil {
+		overrides, _ := h.db.ListChannelOverrides(req.ServerID)
+		payload.ChannelOverrides = overrides
+	}
 	h.hub.SendToUser(c.UserID, protocol.EventRetentionPolicyUpdate, payload)
 }
 
@@ -1680,8 +1685,9 @@ func (h *Handlers) HandleSetRetentionPolicy(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	// Broadcast update to all users on this server
-	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy}
+	// Broadcast update to all users on this server (include all overrides for full picture)
+	overrides, _ := h.db.ListChannelOverrides(req.ServerID)
+	payload := &protocol.RetentionPolicyUpdatePayload{Policy: policy, ChannelOverrides: overrides}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventRetentionPolicyUpdate, payload, nil)
 }
 
@@ -1705,9 +1711,10 @@ func (h *Handlers) HandleDeleteRetentionPolicy(c *Client, msg *protocol.Message)
 		return
 	}
 
-	// Broadcast revert to server default
+	// Broadcast updated state (server default + remaining overrides)
 	serverDefault, _ := h.db.GetRetentionPolicyDirect(req.ServerID, nil)
-	payload := &protocol.RetentionPolicyUpdatePayload{Policy: serverDefault}
+	remainingOverrides, _ := h.db.ListChannelOverrides(req.ServerID)
+	payload := &protocol.RetentionPolicyUpdatePayload{Policy: serverDefault, ChannelOverrides: remainingOverrides}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventRetentionPolicyUpdate, payload, nil)
 }
 

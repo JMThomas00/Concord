@@ -145,6 +145,11 @@ type ServerManagementState struct {
 	PruneResults         *protocol.MessagesPrunedPayload
 	ChannelOverrides     []*models.MessageRetentionPolicy
 	SelectedOverride     int
+
+	// Channel override picker
+	OverrideChannelPickerOpen bool
+	OverrideChannelList       []*models.Channel
+	OverrideChannelSelected   int
 }
 
 // RoleFormState holds state for the role creation/edit modal

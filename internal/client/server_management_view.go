@@ -244,11 +244,18 @@ func (a *App) applyMemberFilters() {
 	}
 }
 
-// loadRetentionPolicyForManagement loads retention policy for Messages category
+// loadRetentionPolicyForManagement sends OpGetRetentionPolicy to load the server default + all overrides
 func (a *App) loadRetentionPolicyForManagement(serverID uuid.UUID) {
-	// For now, set to nil - will be loaded from server when implemented
-	a.serverManagementState.RetentionPolicy = nil
-	a.serverManagementState.ChannelOverrides = nil
+	if a.activeConn == nil {
+		return
+	}
+	req := &protocol.GetRetentionPolicyRequest{
+		ServerID: serverID,
+	}
+	msg, err := protocol.NewMessage(protocol.OpGetRetentionPolicy, req)
+	if err == nil {
+		_ = a.activeConn.Connection.Send(msg)
+	}
 }
 
 // Permission list item for rendering
@@ -471,6 +478,9 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if s.SearchInputOpen {
 		return a.handleSearchInputKey(msg)
+	}
+	if s.OverrideChannelPickerOpen {
+		return a.handleChannelPickerKey(msg)
 	}
 	if s.RetentionFormState != nil {
 		return a.handleRetentionFormKey(msg)
@@ -907,11 +917,23 @@ func (a *App) handleEditAction() {
 				FocusField:         0,
 			}
 		}
-	case 3: // Edit server default retention policy
-		s.RetentionFormState = &RetentionFormState{
+	case 3: // Edit server default retention policy — pre-fill with current values
+		form := &RetentionFormState{
 			Mode:       "server",
 			FocusField: 0,
 		}
+		if s.RetentionPolicy != nil {
+			if s.RetentionPolicy.TimeRetentionDays != nil {
+				form.TimeRetentionDays = strconv.Itoa(*s.RetentionPolicy.TimeRetentionDays)
+			}
+			if s.RetentionPolicy.SystemTimeRetentionDays != nil {
+				form.SystemTimeRetentionDays = strconv.Itoa(*s.RetentionPolicy.SystemTimeRetentionDays)
+			}
+			if s.RetentionPolicy.MaxMessageCount != nil {
+				form.MaxMessageCount = strconv.Itoa(*s.RetentionPolicy.MaxMessageCount)
+			}
+		}
+		s.RetentionFormState = form
 	}
 }
 
@@ -935,9 +957,21 @@ func (a *App) handleDeleteAction() {
 				s.DeleteConfirmFocusedButton = 0 // Start with "Yes, Delete" focused
 			}
 		}
-	case 3: // Delete channel override
-		if s.ChannelOverrides != nil && s.SelectedOverride >= 0 && s.SelectedOverride < len(s.ChannelOverrides) {
-			// TODO: Delete channel override
+	case 3: // Remove channel override (un-exempt the channel)
+		if len(s.ChannelOverrides) > 0 && s.SelectedOverride >= 0 && s.SelectedOverride < len(s.ChannelOverrides) {
+			override := s.ChannelOverrides[s.SelectedOverride]
+			if override.ChannelID != nil {
+				serverID := a.getActiveServerID()
+				req := &protocol.DeleteRetentionPolicyRequest{
+					ServerID:  serverID,
+					ChannelID: *override.ChannelID,
+				}
+				pmsg, err := protocol.NewMessage(protocol.OpDeleteRetentionPolicy, req)
+				if err == nil {
+					_ = a.activeConn.Connection.Send(pmsg)
+					a.statusMessage = "Channel exemption removed"
+				}
+			}
 		}
 	}
 }
@@ -1354,10 +1388,44 @@ func (a *App) handlePruneAction() {
 
 func (a *App) handleCreateChannelOverride() {
 	s := a.serverManagementState
-	s.RetentionFormState = &RetentionFormState{
-		Mode:       "channel",
-		FocusField: 0,
+	if a.activeConn == nil {
+		return
 	}
+	serverID := a.getActiveServerID()
+
+	a.activeConn.mu.RLock()
+	channels, ok := a.activeConn.Channels[serverID]
+	a.activeConn.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	// Build set of already-exempt channel IDs
+	exemptIDs := make(map[uuid.UUID]bool)
+	for _, ov := range s.ChannelOverrides {
+		if ov.ChannelID != nil {
+			exemptIDs[*ov.ChannelID] = true
+		}
+	}
+
+	// Collect text channels not already exempt
+	var textChannels []*models.Channel
+	for _, ch := range channels {
+		if ch.Type == models.ChannelTypeText && !exemptIDs[ch.ID] {
+			textChannels = append(textChannels, ch)
+		}
+	}
+	if len(textChannels) == 0 {
+		a.statusMessage = "All text channels are already exempt"
+		return
+	}
+	sort.Slice(textChannels, func(i, j int) bool {
+		return textChannels[i].Name < textChannels[j].Name
+	})
+
+	s.OverrideChannelPickerOpen = true
+	s.OverrideChannelList = textChannels
+	s.OverrideChannelSelected = 0
 }
 
 // Placeholder key handlers for forms/dialogs
@@ -2499,18 +2567,148 @@ func parseDuration(dur string) int {
 	}
 }
 
-func (a *App) handleRetentionFormKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement retention form key handling
-	if msg.String() == "esc" {
-		a.serverManagementState.RetentionFormState = nil
+func (a *App) handleChannelPickerKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	switch msg.String() {
+	case "up":
+		if s.OverrideChannelSelected > 0 {
+			s.OverrideChannelSelected--
+		}
+	case "down":
+		if s.OverrideChannelSelected < len(s.OverrideChannelList)-1 {
+			s.OverrideChannelSelected++
+		}
+	case "enter":
+		if len(s.OverrideChannelList) > 0 && s.OverrideChannelSelected < len(s.OverrideChannelList) {
+			ch := s.OverrideChannelList[s.OverrideChannelSelected]
+			serverID := a.getActiveServerID()
+			chID := ch.ID
+			req := &protocol.SetRetentionPolicyRequest{
+				ServerID:  serverID,
+				ChannelID: &chID,
+				// nil limits = keep all messages = exempt
+			}
+			pmsg, err := protocol.NewMessage(protocol.OpSetRetentionPolicy, req)
+			if err == nil {
+				_ = a.activeConn.Connection.Send(pmsg)
+				a.statusMessage = fmt.Sprintf("#%s is now exempt from pruning", ch.Name)
+			}
+		}
+		s.OverrideChannelPickerOpen = false
+	case "esc":
+		s.OverrideChannelPickerOpen = false
 	}
 	return nil
 }
 
+func (a *App) handleRetentionFormKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	form := s.RetentionFormState
+	if form == nil {
+		return nil
+	}
+
+	// Fields 0-2 are text inputs; 3 = [S] Save button (virtual)
+	onTextField := form.FocusField >= 0 && form.FocusField <= 2
+
+	switch msg.String() {
+	case "esc":
+		s.RetentionFormState = nil
+	case "tab":
+		form.FocusField = (form.FocusField + 1) % 3 // cycle through 3 text fields
+	case "shift+tab":
+		form.FocusField--
+		if form.FocusField < 0 {
+			form.FocusField = 2
+		}
+	case "s", "S":
+		a.saveRetentionPolicy(form)
+	case "enter":
+		// Enter on any text field also saves
+		if onTextField {
+			a.saveRetentionPolicy(form)
+		}
+	case "backspace":
+		if onTextField {
+			switch form.FocusField {
+			case 0:
+				if len(form.TimeRetentionDays) > 0 {
+					form.TimeRetentionDays = form.TimeRetentionDays[:len(form.TimeRetentionDays)-1]
+				}
+			case 1:
+				if len(form.SystemTimeRetentionDays) > 0 {
+					form.SystemTimeRetentionDays = form.SystemTimeRetentionDays[:len(form.SystemTimeRetentionDays)-1]
+				}
+			case 2:
+				if len(form.MaxMessageCount) > 0 {
+					form.MaxMessageCount = form.MaxMessageCount[:len(form.MaxMessageCount)-1]
+				}
+			}
+		}
+	default:
+		if onTextField && len(msg.String()) == 1 {
+			ch := msg.String()[0]
+			if ch >= '0' && ch <= '9' {
+				switch form.FocusField {
+				case 0:
+					form.TimeRetentionDays += msg.String()
+				case 1:
+					form.SystemTimeRetentionDays += msg.String()
+				case 2:
+					form.MaxMessageCount += msg.String()
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (a *App) saveRetentionPolicy(form *RetentionFormState) {
+	s := a.serverManagementState
+	serverID := a.getActiveServerID()
+
+	var timeRetDays, sysTimeRetDays, maxCount *int
+	if v, err := strconv.Atoi(form.TimeRetentionDays); err == nil && v > 0 {
+		timeRetDays = &v
+	}
+	if v, err := strconv.Atoi(form.SystemTimeRetentionDays); err == nil && v > 0 {
+		sysTimeRetDays = &v
+	}
+	if v, err := strconv.Atoi(form.MaxMessageCount); err == nil && v > 0 {
+		maxCount = &v
+	}
+
+	req := &protocol.SetRetentionPolicyRequest{
+		ServerID:                serverID,
+		ChannelID:               form.ChannelID,
+		TimeRetentionDays:       timeRetDays,
+		SystemTimeRetentionDays: sysTimeRetDays,
+		MaxMessageCount:         maxCount,
+	}
+	pmsg, err := protocol.NewMessage(protocol.OpSetRetentionPolicy, req)
+	if err == nil {
+		_ = a.activeConn.Connection.Send(pmsg)
+		a.statusMessage = "Retention policy saved"
+	}
+	s.RetentionFormState = nil
+}
+
 func (a *App) handlePruneConfirmKey(msg tea.KeyMsg) tea.Cmd {
-	// TODO: Implement prune confirmation key handling
-	if msg.String() == "esc" || msg.String() == "n" {
-		a.serverManagementState.PruneConfirmOpen = false
+	s := a.serverManagementState
+	switch msg.String() {
+	case "enter":
+		serverID := a.getActiveServerID()
+		req := &protocol.PruneMessagesRequest{
+			ServerID: serverID,
+		}
+		pmsg, err := protocol.NewMessage(protocol.OpPruneMessages, req)
+		if err == nil {
+			_ = a.activeConn.Connection.Send(pmsg)
+			a.statusMessage = "Pruning messages..."
+		}
+		s.PruneConfirmOpen = false
+	case "esc", "n", "N":
+		s.PruneConfirmOpen = false
 	}
 	return nil
 }
@@ -2587,6 +2785,17 @@ func (a *App) renderServerManagementView() string {
 	// Show delete confirmation dialog if active
 	if s.DeleteConfirmOpen {
 		return a.renderDeleteConfirmDialog()
+	}
+
+	// Messages category dialogs
+	if s.OverrideChannelPickerOpen {
+		return a.renderChannelPickerPage()
+	}
+	if s.RetentionFormState != nil {
+		return a.renderRetentionFormPage()
+	}
+	if s.PruneConfirmOpen {
+		return a.renderPruneConfirmPage()
 	}
 
 	return baseView
@@ -3574,115 +3783,281 @@ func (a *App) renderMembersRoleAssignPage(width, height int, s *ServerManagement
 		Render(content)
 }
 
+// resolveChannelName looks up a channel name from the active server connection
+func (a *App) resolveChannelName(channelID uuid.UUID) string {
+	if a.activeConn == nil {
+		return channelID.String()[:8]
+	}
+	serverID := a.getActiveServerID()
+	a.activeConn.mu.RLock()
+	defer a.activeConn.mu.RUnlock()
+	if channels, ok := a.activeConn.Channels[serverID]; ok {
+		for _, ch := range channels {
+			if ch.ID == channelID {
+				return ch.Name
+			}
+		}
+	}
+	return channelID.String()[:8]
+}
+
 // renderMessagesCategory renders the Messages/Retention management category
 func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState) string {
-	layout := calculateSettingsLayout(width, height, 2, 1) // 2 = 2 padding lines, 1 = extra help line
+	layout := calculateSettingsLayout(width, height, 2, 1)
 
 	// ── TOP SECTION ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
-
-	// Header
-	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-		Bold(true)
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	top.writeLine(headerStyle.Render("Message Retention Settings"))
-
-	// Subtitle
-	descStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(descStyle.Render("Configure message retention policies and channel overrides"))
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(descStyle.Render("Configure retention policies · exempt channels from pruning"))
 	top.writeBlank()
-
-	// Top section separator
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE SECTION ──
 	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	sectionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 
-	// Server Default Policy section
-	sectionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true)
+	// Server Default Policy
 	middle.writeLine(sectionStyle.Render("Server Default Policy"))
-
-	policyStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-
 	if s.RetentionPolicy == nil {
-		middle.writeLine(policyStyle.Render("  No retention policy configured. Messages kept indefinitely."))
+		middle.writeLine(dimStyle.Render("  No policy set — messages kept indefinitely"))
 	} else {
-		middle.writeLine(policyStyle.Render(fmt.Sprintf("  Time-based: %d days", s.RetentionPolicy.TimeRetentionDays)))
-		middle.writeLine(policyStyle.Render(fmt.Sprintf("  Count-based: %d messages max", s.RetentionPolicy.MaxMessageCount)))
+		p := s.RetentionPolicy
+		if p.TimeRetentionDays != nil {
+			middle.writeLine(valueStyle.Render(fmt.Sprintf("  Time-based:    %d days", *p.TimeRetentionDays)))
+		} else {
+			middle.writeLine(dimStyle.Render("  Time-based:    disabled"))
+		}
+		if p.SystemTimeRetentionDays != nil {
+			middle.writeLine(valueStyle.Render(fmt.Sprintf("  System msgs:   %d days", *p.SystemTimeRetentionDays)))
+		} else {
+			middle.writeLine(dimStyle.Render("  System msgs:   disabled"))
+		}
+		if p.MaxMessageCount != nil {
+			middle.writeLine(valueStyle.Render(fmt.Sprintf("  Max per chan:   %d messages", *p.MaxMessageCount)))
+		} else {
+			middle.writeLine(dimStyle.Render("  Max per chan:   disabled"))
+		}
 	}
 	middle.writeBlank()
 
-	// Channel Overrides section
-	middle.writeLine(sectionStyle.Render("Channel Overrides"))
-
-	if s.ChannelOverrides == nil || len(s.ChannelOverrides) == 0 {
-		middle.writeLine(policyStyle.Render("  No channel-specific overrides configured."))
+	// Exempt Channels (channel overrides with no limits)
+	middle.writeLine(sectionStyle.Render("Exempt Channels  (kept on prune)"))
+	if len(s.ChannelOverrides) == 0 {
+		middle.writeLine(dimStyle.Render("  No exempt channels configured"))
 	} else {
 		for i, override := range s.ChannelOverrides {
 			selected := s.FocusOnForm && i == s.SelectedOverride
-			overrideText := fmt.Sprintf("#%s: %d days, %d max",
-				override.ChannelID.String()[:8],
-				override.TimeRetentionDays,
-				override.MaxMessageCount)
-
+			chName := "unknown"
+			if override.ChannelID != nil {
+				chName = a.resolveChannelName(*override.ChannelID)
+			}
+			label := fmt.Sprintf("  # %s", chName)
 			if selected {
 				line := lipgloss.NewStyle().
 					Foreground(lipgloss.Color(a.theme.Colors.Background)).
 					Background(lipgloss.Color(a.theme.Colors.Cyan)).
 					Bold(true).
 					Width(layout.interiorWidth).
-					Render("▶ " + overrideText)
+					Render("▶ # " + chName)
 				middle.writeLine(line)
 			} else {
-				middle.writeLine(policyStyle.Render("  " + overrideText))
+				middle.writeLine(dimStyle.Render(label))
 			}
 		}
 	}
 	middle.writeBlank()
 
-	// Actions section
+	// Actions
 	middle.writeLine(sectionStyle.Render("Actions"))
-	actionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	middle.writeLine(actionStyle.Render("  E - Edit server default policy"))
-	middle.writeLine(actionStyle.Render("  N - Create channel override"))
-	middle.writeLine(actionStyle.Render("  D - Delete selected override"))
-	middle.writeLine(actionStyle.Render("  P - Prune messages now (manual cleanup)"))
-
-	// Fill remaining middle section space
+	actionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	middle.writeLine(actionStyle.Render("  E · Edit server default policy"))
+	middle.writeLine(actionStyle.Render("  N · Exempt a channel from pruning"))
+	middle.writeLine(actionStyle.Render("  D · Remove selected channel exemption"))
+	middle.writeLine(actionStyle.Render("  P · Run manual prune now"))
 	middle.pad()
 
 	// ── BOTTOM SECTION ──
 	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
 	bottom.writeBlank()
-
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select override · Esc close"))
-	bottom.writeLine(helpStyle.Render("Actions: E edit policy · N new override · D delete · P prune"))
-
-	// Fill remaining bottom section space
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("↑↓ select exempt channel · Tab focus · Esc back"))
+	bottom.writeLine(helpStyle.Render("E edit policy · N exempt channel · D remove · P prune"))
 	bottom.pad()
 
-	// ── ASSEMBLE ──
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		top.String(),
-		middle.String(),
-		bottom.String(),
-	)
-
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).
-		Height(height).
+		Width(width).Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Padding(0, 1).
-		Render(content)
+		Padding(0, 1).Render(content)
+}
+
+// renderRetentionFormPage renders the Edit Server Default Policy dialog (full-screen centered)
+func (a *App) renderRetentionFormPage() string {
+	s := a.serverManagementState
+	form := s.RetentionFormState
+	if form == nil {
+		return ""
+	}
+
+	dialogWidth := 56
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true).
+		Align(lipgloss.Center).Width(dialogWidth - 4)
+
+	var content strings.Builder
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true).
+		Align(lipgloss.Center).Width(dialogWidth - 4)
+	content.WriteString(titleStyle.Render("Edit Server Default Policy"))
+	content.WriteString("\n\n")
+
+	renderField := func(label, value string, fieldIdx int) {
+		content.WriteString(labelStyle.Render(label))
+		content.WriteString("\n")
+		display := fmt.Sprintf("  [%s]", value)
+		if len(value) == 0 {
+			display = fmt.Sprintf("  [%s]", "")
+		}
+		if form.FocusField == fieldIdx {
+			content.WriteString(selectedStyle.Render(display))
+		} else {
+			content.WriteString(normalStyle.Render(display))
+		}
+		content.WriteString("\n\n")
+	}
+
+	renderField("Time Retention (days):", form.TimeRetentionDays, 0)
+	renderField("System Message Retention (days):", form.SystemTimeRetentionDays, 1)
+	renderField("Max Messages Per Channel:", form.MaxMessageCount, 2)
+
+	// Buttons
+	saveBtn := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).
+		Render("[S] Save")
+	cancelBtn := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Red)).
+		Render("[Esc] Cancel")
+	content.WriteString(fmt.Sprintf("%s  %s\n\n", saveBtn, cancelBtn))
+
+	content.WriteString(helpStyle.Render("Leave fields empty to disable. Use Tab/Shift+Tab to navigate."))
+
+	dialog := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Yellow)).
+		Padding(1, 2).Width(dialogWidth).
+		Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
+// renderPruneConfirmPage renders the Confirm Message Pruning dialog (full-screen centered)
+func (a *App) renderPruneConfirmPage() string {
+	dialogWidth := 62
+	var content strings.Builder
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true).
+		Align(lipgloss.Center).Width(dialogWidth - 4)
+	content.WriteString(titleStyle.Render("⚠ Confirm Message Pruning"))
+	content.WriteString("\n\n")
+
+	bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	content.WriteString(bodyStyle.Render("This will permanently delete old messages according to the\nconfigured retention policies across all channels."))
+	content.WriteString("\n\n")
+
+	preserveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green))
+	content.WriteString(preserveStyle.Render("Pinned messages will be preserved."))
+	content.WriteString("\n\n")
+
+	content.WriteString(bodyStyle.Render("Are you sure you want to continue?"))
+	content.WriteString("\n\n")
+
+	confirmBtn := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).
+		Render("[Enter] Yes, prune now")
+	cancelBtn := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Red)).
+		Render("[Esc] Cancel")
+	content.WriteString(fmt.Sprintf("%s  %s", confirmBtn, cancelBtn))
+
+	dialog := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Yellow)).
+		Padding(1, 2).Width(dialogWidth).
+		Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
+}
+
+// renderChannelPickerPage renders the channel picker for adding an exempt channel
+func (a *App) renderChannelPickerPage() string {
+	s := a.serverManagementState
+	dialogWidth := 50
+	var content strings.Builder
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true).
+		Align(lipgloss.Center).Width(dialogWidth - 4)
+	content.WriteString(titleStyle.Render("Exempt Channel from Pruning"))
+	content.WriteString("\n\n")
+
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	content.WriteString(descStyle.Render("Select a channel to keep all messages on prune:"))
+	content.WriteString("\n\n")
+
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+
+	if len(s.OverrideChannelList) == 0 {
+		content.WriteString(descStyle.Render("  No channels available"))
+	} else {
+		for i, ch := range s.OverrideChannelList {
+			line := fmt.Sprintf("  # %s", ch.Name)
+			if i == s.OverrideChannelSelected {
+				content.WriteString(selectedStyle.Render(line))
+			} else {
+				content.WriteString(normalStyle.Render(line))
+			}
+			content.WriteString("\n")
+		}
+	}
+	content.WriteString("\n")
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true).
+		Align(lipgloss.Center).Width(dialogWidth - 4)
+	content.WriteString(helpStyle.Render("[↑↓] Navigate  [Enter] Exempt channel  [Esc] Cancel"))
+
+	dialog := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Yellow)).
+		Padding(1, 2).Width(dialogWidth).
+		Render(content.String())
+
+	return lipgloss.NewStyle().
+		Width(a.width).Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(dialog)
 }
 
 // renderChannelFormPage renders the channel create/edit form as a full page

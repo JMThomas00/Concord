@@ -559,7 +559,8 @@ type PruneMessagesRequest struct {
 
 // RetentionPolicyUpdatePayload is dispatched when a retention policy changes
 type RetentionPolicyUpdatePayload struct {
-	Policy *models.MessageRetentionPolicy `json:"policy"`
+	Policy           *models.MessageRetentionPolicy   `json:"policy"`
+	ChannelOverrides []*models.MessageRetentionPolicy `json:"channel_overrides,omitempty"`
 }
 
 // MessagesPrunedPayload is dispatched when messages are pruned
