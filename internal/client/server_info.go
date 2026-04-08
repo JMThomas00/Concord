@@ -20,8 +20,9 @@ type ClientServerInfo struct {
 	LastConnected    *time.Time         `json:"last_connected,omitempty"` // Last successful connection
 	SavedCredentials *SavedCredentials  `json:"saved_credentials,omitempty"` // Saved login credentials
 	UserID           uuid.UUID          `json:"user_id,omitempty"` // User ID on this server
-	IconLetter       string             `json:"icon_letter"`       // Letter shown in server icon (1-2 chars)
-	IconColor        string             `json:"icon_color"`        // Hex color for server icon
+	IconLetter       string               `json:"icon_letter"`               // Letter shown in server icon (1-2 chars)
+	IconColor        string               `json:"icon_color"`                // Hex color for server icon
+	SoundOverride    *ServerSoundOverride `json:"sound_override,omitempty"`  // Per-server sound settings (nil = use global)
 }
 
 // SavedCredentials stores login credentials for auto-connect

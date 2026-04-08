@@ -173,6 +173,10 @@ type App struct {
 	unreadCounts  map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → count
 	mentionCounts map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → @mention count
 	mutedChannels map[uuid.UUID]bool              // channelID → muted
+	mutedServers  map[uuid.UUID]bool              // clientServerID → muted
+
+	// Notification settings (mirrors UIConfig.Notifications, kept in sync)
+	notifConfig NotificationConfig
 
 	// AFK tracking
 	lastActivityTime time.Time
@@ -339,6 +343,20 @@ func (a *App) getActiveServerID() uuid.UUID {
 	return uuid.Nil
 }
 
+// loadMutedServers converts the persisted []string of UUIDs into the runtime map.
+func loadMutedServers(cfg *AppConfig) map[uuid.UUID]bool {
+	m := make(map[uuid.UUID]bool)
+	if cfg == nil {
+		return m
+	}
+	for _, s := range cfg.UI.MutedServers {
+		if id, err := uuid.Parse(s); err == nil {
+			m[id] = true
+		}
+	}
+	return m
+}
+
 // saveMutedChannels persists the current mutedChannels map back to config.json.
 func (a *App) saveMutedChannels() {
 	if a.configMgr == nil {
@@ -353,6 +371,36 @@ func (a *App) saveMutedChannels() {
 		slugs = append(slugs, id.String())
 	}
 	cfg.UI.MutedChannels = slugs
+	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// saveMutedServers persists the current mutedServers map back to config.json.
+func (a *App) saveMutedServers() {
+	if a.configMgr == nil {
+		return
+	}
+	cfg, err := a.configMgr.LoadAppConfig()
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{Version: 1}
+	}
+	slugs := make([]string, 0, len(a.mutedServers))
+	for id := range a.mutedServers {
+		slugs = append(slugs, id.String())
+	}
+	cfg.UI.MutedServers = slugs
+	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// saveNotifConfig persists the current notification config back to config.json.
+func (a *App) saveNotifConfig() {
+	if a.configMgr == nil {
+		return
+	}
+	cfg, err := a.configMgr.LoadAppConfig()
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{Version: 1}
+	}
+	cfg.UI.Notifications = a.notifConfig
 	_ = a.configMgr.SaveAppConfig(cfg)
 }
 
@@ -510,6 +558,8 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 		unreadCounts:            make(map[uuid.UUID]map[uuid.UUID]int),
 		mentionCounts:           make(map[uuid.UUID]map[uuid.UUID]int),
 		mutedChannels:           loadMutedChannels(appConfig),
+		mutedServers:            loadMutedServers(appConfig),
+		notifConfig:             appConfig.UI.Notifications,
 		input:                   input,
 		loginEmail:              loginEmail,
 		loginPassword:           loginPassword,
@@ -4291,27 +4341,51 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		// Add message to connection's message history
 		sc.AddMessage(payload.Message.ChannelID, display)
 
-		// Unread tracking: increment if this channel is not currently viewed
+		// Check for @mention (personal mention or @everyone/@here) — computed before
+		// the isCurrentChannel guard so sounds can fire regardless of active channel.
 		isCurrentChannel := a.currentChannel != nil && a.currentChannel.ID == payload.Message.ChannelID
-		if !isCurrentChannel && !a.mutedChannels[payload.Message.ChannelID] {
+		isMutedChannel := a.mutedChannels[payload.Message.ChannelID]
+		isMutedServer := a.mutedServers[serverID]
+
+		hasMention := false
+		if sc.User != nil && containsMention(payload.Message.Content, sc.User.Username) {
+			hasMention = true
+		}
+		if payload.Message.MentionEveryone {
+			hasMention = true
+		}
+
+		// Unread tracking: only for messages not in the currently viewed channel
+		if !isCurrentChannel && !isMutedChannel && !isMutedServer {
 			if a.unreadCounts[serverID] == nil {
 				a.unreadCounts[serverID] = make(map[uuid.UUID]int)
 			}
 			a.unreadCounts[serverID][payload.Message.ChannelID]++
-			// Check for @mention (personal mention or @everyone/@here)
-			hasMention := false
-			if sc.User != nil && containsMention(payload.Message.Content, sc.User.Username) {
-				hasMention = true
-			}
-			if payload.Message.MentionEveryone {
-				hasMention = true
-			}
 			if hasMention {
 				if a.mentionCounts[serverID] == nil {
 					a.mentionCounts[serverID] = make(map[uuid.UUID]int)
 				}
 				a.mentionCounts[serverID][payload.Message.ChannelID]++
 			}
+		}
+
+		// Sound and desktop notification: fire for all non-own, non-muted messages.
+		// Sound plays even in the current channel; desktop popup only when away from it.
+		if !display.IsOwn && !isMutedChannel && !isMutedServer {
+			channelName := ""
+			for _, channels := range sc.Channels {
+				for _, ch := range channels {
+					if ch.ID == payload.Message.ChannelID {
+						channelName = ch.Name
+						break
+					}
+				}
+			}
+			srvName := ""
+			if sc.ServerInfo != nil {
+				srvName = sc.ServerInfo.Name
+			}
+			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
 		}
 
 		log.Printf("MESSAGE_CREATE: channel=%s, author=%s, activeConn=%v, currentChannel=%v",

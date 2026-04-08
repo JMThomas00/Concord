@@ -239,6 +239,21 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		return a.handleSettingsServerFormKey(msg)
 	}
 
+	// Route server sound override sub-page
+	if s.ServerSoundPageOpen {
+		return a.handleServerSoundPageKey(msg)
+	}
+
+	// Route notification sub-pages
+	if s.SelectedCategory == 1 && s.FocusOnForm {
+		if s.NotifSoundPickerOpen {
+			return a.handleNotifSoundPickerKey(msg)
+		}
+		if s.NotifMutePickerOpen {
+			return a.handleNotifMutePickerKey(msg)
+		}
+	}
+
 	switch msg.String() {
 	case "esc":
 		// If delete confirmation is shown, cancel it
@@ -271,6 +286,10 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 					s.SelectedTheme--
 					a.previewTheme(s.AvailableThemes[s.SelectedTheme])
 				}
+			case 1: // Notifications category
+				if s.NotifFocusField > 0 {
+					s.NotifFocusField--
+				}
 			case 3: // Manage Servers category
 				if s.SelectedServer > 0 {
 					s.SelectedServer--
@@ -291,6 +310,10 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.SelectedTheme < len(s.AvailableThemes)-1 {
 					s.SelectedTheme++
 					a.previewTheme(s.AvailableThemes[s.SelectedTheme])
+				}
+			case 1: // Notifications category
+				if s.NotifFocusField < 5 {
+					s.NotifFocusField++
 				}
 			case 3: // Manage Servers category
 				serverCount := len(a.connMgr.GetAllConnections())
@@ -321,8 +344,9 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				chosen := s.AvailableThemes[s.SelectedTheme]
 				a.applyAndSaveTheme(chosen)
 				a.statusMessage = fmt.Sprintf("Theme set to %q", themes.GetThemeDisplayName(chosen))
-				// Go back to categories list after applying
 				s.FocusOnForm = false
+			case 1: // Notifications category
+				a.handleNotifFieldActivate(s)
 			}
 		}
 
@@ -475,6 +499,21 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 
+	case "space":
+		if s.FocusOnForm && s.SelectedCategory == 1 {
+			switch s.NotifFocusField {
+			case 0: // Notification Sounds toggle
+				a.notifConfig.SoundsMuted = !a.notifConfig.SoundsMuted
+				a.saveNotifConfig()
+			case 1: // Mentions Only toggle
+				a.notifConfig.MentionsOnly = !a.notifConfig.MentionsOnly
+				a.saveNotifConfig()
+			case 2: // Terminal Bell on Mention toggle
+				a.notifConfig.BellOnMention = !a.notifConfig.BellOnMention
+				a.saveNotifConfig()
+			}
+		}
+
 	case "p":
 		if s.FocusOnForm && s.SelectedCategory == 3 {
 			// Ping selected server
@@ -494,9 +533,183 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				return PingServerCmd(srv.ServerInfo)
 			}
 		}
+
+	case "s", "S":
+		if s.FocusOnForm && s.SelectedCategory == 3 {
+			// Open per-server sound override sub-page
+			servers := a.connMgr.GetAllConnections()
+			if s.SelectedServer >= 0 && s.SelectedServer < len(servers) {
+				srv := servers[s.SelectedServer]
+				serverID := srv.ServerInfo.ID
+				s.ServerSoundServerID = &serverID
+				s.ServerSoundFocus = 0
+				s.ServerSoundPickerOpen = false
+				s.ServerSoundPageOpen = true
+			}
+		}
 	}
 
 	return nil
+}
+
+// handleNotifFieldActivate is called on Enter for the Notifications category.
+func (a *App) handleNotifFieldActivate(s *SettingsState) {
+	switch s.NotifFocusField {
+	case 0: // Notification Sounds toggle
+		a.notifConfig.SoundsMuted = !a.notifConfig.SoundsMuted
+		a.saveNotifConfig()
+	case 1: // Mentions Only toggle
+		a.notifConfig.MentionsOnly = !a.notifConfig.MentionsOnly
+		a.saveNotifConfig()
+	case 2: // Terminal Bell on Mention toggle
+		a.notifConfig.BellOnMention = !a.notifConfig.BellOnMention
+		a.saveNotifConfig()
+	case 3: // @Mention sound picker
+		s.NotifSoundPickerOpen = true
+		s.NotifSoundTarget = 0
+		s.NotifSoundCursor = FindSoundIndex(a.notifConfig.MentionSound)
+	case 4: // Message sound picker
+		s.NotifSoundPickerOpen = true
+		s.NotifSoundTarget = 1
+		s.NotifSoundCursor = FindSoundIndex(a.notifConfig.MessageSound)
+	case 5: // Mute manager
+		s.NotifMutePickerOpen = true
+		s.NotifMuteTab = 0
+		s.NotifMuteServerIdx = 0
+		s.NotifMuteChanIdx = 0
+	}
+}
+
+// handleNotifSoundPickerKey handles key events on the sound picker sub-page.
+func (a *App) handleNotifSoundPickerKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.settingsState
+	if s == nil {
+		return nil
+	}
+	switch msg.String() {
+	case "esc":
+		s.NotifSoundPickerOpen = false
+	case "up", "k":
+		if s.NotifSoundCursor > 0 {
+			s.NotifSoundCursor--
+		}
+	case "down", "j":
+		if s.NotifSoundCursor < len(SoundOptions)-1 {
+			s.NotifSoundCursor++
+		}
+	case "p":
+		// Preview the highlighted sound
+		a.playSound(SoundOptions[s.NotifSoundCursor].Name)
+	case "enter", " ":
+		chosen := SoundOptions[s.NotifSoundCursor].Name
+		if s.NotifSoundTarget == 0 {
+			a.notifConfig.MentionSound = chosen
+		} else {
+			a.notifConfig.MessageSound = chosen
+		}
+		a.saveNotifConfig()
+		s.NotifSoundPickerOpen = false
+	}
+	return nil
+}
+
+// handleNotifMutePickerKey handles key events on the mute picker sub-page.
+func (a *App) handleNotifMutePickerKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.settingsState
+	if s == nil {
+		return nil
+	}
+	switch msg.String() {
+	case "esc":
+		s.NotifMutePickerOpen = false
+	case "tab":
+		s.NotifMuteTab = 1 - s.NotifMuteTab // toggle 0↔1
+		s.NotifMuteServerIdx = 0
+		s.NotifMuteChanIdx = 0
+	case "up", "k":
+		if s.NotifMuteTab == 0 {
+			if s.NotifMuteServerIdx > 0 {
+				s.NotifMuteServerIdx--
+			}
+		} else {
+			if s.NotifMuteChanIdx > 0 {
+				s.NotifMuteChanIdx--
+			}
+		}
+	case "down", "j":
+		if s.NotifMuteTab == 0 {
+			if s.NotifMuteServerIdx < len(a.clientServers)-1 {
+				s.NotifMuteServerIdx++
+			}
+		} else {
+			// Count total channels
+			total := a.notifMuteChanTotal()
+			if s.NotifMuteChanIdx < total-1 {
+				s.NotifMuteChanIdx++
+			}
+		}
+	case " ", "enter":
+		if s.NotifMuteTab == 0 {
+			a.toggleMuteServer(s.NotifMuteServerIdx)
+		} else {
+			a.toggleMuteChanByIndex(s.NotifMuteChanIdx)
+		}
+	}
+	return nil
+}
+
+// notifMuteChanTotal returns the total number of text channels across all servers.
+func (a *App) notifMuteChanTotal() int {
+	total := 0
+	for _, srv := range a.connMgr.GetAllConnections() {
+		for _, channels := range srv.Channels {
+			for _, ch := range channels {
+				if ch.Type == 0 { // text channel
+					total++
+				}
+			}
+		}
+	}
+	return total
+}
+
+// toggleMuteServer toggles the mute state for the server at the given list index.
+func (a *App) toggleMuteServer(idx int) {
+	servers := a.clientServers
+	if idx < 0 || idx >= len(servers) {
+		return
+	}
+	id := servers[idx].ID
+	if a.mutedServers[id] {
+		delete(a.mutedServers, id)
+	} else {
+		a.mutedServers[id] = true
+	}
+	a.saveMutedServers()
+}
+
+// toggleMuteChanByIndex toggles the mute state for the nth text channel across all servers.
+func (a *App) toggleMuteChanByIndex(idx int) {
+	i := 0
+	for _, srv := range a.connMgr.GetAllConnections() {
+		for _, channels := range srv.Channels {
+			for _, ch := range channels {
+				if ch.Type != 0 {
+					continue
+				}
+				if i == idx {
+					if a.mutedChannels[ch.ID] {
+						delete(a.mutedChannels, ch.ID)
+					} else {
+						a.mutedChannels[ch.ID] = true
+					}
+					a.saveMutedChannels()
+					return
+				}
+				i++
+			}
+		}
+	}
 }
 
 // handleSettingsServerFormKey handles key events when the server add/edit form is open
@@ -699,11 +912,19 @@ func (a *App) renderSettingsView() string {
 	case 0: // Theme category
 		contentBuf.WriteString(a.renderThemeContent(s, contentWidth, contentHeight))
 	case 1: // Notifications category
-		contentBuf.WriteString(a.renderNotificationsContent(contentWidth, contentHeight))
+		if s.NotifSoundPickerOpen {
+			contentBuf.WriteString(a.renderNotifSoundPickerPage(contentWidth, contentHeight))
+		} else if s.NotifMutePickerOpen {
+			contentBuf.WriteString(a.renderNotifMutePickerPage(contentWidth, contentHeight))
+		} else {
+			contentBuf.WriteString(a.renderNotificationsContent(contentWidth, contentHeight))
+		}
 	case 2: // Display category
 		contentBuf.WriteString(a.renderDisplayContent(contentWidth, contentHeight))
 	case 3: // Manage Servers category
-		if s.ServerFormOpen {
+		if s.ServerSoundPageOpen {
+			contentBuf.WriteString(a.renderServerSoundPage(contentWidth, contentHeight))
+		} else if s.ServerFormOpen {
 			contentBuf.WriteString(a.renderServerFormPage(contentWidth, contentHeight))
 		} else {
 			contentBuf.WriteString(a.renderManageServersContent(s, contentWidth, contentHeight))
@@ -1198,7 +1419,7 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 	navStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(navStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
-	bottom.writeLine(navStyle.Render("Actions: Ctrl+N add · E edit · D delete · P ping"))
+	bottom.writeLine(navStyle.Render("Actions: Ctrl+N add · E edit · D delete · P ping · S sounds"))
 
 	// Fill remaining bottom section space
 	bottom.pad()
@@ -1219,90 +1440,328 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 		Render(content)
 }
 
-// renderNotificationsContent renders the notifications settings panel
+// renderNotificationsContent renders the main notifications settings panel.
 func (a *App) renderNotificationsContent(width, height int) string {
-	layout := calculateSettingsLayout(width, height, defaultStatusLines, 0)
+	s := a.settingsState
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + blank + 2 help lines = 4 lines → pageBottomExtra = 1
+	layout := calculateSettingsLayout(width, height, 2, 1)
 
-	// ── TOP SECTION ──
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+
+	focused := s != nil && s.FocusOnForm
+	focusField := 0
+	if s != nil {
+		focusField = s.NotifFocusField
+	}
+
+	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
-
-	// Header
-	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-		Bold(true)
-	top.writeLine(headerStyle.Render("Notifications Settings"))
-
-	// Subtitle
-	subtitleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(subtitleStyle.Render("Configure notification preferences and behavior"))
-
-	// Feature status
-	featureStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Orange)).
-		Italic(true)
-	top.writeLine(featureStyle.Render("Feature in development"))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("Notification Settings"))
+	top.writeLine(dimStyle.Render("Sounds, desktop alerts, and muting"))
 	top.writeBlank()
-
-	// Top section separator (last line of top section)
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
-	// ── MIDDLE SECTION ──
+	// ── MIDDLE ──
 	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 
-	// Coming soon message (centered)
-	centerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	middle.writeLine(centerStyle.Render("                         This feature is coming soon!"))
-	middle.writeLine(centerStyle.Render("                      Stay tuned for future updates."))
+	cfg := a.notifConfig
+
+	// helper to render a settings row (label + value line) with focus highlight
+	writeField := func(fieldIdx int, label, value string) {
+		isSelected := focused && focusField == fieldIdx
+		lStyle := labelStyle
+		vStyle := normalStyle
+		marker := "  "
+		if isSelected {
+			lStyle = selectedStyle
+			vStyle = selectedStyle
+			marker = "▶ "
+		}
+		middle.writeLine(lStyle.Render(marker + label))
+		middle.writeLine(vStyle.Render("    " + value))
+		middle.writeBlank()
+	}
+
+	// Field 0: Notification sounds toggle
+	soundsVal := "[✓] Enabled"
+	if cfg.SoundsMuted {
+		soundsVal = "[ ] Disabled"
+	}
+	writeField(0, "Notification Sounds", soundsVal)
+
+	// Field 1: Mentions only toggle
+	mentionsOnlyVal := "[ ] Off  (sounds for all messages)"
+	if cfg.MentionsOnly {
+		mentionsOnlyVal = "[✓] On   (sounds for @mentions only)"
+	}
+	writeField(1, "Mentions Only", mentionsOnlyVal)
+
+	// Field 2: Terminal bell on mention toggle
+	bellVal := "[ ] Off"
+	if cfg.BellOnMention {
+		bellVal = "[✓] On"
+	}
+	writeField(2, "Terminal Bell on Mention", bellVal)
+
+	// Field 3: @Mention sound
+	mentionSound := cfg.MentionSound
+	if mentionSound == "" {
+		mentionSound = "None"
+	}
+	writeField(3, "@Mention Alert Sound", mentionSound+" ▾")
+
+	// Field 4: Message sound
+	msgSound := cfg.MessageSound
+	if msgSound == "" {
+		msgSound = "None"
+	}
+	writeField(4, "Message Alert Sound", msgSound+" ▾")
+
+	// Divider
+	middle.writeLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
 	middle.writeBlank()
-	middle.writeBlank()
 
-	// Planned features
-	plannedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-		Bold(true)
-	middle.writeLine(plannedStyle.Render("Planned features:"))
+	// Field 5: Mute manager link
+	muteLabel := "Manage Muted Servers & Channels"
+	numMuted := len(a.mutedServers) + len(a.mutedChannels)
+	muteHint := "none muted"
+	if numMuted > 0 {
+		muteHint = fmt.Sprintf("%d muted", numMuted)
+	}
+	isSelected5 := focused && focusField == 5
+	marker5 := "  "
+	lStyle5 := labelStyle
+	if isSelected5 {
+		marker5 = "▶ "
+		lStyle5 = selectedStyle
+	}
+	middle.writeLine(lStyle5.Render(marker5 + muteLabel))
+	middle.writeLine(dimStyle.Render("    " + muteHint))
 
-	bulletStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	middle.writeLine(bulletStyle.Render("  • Desktop notifications for @mentions"))
-	middle.writeLine(bulletStyle.Render("  • Sound alerts for messages"))
-	middle.writeLine(bulletStyle.Render("  • Per-channel notification muting"))
-	middle.writeLine(bulletStyle.Render("  • DND mode scheduling"))
-	middle.writeLine(bulletStyle.Render("  • Notification history log"))
-
-	// Fill remaining middle section space
 	middle.pad()
 
-	// ── BOTTOM SECTION ──
+	// ── BOTTOM ──
 	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
-
-	// Bottom section separator (first line of bottom section)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
-
-	// Navigation help
-	navStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(navStyle.Render("Navigation: Esc close · Tab back to sections"))
-
-	// Fill remaining bottom section space
+	bottom.writeBlank()
+	bottom.writeLine(helpStyle.Render("↑↓ navigate · Space / Enter toggle or open · Tab back to menu"))
+	bottom.writeLine(helpStyle.Render("P preview sound · Esc back"))
 	bottom.pad()
 
-	// ── ASSEMBLE ──
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		top.String(),
-		middle.String(),
-		bottom.String(),
-	)
-
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).
-		Height(height).
+		Width(width).Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Padding(0, 1).
-		Render(content)
+		Padding(0, 1).Render(content)
+}
+
+// renderNotifSoundPickerPage renders the sound selection sub-page.
+func (a *App) renderNotifSoundPickerPage(width, height int) string {
+	s := a.settingsState
+	if s == nil {
+		return ""
+	}
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + 1 help line → pageBottomExtra = 0
+	layout := calculateSettingsLayout(width, height, 2, 0)
+
+	title := "Select @Mention Sound"
+	subtitle := "Sound played when someone @mentions you"
+	if s.NotifSoundTarget == 1 {
+		title = "Select Message Alert Sound"
+		subtitle = "Sound played for messages in other channels"
+	}
+
+	// ── TOP ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).Render(title))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Render(subtitle))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	currentSound := a.notifConfig.MentionSound
+	if s.NotifSoundTarget == 1 {
+		currentSound = a.notifConfig.MessageSound
+	}
+
+	for i, opt := range SoundOptions {
+		isCursor := i == s.NotifSoundCursor
+		isCurrent := opt.Name == currentSound || (currentSound == "" && opt.Name == "None")
+
+		prefix := "  ○ "
+		if isCurrent {
+			prefix = "  ● "
+		}
+		line := prefix + opt.Name
+
+		if isCursor {
+			middle.writeLine(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Background)).
+				Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+				Render("▶ " + line[2:]))
+		} else {
+			middle.writeLine(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Render(line))
+		}
+	}
+	middle.pad()
+
+	// ── BOTTOM ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Render("↑↓ navigate · P preview · Enter select · Esc cancel"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().
+		Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
+}
+
+// renderNotifMutePickerPage renders the mute manager sub-page.
+func (a *App) renderNotifMutePickerPage(width, height int) string {
+	s := a.settingsState
+	if s == nil {
+		return ""
+	}
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + blank + 2 help lines → pageBottomExtra = 1
+	layout := calculateSettingsLayout(width, height, 2, 1)
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Orange)).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	cursorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+
+	// ── TOP ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("Muted Servers & Channels"))
+	top.writeLine(dimStyle.Render("Space / Enter to toggle muting · Tab to switch tab"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	// Tab bar
+	serversTab := "  Servers  "
+	channelsTab := "  Channels  "
+	activeTabStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	inactiveTabStyle := dimStyle
+	if s.NotifMuteTab == 0 {
+		middle.writeLine(activeTabStyle.Render(serversTab) + "  " + inactiveTabStyle.Render(channelsTab))
+	} else {
+		middle.writeLine(inactiveTabStyle.Render(serversTab) + "  " + activeTabStyle.Render(channelsTab))
+	}
+	middle.writeBlank()
+
+	if s.NotifMuteTab == 0 {
+		// Servers list
+		if len(a.clientServers) == 0 {
+			middle.writeLine(dimStyle.Render("  No servers configured"))
+		}
+		for i, srv := range a.clientServers {
+			isMuted := a.mutedServers[srv.ID]
+			isCursor := i == s.NotifMuteServerIdx
+			dot := "○"
+			dStyle := normalStyle
+			if isMuted {
+				dot = "●"
+				dStyle = mutedStyle
+			}
+			label := fmt.Sprintf("  %s  %s  %s:%d", dot, srv.Name, srv.Address, srv.Port)
+			if isMuted {
+				label += "  (muted)"
+			}
+			if isCursor {
+				middle.writeLine(cursorStyle.Render("▶" + label[1:]))
+			} else {
+				middle.writeLine(dStyle.Render(label))
+			}
+		}
+	} else {
+		// Channels list — flat list across all servers
+		idx := 0
+		servers := a.connMgr.GetAllConnections()
+		if len(servers) == 0 {
+			middle.writeLine(dimStyle.Render("  No connected servers"))
+		}
+		for _, srv := range servers {
+			srvName := ""
+			if srv.ServerInfo != nil {
+				srvName = srv.ServerInfo.Name
+			}
+			for _, channels := range srv.Channels {
+				for _, ch := range channels {
+					if ch.Type != 0 {
+						continue
+					}
+					isMuted := a.mutedChannels[ch.ID]
+					isCursor := idx == s.NotifMuteChanIdx
+					dot := "○"
+					dStyle := normalStyle
+					if isMuted {
+						dot = "●"
+						dStyle = mutedStyle
+					}
+					label := fmt.Sprintf("  %s  #%s", dot, ch.Name)
+					if srvName != "" {
+						label += dimStyle.Render(fmt.Sprintf("  (%s)", srvName))
+					}
+					if isMuted {
+						label += mutedStyle.Render("  muted")
+					}
+					if isCursor {
+						middle.writeLine(cursorStyle.Render("▶ " + dot + "  #" + ch.Name))
+					} else {
+						middle.writeLine(dStyle.Render(label))
+					}
+					idx++
+				}
+			}
+		}
+		if idx == 0 {
+			middle.writeLine(dimStyle.Render("  No text channels found"))
+		}
+	}
+	middle.pad()
+
+	// ── BOTTOM ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+	bottom.writeLine(helpStyle.Render("↑↓ navigate · Space / Enter toggle mute"))
+	bottom.writeLine(helpStyle.Render("Tab switch tab · Esc close"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().
+		Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
 }
 
 // renderDisplayContent renders the display settings panel
@@ -1421,4 +1880,273 @@ func (a *App) saveServerOrder() {
 	if err := a.configMgr.SaveServers(config); err != nil {
 		a.statusMessage = fmt.Sprintf("Failed to save server order: %v", err)
 	}
+}
+
+// handleServerSoundPageKey handles key events on the per-server sound override sub-page.
+func (a *App) handleServerSoundPageKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.settingsState
+	if s == nil {
+		return nil
+	}
+
+	// Route to sound picker if open
+	if s.ServerSoundPickerOpen {
+		switch msg.String() {
+		case "esc":
+			s.ServerSoundPickerOpen = false
+		case "up", "k":
+			if s.ServerSoundPickerCursor > 0 {
+				s.ServerSoundPickerCursor--
+			}
+		case "down", "j":
+			if s.ServerSoundPickerCursor < len(SoundOptions)-1 {
+				s.ServerSoundPickerCursor++
+			}
+		case "p":
+			a.playSound(SoundOptions[s.ServerSoundPickerCursor].Name)
+		case "enter", " ":
+			chosen := SoundOptions[s.ServerSoundPickerCursor].Name
+			a.applyServerSoundOverrideField(s, s.ServerSoundPickerTarget, chosen)
+			s.ServerSoundPickerOpen = false
+		}
+		return nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		s.ServerSoundPageOpen = false
+		s.ServerSoundServerID = nil
+	case "up", "k":
+		if s.ServerSoundFocus > 0 {
+			s.ServerSoundFocus--
+		}
+	case "down", "j":
+		if s.ServerSoundFocus < 3 {
+			s.ServerSoundFocus++
+		}
+	case "space", "enter":
+		switch s.ServerSoundFocus {
+		case 0: // Muted toggle
+			a.applyServerSoundOverrideField(s, 0, "")
+		case 1: // Mentions only toggle
+			a.applyServerSoundOverrideField(s, 1, "")
+		case 2: // Mention sound picker
+			ov := a.getServerSoundOverride(s.ServerSoundServerID)
+			s.ServerSoundPickerTarget = 2
+			s.ServerSoundPickerCursor = FindSoundIndex(ov.MentionSound)
+			s.ServerSoundPickerOpen = true
+		case 3: // Message sound picker
+			ov := a.getServerSoundOverride(s.ServerSoundServerID)
+			s.ServerSoundPickerTarget = 3
+			s.ServerSoundPickerCursor = FindSoundIndex(ov.MessageSound)
+			s.ServerSoundPickerOpen = true
+		}
+	case "r", "R":
+		// Reset: clear override entirely (revert to global defaults)
+		a.setServerSoundOverride(s.ServerSoundServerID, nil)
+	}
+	return nil
+}
+
+// getServerSoundOverride returns the current override for a server, or a zero-value struct if none.
+func (a *App) getServerSoundOverride(serverID *uuid.UUID) ServerSoundOverride {
+	if serverID == nil {
+		return ServerSoundOverride{}
+	}
+	for _, srv := range a.clientServers {
+		if srv.ID == *serverID && srv.SoundOverride != nil {
+			return *srv.SoundOverride
+		}
+	}
+	return ServerSoundOverride{}
+}
+
+// setServerSoundOverride writes (or clears) the sound override for a server and persists it.
+func (a *App) setServerSoundOverride(serverID *uuid.UUID, ov *ServerSoundOverride) {
+	if serverID == nil {
+		return
+	}
+	for _, srv := range a.clientServers {
+		if srv.ID == *serverID {
+			srv.SoundOverride = ov
+			if err := a.configMgr.UpdateServer(srv); err != nil {
+				a.statusMessage = fmt.Sprintf("Failed to save server sound settings: %v", err)
+			}
+			return
+		}
+	}
+}
+
+// applyServerSoundOverrideField modifies one field of the server's sound override.
+// field: 0=muted toggle, 1=mentionsOnly toggle, 2=mentionSound string, 3=messageSound string.
+func (a *App) applyServerSoundOverrideField(s *SettingsState, field int, value string) {
+	if s.ServerSoundServerID == nil {
+		return
+	}
+	ov := a.getServerSoundOverride(s.ServerSoundServerID)
+	switch field {
+	case 0:
+		ov.SoundsMuted = !ov.SoundsMuted
+	case 1:
+		ov.MentionsOnly = !ov.MentionsOnly
+	case 2:
+		ov.MentionSound = value
+	case 3:
+		ov.MessageSound = value
+	}
+	a.setServerSoundOverride(s.ServerSoundServerID, &ov)
+}
+
+// renderServerSoundPage renders the per-server sound override settings sub-page.
+func (a *App) renderServerSoundPage(width, height int) string {
+	s := a.settingsState
+	if s == nil {
+		return ""
+	}
+
+	// Find the server name
+	serverName := "Server"
+	for _, srv := range a.clientServers {
+		if s.ServerSoundServerID != nil && srv.ID == *s.ServerSoundServerID {
+			serverName = srv.Name
+			break
+		}
+	}
+
+	ov := a.getServerSoundOverride(s.ServerSoundServerID)
+
+	// If sound picker sub-page is open, render that instead
+	if s.ServerSoundPickerOpen {
+		layout := calculateSettingsLayout(width, height, 2, 0)
+		title := "@Mention Sound — " + serverName
+		subtitle := "Overrides global mention sound for this server"
+		if s.ServerSoundPickerTarget == 3 {
+			title = "Message Sound — " + serverName
+			subtitle = "Overrides global message sound for this server"
+		}
+		top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+		top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).Render(title))
+		top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Render(subtitle))
+		top.writeBlank()
+		top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+		middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+		currentSound := ov.MentionSound
+		if s.ServerSoundPickerTarget == 3 {
+			currentSound = ov.MessageSound
+		}
+		for i, opt := range SoundOptions {
+			isCursor := i == s.ServerSoundPickerCursor
+			isCurrent := opt.Name == currentSound || (currentSound == "" && opt.Name == "None")
+			marker := "  "
+			style := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+			if isCursor {
+				marker = "▶ "
+				style = lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Background)).
+					Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+			} else if isCurrent {
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green))
+			}
+			suffix := ""
+			if isCurrent {
+				suffix = " ✓"
+			}
+			middle.writeLine(style.Render(marker + opt.Name + suffix))
+		}
+		middle.pad()
+
+		bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+		helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+		bottom.writeLine(helpStyle.Render("↑↓ navigate · P preview · Enter select · Esc back"))
+		bottom.pad()
+
+		content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+		return lipgloss.NewStyle().Width(width).Height(height).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+			Padding(0, 1).Render(content)
+	}
+
+	// Main server sound page
+	layout := calculateSettingsLayout(width, height, 2, 1)
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+
+	focused := s.FocusOnForm
+
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("Sound Settings — " + serverName))
+	top.writeLine(dimStyle.Render("Overrides global notification sounds for this server"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	renderField := func(fieldIdx int, label, value string) {
+		isSelected := focused && s.ServerSoundFocus == fieldIdx
+		lStyle := labelStyle
+		vStyle := normalStyle
+		marker := "  "
+		if isSelected {
+			lStyle = selectedStyle
+			vStyle = selectedStyle
+			marker = "▶ "
+		}
+		middle.writeLine(lStyle.Render(marker + label))
+		middle.writeLine(vStyle.Render("    " + value))
+		middle.writeBlank()
+	}
+
+	mutedVal := "[✓] Enabled"
+	if ov.SoundsMuted {
+		mutedVal = "[ ] Muted (all sounds silenced for this server)"
+	}
+	renderField(0, "Notification Sounds", mutedVal)
+
+	mentionsOnlyVal := "[ ] Off  (sounds for all messages)"
+	if ov.MentionsOnly {
+		mentionsOnlyVal = "[✓] On   (sounds for @mentions only)"
+	}
+	renderField(1, "Mentions Only", mentionsOnlyVal)
+
+	mentionSnd := ov.MentionSound
+	if mentionSnd == "" {
+		mentionSnd = "Global default (" + a.notifConfig.MentionSound + ")"
+		if a.notifConfig.MentionSound == "" {
+			mentionSnd = "Global default (None)"
+		}
+	}
+	renderField(2, "@Mention Alert Sound", mentionSnd+" ▾")
+
+	msgSnd := ov.MessageSound
+	if msgSnd == "" {
+		msgSnd = "Global default (" + a.notifConfig.MessageSound + ")"
+		if a.notifConfig.MessageSound == "" {
+			msgSnd = "Global default (None)"
+		}
+	}
+	renderField(3, "Message Alert Sound", msgSnd+" ▾")
+
+	middle.pad()
+
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+	bottom.writeLine(helpStyle.Render("↑↓ navigate · Space / Enter toggle or open · R reset to global defaults · Esc back"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().Width(width).Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).Render(content)
 }

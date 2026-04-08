@@ -46,7 +46,26 @@ type UIConfig struct {
 	ShowMembersList     bool                         `json:"show_members_list"`
 	CollapsedCategories map[string]map[string]bool   `json:"collapsed_categories,omitempty"` // serverID -> categoryID -> collapsed
 	MutedChannels       []string                     `json:"muted_channels,omitempty"`       // channel UUIDs
+	MutedServers        []string                     `json:"muted_servers,omitempty"`        // client server UUIDs
 	LastBannerIndex     int                          `json:"last_banner_index"`              // Index of last displayed banner
+	Notifications       NotificationConfig           `json:"notifications"`
+}
+
+// NotificationConfig holds notification and sound alert preferences
+type NotificationConfig struct {
+	SoundsMuted  bool   `json:"sounds_muted"`   // Master mute for all notification sounds
+	MentionsOnly bool   `json:"mentions_only"`  // Only play sounds for @mention messages
+	BellOnMention bool  `json:"bell_on_mention"` // Write terminal bell \a on every @mention
+	MentionSound string `json:"mention_sound"`  // Sound name for @mention alerts
+	MessageSound string `json:"message_sound"`  // Sound name for regular message alerts
+}
+
+// ServerSoundOverride stores per-server sound settings, overriding global defaults.
+type ServerSoundOverride struct {
+	SoundsMuted  bool   `json:"sounds_muted"`  // Mute all sounds for this server
+	MentionsOnly bool   `json:"mentions_only"` // Only mention sounds for this server
+	MentionSound string `json:"mention_sound"` // "" means use global default
+	MessageSound string `json:"message_sound"` // "" means use global default
 }
 
 // ConfigManager handles loading and saving configuration files
