@@ -81,7 +81,16 @@ func extractBanners(n *html.Node) []BannerData {
 					// Extract ASCII art
 					artHTML := getInnerHTML(n)
 					artText := htmlutil.UnescapeString(artHTML)
-					artText = strings.TrimSpace(artText)
+					// Strip leading/trailing blank lines but preserve leading spaces
+					// on the first content line. strings.TrimSpace would eat them.
+					artLines := strings.Split(artText, "\n")
+					for len(artLines) > 0 && strings.TrimSpace(artLines[0]) == "" {
+						artLines = artLines[1:]
+					}
+					for len(artLines) > 0 && strings.TrimSpace(artLines[len(artLines)-1]) == "" {
+						artLines = artLines[:len(artLines)-1]
+					}
+					artText = strings.Join(artLines, "\n")
 
 					// Only add if we have valid data
 					if artText != "" {

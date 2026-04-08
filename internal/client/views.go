@@ -19,13 +19,15 @@ var typingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 // renderLoginView renders the login screen
 func (a *App) renderLoginView() string {
-	// Render ASCII art banner separately (no width constraint)
+	// Render ASCII art banner. Trim trailing whitespace from each line so lipgloss
+	// measures the true visual width. Many banner strings have trailing spaces that
+	// inflate the block width, causing lipgloss.Place to add too little left padding
+	// and making the art appear left-shifted on screen.
 	bannerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center)
+		Bold(true)
 
-	banner := bannerStyle.Render(a.banner.Art)
+	banner := bannerStyle.Render(trimBannerArt(a.banner.Art))
 
 	// Render login form with fixed width
 	formWidth := 50
@@ -158,13 +160,12 @@ func (a *App) renderLoginView() string {
 
 // renderRegisterView renders the registration screen
 func (a *App) renderRegisterView() string {
-	// Render ASCII art banner separately (no width constraint)
+	// Render ASCII art banner — trim trailing whitespace for correct centering.
 	bannerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center)
+		Bold(true)
 
-	banner := bannerStyle.Render(a.banner.Art)
+	banner := bannerStyle.Render(trimBannerArt(a.banner.Art))
 
 	// Render registration form with fixed width
 	formWidth := 50
