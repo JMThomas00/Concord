@@ -49,6 +49,7 @@ type UIConfig struct {
 	MutedServers        []string                     `json:"muted_servers,omitempty"`        // client server UUIDs
 	LastBannerIndex     int                          `json:"last_banner_index"`              // Index of last displayed banner
 	Notifications       NotificationConfig           `json:"notifications"`
+	Display             DisplayConfig                `json:"display"`
 }
 
 // NotificationConfig holds notification and sound alert preferences
@@ -58,6 +59,16 @@ type NotificationConfig struct {
 	BellOnMention bool  `json:"bell_on_mention"` // Write terminal bell \a on every @mention
 	MentionSound string `json:"mention_sound"`  // Sound name for @mention alerts
 	MessageSound string `json:"message_sound"`  // Sound name for regular message alerts
+}
+
+// DisplayConfig holds display and appearance preferences
+type DisplayConfig struct {
+	TimestampFormat string `json:"timestamp_format"` // "12h" or "24h"; empty = "24h"
+	TimestampStyle  string `json:"timestamp_style"`  // "absolute" or "relative"; empty = "absolute"
+	MessageDensity  string `json:"message_density"`  // "compact", "normal", "spacious"; empty = "normal"
+	ShowAvatars     bool   `json:"show_avatars"`      // show colored circle avatars in chat headers
+	ShowDateSeps    bool   `json:"show_date_seps"`    // show date separator lines between days
+	GroupingGapMins int    `json:"grouping_gap_mins"` // minutes before new header shown; 0 = default (5)
 }
 
 // ServerSoundOverride stores per-server sound settings, overriding global defaults.
@@ -274,6 +285,14 @@ func (cm *ConfigManager) LoadAppConfig() (*AppConfig, error) {
 				LastBannerIndex:     -1,
 				ShowMembersList:     true,
 				CollapsedCategories: make(map[string]map[string]bool),
+				Display: DisplayConfig{
+					TimestampFormat: "24h",
+					TimestampStyle:  "absolute",
+					MessageDensity:  "normal",
+					ShowAvatars:     false,
+					ShowDateSeps:    false,
+					GroupingGapMins: 5,
+				},
 			},
 		}, nil
 	}

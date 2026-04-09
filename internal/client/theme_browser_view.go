@@ -50,6 +50,9 @@ type SettingsState struct {
 	NotifMuteServerIdx   int  // cursor in servers list
 	NotifMuteChanIdx     int  // cursor in channels list
 
+	// Display category state
+	DisplayFocusField int // 0=timestamp format, 1=timestamp style, 2=density, 3=avatars, 4=date seps, 5=gap, 6=members panel
+
 	// Server sound override sub-page state (Manage Servers → S key)
 	ServerSoundPageOpen  bool       // server sound override sub-page open
 	ServerSoundServerID  *uuid.UUID // which server is being edited

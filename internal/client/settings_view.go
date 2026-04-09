@@ -290,6 +290,10 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.NotifFocusField > 0 {
 					s.NotifFocusField--
 				}
+			case 2: // Display category
+				if s.DisplayFocusField > 0 {
+					s.DisplayFocusField--
+				}
 			case 3: // Manage Servers category
 				if s.SelectedServer > 0 {
 					s.SelectedServer--
@@ -314,6 +318,10 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 			case 1: // Notifications category
 				if s.NotifFocusField < 5 {
 					s.NotifFocusField++
+				}
+			case 2: // Display category
+				if s.DisplayFocusField < 6 {
+					s.DisplayFocusField++
 				}
 			case 3: // Manage Servers category
 				serverCount := len(a.connMgr.GetAllConnections())
@@ -347,6 +355,8 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				s.FocusOnForm = false
 			case 1: // Notifications category
 				a.handleNotifFieldActivate(s)
+			case 2: // Display category
+				a.handleDisplayFieldActivate(s)
 			}
 		}
 
@@ -512,6 +522,9 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				a.notifConfig.BellOnMention = !a.notifConfig.BellOnMention
 				a.saveNotifConfig()
 			}
+		}
+		if s.FocusOnForm && s.SelectedCategory == 2 {
+			a.handleDisplayFieldActivate(s)
 		}
 
 	case "p":
@@ -1764,91 +1777,194 @@ func (a *App) renderNotifMutePickerPage(width, height int) string {
 		Padding(0, 1).Render(content)
 }
 
-// renderDisplayContent renders the display settings panel
+// renderDisplayContent renders the display settings panel.
 func (a *App) renderDisplayContent(width, height int) string {
-	layout := calculateSettingsLayout(width, height, defaultStatusLines, 0)
+	s := a.settingsState
+	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Bottom: separator + blank + 1 help line → pageBottomExtra = 0
+	layout := calculateSettingsLayout(width, height, 2, 0)
 
-	// ── TOP SECTION ──
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Background)).
+		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+
+	focused := s != nil && s.FocusOnForm
+	focusField := 0
+	if s != nil {
+		focusField = s.DisplayFocusField
+	}
+
+	cfg := DisplayConfig{}
+	showMembers := true
+	if a.uiConfig != nil {
+		cfg = a.uiConfig.Display
+		showMembers = a.uiConfig.ShowMembersList
+	}
+
+	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
-
-	// Header
-	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-		Bold(true)
-	top.writeLine(headerStyle.Render("Display Settings"))
-
-	// Subtitle
-	subtitleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(subtitleStyle.Render("Customize display and appearance settings"))
-
-	// Feature status
-	featureStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Orange)).
-		Italic(true)
-	top.writeLine(featureStyle.Render("Feature in development"))
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("Display Settings"))
+	top.writeLine(dimStyle.Render("Timestamps, message layout, and appearance"))
 	top.writeBlank()
-
-	// Top section separator (last line of top section)
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
-	// ── MIDDLE SECTION ──
+	// ── MIDDLE ──
 	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 
-	// Coming soon message (centered)
-	centerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	middle.writeLine(centerStyle.Render("                         This feature is coming soon!"))
-	middle.writeLine(centerStyle.Render("                      Stay tuned for future updates."))
+	writeField := func(fieldIdx int, label, value string) {
+		isSelected := focused && focusField == fieldIdx
+		lStyle := labelStyle
+		vStyle := normalStyle
+		marker := "  "
+		if isSelected {
+			lStyle = selectedStyle
+			vStyle = selectedStyle
+			marker = "▶ "
+		}
+		middle.writeLine(lStyle.Render(marker + label))
+		middle.writeLine(vStyle.Render("    " + value))
+		middle.writeBlank()
+	}
+
+	// Field 0: Timestamp Format
+	tsFormat := cfg.TimestampFormat
+	if tsFormat == "" {
+		tsFormat = "24h"
+	}
+	tsFormatVal := "24h  (01/02/06 15:04)"
+	if tsFormat == "12h" {
+		tsFormatVal = "12h  (01/02/06 3:04 PM)"
+	}
+	writeField(0, "Timestamp Format", tsFormatVal+" ◀▶")
+
+	// Field 1: Timestamp Style
+	tsStyle := cfg.TimestampStyle
+	if tsStyle == "" {
+		tsStyle = "absolute"
+	}
+	tsStyleVal := "Absolute  (01/02/06 15:04)"
+	if tsStyle == "relative" {
+		tsStyleVal = "Relative  (Today at 15:04)"
+	}
+	writeField(1, "Timestamp Style", tsStyleVal+" ◀▶")
+
+	// Field 2: Message Density
+	density := cfg.MessageDensity
+	if density == "" {
+		density = "normal"
+	}
+	densityVal := map[string]string{
+		"compact":  "Compact   (no blank lines between messages)",
+		"normal":   "Normal    (one blank line between messages)",
+		"spacious": "Spacious  (extra space between sender groups)",
+	}[density]
+	writeField(2, "Message Density", densityVal+" ◀▶")
+
+	// Field 3: Show Avatars
+	avatarVal := "[ ] Off"
+	if cfg.ShowAvatars {
+		avatarVal = "[✓] On   (colored circle before username)"
+	}
+	writeField(3, "Show Avatars", avatarVal)
+
+	// Field 4: Date Separators
+	dateSepVal := "[ ] Off"
+	if cfg.ShowDateSeps {
+		dateSepVal = "[✓] On   (──── Today ──── between days)"
+	}
+	writeField(4, "Date Separators", dateSepVal)
+
+	// Field 5: Message Grouping Gap
+	gapMins := cfg.GroupingGapMins
+	if gapMins == 0 {
+		gapMins = 5
+	}
+	gapVal := fmt.Sprintf("%d min  (group consecutive messages from same sender)", gapMins)
+	writeField(5, "Message Grouping Gap", gapVal+" ◀▶")
+
+	// Divider
+	middle.writeLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
 	middle.writeBlank()
-	middle.writeBlank()
 
-	// Planned features
-	plannedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-		Bold(true)
-	middle.writeLine(plannedStyle.Render("Planned features:"))
+	// Field 6: Show Members Panel
+	membersVal := "[ ] Hidden"
+	if showMembers {
+		membersVal = "[✓] Visible"
+	}
+	writeField(6, "Show Members Panel", membersVal)
 
-	bulletStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	middle.writeLine(bulletStyle.Render("  • Font size adjustment"))
-	middle.writeLine(bulletStyle.Render("  • Timestamp format options (12h/24h, relative/absolute)"))
-	middle.writeLine(bulletStyle.Render("  • Message density (compact, normal, spacious)"))
-	middle.writeLine(bulletStyle.Render("  • Avatar display preferences"))
-	middle.writeLine(bulletStyle.Render("  • Color blindness modes"))
-	middle.writeLine(bulletStyle.Render("  • Custom color overrides"))
-
-	// Fill remaining middle section space
 	middle.pad()
 
-	// ── BOTTOM SECTION ──
+	// ── BOTTOM ──
 	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
-
-	// Bottom section separator (first line of bottom section)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
-
-	// Navigation help
-	navStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(navStyle.Render("Navigation: Esc close · Tab back to sections"))
-
-	// Fill remaining bottom section space
+	bottom.writeLine(helpStyle.Render("↑↓ navigate · Space / Enter toggle or cycle · Tab back to menu · Esc close"))
 	bottom.pad()
 
-	// ── ASSEMBLE ──
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		top.String(),
-		middle.String(),
-		bottom.String(),
-	)
-
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).
-		Height(height).
+		Width(width).Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Padding(0, 1).
-		Render(content)
+		Padding(0, 1).Render(content)
+}
+
+// handleDisplayFieldActivate is called on Space/Enter for the Display category.
+func (a *App) handleDisplayFieldActivate(s *SettingsState) {
+	if a.uiConfig == nil {
+		return
+	}
+	cfg := &a.uiConfig.Display
+	switch s.DisplayFocusField {
+	case 0: // Timestamp Format: cycle 24h → 12h → 24h
+		if cfg.TimestampFormat == "" || cfg.TimestampFormat == "24h" {
+			cfg.TimestampFormat = "12h"
+		} else {
+			cfg.TimestampFormat = "24h"
+		}
+	case 1: // Timestamp Style: cycle absolute → relative → absolute
+		if cfg.TimestampStyle == "" || cfg.TimestampStyle == "absolute" {
+			cfg.TimestampStyle = "relative"
+		} else {
+			cfg.TimestampStyle = "absolute"
+		}
+	case 2: // Message Density: cycle compact → normal → spacious → compact
+		switch cfg.MessageDensity {
+		case "compact":
+			cfg.MessageDensity = "normal"
+		case "spacious":
+			cfg.MessageDensity = "compact"
+		default: // "normal" or ""
+			cfg.MessageDensity = "spacious"
+		}
+	case 3: // Show Avatars toggle
+		cfg.ShowAvatars = !cfg.ShowAvatars
+	case 4: // Date Separators toggle
+		cfg.ShowDateSeps = !cfg.ShowDateSeps
+	case 5: // Message Grouping Gap: cycle through presets
+		presets := []int{1, 2, 5, 10, 15, 30}
+		cur := cfg.GroupingGapMins
+		if cur == 0 {
+			cur = 5
+		}
+		next := presets[0]
+		for i, v := range presets {
+			if v == cur && i+1 < len(presets) {
+				next = presets[i+1]
+				break
+			}
+		}
+		cfg.GroupingGapMins = next
+	case 6: // Show Members Panel toggle
+		a.uiConfig.ShowMembersList = !a.uiConfig.ShowMembersList
+	}
+	a.saveDisplayConfig()
+	a.updateChatContent()
 }
 
 // saveServerOrder saves the updated server order to the config file

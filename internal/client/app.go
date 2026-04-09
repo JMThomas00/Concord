@@ -404,6 +404,52 @@ func (a *App) saveNotifConfig() {
 	_ = a.configMgr.SaveAppConfig(cfg)
 }
 
+// saveDisplayConfig persists the current display config and ShowMembersList back to config.json.
+func (a *App) saveDisplayConfig() {
+	if a.configMgr == nil || a.uiConfig == nil {
+		return
+	}
+	cfg, err := a.configMgr.LoadAppConfig()
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{Version: 1}
+	}
+	cfg.UI.Display = a.uiConfig.Display
+	cfg.UI.ShowMembersList = a.uiConfig.ShowMembersList
+	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// formatTimestamp formats a message timestamp according to the current display config.
+func (a *App) formatTimestamp(t time.Time) string {
+	if a.uiConfig == nil {
+		return t.Format("01/02/06 15:04")
+	}
+	cfg := a.uiConfig.Display
+	if cfg.TimestampStyle == "relative" {
+		now := time.Now()
+		today := now.Truncate(24 * time.Hour)
+		msgDay := t.Truncate(24 * time.Hour)
+		var timePart string
+		if cfg.TimestampFormat == "12h" {
+			timePart = t.Format("3:04 PM")
+		} else {
+			timePart = t.Format("15:04")
+		}
+		switch {
+		case msgDay.Equal(today):
+			return "Today at " + timePart
+		case msgDay.Equal(today.Add(-24 * time.Hour)):
+			return "Yesterday at " + timePart
+		default:
+			return t.Format("Jan 2") + " at " + timePart
+		}
+	}
+	// Absolute
+	if cfg.TimestampFormat == "12h" {
+		return t.Format("01/02/06 3:04 PM")
+	}
+	return t.Format("01/02/06 15:04")
+}
+
 // NewApp creates a new application instance
 func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences, configMgr *ConfigManager, identity *LocalIdentity) *App {
 	// Initialize textarea for chat
@@ -3127,7 +3173,11 @@ func (a *App) addMessage(msg *models.Message, author *models.User) {
 		if lastMsg.AuthorID == msg.AuthorID {
 			// Same author, check time gap
 			gap := msg.CreatedAt.Sub(lastMsg.CreatedAt)
-			if gap.Minutes() < 5 {
+			gapMins := float64(5)
+			if a.uiConfig != nil && a.uiConfig.Display.GroupingGapMins > 0 {
+				gapMins = float64(a.uiConfig.Display.GroupingGapMins)
+			}
+			if gap.Minutes() < gapMins {
 				showHeader = false
 			}
 		}
@@ -3161,6 +3211,9 @@ func (a *App) updateChatContent() {
 	// Get viewport width for full-width backgrounds
 	viewportWidth := a.chatViewport.Width
 
+	// Track last rendered date for date separators
+	var lastRenderedDate time.Time
+
 	for i, msg := range messages {
 		// Check if this message is selected in navigation mode
 		// Level 1: Highlight entire message with selection background
@@ -3180,16 +3233,78 @@ func (a *App) updateChatContent() {
 		// Note: Reply quotes are now embedded inline in message content (press 'r' to reply)
 		// No separate reply indicator rendering needed
 
-		if msg.ShowHeader && !isSystemMsg {
+		// Compute showHeader dynamically so GroupingGapMins changes take effect immediately
+		showHeader := true
+		if i > 0 && !isSystemMsg {
+			prev := messages[i-1]
+			prevIsSystem := prev.IsSystem || prev.AuthorName == "System"
+			if !prevIsSystem && prev.AuthorID == msg.AuthorID {
+				gap := msg.CreatedAt.Sub(prev.CreatedAt)
+				gapMins := float64(5)
+				if a.uiConfig != nil && a.uiConfig.Display.GroupingGapMins > 0 {
+					gapMins = float64(a.uiConfig.Display.GroupingGapMins)
+				}
+				if gap.Minutes() < gapMins {
+					showHeader = false
+				}
+			}
+		}
+
+		// Date separator: render a ──── Day ──── divider between days when enabled
+		if a.uiConfig != nil && a.uiConfig.Display.ShowDateSeps && !isSystemMsg {
+			msgDate := msg.CreatedAt.Truncate(24 * time.Hour)
+			if !lastRenderedDate.IsZero() && !msgDate.Equal(lastRenderedDate) {
+				now := time.Now()
+				today := now.Truncate(24 * time.Hour)
+				yesterday := today.Add(-24 * time.Hour)
+				var dateLabel string
+				switch {
+				case msgDate.Equal(today):
+					dateLabel = "Today"
+				case msgDate.Equal(yesterday):
+					dateLabel = "Yesterday"
+				default:
+					dateLabel = msg.CreatedAt.Format("January 2, 2006")
+				}
+				barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+				barLen := (viewportWidth - len([]rune(dateLabel)) - 4) / 2
+				if barLen < 4 {
+					barLen = 4
+				}
+				bar := strings.Repeat("─", barLen)
+				sepLine := barStyle.Render(bar + " " + dateLabel + " " + bar)
+				content.WriteString(lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, sepLine))
+				content.WriteString("\n")
+			}
+			lastRenderedDate = msgDate
+		}
+
+		if showHeader && !isSystemMsg {
 			// Render author line with full width background (non-system messages)
 			authorStyle := a.styles.UsernameOther
 			if msg.IsOwn {
 				authorStyle = a.styles.UsernameSelf
 			}
-			timestamp := msg.CreatedAt.Format("01/02/06 15:04")
+			timestamp := a.formatTimestamp(msg.CreatedAt)
 
-			// Render author name with its style
-			authorText := authorStyle.Render(msg.AuthorName)
+			// Render author name — optionally preceded by a colored avatar circle
+			var authorText string
+			var plainAuthor string
+			if a.uiConfig != nil && a.uiConfig.Display.ShowAvatars {
+				initial := "?"
+				if len([]rune(msg.AuthorName)) > 0 {
+					initial = strings.ToUpper(string([]rune(msg.AuthorName)[:1]))
+				}
+				avatarStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(msg.AuthorColor)).
+					Bold(true)
+				circle := avatarStyle.Render("(" + initial + ")")
+				authorText = circle + " " + authorStyle.Render(msg.AuthorName)
+				plainAuthor = "(" + initial + ") " + msg.AuthorName
+			} else {
+				authorText = authorStyle.Render(msg.AuthorName)
+				plainAuthor = msg.AuthorName
+			}
 
 			// Add [DM] indicator and recipient for whisper messages
 			dmIndicator := ""
@@ -3228,7 +3343,7 @@ func (a *App) updateChatContent() {
 			if isSelected || isInLevel2 {
 				// Build header from PLAIN TEXT (no pre-applied colors)
 				// This prevents ANSI code interference when applying background highlight
-				plainHeader := msg.AuthorName
+				plainHeader := plainAuthor
 				if msg.IsWhisper {
 					// Add plain text [DM] indicator
 					plainHeader += " [DM]"
@@ -3356,7 +3471,23 @@ func (a *App) updateChatContent() {
 			contentLine = contentStyle.Render(contentLine)
 		}
 		content.WriteString(contentLine)
-		content.WriteString("\n\n") // Add blank line between messages
+		// Spacing between messages based on density setting
+		density := ""
+		if a.uiConfig != nil {
+			density = a.uiConfig.Display.MessageDensity
+		}
+		switch density {
+		case "compact":
+			content.WriteString("\n") // no blank line
+		case "spacious":
+			if showHeader {
+				content.WriteString("\n\n\n") // extra gap before new sender groups
+			} else {
+				content.WriteString("\n\n")
+			}
+		default: // "normal" or unset
+			content.WriteString("\n\n")
+		}
 	}
 
 	a.chatViewport.SetContent(content.String())
