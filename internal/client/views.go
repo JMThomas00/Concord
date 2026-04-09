@@ -19,13 +19,15 @@ var typingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 // renderLoginView renders the login screen
 func (a *App) renderLoginView() string {
-	// Render ASCII art banner separately (no width constraint)
+	// Render ASCII art banner. Trim trailing whitespace from each line so lipgloss
+	// measures the true visual width. Many banner strings have trailing spaces that
+	// inflate the block width, causing lipgloss.Place to add too little left padding
+	// and making the art appear left-shifted on screen.
 	bannerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center)
+		Bold(true)
 
-	banner := bannerStyle.Render(a.banner.Art)
+	banner := bannerStyle.Render(trimBannerArt(a.banner.Art))
 
 	// Render login form with fixed width
 	formWidth := 50
@@ -158,13 +160,12 @@ func (a *App) renderLoginView() string {
 
 // renderRegisterView renders the registration screen
 func (a *App) renderRegisterView() string {
-	// Render ASCII art banner separately (no width constraint)
+	// Render ASCII art banner — trim trailing whitespace for correct centering.
 	bannerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center)
+		Bold(true)
 
-	banner := bannerStyle.Render(a.banner.Art)
+	banner := bannerStyle.Render(trimBannerArt(a.banner.Art))
 
 	// Render registration form with fixed width
 	formWidth := 50
@@ -574,10 +575,23 @@ func (a *App) renderMainView() string {
 	serverIconsWidth := 22   // Server list column (wide enough to show names)
 	channelsWidth := 26      // Channels list column
 	membersWidth := 30       // Members list column
+
+	showMembers := a.uiConfig == nil || a.uiConfig.ShowMembersList
+	if !showMembers {
+		membersWidth = 0
+	}
+
 	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
+	// lipgloss Width(n) sets content width; outer rendered width = n+2 (left+right border).
+	// In 4-column mode each panel contributes n+2 outer width, making total = availableWidth+8.
+	// In 3-column mode (members hidden) each of the 3 panels adds 2 extra outer chars = 6 total,
+	// so we subtract 6 from chatWidth to keep total outer == availableWidth and show the right border.
+	if !showMembers {
+		chatWidth -= 6
+	}
 
 	// Ensure chat has minimum width
-	if chatWidth < 60 {
+	if chatWidth < 60 && showMembers {
 		// If terminal is too narrow, reduce members width
 		membersWidth = 20
 		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
@@ -590,10 +604,15 @@ func (a *App) renderMainView() string {
 	serverIcons := a.renderServerIcons(serverIconsWidth, panelHeight)
 	channels := a.renderChannelList(channelsWidth, panelHeight)
 	chat := a.renderChatPanel(chatWidth, panelHeight)
-	members := a.renderUserList(membersWidth, panelHeight)
 
-	// Combine panels horizontally (4 columns)
-	mainContent := lipgloss.JoinHorizontal(lipgloss.Top, serverIcons, channels, chat, members)
+	// Combine panels horizontally (3 or 4 columns depending on members visibility)
+	var mainContent string
+	if showMembers {
+		members := a.renderUserList(membersWidth, panelHeight)
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, serverIcons, channels, chat, members)
+	} else {
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, serverIcons, channels, chat)
+	}
 
 	// Add status bar
 	statusBar := a.renderStatusBar()

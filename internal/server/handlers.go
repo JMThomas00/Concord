@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
 	"time"
 
@@ -727,14 +726,14 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	log.Printf("DEBUG HandleKickMember: target=%s, channelID=%s, channelID==Nil=%v", target.Username, req.ChannelID, req.ChannelID == uuid.Nil)
+	DBLog.Debug("HandleKickMember", "target", target.Username, "channelID", req.ChannelID, "channelID==Nil", req.ChannelID == uuid.Nil)
 
 	// Send warning message to the channel where the command was issued (if specified)
 	if req.ChannelID != uuid.Nil {
 		warningMsg := fmt.Sprintf("⚠️ %s will be kicked in 5 seconds...", target.Username)
 		h.sendSystemMessage(req.ChannelID, warningMsg)
 	} else {
-		log.Printf("DEBUG HandleKickMember: Skipping warning message - channelID is nil")
+		DBLog.Debug("HandleKickMember: skipping warning message, channelID is nil")
 	}
 
 	// Wait 5 seconds
@@ -750,7 +749,7 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 	member, err := h.db.GetServerMember(req.ServerID, req.UserID)
 	if err == nil {
 		roles, _ := h.db.GetMemberRoles(req.ServerID, req.UserID)
-		log.Printf("DEBUG HandleKickMember: Broadcasting update - IsBanned=%v, KickCount=%d", member.IsBanned, member.KickCount)
+		DBLog.Debug("HandleKickMember: broadcasting update", "IsBanned", member.IsBanned, "KickCount", member.KickCount)
 		updatePayload := &protocol.ServerMemberUpdatePayload{
 			ServerID: req.ServerID,
 			Member:   member,
@@ -759,7 +758,7 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 		}
 		h.hub.BroadcastToServer(req.ServerID, protocol.EventServerMemberUpdate, updatePayload, nil)
 	} else {
-		log.Printf("DEBUG HandleKickMember: ERROR getting updated member: %v", err)
+		DBLog.Debug("HandleKickMember: error getting updated member", "error", err)
 	}
 
 	// Send funny system message to the channel where the command was issued (if specified)

@@ -39,6 +39,27 @@ type SettingsState struct {
 	// Server form state (add/edit server)
 	ServerFormOpen   bool
 	ServerFormState  *ServerFormState
+
+	// Notifications category state
+	NotifFocusField      int  // 0=sounds, 1=mentions-only, 2=bell, 3=mention sound, 4=message sound, 5=mute manager
+	NotifSoundPickerOpen bool // sound picker sub-page open
+	NotifSoundTarget     int  // 0=mention sound, 1=message sound
+	NotifSoundCursor     int  // cursor position in sound picker list
+	NotifMutePickerOpen  bool // mute picker sub-page open
+	NotifMuteTab         int  // 0=servers tab, 1=channels tab
+	NotifMuteServerIdx   int  // cursor in servers list
+	NotifMuteChanIdx     int  // cursor in channels list
+
+	// Display category state
+	DisplayFocusField int // 0=timestamp format, 1=timestamp style, 2=density, 3=avatars, 4=date seps, 5=gap, 6=members panel
+
+	// Server sound override sub-page state (Manage Servers → S key)
+	ServerSoundPageOpen  bool       // server sound override sub-page open
+	ServerSoundServerID  *uuid.UUID // which server is being edited
+	ServerSoundFocus     int        // 0=muted, 1=mentions-only, 2=mention sound, 3=message sound
+	ServerSoundPickerOpen bool      // sound picker within server sound page
+	ServerSoundPickerTarget int     // 0=mention sound, 1=message sound
+	ServerSoundPickerCursor int     // cursor in that picker
 }
 
 // ServerFormState holds state for the add/edit server form

@@ -46,7 +46,37 @@ type UIConfig struct {
 	ShowMembersList     bool                         `json:"show_members_list"`
 	CollapsedCategories map[string]map[string]bool   `json:"collapsed_categories,omitempty"` // serverID -> categoryID -> collapsed
 	MutedChannels       []string                     `json:"muted_channels,omitempty"`       // channel UUIDs
+	MutedServers        []string                     `json:"muted_servers,omitempty"`        // client server UUIDs
 	LastBannerIndex     int                          `json:"last_banner_index"`              // Index of last displayed banner
+	Notifications       NotificationConfig           `json:"notifications"`
+	Display             DisplayConfig                `json:"display"`
+}
+
+// NotificationConfig holds notification and sound alert preferences
+type NotificationConfig struct {
+	SoundsMuted  bool   `json:"sounds_muted"`   // Master mute for all notification sounds
+	MentionsOnly bool   `json:"mentions_only"`  // Only play sounds for @mention messages
+	BellOnMention bool  `json:"bell_on_mention"` // Write terminal bell \a on every @mention
+	MentionSound string `json:"mention_sound"`  // Sound name for @mention alerts
+	MessageSound string `json:"message_sound"`  // Sound name for regular message alerts
+}
+
+// DisplayConfig holds display and appearance preferences
+type DisplayConfig struct {
+	TimestampFormat string `json:"timestamp_format"` // "12h" or "24h"; empty = "24h"
+	TimestampStyle  string `json:"timestamp_style"`  // "absolute" or "relative"; empty = "absolute"
+	MessageDensity  string `json:"message_density"`  // "compact", "normal", "spacious"; empty = "normal"
+	ShowAvatars     bool   `json:"show_avatars"`      // show colored circle avatars in chat headers
+	ShowDateSeps    bool   `json:"show_date_seps"`    // show date separator lines between days
+	GroupingGapMins int    `json:"grouping_gap_mins"` // minutes before new header shown; 0 = default (5)
+}
+
+// ServerSoundOverride stores per-server sound settings, overriding global defaults.
+type ServerSoundOverride struct {
+	SoundsMuted  bool   `json:"sounds_muted"`  // Mute all sounds for this server
+	MentionsOnly bool   `json:"mentions_only"` // Only mention sounds for this server
+	MentionSound string `json:"mention_sound"` // "" means use global default
+	MessageSound string `json:"message_sound"` // "" means use global default
 }
 
 // ConfigManager handles loading and saving configuration files
@@ -255,6 +285,14 @@ func (cm *ConfigManager) LoadAppConfig() (*AppConfig, error) {
 				LastBannerIndex:     -1,
 				ShowMembersList:     true,
 				CollapsedCategories: make(map[string]map[string]bool),
+				Display: DisplayConfig{
+					TimestampFormat: "24h",
+					TimestampStyle:  "absolute",
+					MessageDensity:  "normal",
+					ShowAvatars:     false,
+					ShowDateSeps:    false,
+					GroupingGapMins: 5,
+				},
 			},
 		}, nil
 	}

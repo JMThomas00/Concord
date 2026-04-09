@@ -21,11 +21,15 @@ func main() {
 	fixAdmin := flag.Bool("fix-admin", false, "Repair broken Admin role (permissions, is_hoisted)")
 	cleanupDuplicates := flag.Bool("cleanup-duplicates", false, "Merge and remove duplicate roles")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+	debugMode := flag.Bool("debug", false, "Enable debug logging (shorthand for --log-level debug)")
 	hybridMode := flag.Bool("hybrid", false, "Enable hybrid dashboard with live logs")
 	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
 	flag.Parse()
 
 	// Parse and initialize logger early
+	if *debugMode {
+		*logLevel = "debug"
+	}
 	var level charmlog.Level
 	switch *logLevel {
 	case "debug":
@@ -40,6 +44,7 @@ func main() {
 		level = charmlog.InfoLevel
 	}
 	server.InitLogger(level)
+	database.SetDebug(level == charmlog.DebugLevel)
 
 	// Detect first-run: no config file specified and default config file absent
 	isFirstRun := *configPath == ""

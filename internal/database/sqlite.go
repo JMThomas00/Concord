@@ -12,6 +12,22 @@ import (
 	"github.com/concord-chat/concord/internal/models"
 )
 
+// DebugEnabled gates verbose debug logging in the database package.
+// Set to true via SetDebug when the server is started with --debug or --log-level debug.
+var DebugEnabled bool
+
+// SetDebug enables or disables debug logging for the database package.
+func SetDebug(enabled bool) {
+	DebugEnabled = enabled
+}
+
+// debugf logs a formatted message only when DebugEnabled is true.
+func debugf(format string, args ...any) {
+	if DebugEnabled {
+		log.Printf("DEBUG "+format, args...)
+	}
+}
+
 // DB wraps the SQLite database connection
 type DB struct {
 	*sql.DB
@@ -1245,7 +1261,7 @@ func (db *DB) GetServerMember(serverID, userID uuid.UUID) (*models.ServerMember,
 		member.CustomTitle = customTitle.String
 	}
 
-	log.Printf("DEBUG GetServerMember: userID=%s, IsBanned=%v, KickCount=%d", member.UserID, member.IsBanned, member.KickCount)
+	debugf("GetServerMember: userID=%s, IsBanned=%v, KickCount=%d", member.UserID, member.IsBanned, member.KickCount)
 
 	// Query roles
 	rows, err := db.Query(`
@@ -1989,18 +2005,18 @@ func (db *DB) IncrementMemberKickCount(userID, serverID uuid.UUID) error {
 	result, err := db.Exec(`UPDATE server_members SET kick_count = kick_count + 1 WHERE user_id = ? AND server_id = ?`,
 		userID.String(), serverID.String())
 	if err != nil {
-		log.Printf("DEBUG IncrementMemberKickCount: ERROR updating kick_count: %v", err)
+		debugf("IncrementMemberKickCount: ERROR updating kick_count: %v", err)
 		return err
 	}
 	rowsAffected, _ := result.RowsAffected()
-	log.Printf("DEBUG IncrementMemberKickCount: userID=%s, rows affected=%d", userID, rowsAffected)
+	debugf("IncrementMemberKickCount: userID=%s, rows affected=%d", userID, rowsAffected)
 
 	// Read back the new value to verify
 	var kickCount int
 	err = db.QueryRow(`SELECT kick_count FROM server_members WHERE user_id = ? AND server_id = ?`,
 		userID.String(), serverID.String()).Scan(&kickCount)
 	if err == nil {
-		log.Printf("DEBUG IncrementMemberKickCount: New kick_count value in DB: %d", kickCount)
+		debugf("IncrementMemberKickCount: New kick_count value in DB: %d", kickCount)
 	}
 
 	return nil
@@ -2584,7 +2600,7 @@ func (db *DB) AddMute(serverID, userID, channelID, issuedBy uuid.UUID, duration 
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(duration) * time.Minute)
 
-	log.Printf("DEBUG AddMute: userID=%s, issuedBy=%s, duration=%d minutes, expiresAt=%s", userID, issuedBy, duration, expiresAt.Format("15:04:05"))
+	debugf("AddMute: userID=%s, issuedBy=%s, duration=%d minutes, expiresAt=%s", userID, issuedBy, duration, expiresAt.Format("15:04:05"))
 
 	_, err := db.Exec(`
 		INSERT INTO mutes (id, server_id, user_id, channel_id, muted_by, muted_at, muted_until, reason, duration, issued_by, issued_at, expires_at)
@@ -2620,7 +2636,7 @@ func (db *DB) RemoveMute(serverID, userID uuid.UUID) error {
 // CleanupExpiredMutes removes expired mutes and returns the users that were unmuted
 func (db *DB) CleanupExpiredMutes() ([]struct{ ServerID, UserID, ChannelID uuid.UUID }, error) {
 	now := time.Now()
-	log.Printf("DEBUG CleanupExpiredMutes: Checking for mutes expired before %s", now.Format("15:04:05"))
+	debugf("CleanupExpiredMutes: Checking for mutes expired before %s", now.Format("15:04:05"))
 
 	rows, err := db.Query(`SELECT server_id, user_id, channel_id FROM mutes WHERE expires_at <= ?`, now)
 	if err != nil {
@@ -2638,11 +2654,11 @@ func (db *DB) CleanupExpiredMutes() ([]struct{ ServerID, UserID, ChannelID uuid.
 		userID, _ := uuid.Parse(userIDStr)
 		channelID, _ := uuid.Parse(channelIDStr)
 		unmuted = append(unmuted, struct{ ServerID, UserID, ChannelID uuid.UUID }{serverID, userID, channelID})
-		log.Printf("DEBUG CleanupExpiredMutes: Found expired mute for userID=%s", userID)
+		debugf("CleanupExpiredMutes: Found expired mute for userID=%s", userID)
 	}
 
 	if len(unmuted) > 0 {
-		log.Printf("DEBUG CleanupExpiredMutes: Deleting %d expired mutes", len(unmuted))
+		debugf("CleanupExpiredMutes: Deleting %d expired mutes", len(unmuted))
 	}
 
 	// Delete expired mutes

@@ -173,6 +173,10 @@ type App struct {
 	unreadCounts  map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → count
 	mentionCounts map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → @mention count
 	mutedChannels map[uuid.UUID]bool              // channelID → muted
+	mutedServers  map[uuid.UUID]bool              // clientServerID → muted
+
+	// Notification settings (mirrors UIConfig.Notifications, kept in sync)
+	notifConfig NotificationConfig
 
 	// AFK tracking
 	lastActivityTime time.Time
@@ -339,6 +343,20 @@ func (a *App) getActiveServerID() uuid.UUID {
 	return uuid.Nil
 }
 
+// loadMutedServers converts the persisted []string of UUIDs into the runtime map.
+func loadMutedServers(cfg *AppConfig) map[uuid.UUID]bool {
+	m := make(map[uuid.UUID]bool)
+	if cfg == nil {
+		return m
+	}
+	for _, s := range cfg.UI.MutedServers {
+		if id, err := uuid.Parse(s); err == nil {
+			m[id] = true
+		}
+	}
+	return m
+}
+
 // saveMutedChannels persists the current mutedChannels map back to config.json.
 func (a *App) saveMutedChannels() {
 	if a.configMgr == nil {
@@ -354,6 +372,82 @@ func (a *App) saveMutedChannels() {
 	}
 	cfg.UI.MutedChannels = slugs
 	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// saveMutedServers persists the current mutedServers map back to config.json.
+func (a *App) saveMutedServers() {
+	if a.configMgr == nil {
+		return
+	}
+	cfg, err := a.configMgr.LoadAppConfig()
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{Version: 1}
+	}
+	slugs := make([]string, 0, len(a.mutedServers))
+	for id := range a.mutedServers {
+		slugs = append(slugs, id.String())
+	}
+	cfg.UI.MutedServers = slugs
+	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// saveNotifConfig persists the current notification config back to config.json.
+func (a *App) saveNotifConfig() {
+	if a.configMgr == nil {
+		return
+	}
+	cfg, err := a.configMgr.LoadAppConfig()
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{Version: 1}
+	}
+	cfg.UI.Notifications = a.notifConfig
+	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// saveDisplayConfig persists the current display config and ShowMembersList back to config.json.
+func (a *App) saveDisplayConfig() {
+	if a.configMgr == nil || a.uiConfig == nil {
+		return
+	}
+	cfg, err := a.configMgr.LoadAppConfig()
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{Version: 1}
+	}
+	cfg.UI.Display = a.uiConfig.Display
+	cfg.UI.ShowMembersList = a.uiConfig.ShowMembersList
+	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// formatTimestamp formats a message timestamp according to the current display config.
+func (a *App) formatTimestamp(t time.Time) string {
+	if a.uiConfig == nil {
+		return t.Format("01/02/06 15:04")
+	}
+	cfg := a.uiConfig.Display
+	if cfg.TimestampStyle == "relative" {
+		now := time.Now()
+		today := now.Truncate(24 * time.Hour)
+		msgDay := t.Truncate(24 * time.Hour)
+		var timePart string
+		if cfg.TimestampFormat == "12h" {
+			timePart = t.Format("3:04 PM")
+		} else {
+			timePart = t.Format("15:04")
+		}
+		switch {
+		case msgDay.Equal(today):
+			return "Today at " + timePart
+		case msgDay.Equal(today.Add(-24 * time.Hour)):
+			return "Yesterday at " + timePart
+		default:
+			return t.Format("Jan 2") + " at " + timePart
+		}
+	}
+	// Absolute
+	if cfg.TimestampFormat == "12h" {
+		return t.Format("01/02/06 3:04 PM")
+	}
+	return t.Format("01/02/06 15:04")
 }
 
 // NewApp creates a new application instance
@@ -510,6 +604,8 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 		unreadCounts:            make(map[uuid.UUID]map[uuid.UUID]int),
 		mentionCounts:           make(map[uuid.UUID]map[uuid.UUID]int),
 		mutedChannels:           loadMutedChannels(appConfig),
+		mutedServers:            loadMutedServers(appConfig),
+		notifConfig:             appConfig.UI.Notifications,
 		input:                   input,
 		loginEmail:              loginEmail,
 		loginPassword:           loginPassword,
@@ -3077,7 +3173,11 @@ func (a *App) addMessage(msg *models.Message, author *models.User) {
 		if lastMsg.AuthorID == msg.AuthorID {
 			// Same author, check time gap
 			gap := msg.CreatedAt.Sub(lastMsg.CreatedAt)
-			if gap.Minutes() < 5 {
+			gapMins := float64(5)
+			if a.uiConfig != nil && a.uiConfig.Display.GroupingGapMins > 0 {
+				gapMins = float64(a.uiConfig.Display.GroupingGapMins)
+			}
+			if gap.Minutes() < gapMins {
 				showHeader = false
 			}
 		}
@@ -3111,6 +3211,9 @@ func (a *App) updateChatContent() {
 	// Get viewport width for full-width backgrounds
 	viewportWidth := a.chatViewport.Width
 
+	// Track last rendered date for date separators
+	var lastRenderedDate time.Time
+
 	for i, msg := range messages {
 		// Check if this message is selected in navigation mode
 		// Level 1: Highlight entire message with selection background
@@ -3130,16 +3233,78 @@ func (a *App) updateChatContent() {
 		// Note: Reply quotes are now embedded inline in message content (press 'r' to reply)
 		// No separate reply indicator rendering needed
 
-		if msg.ShowHeader && !isSystemMsg {
+		// Compute showHeader dynamically so GroupingGapMins changes take effect immediately
+		showHeader := true
+		if i > 0 && !isSystemMsg {
+			prev := messages[i-1]
+			prevIsSystem := prev.IsSystem || prev.AuthorName == "System"
+			if !prevIsSystem && prev.AuthorID == msg.AuthorID {
+				gap := msg.CreatedAt.Sub(prev.CreatedAt)
+				gapMins := float64(5)
+				if a.uiConfig != nil && a.uiConfig.Display.GroupingGapMins > 0 {
+					gapMins = float64(a.uiConfig.Display.GroupingGapMins)
+				}
+				if gap.Minutes() < gapMins {
+					showHeader = false
+				}
+			}
+		}
+
+		// Date separator: render a ──── Day ──── divider between days when enabled
+		if a.uiConfig != nil && a.uiConfig.Display.ShowDateSeps && !isSystemMsg {
+			msgDate := msg.CreatedAt.Truncate(24 * time.Hour)
+			if !lastRenderedDate.IsZero() && !msgDate.Equal(lastRenderedDate) {
+				now := time.Now()
+				today := now.Truncate(24 * time.Hour)
+				yesterday := today.Add(-24 * time.Hour)
+				var dateLabel string
+				switch {
+				case msgDate.Equal(today):
+					dateLabel = "Today"
+				case msgDate.Equal(yesterday):
+					dateLabel = "Yesterday"
+				default:
+					dateLabel = msg.CreatedAt.Format("January 2, 2006")
+				}
+				barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+				barLen := (viewportWidth - len([]rune(dateLabel)) - 4) / 2
+				if barLen < 4 {
+					barLen = 4
+				}
+				bar := strings.Repeat("─", barLen)
+				sepLine := barStyle.Render(bar + " " + dateLabel + " " + bar)
+				content.WriteString(lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, sepLine))
+				content.WriteString("\n")
+			}
+			lastRenderedDate = msgDate
+		}
+
+		if showHeader && !isSystemMsg {
 			// Render author line with full width background (non-system messages)
 			authorStyle := a.styles.UsernameOther
 			if msg.IsOwn {
 				authorStyle = a.styles.UsernameSelf
 			}
-			timestamp := msg.CreatedAt.Format("01/02/06 15:04")
+			timestamp := a.formatTimestamp(msg.CreatedAt)
 
-			// Render author name with its style
-			authorText := authorStyle.Render(msg.AuthorName)
+			// Render author name — optionally preceded by a colored avatar circle
+			var authorText string
+			var plainAuthor string
+			if a.uiConfig != nil && a.uiConfig.Display.ShowAvatars {
+				initial := "?"
+				if len([]rune(msg.AuthorName)) > 0 {
+					initial = strings.ToUpper(string([]rune(msg.AuthorName)[:1]))
+				}
+				avatarStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(msg.AuthorColor)).
+					Bold(true)
+				circle := avatarStyle.Render("(" + initial + ")")
+				authorText = circle + " " + authorStyle.Render(msg.AuthorName)
+				plainAuthor = "(" + initial + ") " + msg.AuthorName
+			} else {
+				authorText = authorStyle.Render(msg.AuthorName)
+				plainAuthor = msg.AuthorName
+			}
 
 			// Add [DM] indicator and recipient for whisper messages
 			dmIndicator := ""
@@ -3178,7 +3343,7 @@ func (a *App) updateChatContent() {
 			if isSelected || isInLevel2 {
 				// Build header from PLAIN TEXT (no pre-applied colors)
 				// This prevents ANSI code interference when applying background highlight
-				plainHeader := msg.AuthorName
+				plainHeader := plainAuthor
 				if msg.IsWhisper {
 					// Add plain text [DM] indicator
 					plainHeader += " [DM]"
@@ -3306,7 +3471,23 @@ func (a *App) updateChatContent() {
 			contentLine = contentStyle.Render(contentLine)
 		}
 		content.WriteString(contentLine)
-		content.WriteString("\n\n") // Add blank line between messages
+		// Spacing between messages based on density setting
+		density := ""
+		if a.uiConfig != nil {
+			density = a.uiConfig.Display.MessageDensity
+		}
+		switch density {
+		case "compact":
+			content.WriteString("\n") // no blank line
+		case "spacious":
+			if showHeader {
+				content.WriteString("\n\n\n") // extra gap before new sender groups
+			} else {
+				content.WriteString("\n\n")
+			}
+		default: // "normal" or unset
+			content.WriteString("\n\n")
+		}
 	}
 
 	a.chatViewport.SetContent(content.String())
@@ -4291,27 +4472,51 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		// Add message to connection's message history
 		sc.AddMessage(payload.Message.ChannelID, display)
 
-		// Unread tracking: increment if this channel is not currently viewed
+		// Check for @mention (personal mention or @everyone/@here) — computed before
+		// the isCurrentChannel guard so sounds can fire regardless of active channel.
 		isCurrentChannel := a.currentChannel != nil && a.currentChannel.ID == payload.Message.ChannelID
-		if !isCurrentChannel && !a.mutedChannels[payload.Message.ChannelID] {
+		isMutedChannel := a.mutedChannels[payload.Message.ChannelID]
+		isMutedServer := a.mutedServers[serverID]
+
+		hasMention := false
+		if sc.User != nil && containsMention(payload.Message.Content, sc.User.Username) {
+			hasMention = true
+		}
+		if payload.Message.MentionEveryone {
+			hasMention = true
+		}
+
+		// Unread tracking: only for messages not in the currently viewed channel
+		if !isCurrentChannel && !isMutedChannel && !isMutedServer {
 			if a.unreadCounts[serverID] == nil {
 				a.unreadCounts[serverID] = make(map[uuid.UUID]int)
 			}
 			a.unreadCounts[serverID][payload.Message.ChannelID]++
-			// Check for @mention (personal mention or @everyone/@here)
-			hasMention := false
-			if sc.User != nil && containsMention(payload.Message.Content, sc.User.Username) {
-				hasMention = true
-			}
-			if payload.Message.MentionEveryone {
-				hasMention = true
-			}
 			if hasMention {
 				if a.mentionCounts[serverID] == nil {
 					a.mentionCounts[serverID] = make(map[uuid.UUID]int)
 				}
 				a.mentionCounts[serverID][payload.Message.ChannelID]++
 			}
+		}
+
+		// Sound and desktop notification: fire for all non-own, non-muted messages.
+		// Sound plays even in the current channel; desktop popup only when away from it.
+		if !display.IsOwn && !isMutedChannel && !isMutedServer {
+			channelName := ""
+			for _, channels := range sc.Channels {
+				for _, ch := range channels {
+					if ch.ID == payload.Message.ChannelID {
+						channelName = ch.Name
+						break
+					}
+				}
+			}
+			srvName := ""
+			if sc.ServerInfo != nil {
+				srvName = sc.ServerInfo.Name
+			}
+			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
 		}
 
 		log.Printf("MESSAGE_CREATE: channel=%s, author=%s, activeConn=%v, currentChannel=%v",
