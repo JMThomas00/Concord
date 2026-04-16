@@ -50,6 +50,48 @@ type UIConfig struct {
 	LastBannerIndex     int                          `json:"last_banner_index"`              // Index of last displayed banner
 	Notifications       NotificationConfig           `json:"notifications"`
 	Display             DisplayConfig                `json:"display"`
+	Audio               AudioConfig                  `json:"audio"`
+}
+
+// defaultAudioConfig fills in zero-value fields with sensible defaults.
+func defaultAudioConfig(c AudioConfig) AudioConfig {
+	if c.InputGain == 0 {
+		c.InputGain = 1.0
+	}
+	if c.OutputVolume == 0 {
+		c.OutputVolume = 1.0
+	}
+	if c.VADThreshold == 0 {
+		c.VADThreshold = 0.4
+	}
+	if c.PTTKey == "" {
+		c.PTTKey = "ctrl+space"
+	}
+	if c.CodecPreset == "" {
+		c.CodecPreset = "medium"
+	}
+	if c.PerUserVolumes == nil {
+		c.PerUserVolumes = make(map[string]float64)
+	}
+	return c
+}
+
+// AudioConfig holds audio device and voice preferences
+type AudioConfig struct {
+	InputDevice      string             `json:"input_device"`       // "" = system default
+	InputDeviceName  string             `json:"input_device_name"`  // friendly display name
+	OutputDevice     string             `json:"output_device"`      // "" = system default
+	OutputDeviceName string             `json:"output_device_name"` // friendly display name
+	InputGain        float64            `json:"input_gain"`         // 0.0–2.0, default 1.0
+	OutputVolume     float64            `json:"output_volume"`      // 0.0–1.0, default 1.0
+	VADEnabled       bool               `json:"vad_enabled"`        // Voice Activity Detection
+	VADThreshold     float64            `json:"vad_threshold"`      // 0.0–1.0, default 0.4
+	PTTEnabled       bool               `json:"ptt_enabled"`        // Push-to-Talk mode
+	PTTKey           string             `json:"ptt_key"`            // default "ctrl+space"
+	NoiseSuppress    bool               `json:"noise_suppress"`     // Noise suppression
+	EchoCancellation bool               `json:"echo_cancellation"`  // Echo cancellation
+	CodecPreset      string             `json:"codec_preset"`       // "low" / "medium" / "high"
+	PerUserVolumes   map[string]float64 `json:"per_user_volumes"`   // userID → 0.0–2.0
 }
 
 // NotificationConfig holds notification and sound alert preferences

@@ -210,7 +210,7 @@ func (a *App) openSettings(returnTo View) {
 		}
 	}
 
-	categories := []string{"Theme", "Notifications", "Display", "Manage Servers"}
+	categories := []string{"Theme", "Notifications", "Display", "Audio", "Manage Servers"}
 
 	a.settingsState = &SettingsState{
 		Categories:       categories,
@@ -262,6 +262,19 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 
+		// Close audio slider mode if active
+		if s.AudioSliderActive {
+			s.AudioSliderActive = false
+			return nil
+		}
+
+		// Close audio device picker if open
+		if s.AudioPickerOpen {
+			s.AudioPickerOpen = false
+			s.AudioPickerDevices = nil
+			return nil
+		}
+
 		// Cancel and return to previous view
 		// Restore original theme ONLY if currently IN the theme form (not just category selected)
 		// If user has Tab'd back to categories, theme is already applied - don't revert
@@ -294,7 +307,17 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.DisplayFocusField > 0 {
 					s.DisplayFocusField--
 				}
-			case 3: // Manage Servers category
+			case 3: // Audio category
+				if s.AudioPickerOpen {
+					if s.AudioPickerCursor > 0 {
+						s.AudioPickerCursor--
+					}
+				} else if s.AudioSliderActive {
+					s.AudioSliderActive = false // exit slider before moving
+				} else if s.AudioFocusField > 0 {
+					s.AudioFocusField--
+				}
+			case 4: // Manage Servers category
 				if s.SelectedServer > 0 {
 					s.SelectedServer--
 				}
@@ -323,7 +346,17 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.DisplayFocusField < 6 {
 					s.DisplayFocusField++
 				}
-			case 3: // Manage Servers category
+			case 3: // Audio category
+				if s.AudioPickerOpen {
+					if s.AudioPickerCursor < len(s.AudioPickerDevices)-1 {
+						s.AudioPickerCursor++
+					}
+				} else if s.AudioSliderActive {
+					s.AudioSliderActive = false // exit slider before moving
+				} else if s.AudioFocusField < 10 {
+					s.AudioFocusField++
+				}
+			case 4: // Manage Servers category
 				serverCount := len(a.connMgr.GetAllConnections())
 				if s.SelectedServer < serverCount-1 {
 					s.SelectedServer++
@@ -357,7 +390,25 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				a.handleNotifFieldActivate(s)
 			case 2: // Display category
 				a.handleDisplayFieldActivate(s)
+			case 3: // Audio category
+				if s.AudioPickerOpen {
+					a.handleAudioPickerSelect(s)
+				} else {
+					a.handleAudioFieldActivate(s)
+				}
 			}
+		}
+
+	case "left", "h":
+		if s.FocusOnForm && s.SelectedCategory == 3 && s.AudioSliderActive {
+			a.adjustAudioSlider(s, -1)
+			return nil
+		}
+
+	case "right", "l":
+		if s.FocusOnForm && s.SelectedCategory == 3 && s.AudioSliderActive {
+			a.adjustAudioSlider(s, +1)
+			return nil
 		}
 
 	case "shift+up":
@@ -783,8 +834,8 @@ func (a *App) renderServerFormPage(width, height int) string {
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	// Error message
 	if a.addServerError != "" {
@@ -934,7 +985,9 @@ func (a *App) renderSettingsView() string {
 		}
 	case 2: // Display category
 		contentBuf.WriteString(a.renderDisplayContent(contentWidth, contentHeight))
-	case 3: // Manage Servers category
+	case 3: // Audio category
+		contentBuf.WriteString(a.renderAudioContent(contentWidth, contentHeight))
+	case 4: // Manage Servers category
 		if s.ServerSoundPageOpen {
 			contentBuf.WriteString(a.renderServerSoundPage(contentWidth, contentHeight))
 		} else if s.ServerFormOpen {
@@ -1199,8 +1252,8 @@ func (a *App) renderThemeContent(s *SettingsState, width, height int) string {
 			prefix = "▶ "
 			if s.FocusOnForm {
 				line = lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Background)).
-					Background(lipgloss.Color(a.theme.Colors.Cyan)).
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 					Bold(true).
 					Width(layout.interiorWidth).
 					Render(prefix + displayName)
@@ -1373,8 +1426,8 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 			prefix = "▶ "
 			if s.FocusOnForm {
 				line = lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Background)).
-					Background(lipgloss.Color(a.theme.Colors.Cyan)).
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 					Bold(true).
 					Width(layout.interiorWidth).
 					Render(fmt.Sprintf("%s%s %s %s%s", prefix, name, indicator, address, pingStatus))
@@ -1464,8 +1517,8 @@ func (a *App) renderNotificationsContent(width, height int) string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	focused := s != nil && s.FocusOnForm
 	focusField := 0
@@ -1621,8 +1674,8 @@ func (a *App) renderNotifSoundPickerPage(width, height int) string {
 
 		if isCursor {
 			middle.writeLine(lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true).
 				Render("▶ " + line[2:]))
 		} else {
 			middle.writeLine(lipgloss.NewStyle().
@@ -1661,8 +1714,8 @@ func (a *App) renderNotifMutePickerPage(width, height int) string {
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Orange)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	cursorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
@@ -1679,8 +1732,8 @@ func (a *App) renderNotifMutePickerPage(width, height int) string {
 	serversTab := "  Servers  "
 	channelsTab := "  Channels  "
 	activeTabStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 	inactiveTabStyle := dimStyle
 	if s.NotifMuteTab == 0 {
 		middle.writeLine(activeTabStyle.Render(serversTab) + "  " + inactiveTabStyle.Render(channelsTab))
@@ -1788,8 +1841,8 @@ func (a *App) renderDisplayContent(width, height int) string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	focused := s != nil && s.FocusOnForm
 	focusField := 0
@@ -2159,8 +2212,8 @@ func (a *App) renderServerSoundPage(width, height int) string {
 			if isCursor {
 				marker = "▶ "
 				style = lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Background)).
-					Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 			} else if isCurrent {
 				style = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green))
 			}
@@ -2192,8 +2245,8 @@ func (a *App) renderServerSoundPage(width, height int) string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	focused := s.FocusOnForm
 

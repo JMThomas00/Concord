@@ -97,6 +97,12 @@ func New(config *Config) (*Server, error) {
 	// Create handlers
 	handlers := NewHandlers(db, hub, stats)
 
+	// Register voice disconnect cleanup callback so the hub can trigger DB/broadcast
+	// cleanup without importing the handlers package (avoids circular dependency).
+	hub.SetVoiceLeaveCallback(func(userID, serverID, channelID uuid.UUID) {
+		handlers.handleVoiceLeave(userID, serverID, channelID)
+	})
+
 	// Create server
 	s := &Server{
 		config:   config,
@@ -410,7 +416,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	AuthLog.Info("Creating user", "user_id", user.ID, "username", user.Username, "email", user.Email, "discriminator", user.Discriminator)
 
 	if err := s.db.CreateUser(user, string(passwordHash)); err != nil {
-		AuthLog.Error("Failed to create user", "error", err, "username", req.Username, "email", req.Email)
+		// UNIQUE constraint here is expected: the client auto-connect flow
+		// falls through to registration when login fails, but the account
+		// may already exist. The client will retry with login on 409.
+		AuthLog.Warn("Failed to create user (duplicate email/username — client will retry login)", "error", err, "username", req.Username, "email", req.Email)
 		http.Error(w, "Failed to create user (email or username may already exist)", http.StatusConflict)
 		return
 	}

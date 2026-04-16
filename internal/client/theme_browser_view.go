@@ -53,6 +53,21 @@ type SettingsState struct {
 	// Display category state
 	DisplayFocusField int // 0=timestamp format, 1=timestamp style, 2=density, 3=avatars, 4=date seps, 5=gap, 6=members panel
 
+	// Audio category state
+	AudioFocusField int // 0=input device, 1=output device, 2=input gain, 3=output volume,
+	                    // 4=VAD toggle, 5=VAD threshold, 6=PTT toggle, 7=PTT key,
+	                    // 8=noise suppress, 9=echo cancel, 10=codec preset
+
+	// AudioSliderActive is true when a continuous-adjust field (gain, volume,
+	// VAD threshold) has been activated with Enter; ←/→ then fine-tune the value.
+	AudioSliderActive bool
+
+	// Audio device picker sub-state (opened from fields 0 and 1)
+	AudioPickerOpen    bool          // true when device list is visible
+	AudioPickerTarget  int           // 0=input device, 1=output device
+	AudioPickerCursor  int           // highlighted row in the picker list
+	AudioPickerDevices []AudioDevice // cached at picker-open time
+
 	// Server sound override sub-page state (Manage Servers → S key)
 	ServerSoundPageOpen  bool       // server sound override sub-page open
 	ServerSoundServerID  *uuid.UUID // which server is being edited
@@ -204,9 +219,10 @@ type ChannelFormState struct {
 	Mode              string          // "create" or "edit"
 	EditingChannelID  *uuid.UUID      // Channel being edited (nil for create)
 	NameTextInput     textinput.Model // Text input for channel name
-	TypeIndex         int             // 0=Text Channel, 1=Category
+	TypeIndex         int             // 0=Text, 1=Voice, 2=Category
+	MaxUsersInput     textinput.Model // Voice channel capacity (0 = unlimited)
 	CategoryID        *uuid.UUID      // Pre-filled based on selection
-	FocusField        int             // 0=name, 1=type, 2=submit, 3=cancel
+	FocusField        int             // 0=name, 1=type, 2=max-users (voice only), 3=submit, 4=cancel
 	ErrorMsg          string
 }
 

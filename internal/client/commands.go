@@ -107,6 +107,18 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleLockChannel(true)
 	case "unlock":
 		return ch.handleLockChannel(false)
+	case "join-voice":
+		return ch.handleJoinVoice(cmd.Args)
+	case "leave-voice":
+		return ch.handleLeaveVoice(cmd.Args)
+	case "mute-voice":
+		return ch.handleVoiceServerMute(cmd.Args, true, false)
+	case "deafen-voice":
+		return ch.handleVoiceServerMute(cmd.Args, true, true)
+	case "unmute-voice":
+		return ch.handleVoiceServerMute(cmd.Args, false, false)
+	case "move-voice":
+		return ch.handleMoveVoice(cmd.Args)
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}
@@ -1117,4 +1129,195 @@ func (ch *CommandHandler) handleTitle(args []string) (string, error) {
 		return fmt.Sprintf("Cleared title for @%s", targetUsername), nil
 	}
 	return fmt.Sprintf("Set title for @%s: %s", targetUsername, title), nil
+}
+
+// handleJoinVoice handles /join-voice [#channel-name]
+// With no argument it joins the currently selected voice channel (if any).
+func (ch *CommandHandler) handleJoinVoice(args []string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil || a.currentServer == nil || a.currentClientServer == nil {
+		return "", errors.New("not connected to a server")
+	}
+
+	// Resolve target channel
+	var target *models.Channel
+	if len(args) > 0 {
+		name := strings.TrimPrefix(args[0], "#")
+		channels := a.activeConn.GetChannels(a.currentServer.ID)
+		for _, ch := range channels {
+			if ch.Type == models.ChannelTypeVoice && strings.EqualFold(ch.Name, name) {
+				target = ch
+				break
+			}
+		}
+		if target == nil {
+			return "", fmt.Errorf("voice channel #%s not found", name)
+		}
+	} else if a.currentChannel != nil && a.currentChannel.Type == models.ChannelTypeVoice {
+		target = a.currentChannel
+	} else {
+		return "", errors.New("usage: /join-voice [#channel-name] (or select a voice channel first)")
+	}
+
+	channelID := target.ID
+	payload := &protocol.VoiceStateUpdatePayload{
+		ServerID:  a.currentServer.ID,
+		ChannelID: &channelID,
+	}
+	if err := a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload); err != nil {
+		return "", fmt.Errorf("failed to join voice: %w", err)
+	}
+	return fmt.Sprintf("Joining voice channel #%s…", target.Name), nil
+}
+
+// handleLeaveVoice handles /leave-voice — leaves the current voice channel.
+func (ch *CommandHandler) handleLeaveVoice(_ []string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil || a.currentServer == nil || a.currentClientServer == nil {
+		return "", errors.New("not connected to a server")
+	}
+
+	a.activeConn.mu.RLock()
+	var inVoice bool
+	var serverID uuid.UUID
+	if a.activeConn.User != nil {
+		if vs, ok := a.activeConn.VoiceStates[a.activeConn.User.ID]; ok {
+			inVoice = true
+			serverID = vs.ServerID
+		}
+	}
+	a.activeConn.mu.RUnlock()
+
+	if !inVoice {
+		return "", errors.New("you are not in a voice channel")
+	}
+
+	payload := &protocol.VoiceStateUpdatePayload{
+		ServerID:  serverID,
+		ChannelID: nil, // nil = leave
+	}
+	if err := a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload); err != nil {
+		return "", fmt.Errorf("failed to leave voice: %w", err)
+	}
+	return "Left voice channel.", nil
+}
+
+// handleVoiceServerMute handles /mute-voice, /deafen-voice, /unmute-voice @user
+// muted=true, deafened=true → server-deafen; muted=true, deafened=false → server-mute; muted=false → clear both.
+func (ch *CommandHandler) handleVoiceServerMute(args []string, muted, deafened bool) (string, error) {
+	a := ch.app
+	if a.activeConn == nil || a.currentServer == nil || a.currentClientServer == nil {
+		return "", errors.New("not connected to a server")
+	}
+
+	if len(args) < 1 {
+		action := "mute-voice"
+		if deafened {
+			action = "deafen-voice"
+		} else if !muted {
+			action = "unmute-voice"
+		}
+		return "", fmt.Errorf("usage: /%s @user", action)
+	}
+
+	targetUsername := strings.TrimPrefix(args[0], "@")
+	var targetID uuid.UUID
+	found := false
+
+	a.activeConn.mu.RLock()
+	for _, m := range a.activeConn.Members {
+		if strings.EqualFold(m.User.GetDisplayName(), targetUsername) ||
+			strings.EqualFold(m.User.Username, targetUsername) {
+			targetID = m.User.ID
+			found = true
+			break
+		}
+	}
+	a.activeConn.mu.RUnlock()
+
+	if !found {
+		return "", fmt.Errorf("user @%s not found", targetUsername)
+	}
+
+	req := &protocol.VoiceServerMutePayload{
+		ServerID: a.currentServer.ID,
+		UserID:   targetID,
+		Muted:    muted && !deafened,
+		Deafened: deafened,
+	}
+	msg, err := protocol.NewMessage(protocol.OpVoiceServerMute, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create message: %w", err)
+	}
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+
+	action := "Server-muted"
+	if deafened {
+		action = "Server-deafened"
+	} else if !muted {
+		action = "Unmuted"
+	}
+	return fmt.Sprintf("%s @%s", action, targetUsername), nil
+}
+
+// handleMoveVoice handles /move-voice @user #channel — admin force-moves a user.
+func (ch *CommandHandler) handleMoveVoice(args []string) (string, error) {
+	a := ch.app
+	if a.activeConn == nil || a.currentServer == nil || a.currentClientServer == nil {
+		return "", errors.New("not connected to a server")
+	}
+	if len(args) < 2 {
+		return "", errors.New("usage: /move-voice @user #channel")
+	}
+
+	targetUsername := strings.TrimPrefix(args[0], "@")
+	channelName := strings.TrimPrefix(args[1], "#")
+
+	// Resolve user.
+	var targetID uuid.UUID
+	found := false
+	a.activeConn.mu.RLock()
+	for _, m := range a.activeConn.Members {
+		if strings.EqualFold(m.User.GetDisplayName(), targetUsername) ||
+			strings.EqualFold(m.User.Username, targetUsername) {
+			targetID = m.User.ID
+			found = true
+			break
+		}
+	}
+	a.activeConn.mu.RUnlock()
+	if !found {
+		return "", fmt.Errorf("user @%s not found", targetUsername)
+	}
+
+	// Resolve destination voice channel.
+	var destChannelID uuid.UUID
+	foundCh := false
+	channels := a.activeConn.GetChannels(a.currentServer.ID)
+	for _, ch := range channels {
+		if ch.Type == models.ChannelTypeVoice && strings.EqualFold(ch.Name, channelName) {
+			destChannelID = ch.ID
+			foundCh = true
+			break
+		}
+	}
+	if !foundCh {
+		return "", fmt.Errorf("voice channel #%s not found", channelName)
+	}
+
+	req := &protocol.MoveVoicePayload{
+		ServerID:  a.currentServer.ID,
+		UserID:    targetID,
+		ChannelID: destChannelID,
+	}
+	msg, err := protocol.NewMessage(protocol.OpMoveVoice, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create message: %w", err)
+	}
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	return fmt.Sprintf("Moved @%s to #%s.", targetUsername, channelName), nil
 }

@@ -86,10 +86,10 @@ func (a *App) loadChannelListForManagement(serverID uuid.UUID) {
 	defer a.activeConn.mu.RUnlock()
 
 	if channels, ok := a.activeConn.Channels[serverID]; ok {
-		// Include text channels AND categories (not DMs)
+		// Include text, voice channels AND categories (not DMs)
 		var channelList []*models.Channel
 		for _, ch := range channels {
-			if ch.Type == models.ChannelTypeText || ch.Type == models.ChannelTypeCategory {
+			if ch.Type == models.ChannelTypeText || ch.Type == models.ChannelTypeVoice || ch.Type == models.ChannelTypeCategory {
 				channelList = append(channelList, ch)
 			}
 		}
@@ -817,11 +817,17 @@ func (a *App) handleCreateAction() {
 			}
 		}
 
+		maxUsersInput := textinput.New()
+		maxUsersInput.Placeholder = "0"
+		maxUsersInput.CharLimit = 5
+		maxUsersInput.Width = 10
+
 		s.ChannelFormOpen = true
 		s.ChannelFormState = &ChannelFormState{
 			Mode:          "create",
 			NameTextInput: nameInput,
 			TypeIndex:     0,
+			MaxUsersInput: maxUsersInput,
 			CategoryID:    parentCategoryID,
 			FocusField:    0,
 		}
@@ -852,11 +858,20 @@ func (a *App) handleEditAction() {
 			nameInput.Width = 40
 			nameInput.Focus()
 
-			// Determine type index
+			// Determine type index: 0=Text, 1=Voice, 2=Category
 			typeIndex := 0
-			if selectedCh.Type == models.ChannelTypeCategory {
+			switch selectedCh.Type {
+			case models.ChannelTypeVoice:
 				typeIndex = 1
+			case models.ChannelTypeCategory:
+				typeIndex = 2
 			}
+
+			// MaxUsers input
+			maxUsersInput := textinput.New()
+			maxUsersInput.SetValue(fmt.Sprintf("%d", selectedCh.MaxUsers))
+			maxUsersInput.CharLimit = 5
+			maxUsersInput.Width = 10
 
 			// Get category ID
 			var catID *uuid.UUID
@@ -874,6 +889,7 @@ func (a *App) handleEditAction() {
 				EditingChannelID: &chID,
 				NameTextInput:    nameInput,
 				TypeIndex:        typeIndex,
+				MaxUsersInput:    maxUsersInput,
 				CategoryID:       catID,
 				FocusField:       0,
 			}
@@ -1426,6 +1442,14 @@ func (a *App) handleCreateChannelOverride() {
 func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 	state := a.serverManagementState.ChannelFormState
 
+	// maxFields: name(0), type(1), max-users(2, voice only), submit(3), cancel(4)
+	// When not voice, max-users field is skipped: name(0), type(1), submit(2), cancel(3)
+	isVoice := state.TypeIndex == 1
+	maxField := 3 // non-voice: 0-3
+	if isVoice {
+		maxField = 4 // voice: 0-4
+	}
+
 	switch msg.String() {
 	case "esc":
 		a.serverManagementState.ChannelFormOpen = false
@@ -1433,47 +1457,76 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "tab":
-		state.FocusField = (state.FocusField + 1) % 4
-		// Update textinput focus
-		if state.FocusField == 0 {
+		state.FocusField = (state.FocusField + 1) % (maxField + 1)
+		// Skip max-users field if not voice
+		if !isVoice && state.FocusField == 2 {
+			state.FocusField = 3
+		}
+		state.NameTextInput.Blur()
+		state.MaxUsersInput.Blur()
+		switch state.FocusField {
+		case 0:
 			state.NameTextInput.Focus()
-		} else {
-			state.NameTextInput.Blur()
+		case 2:
+			state.MaxUsersInput.Focus()
 		}
 		return nil
 
 	case "shift+tab":
 		state.FocusField--
 		if state.FocusField < 0 {
-			state.FocusField = 3
+			state.FocusField = maxField
 		}
-		if state.FocusField == 0 {
+		// Skip max-users field if not voice
+		if !isVoice && state.FocusField == 2 {
+			state.FocusField = 1
+		}
+		state.NameTextInput.Blur()
+		state.MaxUsersInput.Blur()
+		switch state.FocusField {
+		case 0:
 			state.NameTextInput.Focus()
-		} else {
-			state.NameTextInput.Blur()
+		case 2:
+			state.MaxUsersInput.Focus()
 		}
 		return nil
 
-	case "up", "down":
+	case "up", "down", "left", "right":
 		if state.FocusField == 1 {
-			state.TypeIndex = 1 - state.TypeIndex // Toggle 0<->1
+			// Cycle through types: 0=Text → 1=Voice → 2=Category → 0=Text
+			if msg.String() == "up" || msg.String() == "left" {
+				state.TypeIndex = (state.TypeIndex + 2) % 3
+			} else {
+				state.TypeIndex = (state.TypeIndex + 1) % 3
+			}
 		}
 		return nil
 
 	case "enter":
-		if state.FocusField == 2 { // Submit
+		submitField := 3
+		cancelField := 4
+		if !isVoice {
+			submitField = 2
+			cancelField = 3
+		}
+		if state.FocusField == submitField {
 			return a.handleChannelFormSubmit()
-		} else if state.FocusField == 3 { // Cancel
+		} else if state.FocusField == cancelField {
 			a.serverManagementState.ChannelFormOpen = false
 			a.serverManagementState.ChannelFormState = nil
 		}
 		return nil
 	}
 
-	// Forward to textinput when name field has focus
+	// Forward keystrokes to focused text input
 	if state.FocusField == 0 {
 		var cmd tea.Cmd
 		state.NameTextInput, cmd = state.NameTextInput.Update(msg)
+		return cmd
+	}
+	if state.FocusField == 2 && isVoice {
+		var cmd tea.Cmd
+		state.MaxUsersInput, cmd = state.MaxUsersInput.Update(msg)
 		return cmd
 	}
 
@@ -1500,12 +1553,23 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 		return nil
 	}
 
-	// Determine type
+	// Determine type: 0=Text, 1=Voice, 2=Category
 	var channelType models.ChannelType
-	if state.TypeIndex == 0 {
-		channelType = models.ChannelTypeText
-	} else {
+	switch state.TypeIndex {
+	case 1:
+		channelType = models.ChannelTypeVoice
+	case 2:
 		channelType = models.ChannelTypeCategory
+	default:
+		channelType = models.ChannelTypeText
+	}
+
+	// Parse MaxUsers (voice channels only)
+	maxUsers := 0
+	if channelType == models.ChannelTypeVoice {
+		if v, err := strconv.Atoi(strings.TrimSpace(state.MaxUsersInput.Value())); err == nil && v >= 0 {
+			maxUsers = v
+		}
 	}
 
 	serverID := a.currentServer.ID
@@ -1515,7 +1579,7 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 	if state.Mode == "create" {
 		// Categories are always top-level (no parent)
 		var categoryID *uuid.UUID
-		if channelType == models.ChannelTypeText {
+		if channelType == models.ChannelTypeText || channelType == models.ChannelTypeVoice {
 			categoryID = state.CategoryID
 		}
 
@@ -1524,6 +1588,7 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 			Name:       name,
 			Type:       channelType,
 			CategoryID: categoryID,
+			MaxUsers:   maxUsers,
 		}
 		opCode = protocol.OpChannelCreate
 	} else {
@@ -1531,6 +1596,8 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 			ServerID:  serverID,
 			ChannelID: *state.EditingChannelID,
 			Name:      &name,
+			Type:      &channelType,
+			MaxUsers:  &maxUsers,
 		}
 		opCode = protocol.OpChannelUpdate
 	}
@@ -2961,15 +3028,20 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 	top.writeLine(descStyle.Render("Manage text, voice channels, and categories"))
 
 	// Stats
-	categoryCount := 0
+	textCount, voiceCount, categoryCount := 0, 0, 0
 	for _, ch := range s.ChannelList {
-		if ch.Type == models.ChannelTypeCategory {
+		switch ch.Type {
+		case models.ChannelTypeText:
+			textCount++
+		case models.ChannelTypeVoice:
+			voiceCount++
+		case models.ChannelTypeCategory:
 			categoryCount++
 		}
 	}
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(statsStyle.Render(fmt.Sprintf("%d channels · %d categories", len(s.ChannelList), categoryCount)))
+	top.writeLine(statsStyle.Render(fmt.Sprintf("%d text · %d voice · %d groups", textCount, voiceCount, categoryCount)))
 	top.writeBlank()
 
 	// Top section separator
@@ -3103,17 +3175,20 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 		}
 
 		var channelName string
-		if ch.Type == models.ChannelTypeCategory {
+		switch ch.Type {
+		case models.ChannelTypeCategory:
 			channelName = fmt.Sprintf("▼ %s", ch.Name)
-		} else {
+		case models.ChannelTypeVoice:
+			channelName = fmt.Sprintf("♪ %s", ch.Name)
+		default:
 			channelName = fmt.Sprintf("# %s", ch.Name)
 		}
 
 		var line string
 		if selected {
 			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth).
 				Render(prefix + channelName)
@@ -3292,8 +3367,8 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 		var line string
 		if selected {
 			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth).
 				Render(prefix + roleLine)
@@ -3522,8 +3597,8 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 		var line string
 		if selected {
 			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth).
 				Render(prefix + memberLine)
@@ -3620,8 +3695,8 @@ func (a *App) renderMembersFilterPage(width, height int, s *ServerManagementStat
 	normalStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 		Bold(true)
 
 	// Filter by Role
@@ -3797,8 +3872,8 @@ func (a *App) renderMembersRoleAssignPage(width, height int, s *ServerManagement
 	normalStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 		Bold(true)
 	commentStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
@@ -3940,8 +4015,8 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 			label := fmt.Sprintf("  # %s", chName)
 			if selected {
 				line := lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Background)).
-					Background(lipgloss.Color(a.theme.Colors.Cyan)).
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 					Bold(true).
 					Width(layout.interiorWidth).
 					Render("▶ # " + chName)
@@ -4005,8 +4080,8 @@ func (a *App) renderRetentionFormPage(width, height int, s *ServerManagementStat
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	renderField := func(label, value string, fieldIdx int) {
 		middle.writeLine(labelStyle.Render(label))
@@ -4110,8 +4185,8 @@ func (a *App) renderChannelPickerPage(width, height int, s *ServerManagementStat
 	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
 	if len(s.OverrideChannelList) == 0 {
@@ -4153,6 +4228,15 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	// Use same layout calculation as channel list
 	layout := calculateSettingsLayout(width, height, 2, 0) // 2 = 2 padding lines, 0 = bottom is correct
 
+	// Determine layout vars
+	isVoice := state.TypeIndex == 1
+	submitField := 2
+	cancelField := 3
+	if isVoice {
+		submitField = 3
+		cancelField = 4
+	}
+
 	// ── TOP SECTION ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 
@@ -4161,12 +4245,15 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Bold(true)
 
-	title := "Create Channel / Channel Group"
+	title := "Create Channel"
 	if state.Mode == "edit" {
-		if state.TypeIndex == 0 {
-			title = "Edit Channel"
-		} else {
+		switch state.TypeIndex {
+		case 1:
+			title = "Edit Voice Channel"
+		case 2:
 			title = "Edit Channel Group"
+		default:
+			title = "Edit Text Channel"
 		}
 	}
 	top.writeLine(headerStyle.Render(title))
@@ -4175,7 +4262,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	subtitleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
-	subtitle := "Create a new text channel or channel group"
+	subtitle := "Create a text channel, voice channel, or channel group"
 	if state.Mode == "edit" {
 		subtitle = "Edit channel settings"
 	}
@@ -4217,37 +4304,49 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	// Type selection
 	middle.writeLine(labelStyle.Render("▸ Type:"))
 
-	// Text Channel option
-	textChannelPrefix := "  ( ) "
-	if state.TypeIndex == 0 {
-		textChannelPrefix = "  (●) "
-	}
-	textChannelLine := textChannelPrefix + "Text Channel"
+	typeStyle := lipgloss.NewStyle()
 	if state.FocusField == 1 {
-		middle.writeLine(lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-			Render(textChannelLine))
-	} else {
-		middle.writeLine(textChannelLine)
+		typeStyle = typeStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
 	}
 
-	// Channel Group option
-	channelGroupPrefix := "  ( ) "
-	if state.TypeIndex == 1 {
-		channelGroupPrefix = "  (●) "
+	typeOptions := []struct {
+		label  string
+		idx    int
+		hint   string
+	}{
+		{"Text Channel", 0, "# Text-only messaging"},
+		{"Voice Channel", 1, "♪ Voice + text messaging"},
+		{"Channel Group", 2, "▼ Groups channels together"},
 	}
-	channelGroupLine := channelGroupPrefix + "Channel Group"
-	if state.FocusField == 1 {
-		middle.writeLine(lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-			Render(channelGroupLine))
-	} else {
-		middle.writeLine(channelGroupLine)
+	for _, opt := range typeOptions {
+		radio := "( ) "
+		if state.TypeIndex == opt.idx {
+			radio = "(●) "
+		}
+		hint := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			Render("  " + opt.hint)
+		middle.writeLine(typeStyle.Render("  " + radio + opt.label))
+		middle.writeLine(hint)
 	}
 	middle.writeBlank()
 
-	// Show parent group if applicable
-	if state.CategoryID != nil && a.activeConn != nil {
+	// Max Users field — voice channels only
+	if isVoice {
+		middle.writeLine(labelStyle.Render("▸ Max Users (0 = unlimited):"))
+		maxUsersView := state.MaxUsersInput.View()
+		if state.FocusField == 2 {
+			middle.writeLine(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+				Render("  " + maxUsersView))
+		} else {
+			middle.writeLine("  " + maxUsersView)
+		}
+		middle.writeBlank()
+	}
+
+	// Show parent group if applicable (text/voice only, categories are always top-level)
+	if state.TypeIndex != 2 && state.CategoryID != nil && a.activeConn != nil {
 		a.activeConn.mu.RLock()
 		if a.currentServer != nil {
 			if channels, ok := a.activeConn.Channels[a.currentServer.ID]; ok {
@@ -4273,7 +4372,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	}
 
 	var createButton, cancelButton string
-	if state.FocusField == 2 {
+	if state.FocusField == submitField {
 		createButton = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Background)).
 			Background(lipgloss.Color(a.theme.Colors.Green)).
@@ -4286,7 +4385,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 			Render("[" + createLabel + "]")
 	}
 
-	if state.FocusField == 3 {
+	if state.FocusField == cancelField {
 		cancelButton = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Background)).
 			Background(lipgloss.Color(a.theme.Colors.Red)).
@@ -4313,7 +4412,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	// Navigation help
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(helpStyle.Render("Tab: Navigate · ↑↓: Select type · Enter: Submit · Esc: Cancel"))
+	bottom.writeLine(helpStyle.Render("Tab/Shift+Tab: Navigate · ↑↓←→: Select type · Enter: Submit · Esc: Cancel"))
 
 	// Fill remaining bottom section space
 	bottom.pad()
@@ -4376,8 +4475,8 @@ func (a *App) renderMoveChannelPage(width, height int, s *ServerManagementState)
 	topLevelText := "  Top Level (no group)"
 	if state.SelectedIndex == 0 {
 		middle.writeLine(lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Background)).
-			Background(lipgloss.Color(a.theme.Colors.Cyan)).
+			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+			Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 			Bold(true).
 			Width(layout.interiorWidth).
 			Render("▶ Top Level (no group)"))
@@ -4394,8 +4493,8 @@ func (a *App) renderMoveChannelPage(width, height int, s *ServerManagementState)
 
 		if state.SelectedIndex == listIndex {
 			middle.writeLine(lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth).
 				Render(fmt.Sprintf("▶ ▼ %s", category.Name)))
@@ -4563,8 +4662,8 @@ func (a *App) renderChannelFormDialog() string {
 
 	if state.FocusField == 2 {
 		createStyle = createStyle.
-			Background(lipgloss.Color(a.theme.Colors.Cyan)).
-			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
+			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 			Bold(true)
 	}
 	if state.FocusField == 3 {
@@ -4966,8 +5065,8 @@ func (a *App) renderMuteDurationPage() string {
 
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 		Bold(true)
 
 	options := []string{"1 Hour", "24 Hours", "7 Days", "Permanent"}
@@ -5510,8 +5609,8 @@ func (a *App) renderPermissionsEditorPage(width, height int, s *ServerManagement
 		// Style based on selection
 		if i == s.PermSelectedIndex {
 			selectedStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth)
 			middle.writeLine(selectedStyle.Render(line))

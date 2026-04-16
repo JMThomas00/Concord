@@ -42,11 +42,17 @@ build-server:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY) ./cmd/server
 
-# Build client
+# Build client (voice enabled by default — requires a C toolchain)
 build-client:
-	@echo "Building client..."
+	@echo "Building client (with voice)..."
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
+	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
+
+# Build client without voice/audio (no C toolchain required)
+build-client-novoice:
+	@echo "Building client (no voice)..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 $(GOBUILD) -tags novoice $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY)-novoice ./cmd/client
 
 # Clean build artifacts
 clean:
@@ -86,24 +92,35 @@ install: build
 	install -d $(DESTDIR)/usr/local/share/concord/themes
 	install -m 644 configs/themes/*.toml $(DESTDIR)/usr/local/share/concord/themes/
 
-# Build distribution packages for all platforms
+# Build distribution packages for all platforms (novoice — CGO cross-compilation not practical)
 dist:
-	@echo "Building distribution packages..."
+	@echo "Building distribution packages (novoice — use build-windows-voice for audio)..."
 	@mkdir -p $(DIST_DIR)
 	@for platform in $(PLATFORMS); do \
 		CGO_ENABLED=0 GOOS=$${platform%/*} GOARCH=$${platform#*/} \
 		$(GOBUILD) $(LDFLAGS) -o $(DIST_DIR)/$(SERVER_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/server; \
 		CGO_ENABLED=0 GOOS=$${platform%/*} GOARCH=$${platform#*/} \
-		$(GOBUILD) $(LDFLAGS) -o $(DIST_DIR)/$(CLIENT_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/client; \
+		$(GOBUILD) -tags novoice $(LDFLAGS) -o $(DIST_DIR)/$(CLIENT_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/client; \
 		echo "Built for $${platform}"; \
 	done
 
-# Build for Windows specifically
+# Build for Windows specifically (no audio)
 build-windows:
 	@echo "Building for Windows..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
+
+# Build for Windows with voice audio support (requires MinGW GCC via MSYS2)
+# Install MSYS2 from https://www.msys2.org/ then: pacman -S mingw-w64-x86_64-gcc
+# Output: build/concord-client.exe (with WASAPI audio — voice is now the default)
+#         build/concord-server.exe (unchanged, no CGO needed)
+build-windows-voice:
+	@echo "Building for Windows with voice support..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
+	PATH="C:/msys64/mingw64/bin:$(PATH)" CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
+	@echo "Build complete: $(BUILD_DIR)/$(CLIENT_BINARY).exe"
 
 # Development: watch for changes and rebuild
 dev-server:
@@ -145,7 +162,8 @@ help:
 	@echo "  build         Build both server and client"
 	@echo "  build-server  Build only the server"
 	@echo "  build-client  Build only the client"
-	@echo "  build-windows Build Windows executables"
+	@echo "  build-windows       Build Windows executables (no audio)
+  build-windows-voice Build Windows with full voice/audio (requires MSYS2 GCC)"
 	@echo "  clean         Remove build artifacts"
 	@echo "  test          Run tests"
 	@echo "  deps          Download and tidy dependencies"

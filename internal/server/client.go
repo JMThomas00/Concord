@@ -308,6 +308,31 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleDeleteMessage(c, msg)
 		})
 
+	case protocol.OpVoiceStateUpdate:
+		c.requireAuth(func() {
+			c.handlers.HandleVoiceStateUpdate(c, msg)
+		})
+
+	case protocol.OpVoiceSignal:
+		c.requireAuth(func() {
+			c.handlers.HandleVoiceSignal(c, msg)
+		})
+
+	case protocol.OpVoiceSpeaking:
+		c.requireAuth(func() {
+			c.handlers.HandleVoiceSpeaking(c, msg)
+		})
+
+	case protocol.OpVoiceServerMute:
+		c.requireAuth(func() {
+			c.handlers.HandleVoiceServerMute(c, msg)
+		})
+
+	case protocol.OpMoveVoice:
+		c.requireAuth(func() {
+			c.handlers.HandleMoveVoice(c, msg)
+		})
+
 	default:
 		ClientLog.Warn("Unknown opcode", "user_id", c.UserID, "opcode", msg.Op)
 		c.sendError(protocol.ErrorCodeUnknown, "Unknown operation")
@@ -407,12 +432,15 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 			c.hub.JoinChannel(c.UserID, channel.ID)
 		}
 
+		voiceStates, _ := c.handlers.db.GetVoiceStatesForServer(server.ID)
+
 		serverCreatePayload := &protocol.ServerCreatePayload{
-			Server:   server,
-			Channels: channels,
-			Members:  members,
-			Roles:    roles,
-			Users:    users,
+			Server:      server,
+			Channels:    channels,
+			Members:     members,
+			Roles:       roles,
+			Users:       users,
+			VoiceStates: voiceStates,
 		}
 
 		// Use sequence number starting from 1

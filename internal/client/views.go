@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -746,6 +747,66 @@ func (a *App) renderCategoryRow(node *ChannelTreeNode, width int) string {
 	return categoryStyle.Render(selectionPrefix + fullText)
 }
 
+// countVoiceUsers returns how many users are currently in the given voice channel.
+func (a *App) countVoiceUsers(channelID uuid.UUID) int {
+	if a.activeConn == nil {
+		return 0
+	}
+	a.activeConn.mu.RLock()
+	defer a.activeConn.mu.RUnlock()
+	count := 0
+	for _, vs := range a.activeConn.VoiceStates {
+		if vs.ChannelID == channelID {
+			count++
+		}
+	}
+	return count
+}
+
+// voiceQualityBar returns a compact 4-diamond quality indicator based on ICE RTT.
+// latencyMs == -1 means no data yet (all hollow diamonds).
+func voiceQualityBar(latencyMs int) string {
+	switch {
+	case latencyMs < 0:
+		return "◇◇◇◇"
+	case latencyMs < 50:
+		return fmt.Sprintf("◆◆◆◆ %dms", latencyMs)
+	case latencyMs < 100:
+		return fmt.Sprintf("◆◆◆◇ %dms", latencyMs)
+	case latencyMs < 200:
+		return fmt.Sprintf("◆◆◇◇ %dms", latencyMs)
+	default:
+		return fmt.Sprintf("◆◇◇◇ %dms", latencyMs)
+	}
+}
+
+// voiceIndicator returns a short string showing a member's voice state (speaking, muted, etc.).
+// Returns "" when the user is not in any voice channel.
+func (a *App) voiceIndicator(userID uuid.UUID) string {
+	if a.activeConn == nil {
+		return ""
+	}
+	a.activeConn.mu.RLock()
+	vs, ok := a.activeConn.VoiceStates[userID]
+	speaking := a.activeConn.VoiceSpeaking[userID]
+	a.activeConn.mu.RUnlock()
+	if !ok {
+		return ""
+	}
+	switch {
+	case vs.IsServerMuted || vs.IsServerDeafened:
+		return "✕" // server-muted/deafened
+	case vs.IsSelfDeafened:
+		return "≈" // deafened
+	case vs.IsSelfMuted:
+		return "✕" // self-muted
+	case speaking:
+		return "▶" // speaking
+	default:
+		return "♪" // in voice, not muted
+	}
+}
+
 // renderChannelRow renders a channel row in the channel list
 func (a *App) renderChannelRow(node *ChannelTreeNode, width int) string {
 	// Indent if has parent category
@@ -766,10 +827,15 @@ func (a *App) renderChannelRow(node *ChannelTreeNode, width int) string {
 		lockIcon = "⊗ "
 	}
 
-	// Build unread badge (right-aligned suffix)
+	// Build badge (right-aligned suffix)
 	var badge string
 	isSelected := a.currentChannel != nil && a.currentChannel.ID == node.Channel.ID
-	if !isSelected && a.currentClientServer != nil {
+	if node.Channel.Type == models.ChannelTypeVoice {
+		// Voice channels show active user count instead of unread dots
+		if count := a.countVoiceUsers(node.Channel.ID); count > 0 {
+			badge = fmt.Sprintf(" [%d]", count)
+		}
+	} else if !isSelected && a.currentClientServer != nil {
 		serverID := a.currentClientServer.ID
 		mentions := 0
 		unreads := 0
@@ -1350,13 +1416,69 @@ func (a *App) renderUserList(width, height int) string {
 		b.WriteString(placeholderStyle.Render("No members"))
 		b.WriteString("\n")
 	} else {
-		// Build flat member list for highlighting if focused
+		// Build flat member list for selection highlighting (must match rendering order below).
 		var flatMembers []*MemberDisplay
 		if a.focus == FocusUserList {
 			flatMembers = a.buildFlatMemberList()
 		}
 
-		// Gather distinct hoisted roles present among members, sorted by position DESC
+		// ── Snapshot voice state (one lock acquisition) ───────────────────────
+		type voiceChannelGroup struct {
+			id       uuid.UUID
+			name     string
+			position int
+			members  []*MemberDisplay
+		}
+		var voiceGroups []voiceChannelGroup
+		voiceUserSet := make(map[uuid.UUID]struct{})  // who's in any voice channel
+		voiceChannelOf := make(map[uuid.UUID]uuid.UUID) // userID → channelID
+
+		if a.activeConn != nil {
+			a.activeConn.mu.RLock()
+			groupMap := make(map[uuid.UUID]*voiceChannelGroup)
+			for userID, vs := range a.activeConn.VoiceStates {
+				voiceUserSet[userID] = struct{}{}
+				voiceChannelOf[userID] = vs.ChannelID
+				if _, exists := groupMap[vs.ChannelID]; !exists {
+					name := vs.ChannelID.String()[:8] // fallback
+					pos := 0
+					for _, chList := range a.activeConn.Channels {
+						for _, ch := range chList {
+							if ch.ID == vs.ChannelID {
+								name = ch.Name
+								pos = ch.Position
+								break
+							}
+						}
+					}
+					groupMap[vs.ChannelID] = &voiceChannelGroup{id: vs.ChannelID, name: name, position: pos}
+				}
+			}
+			a.activeConn.mu.RUnlock()
+
+			// Assign member pointers to their voice group.
+			for _, m := range members {
+				if chID, ok := voiceChannelOf[m.User.ID]; ok {
+					if grp, ok := groupMap[chID]; ok {
+						grp.members = append(grp.members, m)
+					}
+				}
+			}
+			for _, g := range groupMap {
+				sort.Slice(g.members, func(i, j int) bool {
+					return g.members[i].User.Username < g.members[j].User.Username
+				})
+				voiceGroups = append(voiceGroups, *g)
+			}
+			sort.Slice(voiceGroups, func(i, j int) bool {
+				if voiceGroups[i].position != voiceGroups[j].position {
+					return voiceGroups[i].position < voiceGroups[j].position
+				}
+				return voiceGroups[i].name < voiceGroups[j].name
+			})
+		}
+
+		// ── Role sections (exclude voice users) ───────────────────────────────
 		type roleSection struct {
 			role    *models.Role
 			members []*MemberDisplay
@@ -1366,6 +1488,9 @@ func (a *App) renderUserList(width, height int) string {
 		var regularMembers []*MemberDisplay
 
 		for _, m := range members {
+			if _, inVoice := voiceUserSet[m.User.ID]; inVoice {
+				continue // shown in voice groups above
+			}
 			if m.HighestRole != nil {
 				rs, exists := roleSectionMap[m.HighestRole.ID]
 				if !exists {
@@ -1379,26 +1504,19 @@ func (a *App) renderUserList(width, height int) string {
 			}
 		}
 
-		// Sort roleSectionOrder by DisplayOrder ASC (lower number = higher priority/top)
-		// If DisplayOrder is equal, sort by role name alphabetically for consistency
+		// Sort roleSectionOrder by DisplayOrder ASC, secondary: role name ASC.
 		for i := 1; i < len(roleSectionOrder); i++ {
 			for j := i; j > 0; j-- {
 				curr := roleSectionMap[roleSectionOrder[j]]
 				prev := roleSectionMap[roleSectionOrder[j-1]]
-
 				currOrder := curr.role.DisplayOrder
 				prevOrder := prev.role.DisplayOrder
-
-				// Sort by DisplayOrder ASC (0 is highest priority, shows at top)
-				// If equal, sort by name alphabetically
 				shouldSwap := false
 				if currOrder < prevOrder {
 					shouldSwap = true
 				} else if currOrder == prevOrder {
-					// Secondary sort: alphabetical by role name
 					shouldSwap = curr.role.Name < prev.role.Name
 				}
-
 				if shouldSwap {
 					roleSectionOrder[j], roleSectionOrder[j-1] = roleSectionOrder[j-1], roleSectionOrder[j]
 				} else {
@@ -1412,25 +1530,140 @@ func (a *App) renderUserList(width, height int) string {
 			Bold(true).
 			Width(innerWidth)
 
-		nameMaxLen := innerWidth - 9 // avatar(3) + prefix(2) + space(1) + dot(1) + space(1) = 8 + 1 padding
+		voiceHeaderStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Bold(true).
+			Width(innerWidth)
 
-		// Track position in flat list for selection highlighting
+		// Local user ID for ↑ vs ↓ VU direction label.
+		var localUID uuid.UUID
+		if a.activeConn != nil && a.activeConn.User != nil {
+			localUID = a.activeConn.User.ID
+		}
+
+		// Track position in flat list for selection highlighting.
 		flatIndex := 0
 
 		renderMember := func(m *MemberDisplay) {
 			prefix := "  "
 			baseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+			selBG := lipgloss.Color(a.theme.Semantic.SidebarSelected)
 
-			// Highlight selected member
 			isSelected := a.focus == FocusUserList && len(flatMembers) > 0 && flatIndex == a.selectedMemberIndex
 			if isSelected {
 				prefix = "> "
-				baseStyle = baseStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+				baseStyle = baseStyle.Background(selBG)
 			}
 
 			dot, dotColor := presenceDot(m.User.Status, a.theme)
 			dotStr := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render(dot)
 			avatar := a.renderMemberAvatar(m.User.GetDisplayName(), m.AvatarColor)
+
+			_, inVoice := voiceUserSet[m.User.ID]
+
+			// ── Row 1 (voice members only): full-width level bar ──────────────
+			// Format:  "  ↑[████████████████████░░░]"
+			// The bar spans the full interior width so the indicator is prominent.
+			if inVoice {
+				var level float32
+				if a.voiceLevels != nil {
+					level = a.voiceLevels[m.User.ID]
+				}
+				scaled := level * 4
+				if scaled > 1.0 {
+					scaled = 1.0
+				}
+
+				// ↑ = local mic input, ↓ = received audio from remote peer.
+				dirStr := "↓"
+				if m.User.ID == localUID {
+					dirStr = "↑"
+				}
+
+				// Segments fill: "  "(2) + dir(1) + "[](2)" consumed; rest is bar.
+				// Always use blank indent — ">" belongs only on the name row below.
+				vuSegs := innerWidth - 5
+				if vuSegs < 4 {
+					vuSegs = 4
+				}
+				filled := int(scaled * float32(vuSegs))
+				bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", vuSegs-filled) + "]"
+
+				vuColor := a.theme.Colors.Cyan
+				if scaled > 0.6 {
+					vuColor = a.theme.Colors.Yellow
+				}
+				if scaled > 0.85 {
+					vuColor = a.theme.Colors.Red
+				}
+
+				barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(vuColor))
+				if isSelected {
+					barStyle = barStyle.Background(selBG)
+				}
+				// Bar row: no ">" chevron — always two-space indent.
+				barLine := "  " + dirStr + barStyle.Render(bar)
+				if isSelected {
+					barLine = lipgloss.NewStyle().Background(selBG).Width(innerWidth).Render(barLine)
+				}
+				b.WriteString(barLine + "\n")
+			}
+
+			// ── Row 2: avatar + name + voice-state icon + quality bar + dot ──
+			voiceStr := ""
+			qualStr := ""
+			nameMaxLen := innerWidth - 9 // prefix(2)+avatar(3)+sp(1)+dot(1)+sp(1)+pad(1)
+
+			if inVoice {
+				ind := a.voiceIndicator(m.User.ID)
+				if ind == "" {
+					ind = "♪"
+				}
+				iconColor := a.theme.Colors.Cyan
+				switch ind {
+				case "▶":
+					iconColor = a.theme.Colors.Green
+				case "✕":
+					iconColor = a.theme.Colors.Red
+				case "≈":
+					iconColor = a.theme.Colors.Comment
+				}
+				voiceStr = " " + lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor)).Render(ind)
+				nameMaxLen -= 2 // icon(1) + space(1)
+
+				// Quality bar — shown for remote peers only (no self-RTT).
+				if m.User.ID != localUID {
+					latencyMs := -1
+					if a.voiceQuality != nil {
+						if ms, ok := a.voiceQuality[m.User.ID]; ok {
+							latencyMs = ms
+						}
+					}
+					qText := voiceQualityBar(latencyMs)
+					var qColor string
+					switch {
+					case latencyMs < 0:
+						qColor = a.theme.Colors.Comment
+					case latencyMs < 50:
+						qColor = a.theme.Colors.Green
+					case latencyMs < 100:
+						qColor = a.theme.Colors.Cyan
+					case latencyMs < 200:
+						qColor = a.theme.Colors.Yellow
+					default:
+						qColor = a.theme.Colors.Red
+					}
+					qStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(qColor))
+					if isSelected {
+						qStyle = qStyle.Background(selBG)
+					}
+					qualStr = " " + qStyle.Render(qText)
+					nameMaxLen -= len([]rune(qText)) + 1 // qText + space
+				}
+			}
+			if nameMaxLen < 4 {
+				nameMaxLen = 4
+			}
 
 			name := m.User.GetDisplayName()
 			if len([]rune(name)) > nameMaxLen {
@@ -1438,64 +1671,70 @@ func (a *App) renderUserList(width, height int) string {
 			}
 			nameStr := baseStyle.Render(name)
 
-			line := prefix + avatar + " " + nameStr + " " + dotStr
+			line := prefix + avatar + " " + nameStr + voiceStr + qualStr + " " + dotStr
 			if isSelected {
-				// Apply background to entire line
 				line = baseStyle.Width(innerWidth).Render(line)
 			}
-
 			b.WriteString(line + "\n")
 
-			// Render custom title if present (yellow, bold, indented)
+			// ── Rows 3 & 4 (optional): title, status ──────────────────────────
 			if m.Member != nil && m.Member.CustomTitle != "" {
 				titleStyle := lipgloss.NewStyle().
 					Foreground(lipgloss.Color(a.theme.Colors.Yellow)).
 					Bold(true)
 				if isSelected {
-					titleStyle = titleStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+					titleStyle = titleStyle.Background(selBG)
 				}
-				// Truncate title if too long - very conservative to ensure ellipsis shows
 				titleText := m.Member.CustomTitle
-				titleMaxLen := innerWidth - 10 // Extra conservative for ellipsis visibility
+				titleMaxLen := innerWidth - 10
 				if titleMaxLen < 10 {
-					titleMaxLen = 10 // Minimum readable length
+					titleMaxLen = 10
 				}
 				if len([]rune(titleText)) > titleMaxLen {
 					runes := []rune(titleText)
 					titleText = string(runes[:titleMaxLen-1]) + "…"
 				}
-				titleLine := "    " + titleStyle.Render(titleText)
-				b.WriteString(titleLine + "\n")
+				b.WriteString("    " + titleStyle.Render(titleText) + "\n")
 			}
 
-			// Render status text if present (gray, italic, indented)
 			if m.User.StatusText != "" {
 				statusStyle := lipgloss.NewStyle().
 					Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 					Italic(true)
 				if isSelected {
-					statusStyle = statusStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+					statusStyle = statusStyle.Background(selBG)
 				}
-				// Truncate status if too long - very conservative to ensure ellipsis shows
 				statusText := m.User.StatusText
-				statusMaxLen := innerWidth - 10 // Extra conservative for ellipsis visibility
+				statusMaxLen := innerWidth - 10
 				if statusMaxLen < 10 {
-					statusMaxLen = 10 // Minimum readable length
+					statusMaxLen = 10
 				}
 				if len([]rune(statusText)) > statusMaxLen {
 					runes := []rune(statusText)
 					statusText = string(runes[:statusMaxLen-1]) + "…"
 				}
-				statusLine := "    " + statusStyle.Render(statusText)
-				b.WriteString(statusLine + "\n")
+				b.WriteString("    " + statusStyle.Render(statusText) + "\n")
 			}
 
 			flatIndex++
 		}
 
-		// Render hoisted role sections
+		// ── 1. Voice channel groups (top of panel) ────────────────────────────
+		for _, g := range voiceGroups {
+			header := fmt.Sprintf("── ♪ %s (%d) ──", strings.ToUpper(g.name), len(g.members))
+			b.WriteString(voiceHeaderStyle.Render(header))
+			b.WriteString("\n")
+			for _, m := range g.members {
+				renderMember(m)
+			}
+		}
+
+		// ── 2. Hoisted role sections ──────────────────────────────────────────
 		for _, roleID := range roleSectionOrder {
 			rs := roleSectionMap[roleID]
+			sort.Slice(rs.members, func(i, j int) bool {
+				return rs.members[i].User.Username < rs.members[j].User.Username
+			})
 			roleName := strings.ToUpper(rs.role.Name)
 			header := fmt.Sprintf("── %s (%d) ──", roleName, len(rs.members))
 			b.WriteString(sectionHeaderStyle.Render(header))
@@ -1505,8 +1744,11 @@ func (a *App) renderUserList(width, height int) string {
 			}
 		}
 
-		// Render regular members section
+		// ── 3. Regular members ────────────────────────────────────────────────
 		if len(regularMembers) > 0 {
+			sort.Slice(regularMembers, func(i, j int) bool {
+				return regularMembers[i].User.Username < regularMembers[j].User.Username
+			})
 			header := fmt.Sprintf("── MEMBERS (%d) ──", len(regularMembers))
 			b.WriteString(sectionHeaderStyle.Render(header))
 			b.WriteString("\n")
@@ -1568,10 +1810,42 @@ func (a *App) renderStatusBar() string {
 		leftContent += textStyle.Render("  |  " + currentUser.FullUsername())
 	}
 
+	// Voice channel pill — shown whenever the local user is in a voice channel,
+	// even while viewing a text channel.
+	inVoice := false
+	if a.activeConn != nil {
+		a.activeConn.mu.RLock()
+		vcID := a.activeConn.CurrentVoiceChannelID
+		a.activeConn.mu.RUnlock()
+		if vcID != uuid.Nil {
+			inVoice = true
+			// Resolve channel name by scanning all channels on this connection.
+			vcName := "voice"
+			a.activeConn.mu.RLock()
+			for _, chList := range a.activeConn.Channels {
+				for _, ch := range chList {
+					if ch.ID == vcID {
+						vcName = ch.Name
+						break
+					}
+				}
+			}
+			a.activeConn.mu.RUnlock()
+			voicePillStyle := lipgloss.NewStyle().
+				Background(lipgloss.Color(a.theme.Colors.Selection)).
+				Foreground(lipgloss.Color(a.theme.Colors.Green)).
+				Bold(true)
+			leftContent += voicePillStyle.Render("  |  ♪ " + vcName)
+		}
+	}
+
 	// Right side: help text (include Server Settings for admins)
 	helpText := "Tab: Navigate  |  Ctrl+S: Settings  |  "
 	if a.currentUserRoleLevel() >= roleLevelAdmin {
 		helpText += "Ctrl+B: Server Settings  |  "
+	}
+	if inVoice {
+		helpText += "Enter: Join/Leave voice  |  "
 	}
 	helpText += "Type /help  |  Ctrl+Q: Quit "
 	rightContent := textStyle.Render(helpText)
@@ -1789,71 +2063,93 @@ func (a *App) renderHelpModalOverlay(baseView string) string {
 		lipgloss.WithWhitespaceForeground(lipgloss.Color(a.theme.Colors.Background)))
 }
 
-// renderMemberContextMenuOverlay renders the member action context menu overlay
+// renderMemberContextMenuOverlay renders the member action context menu overlay.
+// When VolumeSlider is active it shows an inline ASCII slider instead.
 func (a *App) renderMemberContextMenuOverlay(baseView string) string {
 	if a.memberContextMenu == nil {
 		return baseView
 	}
 
-	// Calculate overlay dimensions
 	overlayWidth := 50
 	if overlayWidth > a.width-4 {
 		overlayWidth = a.width - 4
 	}
 
-	// Title
 	titleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
 		Bold(true).
 		Align(lipgloss.Center).
 		Width(overlayWidth - 2)
-	title := titleStyle.Render(fmt.Sprintf("Actions for @%s", a.memberContextMenu.TargetMember.User.Username))
-
-	// Action list
-	var actionLines []string
-	for i, action := range a.memberContextMenu.Actions {
-		keyStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-			Bold(true)
-		labelStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-
-		prefix := "  "
-
-		// Highlight selected action
-		if i == a.memberContextMenu.SelectedIndex {
-			prefix = "> "
-			keyStyle = keyStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
-			labelStyle = labelStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
-		}
-
-		line := fmt.Sprintf("%s%s %s",
-			prefix,
-			keyStyle.Render(fmt.Sprintf("[%s]", action.Key)),
-			labelStyle.Render(action.Label))
-		actionLines = append(actionLines, line)
-	}
-
-	// Footer with keybind hints
 	hintStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 		Italic(true).
 		Align(lipgloss.Center).
 		Width(overlayWidth - 2)
-	hints := hintStyle.Render("Enter: Execute  •  Esc: Close")
 
-	// Build modal content
 	var modalContent strings.Builder
-	modalContent.WriteString(title + "\n\n")
-	for _, line := range actionLines {
-		modalContent.WriteString(line + "\n")
+	var modalHeight int
+
+	if vs := a.memberContextMenu.VolumeSlider; vs != nil {
+		// ── Volume slider sub-mode ────────────────────────────────────────────
+		title := titleStyle.Render(fmt.Sprintf("Volume: @%s", a.memberContextMenu.TargetMember.User.Username))
+
+		// ASCII bar: 20 chars wide, represents 0–200%
+		const barWidth = 20
+		filled := int(vs.Volume / 2.0 * barWidth)
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+		pct := int(vs.Volume*100 + 0.5) // round to nearest integer
+		barStr := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+			Render(fmt.Sprintf("[%s] %d%%", bar, pct))
+
+		centreStyle := lipgloss.NewStyle().
+			Width(overlayWidth - 2).
+			Align(lipgloss.Center)
+		barLine := centreStyle.Render(barStr)
+
+		hints := hintStyle.Render("← −1%  Enter: Save  Esc: Back  +1% →")
+
+		modalContent.WriteString(title + "\n\n")
+		modalContent.WriteString(barLine + "\n\n")
+		modalContent.WriteString(hints)
+		modalHeight = 7 // title + blank + bar + blank + hints + border space
+	} else {
+		// ── Normal action list ────────────────────────────────────────────────
+		title := titleStyle.Render(fmt.Sprintf("Actions for @%s", a.memberContextMenu.TargetMember.User.Username))
+
+		var actionLines []string
+		for i, action := range a.memberContextMenu.Actions {
+			keyStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Bold(true)
+			labelStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+			prefix := "  "
+			if i == a.memberContextMenu.SelectedIndex {
+				prefix = "> "
+				keyStyle = keyStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+				labelStyle = labelStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
+			}
+			line := fmt.Sprintf("%s%s %s",
+				prefix,
+				keyStyle.Render(fmt.Sprintf("[%s]", action.Key)),
+				labelStyle.Render(action.Label))
+			actionLines = append(actionLines, line)
+		}
+
+		hints := hintStyle.Render("Enter: Execute  •  Esc: Close")
+
+		modalContent.WriteString(title + "\n\n")
+		for _, line := range actionLines {
+			modalContent.WriteString(line + "\n")
+		}
+		modalContent.WriteString("\n" + hints)
+		modalHeight = len(actionLines) + 5
 	}
-	modalContent.WriteString("\n" + hints)
 
-	// Calculate modal height
-	modalHeight := len(actionLines) + 5 // title + actions + footer + spacing
-
-	// Wrap in box
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
@@ -1864,7 +2160,6 @@ func (a *App) renderMemberContextMenuOverlay(baseView string) string {
 
 	modal := boxStyle.Render(modalContent.String())
 
-	// Use lipgloss.Place to overlay the modal on the base view
 	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, modal,
 		lipgloss.WithWhitespaceChars(""),
 		lipgloss.WithWhitespaceForeground(lipgloss.Color(a.theme.Colors.Background)))
