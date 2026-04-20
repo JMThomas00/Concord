@@ -3,11 +3,13 @@
 // Real voice engine — compiled only when: go build -tags voice ./cmd/client
 //
 // Audio I/O:  github.com/gen2brain/malgo  (CGO wrapper for miniaudio)
+// Codec:      github.com/hraban/opus      (CGO wrapper for libopus)
 // Transport:  github.com/pion/webrtc/v3   (pure-Go WebRTC, no CGO)
 //
-// Audio format: 16-bit PCM, 16 000 Hz, mono, 20 ms frames (640 bytes).
-// Transport: WebRTC SCTP data channels (unreliable, unordered) — behaves like
-// UDP so stale packets are dropped rather than blocking newer audio.
+// Audio format: 16-bit PCM, captured at a sample rate determined by the codec
+// preset (8/16/24/48 kHz). Each 20 ms PCM frame is Opus-encoded before being
+// sent over the WebRTC SCTP data channel (unreliable, unordered — behaves like
+// UDP so stale packets are dropped rather than blocking newer audio).
 //
 // Offer/answer collision resolution:
 //   The peer whose UUID string sorts lexicographically LOWER sends the Offer.
@@ -29,6 +31,7 @@ import (
 
 	malgo "github.com/gen2brain/malgo"
 	"github.com/google/uuid"
+	"github.com/hraban/opus"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -41,10 +44,10 @@ const (
 )
 
 // sampleRateForPreset maps a codec preset name to a capture/playback sample rate in Hz.
-// Higher rates capture more audio bandwidth and sound noticeably better.
+// Opus supports 8000, 12000, 16000, 24000, and 48000 Hz; all presets use valid values.
 //
 //	low    →  8 000 Hz  (telephone quality)
-//	medium → 16 000 Hz  (standard voice — previous fixed default)
+//	medium → 16 000 Hz  (standard voice)
 //	high   → 24 000 Hz  (HD voice)
 //	ultra  → 48 000 Hz  (studio-grade, full audio bandwidth)
 func sampleRateForPreset(preset string) uint32 {
@@ -59,6 +62,29 @@ func sampleRateForPreset(preset string) uint32 {
 		return 16000
 	}
 }
+
+// bitrateForPreset maps a codec preset name to an Opus target bitrate in bps.
+//
+//	low    →   8 000 bps  (highly compressed, minimal bandwidth)
+//	medium →  32 000 bps  (clear voice, good compression)
+//	high   →  64 000 bps  (high clarity)
+//	ultra  → 128 000 bps  (near-transparent quality)
+func bitrateForPreset(preset string) int {
+	switch preset {
+	case "low":
+		return 8000
+	case "high":
+		return 64000
+	case "ultra":
+		return 128000
+	default: // "medium" or unset
+		return 32000
+	}
+}
+
+// maxOpusPacketBytes is a safe upper bound for an encoded Opus frame buffer.
+// A 20 ms frame at 128 kbps is at most 320 bytes; 4000 gives ample headroom.
+const maxOpusPacketBytes = 4000
 
 // ── peerConn ─────────────────────────────────────────────────────────────────
 
@@ -183,6 +209,21 @@ type VoiceEngine struct {
 
 	captureC chan []byte // capture callback → processCapture goroutine
 
+	// Opus encoder — owned exclusively by the processCapture goroutine after Start().
+	// pendingBitrate carries a new bitrate set by UpdateConfig(); processCapture
+	// reads and applies it atomically before the next Encode call so we never
+	// call SetBitrate concurrently with Encode.
+	enc            *opus.Encoder
+	pendingBitrate int32 // target bps; 0 = no pending change
+
+	// Opus decoders — one per remote peer, created in touchIncoming().
+	decoders   map[uuid.UUID]*opus.Decoder
+	decodersMu sync.RWMutex
+
+	// sampleRate is captured from sampleRateForPreset in Start() and used when
+	// creating per-peer decoders and sizing the decode output buffer.
+	sampleRate uint32
+
 	// VAD state (used in processCapture goroutine only — no lock needed)
 	isSpeaking bool
 	speakUntil time.Time
@@ -223,6 +264,7 @@ func NewVoiceEngine(
 		api:         api,
 		peers:       make(map[uuid.UUID]*peerConn),
 		incoming:    make(map[uuid.UUID]*incomingBuffer),
+		decoders:    make(map[uuid.UUID]*opus.Decoder),
 		captureC:    make(chan []byte, 32),
 		sigOut:      sigOut,
 		eventOut:    eventOut,
@@ -261,9 +303,22 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 		ctx.Free()
 	}
 
-	// Choose sample rate from the user's codec preset.
+	// Choose sample rate and Opus bitrate from the user's codec preset.
 	sampleRate := sampleRateForPreset(e.cfg.CodecPreset)
-	log.Printf("voice: codec preset=%q → sample rate=%d Hz", e.cfg.CodecPreset, sampleRate)
+	bitrate := bitrateForPreset(e.cfg.CodecPreset)
+	log.Printf("voice: codec preset=%q → %d Hz / %d bps (Opus)", e.cfg.CodecPreset, sampleRate, bitrate)
+
+	// ── Opus encoder ─────────────────────────────────────────────────────────
+	enc, err := opus.NewEncoder(int(sampleRate), voiceChannels, opus.AppVoIP)
+	if err != nil {
+		freeCtx()
+		return fmt.Errorf("opus encoder: %w", err)
+	}
+	if err := enc.SetBitrate(bitrate); err != nil {
+		log.Printf("voice: opus SetBitrate: %v", err)
+	}
+	e.enc = enc
+	e.sampleRate = sampleRate
 
 	// ── Capture device (microphone) ──────────────────────────────────────────
 	capCfg := malgo.DefaultDeviceConfig(malgo.Capture)
@@ -401,6 +456,12 @@ func (e *VoiceEngine) Stop() {
 		_ = e.malgoCtx.Uninit()
 		e.malgoCtx.Free()
 	}
+
+	e.enc = nil
+	e.decodersMu.Lock()
+	e.decoders = make(map[uuid.UUID]*opus.Decoder)
+	e.decodersMu.Unlock()
+
 	log.Printf("voice: engine stopped")
 }
 
@@ -732,6 +793,22 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 		return
 	}
 
+	// Apply any pending bitrate change before encoding (lock-free handoff from UpdateConfig).
+	if pb := atomic.SwapInt32(&e.pendingBitrate, 0); pb != 0 {
+		if err := e.enc.SetBitrate(int(pb)); err != nil {
+			log.Printf("voice: opus SetBitrate: %v", err)
+		}
+	}
+
+	// Encode PCM → Opus once; broadcast the same packet to every connected peer.
+	opusBuf := make([]byte, maxOpusPacketBytes)
+	n, err := e.enc.Encode(samples, opusBuf)
+	if err != nil {
+		log.Printf("voice: opus encode: %v", err)
+		return
+	}
+	opusPacket := opusBuf[:n]
+
 	e.peersMu.RLock()
 	defer e.peersMu.RUnlock()
 	for _, peer := range e.peers {
@@ -741,13 +818,13 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 		if dc == nil {
 			continue
 		}
-		if err := dc.Send(raw); err != nil {
+		if err := dc.Send(opusPacket); err != nil {
 			log.Printf("voice: send to %s: %v", peer.userID, err)
 		}
 	}
 }
 
-// onAudioData is called from pion goroutines when PCM arrives from a peer.
+// onAudioData is called from pion goroutines when an Opus packet arrives from a peer.
 func (e *VoiceEngine) onAudioData(fromUserID uuid.UUID, data []byte) {
 	e.incomingMu.RLock()
 	buf, ok := e.incoming[fromUserID]
@@ -755,7 +832,23 @@ func (e *VoiceEngine) onAudioData(fromUserID uuid.UUID, data []byte) {
 	if !ok {
 		return
 	}
-	buf.push(bytesToInt16(data))
+
+	e.decodersMu.RLock()
+	dec, hasDec := e.decoders[fromUserID]
+	e.decodersMu.RUnlock()
+	if !hasDec {
+		return
+	}
+
+	// Decode Opus → PCM. frameSize = sampleRate × 20ms / 1000.
+	frameSize := int(e.sampleRate) * voiceFrameMs / 1000
+	pcm := make([]int16, frameSize)
+	n, err := dec.Decode(data, pcm)
+	if err != nil {
+		log.Printf("voice: opus decode from %s: %v", fromUserID, err)
+		return
+	}
+	buf.push(pcm[:n])
 }
 
 // mixPCM mixes all incoming peer buffers into a single frame. Called from the
@@ -799,11 +892,18 @@ func (e *VoiceEngine) SetUserVolume(userID uuid.UUID, vol float64) {
 	e.mu.Unlock()
 }
 
-// UpdateConfig hot-reloads audio config (gain, VAD, per-user volumes).
+// UpdateConfig hot-reloads audio config (gain, VAD, per-user volumes, Opus bitrate).
 func (e *VoiceEngine) UpdateConfig(cfg AudioConfig) {
 	e.mu.Lock()
+	oldPreset := e.cfg.CodecPreset
 	e.cfg = cfg
 	e.mu.Unlock()
+
+	// If the codec preset changed, signal processCapture to update the Opus bitrate
+	// before its next Encode call. Sample-rate changes require a voice reconnect.
+	if cfg.CodecPreset != oldPreset {
+		atomic.StoreInt32(&e.pendingBitrate, int32(bitrateForPreset(cfg.CodecPreset)))
+	}
 
 	e.incomingMu.RLock()
 	defer e.incomingMu.RUnlock()
@@ -832,7 +932,6 @@ func (e *VoiceEngine) iceServers() []webrtc.ICEServer {
 
 func (e *VoiceEngine) touchIncoming(userID uuid.UUID) {
 	e.incomingMu.Lock()
-	defer e.incomingMu.Unlock()
 	if _, ok := e.incoming[userID]; !ok {
 		vol := 1.0
 		e.mu.Lock()
@@ -842,12 +941,29 @@ func (e *VoiceEngine) touchIncoming(userID uuid.UUID) {
 		e.mu.Unlock()
 		e.incoming[userID] = newIncomingBuffer(vol)
 	}
+	e.incomingMu.Unlock()
+
+	// Create an Opus decoder for this peer if one doesn't exist yet.
+	e.decodersMu.Lock()
+	if _, ok := e.decoders[userID]; !ok {
+		dec, err := opus.NewDecoder(int(e.sampleRate), voiceChannels)
+		if err != nil {
+			log.Printf("voice: opus NewDecoder for %s: %v", userID, err)
+		} else {
+			e.decoders[userID] = dec
+		}
+	}
+	e.decodersMu.Unlock()
 }
 
 func (e *VoiceEngine) dropIncoming(userID uuid.UUID) {
 	e.incomingMu.Lock()
 	delete(e.incoming, userID)
 	e.incomingMu.Unlock()
+
+	e.decodersMu.Lock()
+	delete(e.decoders, userID)
+	e.decodersMu.Unlock()
 }
 
 // rmsAmplitude returns RMS of an int16 PCM slice, normalised to [0,1].
