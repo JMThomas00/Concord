@@ -31,11 +31,11 @@ import (
 // See SETTINGS_PAGE_TEMPLATE.md for complete examples and patterns.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// openServerManagement transitions the app into the Server Management view
-func (a *App) openServerManagement(returnTo View, categoryIndex int) {
+// openServerManagement transitions the app into the Server Management view with a slide-from-right animation.
+func (a *App) openServerManagement(returnTo View, categoryIndex int) tea.Cmd {
 	if a.activeConn == nil {
 		a.statusMessage = "No active server connection"
-		return
+		return nil
 	}
 
 	categories := []string{"Channels", "Roles", "Members", "Messages"}
@@ -74,6 +74,13 @@ func (a *App) openServerManagement(returnTo View, categoryIndex int) {
 	}
 
 	a.view = ViewServerManagement
+	if a.uiConfig != nil && a.uiConfig.Display.DisablePanelAnimations {
+		return nil
+	}
+	a.srvMgmtAnimFrame = 0
+	a.srvMgmtAnimClosing = false
+	a.srvMgmtAnimating = true
+	return srvMgmtPanelAnimTick()
 }
 
 // loadChannelListForManagement loads channels for the Channels category
@@ -494,10 +501,16 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.String() {
 	case "esc":
-		// Return to previous view
-		returnTo := s.PreviousView
-		a.serverManagementState = nil
-		a.view = returnTo
+		// Return to previous view (with slide-out animation if enabled)
+		if a.uiConfig != nil && a.uiConfig.Display.DisablePanelAnimations {
+			returnTo := s.PreviousView
+			a.serverManagementState = nil
+			a.view = returnTo
+			return nil
+		}
+		a.srvMgmtAnimClosing = true
+		a.srvMgmtAnimating = true
+		return srvMgmtPanelAnimTick()
 
 	// IMPORTANT: Shift+up/down must be BEFORE regular up/down to take priority
 	case "shift+up":

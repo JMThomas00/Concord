@@ -105,12 +105,22 @@ type NotificationConfig struct {
 
 // DisplayConfig holds display and appearance preferences
 type DisplayConfig struct {
-	TimestampFormat string `json:"timestamp_format"` // "12h" or "24h"; empty = "24h"
-	TimestampStyle  string `json:"timestamp_style"`  // "absolute" or "relative"; empty = "absolute"
-	MessageDensity  string `json:"message_density"`  // "compact", "normal", "spacious"; empty = "normal"
-	ShowAvatars     bool   `json:"show_avatars"`      // show colored circle avatars in chat headers
-	ShowDateSeps    bool   `json:"show_date_seps"`    // show date separator lines between days
-	GroupingGapMins int    `json:"grouping_gap_mins"` // minutes before new header shown; 0 = default (5)
+	TimestampFormat    string `json:"timestamp_format"`     // "12h" or "24h"; empty = "24h"
+	TimestampStyle     string `json:"timestamp_style"`      // "absolute" or "relative"; empty = "absolute"
+	MessageDensity     string `json:"message_density"`      // "compact", "normal", "spacious"; empty = "normal"
+	ShowAvatars        bool   `json:"show_avatars"`         // show colored circle avatars in chat headers
+	ShowDateSeps       bool   `json:"show_date_seps"`       // show date separator lines between days
+	GroupingGapMins    int    `json:"grouping_gap_mins"`    // minutes before new header shown; 0 = default (5)
+	ServerListCollapsed  bool `json:"server_list_collapsed"`  // false = expanded (default), true = collapsed
+	MembersListCollapsed bool `json:"members_list_collapsed"` // false = expanded (default), true = collapsed
+
+	// Members panel display options (false = show, true = hide — matches Go zero value = show by default)
+	MembersHideVUMeter bool `json:"members_hide_vu_meter"` // hide the voice level bar row
+	MembersHideQuality bool `json:"members_hide_quality"`  // hide the connection quality bar
+
+	// Animation options
+	DisablePanelAnimations bool   `json:"disable_panel_animations"` // skip slide-in/out for settings and server panels
+	TypingAnimation        string `json:"typing_animation"`          // "" = "braille"; see typingAnimNames for valid values
 }
 
 // ServerSoundOverride stores per-server sound settings, overriding global defaults.

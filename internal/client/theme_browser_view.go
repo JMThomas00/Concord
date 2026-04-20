@@ -51,7 +51,8 @@ type SettingsState struct {
 	NotifMuteChanIdx     int  // cursor in channels list
 
 	// Display category state
-	DisplayFocusField int // 0=timestamp format, 1=timestamp style, 2=density, 3=avatars, 4=date seps, 5=gap, 6=members panel
+	DisplayFocusField  int // 0=timestamp format, 1=timestamp style, 2=density, 3=avatars, 4=date seps, 5=gap, 6=members panel
+	DisplayScrollOffset int // scroll offset for the middle section when content exceeds visible area
 
 	// Audio category state
 	AudioFocusField int // 0=input device, 1=output device, 2=input gain, 3=output volume,

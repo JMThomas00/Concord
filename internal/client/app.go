@@ -189,6 +189,23 @@ type App struct {
 	voiceQuality  map[uuid.UUID]int     // userID → latest ICE RTT ms (-1 = unknown)
 	voiceLevels   map[uuid.UUID]float32 // userID → latest RMS output level (0.0–1.0)
 
+	// Server list panel animation
+	serverListAnimWidth int  // current animated width (22 expanded, 8 collapsed)
+	serverListAnimating  bool
+
+	// Members panel animation
+	membersAnimWidth int  // current animated width (30 expanded, 8 collapsed)
+	membersAnimating  bool
+
+	// Full-panel slide animations
+	settingsAnimFrame   int  // 0=hidden, panelAnimMaxFrames=fully visible
+	settingsAnimClosing bool // true while sliding out
+	settingsAnimating   bool
+
+	srvMgmtAnimFrame   int
+	srvMgmtAnimClosing bool
+	srvMgmtAnimating   bool
+
 	// AFK tracking
 	lastActivityTime time.Time
 	isAFK            bool
@@ -251,6 +268,7 @@ type MemberContextMenu struct {
 	Actions       []MemberAction
 	SelectedIndex int
 	VolumeSlider  *VolumeSliderState // non-nil when in per-user volume adjust mode
+	AnimFrame     int                // 0 = just opened, counts up to contextMenuMaxFrames
 }
 
 // VolumeSliderState holds the in-progress per-user volume adjustment.
@@ -419,6 +437,54 @@ func (a *App) saveNotifConfig() {
 	}
 	cfg.UI.Notifications = a.notifConfig
 	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// serverListAnimTick returns a Cmd that fires one animation frame (16ms ≈ 60fps).
+func serverListAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return serverListAnimTickMsg{}
+	})
+}
+
+// membersAnimTick returns a Cmd that fires one members panel animation frame.
+func membersAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return membersAnimTickMsg{}
+	})
+}
+
+// toggleMembersList flips the collapsed state and starts the slide animation.
+func (a *App) toggleMembersList() tea.Cmd {
+	if a.uiConfig == nil {
+		return nil
+	}
+	a.uiConfig.Display.MembersListCollapsed = !a.uiConfig.Display.MembersListCollapsed
+	a.membersAnimating = true
+	a.saveDisplayConfig()
+	return membersAnimTick()
+}
+
+// toggleServerList flips the collapsed state and starts the slide animation.
+func (a *App) toggleServerList() tea.Cmd {
+	if a.uiConfig == nil {
+		return nil
+	}
+	a.uiConfig.Display.ServerListCollapsed = !a.uiConfig.Display.ServerListCollapsed
+	a.serverListAnimating = true
+	a.saveDisplayConfig()
+	return serverListAnimTick()
+}
+
+// renderViewByID renders the background view used during panel slide animations.
+func (a *App) renderViewByID(v View) string {
+	switch v {
+	case ViewMain:
+		return a.renderMainView()
+	case ViewLogin:
+		return a.renderLoginView()
+	default:
+		return a.renderMainView()
+	}
 }
 
 // saveDisplayConfig persists the current display config and ShowMembersList back to config.json.
@@ -652,6 +718,20 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 		addServerUseTLS:         false,
 	}
 
+	// Initialize server list animation width based on saved collapsed state
+	if appConfig.UI.Display.ServerListCollapsed {
+		app.serverListAnimWidth = 10
+	} else {
+		app.serverListAnimWidth = 22
+	}
+
+	// Initialize members panel animation width based on saved collapsed state
+	if appConfig.UI.Display.MembersListCollapsed {
+		app.membersAnimWidth = 10
+	} else {
+		app.membersAnimWidth = 30
+	}
+
 	// Initialize command handler
 	app.commandHandler = NewCommandHandler(app)
 
@@ -709,7 +789,7 @@ func (a *App) Init() tea.Cmd {
 		textinput.Blink,
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
-		tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }),
+		tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }),
 	}
 	// Auto-connect all known servers when identity is configured
 	if a.localIdentity != nil {
@@ -887,7 +967,107 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.rebuildTypingUsers()
 			}
 		}
-		cmds = append(cmds, tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }))
+		cmds = append(cmds, tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }))
+
+	case serverListAnimTickMsg:
+		target := 22
+		if a.uiConfig != nil && a.uiConfig.Display.ServerListCollapsed {
+			target = 10
+		}
+		if a.serverListAnimWidth < target {
+			a.serverListAnimWidth = min(a.serverListAnimWidth+2, target)
+		} else if a.serverListAnimWidth > target {
+			a.serverListAnimWidth = max(a.serverListAnimWidth-2, target)
+		}
+		a.updateViewportSize()
+		if a.activeConn != nil && a.currentChannel != nil {
+			a.updateChatContent()
+		}
+		if a.serverListAnimWidth != target {
+			cmds = append(cmds, serverListAnimTick())
+		} else {
+			a.serverListAnimating = false
+		}
+
+	case membersAnimTickMsg:
+		target := 30
+		if a.uiConfig != nil && a.uiConfig.Display.MembersListCollapsed {
+			target = 10
+		}
+		if a.membersAnimWidth < target {
+			a.membersAnimWidth = min(a.membersAnimWidth+2, target)
+		} else if a.membersAnimWidth > target {
+			a.membersAnimWidth = max(a.membersAnimWidth-2, target)
+		}
+		a.updateViewportSize()
+		if a.activeConn != nil && a.currentChannel != nil {
+			a.updateChatContent()
+		}
+		if a.membersAnimWidth != target {
+			cmds = append(cmds, membersAnimTick())
+		} else {
+			a.membersAnimating = false
+		}
+
+	case contextMenuAnimTickMsg:
+		if a.memberContextMenu != nil && a.memberContextMenu.AnimFrame < contextMenuMaxFrames {
+			a.memberContextMenu.AnimFrame++
+			if a.memberContextMenu.AnimFrame < contextMenuMaxFrames {
+				cmds = append(cmds, contextMenuAnimTick())
+			}
+		}
+
+	case settingsPanelAnimTickMsg:
+		if a.settingsAnimating {
+			if !a.settingsAnimClosing {
+				a.settingsAnimFrame++
+				if a.settingsAnimFrame < panelAnimMaxFrames {
+					cmds = append(cmds, settingsPanelAnimTick())
+				} else {
+					a.settingsAnimating = false
+				}
+			} else {
+				a.settingsAnimFrame--
+				if a.settingsAnimFrame > 0 {
+					cmds = append(cmds, settingsPanelAnimTick())
+				} else {
+					a.settingsAnimating = false
+					a.settingsAnimClosing = false
+					if a.settingsState != nil {
+						a.view = a.settingsState.PreviousView
+						a.settingsState = nil
+					}
+				}
+			}
+		}
+
+	case srvMgmtPanelAnimTickMsg:
+		if a.srvMgmtAnimating {
+			if !a.srvMgmtAnimClosing {
+				a.srvMgmtAnimFrame++
+				if a.srvMgmtAnimFrame < panelAnimMaxFrames {
+					cmds = append(cmds, srvMgmtPanelAnimTick())
+				} else {
+					a.srvMgmtAnimating = false
+				}
+			} else {
+				a.srvMgmtAnimFrame--
+				if a.srvMgmtAnimFrame > 0 {
+					cmds = append(cmds, srvMgmtPanelAnimTick())
+				} else {
+					a.srvMgmtAnimating = false
+					a.srvMgmtAnimClosing = false
+					if a.serverManagementState != nil {
+						a.view = a.serverManagementState.PreviousView
+						a.serverManagementState = nil
+					}
+				}
+			}
+		}
+
+	case chatReflowMsg:
+		a.updateViewportSize()
+		a.updateChatContent()
 
 	case tea.KeyMsg:
 		// Any key press resets AFK state
@@ -1195,8 +1375,22 @@ func (a *App) View() string {
 		baseView = a.renderManageServersView()
 	case ViewSettings:
 		baseView = a.renderSettingsView()
+		if a.settingsAnimating {
+			t := float64(a.settingsAnimFrame) / float64(panelAnimMaxFrames)
+			animWidth := int(easeInOutCubic(t) * float64(a.width))
+			if animWidth < a.width {
+				baseView = clipPanelLeft(baseView, animWidth)
+			}
+		}
 	case ViewServerManagement:
 		baseView = a.renderServerManagementView()
+		if a.srvMgmtAnimating {
+			t := float64(a.srvMgmtAnimFrame) / float64(panelAnimMaxFrames)
+			animWidth := int(easeInOutCubic(t) * float64(a.width))
+			if animWidth < a.width {
+				baseView = clipPanelRight(baseView, animWidth, a.width)
+			}
+		}
 	case ViewThemeBrowser:
 		baseView = a.renderThemeBrowserView()
 	default:
@@ -1306,8 +1500,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "ctrl+s":
 		// Context-aware: Open Settings from login/main view, otherwise cycle servers
 		if a.view == ViewLogin || a.view == ViewMain {
-			a.openSettings(a.view)
-			return nil
+			return a.openSettings(a.view)
 		}
 		// Cycle through client servers (forward) when not in login/main view
 		if len(a.clientServers) > 0 {
@@ -1320,8 +1513,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewMain {
 			// Check if user has admin permissions
 			if a.currentUserRoleLevel() >= roleLevelAdmin {
-				a.openServerManagement(ViewMain, 0) // Start on Channels category
-				return nil
+				return a.openServerManagement(ViewMain, 0)
 			}
 		}
 
@@ -1330,6 +1522,18 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewLogin || a.view == ViewMain {
 			a.openThemeBrowser(a.view)
 			return nil
+		}
+
+	case "[":
+		// Toggle server list panel collapse/expand with animation (not while typing)
+		if a.view == ViewMain && a.focus != FocusInput {
+			return a.toggleServerList()
+		}
+
+	case "]":
+		// Toggle members panel collapse/expand with animation (not while typing)
+		if a.view == ViewMain && a.focus != FocusInput {
+			return a.toggleMembersList()
 		}
 
 	case "tab":
@@ -1775,8 +1979,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "s":
 		// Open Settings when focused on server list
 		if a.view == ViewMain && a.focus == FocusServerIcons {
-			a.openSettings(ViewMain)
-			return nil
+			return a.openSettings(ViewMain)
 		}
 
 	case "l":
@@ -2530,7 +2733,7 @@ func (a *App) openMemberContextMenu() tea.Cmd {
 			Actions:       actions,
 			SelectedIndex: 0,
 		}
-		return nil
+		return contextMenuAnimTick()
 	}
 
 	// Check if user can moderate this member
@@ -2604,9 +2807,10 @@ func (a *App) openMemberContextMenu() tea.Cmd {
 		TargetMember:  targetMember,
 		Actions:       actions,
 		SelectedIndex: 0,
+		AnimFrame:     0,
 	}
 
-	return nil
+	return contextMenuAnimTick()
 }
 
 // executeMemberAction executes the selected action from the context menu.
@@ -3837,11 +4041,12 @@ func (a *App) updateChatContent() {
 
 				// Apply highlight style with background - foreground will be theme color
 				if msg.IsOwn {
-					// Right-align with highlight
+					// Right-align with highlight and symmetric right padding
 					headerStyle := lipgloss.NewStyle().
 						Background(lipgloss.Color(a.theme.Colors.Selection)).
 						Width(viewportWidth).
-						Align(lipgloss.Right)
+						Align(lipgloss.Right).
+						PaddingRight(2)
 					headerLine = headerStyle.Render(plainHeader)
 				} else {
 					// Left-align with highlight and left padding
@@ -3854,14 +4059,12 @@ func (a *App) updateChatContent() {
 			} else {
 				// No highlight
 				if msg.IsOwn {
-					// Right-align: add left padding
-					headerWidth := lipgloss.Width(header)
-					if headerWidth < viewportWidth {
-						padding := viewportWidth - headerWidth
-						headerLine = strings.Repeat(" ", padding) + header
-					} else {
-						headerLine = header
-					}
+					// Right-align with symmetric right padding
+					lineStyle := lipgloss.NewStyle().
+						Width(viewportWidth).
+						Align(lipgloss.Right).
+						PaddingRight(2)
+					headerLine = lineStyle.Render(header)
 				} else {
 					// Left-align with left padding to match right side visual spacing
 					lineStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
@@ -3924,11 +4127,12 @@ func (a *App) updateChatContent() {
 		if isSelected || isInLevel2 {
 			// Apply highlight with alignment
 			if msg.IsOwn {
-				// Right-align with highlight
+				// Right-align with highlight and symmetric right padding
 				contentStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
 					Width(viewportWidth).
-					Align(lipgloss.Right)
+					Align(lipgloss.Right).
+					PaddingRight(2)
 				contentLine = contentStyle.Render(contentLine)
 			} else {
 				// Left-align with highlight and left padding
@@ -3940,14 +4144,17 @@ func (a *App) updateChatContent() {
 			}
 		} else {
 			// No highlight - apply width for proper formatting
-			contentStyle := lipgloss.NewStyle().Width(viewportWidth)
 			if msg.IsOwn {
-				contentStyle = contentStyle.Align(lipgloss.Right)
+				contentStyle := lipgloss.NewStyle().
+					Width(viewportWidth).
+					Align(lipgloss.Right).
+					PaddingRight(2)
+				contentLine = contentStyle.Render(contentLine)
 			} else {
 				// Left-align with left padding to match right side visual spacing
-				contentStyle = contentStyle.PaddingLeft(2)
+				contentStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
+				contentLine = contentStyle.Render(contentLine)
 			}
-			contentLine = contentStyle.Render(contentLine)
 		}
 		content.WriteString(contentLine)
 		// Spacing between messages based on density setting
@@ -4195,14 +4402,24 @@ func (a *App) clearTypingState() {
 // Must use the same column widths and height math as renderMainView / renderChatPanel
 // so that chatViewport.Width is correct before updateChatContent() is called.
 func (a *App) updateViewportSize() {
-	// Must match renderMainView exactly
+	// Must match renderMainView exactly — use animated widths, not hardcoded defaults
 	availableWidth := a.width - 1
-	serverIconsWidth := 22
+	serverIconsWidth := a.serverListAnimWidth
+	if serverIconsWidth < 10 {
+		serverIconsWidth = 10
+	}
 	channelsWidth := 26
-	membersWidth := 30
+	showMembers := a.uiConfig == nil || a.uiConfig.ShowMembersList
+	membersWidth := 0
+	if showMembers {
+		membersWidth = a.membersAnimWidth
+		if membersWidth < 10 {
+			membersWidth = 10
+		}
+	}
 	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
-	if chatWidth < 60 {
-		membersWidth = 20
+	if chatWidth < 60 && showMembers && membersWidth > 10 {
+		membersWidth = 10
 		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
 	}
 
@@ -4230,16 +4447,24 @@ func (a *App) updateViewportSize() {
 
 // isCursorOverChatViewport checks if mouse coordinates are within chat viewport bounds
 func (a *App) isCursorOverChatViewport(x, y int) bool {
-	// Match layout calculation from views.go:574-583
+	// Match layout calculation from views.go renderMainView exactly
 	availableWidth := a.width - 1
-	serverIconsWidth := 22
+	serverIconsWidth := a.serverListAnimWidth
+	if serverIconsWidth < 10 {
+		serverIconsWidth = 10
+	}
 	channelsWidth := 26
-	membersWidth := 30
+	showMembers := a.uiConfig == nil || a.uiConfig.ShowMembersList
+	membersWidth := 0
+	if showMembers {
+		membersWidth = a.membersAnimWidth
+		if membersWidth < 10 {
+			membersWidth = 10
+		}
+	}
 	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
-
-	// Adjust for narrow terminals
-	if chatWidth < 60 {
-		membersWidth = 20
+	if chatWidth < 60 && showMembers && membersWidth > 10 {
+		membersWidth = 10
 		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
 	}
 
@@ -4603,6 +4828,62 @@ type exitNavModeMsg struct {
 
 // typingTickMsg drives the typing indicator animation and expiry pruning
 type typingTickMsg time.Time
+
+// typingTickDuration returns the tick interval for the current typing animation style.
+func (a *App) typingTickDuration() time.Duration {
+	if a.uiConfig != nil {
+		switch a.uiConfig.Display.TypingAnimation {
+		case "pulse", "meter":
+			return 150 * time.Millisecond
+		case "points", "ellipsis":
+			return 300 * time.Millisecond
+		case "hamburger":
+			return 333 * time.Millisecond
+		}
+	}
+	return 100 * time.Millisecond // "braille", "dot", "line", or default
+}
+
+// serverListAnimTickMsg drives the server list collapse/expand animation
+type serverListAnimTickMsg struct{}
+
+// membersAnimTickMsg drives the members panel collapse/expand animation
+type membersAnimTickMsg struct{}
+
+// contextMenuAnimTickMsg drives the member context menu pop-in animation
+type contextMenuAnimTickMsg struct{}
+
+const contextMenuMaxFrames = 8
+
+func contextMenuAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return contextMenuAnimTickMsg{}
+	})
+}
+
+// panelAnimMaxFrames is shared by the Settings and Server Management slide animations.
+// 60 frames × 16ms = 960ms total.
+const panelAnimMaxFrames = 60
+
+type settingsPanelAnimTickMsg struct{}
+type srvMgmtPanelAnimTickMsg struct{}
+
+func settingsPanelAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return settingsPanelAnimTickMsg{}
+	})
+}
+
+func srvMgmtPanelAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return srvMgmtPanelAnimTickMsg{}
+	})
+}
+
+// chatReflowMsg triggers a chat content reflow after panel animation completes.
+// Fired as the final step of an animation so View() has one frame to update
+// chatViewport.Width before updateChatContent() reads it.
+type chatReflowMsg struct{}
 
 // ConnectionFailedMsg indicates connection failed
 type ConnectionFailedMsg struct {
