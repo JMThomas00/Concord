@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -66,6 +67,12 @@ type ServerConnection struct {
 	Roles    map[uuid.UUID][]*models.Role    // Roles per protocol server
 	PinnedMessages map[uuid.UUID][]*models.Message // Pinned messages per channel
 
+	// Voice state — keyed by protocol server ID
+	// VoiceStates maps userID → VoiceState for all users currently in voice on this connection's servers.
+	VoiceStates           map[uuid.UUID]*models.VoiceState // userID → state
+	CurrentVoiceChannelID uuid.UUID                        // local user's channel (zero = not in voice)
+	VoiceSpeaking         map[uuid.UUID]bool               // userID → speaking (ephemeral)
+
 	// Retry tracking
 	RetryCount     int
 	RetryStrategy  *ReconnectStrategy
@@ -85,6 +92,8 @@ func NewServerConnection(serverID uuid.UUID, serverInfo *ClientServerInfo) *Serv
 		Members:        make([]*MemberDisplay, 0),
 		Roles:          make(map[uuid.UUID][]*models.Role),
 		PinnedMessages: make(map[uuid.UUID][]*models.Message),
+		VoiceStates:    make(map[uuid.UUID]*models.VoiceState),
+		VoiceSpeaking:  make(map[uuid.UUID]bool),
 	}
 }
 
@@ -355,6 +364,29 @@ func (cm *ConnectionManager) SendTyping(serverID, channelID uuid.UUID) error {
 	}
 
 	return conn.SendTyping(channelID)
+}
+
+// SendVoiceStateUpdate sends a voice state update (join/leave/mute/deafen) to a server.
+func (cm *ConnectionManager) SendVoiceStateUpdate(serverID uuid.UUID, payload *protocol.VoiceStateUpdatePayload) error {
+	sc := cm.GetConnection(serverID)
+	if sc == nil {
+		return fmt.Errorf("server %s not found", serverID)
+	}
+
+	sc.mu.RLock()
+	conn := sc.Connection
+	sc.mu.RUnlock()
+
+	if conn == nil || sc.GetState() != StateReady {
+		return fmt.Errorf("server %s not ready", serverID)
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	msg := &protocol.Message{Op: protocol.OpVoiceStateUpdate, Data: data}
+	return conn.Send(msg)
 }
 
 // SendRaw sends a raw protocol message to a specific server

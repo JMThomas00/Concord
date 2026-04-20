@@ -190,8 +190,8 @@ func (a *App) renderSeparator(width int) string {
 		Render(strings.Repeat("─", width))
 }
 
-// openSettings transitions the app into the Settings view
-func (a *App) openSettings(returnTo View) {
+// openSettings transitions the app into the Settings view with a slide-from-left animation.
+func (a *App) openSettings(returnTo View) tea.Cmd {
 	names := themes.ListAvailableThemes()
 	if len(names) == 0 {
 		names = []string{"dracula"}
@@ -210,7 +210,7 @@ func (a *App) openSettings(returnTo View) {
 		}
 	}
 
-	categories := []string{"Theme", "Notifications", "Display", "Manage Servers"}
+	categories := []string{"Theme", "Notifications", "Display", "Audio", "Manage Servers"}
 
 	a.settingsState = &SettingsState{
 		Categories:       categories,
@@ -224,6 +224,13 @@ func (a *App) openSettings(returnTo View) {
 		ServerFormOpen:   false,
 	}
 	a.view = ViewSettings
+	if a.uiConfig != nil && a.uiConfig.Display.DisablePanelAnimations {
+		return nil
+	}
+	a.settingsAnimFrame = 0
+	a.settingsAnimClosing = false
+	a.settingsAnimating = true
+	return settingsPanelAnimTick()
 }
 
 // handleSettingsKey processes key events when in ViewSettings
@@ -262,15 +269,33 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 
-		// Cancel and return to previous view
+		// Close audio slider mode if active
+		if s.AudioSliderActive {
+			s.AudioSliderActive = false
+			return nil
+		}
+
+		// Close audio device picker if open
+		if s.AudioPickerOpen {
+			s.AudioPickerOpen = false
+			s.AudioPickerDevices = nil
+			return nil
+		}
+
+		// Cancel and return to previous view (with slide-out animation if enabled).
 		// Restore original theme ONLY if currently IN the theme form (not just category selected)
-		// If user has Tab'd back to categories, theme is already applied - don't revert
 		if s.SelectedCategory == 0 && s.FocusOnForm && s.OriginalTheme != "" {
 			a.applyAndSaveTheme(s.OriginalTheme)
 		}
-		returnTo := s.PreviousView
-		a.settingsState = nil
-		a.view = returnTo
+		if a.uiConfig != nil && a.uiConfig.Display.DisablePanelAnimations {
+			returnTo := s.PreviousView
+			a.settingsState = nil
+			a.view = returnTo
+			return nil
+		}
+		a.settingsAnimClosing = true
+		a.settingsAnimating = true
+		return settingsPanelAnimTick()
 
 	case "up", "k":
 		if !s.FocusOnForm {
@@ -293,8 +318,19 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 			case 2: // Display category
 				if s.DisplayFocusField > 0 {
 					s.DisplayFocusField--
+					a.updateDisplayScroll(s)
 				}
-			case 3: // Manage Servers category
+			case 3: // Audio category
+				if s.AudioPickerOpen {
+					if s.AudioPickerCursor > 0 {
+						s.AudioPickerCursor--
+					}
+				} else if s.AudioSliderActive {
+					s.AudioSliderActive = false // exit slider before moving
+				} else if s.AudioFocusField > 0 {
+					s.AudioFocusField--
+				}
+			case 4: // Manage Servers category
 				if s.SelectedServer > 0 {
 					s.SelectedServer--
 				}
@@ -320,10 +356,21 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 					s.NotifFocusField++
 				}
 			case 2: // Display category
-				if s.DisplayFocusField < 6 {
+				if s.DisplayFocusField < 12 {
 					s.DisplayFocusField++
+					a.updateDisplayScroll(s)
 				}
-			case 3: // Manage Servers category
+			case 3: // Audio category
+				if s.AudioPickerOpen {
+					if s.AudioPickerCursor < len(s.AudioPickerDevices)-1 {
+						s.AudioPickerCursor++
+					}
+				} else if s.AudioSliderActive {
+					s.AudioSliderActive = false // exit slider before moving
+				} else if s.AudioFocusField < 10 {
+					s.AudioFocusField++
+				}
+			case 4: // Manage Servers category
 				serverCount := len(a.connMgr.GetAllConnections())
 				if s.SelectedServer < serverCount-1 {
 					s.SelectedServer++
@@ -357,7 +404,25 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				a.handleNotifFieldActivate(s)
 			case 2: // Display category
 				a.handleDisplayFieldActivate(s)
+			case 3: // Audio category
+				if s.AudioPickerOpen {
+					a.handleAudioPickerSelect(s)
+				} else {
+					a.handleAudioFieldActivate(s)
+				}
 			}
+		}
+
+	case "left", "h":
+		if s.FocusOnForm && s.SelectedCategory == 3 && s.AudioSliderActive {
+			a.adjustAudioSlider(s, -1)
+			return nil
+		}
+
+	case "right", "l":
+		if s.FocusOnForm && s.SelectedCategory == 3 && s.AudioSliderActive {
+			a.adjustAudioSlider(s, +1)
+			return nil
 		}
 
 	case "shift+up":
@@ -783,8 +848,8 @@ func (a *App) renderServerFormPage(width, height int) string {
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	// Error message
 	if a.addServerError != "" {
@@ -934,7 +999,9 @@ func (a *App) renderSettingsView() string {
 		}
 	case 2: // Display category
 		contentBuf.WriteString(a.renderDisplayContent(contentWidth, contentHeight))
-	case 3: // Manage Servers category
+	case 3: // Audio category
+		contentBuf.WriteString(a.renderAudioContent(contentWidth, contentHeight))
+	case 4: // Manage Servers category
 		if s.ServerSoundPageOpen {
 			contentBuf.WriteString(a.renderServerSoundPage(contentWidth, contentHeight))
 		} else if s.ServerFormOpen {
@@ -1199,8 +1266,8 @@ func (a *App) renderThemeContent(s *SettingsState, width, height int) string {
 			prefix = "▶ "
 			if s.FocusOnForm {
 				line = lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Background)).
-					Background(lipgloss.Color(a.theme.Colors.Cyan)).
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 					Bold(true).
 					Width(layout.interiorWidth).
 					Render(prefix + displayName)
@@ -1373,8 +1440,8 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 			prefix = "▶ "
 			if s.FocusOnForm {
 				line = lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Background)).
-					Background(lipgloss.Color(a.theme.Colors.Cyan)).
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 					Bold(true).
 					Width(layout.interiorWidth).
 					Render(fmt.Sprintf("%s%s %s %s%s", prefix, name, indicator, address, pingStatus))
@@ -1464,8 +1531,8 @@ func (a *App) renderNotificationsContent(width, height int) string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	focused := s != nil && s.FocusOnForm
 	focusField := 0
@@ -1621,8 +1688,8 @@ func (a *App) renderNotifSoundPickerPage(width, height int) string {
 
 		if isCursor {
 			middle.writeLine(lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true).
 				Render("▶ " + line[2:]))
 		} else {
 			middle.writeLine(lipgloss.NewStyle().
@@ -1661,8 +1728,8 @@ func (a *App) renderNotifMutePickerPage(width, height int) string {
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Orange)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	cursorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
@@ -1679,8 +1746,8 @@ func (a *App) renderNotifMutePickerPage(width, height int) string {
 	serversTab := "  Servers  "
 	channelsTab := "  Channels  "
 	activeTabStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 	inactiveTabStyle := dimStyle
 	if s.NotifMuteTab == 0 {
 		middle.writeLine(activeTabStyle.Render(serversTab) + "  " + inactiveTabStyle.Render(channelsTab))
@@ -1788,8 +1855,8 @@ func (a *App) renderDisplayContent(width, height int) string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	focused := s != nil && s.FocusOnForm
 	focusField := 0
@@ -1813,7 +1880,10 @@ func (a *App) renderDisplayContent(width, height int) string {
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE ──
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	// Build all middle lines into a slice first so we can scroll-window them.
+	var allMiddleLines []string
+	addLine := func(s string) { allMiddleLines = append(allMiddleLines, s) }
+	addBlank := func() { allMiddleLines = append(allMiddleLines, "") }
 
 	writeField := func(fieldIdx int, label, value string) {
 		isSelected := focused && focusField == fieldIdx
@@ -1825,9 +1895,9 @@ func (a *App) renderDisplayContent(width, height int) string {
 			vStyle = selectedStyle
 			marker = "▶ "
 		}
-		middle.writeLine(lStyle.Render(marker + label))
-		middle.writeLine(vStyle.Render("    " + value))
-		middle.writeBlank()
+		addLine(lStyle.Render(marker + label))
+		addLine(vStyle.Render("    " + value))
+		addBlank()
 	}
 
 	// Field 0: Timestamp Format
@@ -1887,8 +1957,8 @@ func (a *App) renderDisplayContent(width, height int) string {
 	writeField(5, "Message Grouping Gap", gapVal+" ◀▶")
 
 	// Divider
-	middle.writeLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
-	middle.writeBlank()
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addBlank()
 
 	// Field 6: Show Members Panel
 	membersVal := "[ ] Hidden"
@@ -1897,6 +1967,105 @@ func (a *App) renderDisplayContent(width, height int) string {
 	}
 	writeField(6, "Show Members Panel", membersVal)
 
+	// Field 7: Show Server List
+	showServerList := true
+	if a.uiConfig != nil {
+		showServerList = !a.uiConfig.Display.ServerListCollapsed
+	}
+	serverListVal := "[ ] Collapsed"
+	if showServerList {
+		serverListVal = "[✓] Expanded"
+	}
+	writeField(7, "Server List Panel", serverListVal)
+
+	// Field 8: Members Panel collapsed
+	showMembersExpanded := true
+	if a.uiConfig != nil {
+		showMembersExpanded = !a.uiConfig.Display.MembersListCollapsed
+	}
+	membersExpandedVal := "[ ] Collapsed"
+	if showMembersExpanded {
+		membersExpandedVal = "[✓] Expanded"
+	}
+	writeField(8, "Members Panel", membersExpandedVal)
+
+	// Divider — Members Panel section
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("  Members Panel"))
+	addBlank()
+
+	// Field 9: Voice level bar (VU meter)
+	vuVal := "[✓] On   (↑[████░░] input/output level bar)"
+	if a.uiConfig != nil && a.uiConfig.Display.MembersHideVUMeter {
+		vuVal = "[ ] Off"
+	}
+	writeField(9, "Voice Level Bar", vuVal)
+
+	// Field 10: Connection quality
+	qualVal := "[✓] On   (◆◆◆◇ connection quality)"
+	if a.uiConfig != nil && a.uiConfig.Display.MembersHideQuality {
+		qualVal = "[ ] Off"
+	}
+	writeField(10, "Connection Quality", qualVal)
+
+	// Divider — Animations section
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("  Animations"))
+	addBlank()
+
+	// Field 11: Panel slide animations
+	panelAnimVal := "[✓] On   (settings and server panels slide in/out)"
+	if a.uiConfig != nil && a.uiConfig.Display.DisablePanelAnimations {
+		panelAnimVal = "[ ] Off"
+	}
+	writeField(11, "Panel Animations", panelAnimVal)
+
+	// Field 12: Typing indicator animation style
+	typingAnim := cfg.TypingAnimation
+	if typingAnim == "" {
+		typingAnim = "braille"
+	}
+	typingAnimPreviews := map[string]string{
+		"braille":   "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+		"dot":       "⣾⣽⣻⢿⡿⣟⣯⣷",
+		"line":      "|/-\\",
+		"pulse":     "█▓▒░",
+		"points":    "∙∙∙ ●∙∙ ∙●∙ ∙∙●",
+		"meter":     "▱▱▱ ▰▱▱ ▰▰▱ ▰▰▰",
+		"hamburger": "☱☲☴☲",
+		"ellipsis":  ". .. ...",
+	}
+	typingAnimVal := fmt.Sprintf("%-10s  %s  ◀▶", typingAnim, typingAnimPreviews[typingAnim])
+	writeField(12, "Typing Animation", typingAnimVal)
+
+	// Apply scroll window: clip allMiddleLines to layout.middleLines starting at DisplayScrollOffset.
+	offset := 0
+	if s != nil {
+		offset = s.DisplayScrollOffset
+	}
+	total := len(allMiddleLines)
+	maxOffset := total - layout.middleLines
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	end := offset + layout.middleLines
+	if end > total {
+		end = total
+	}
+	window := allMiddleLines[offset:end]
+
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	for _, line := range window {
+		middle.writeLine(line)
+	}
 	middle.pad()
 
 	// ── BOTTOM ──
@@ -1912,6 +2081,32 @@ func (a *App) renderDisplayContent(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
+}
+
+// displayFieldLineStarts maps each Display field index to its first line in the middle section.
+// Layout: fields 0-5 (3 lines each), divider+blank (2), fields 6-8 (3 lines each),
+// divider+header+blank (3), fields 9-10 (3 lines each),
+// divider+header+blank (3), fields 11-12 (3 lines each).
+var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44}
+
+// updateDisplayScroll adjusts DisplayScrollOffset so the focused field is visible.
+func (a *App) updateDisplayScroll(s *SettingsState) {
+	contentHeight := a.height - 2
+	layout := calculateSettingsLayout(100, contentHeight, 2, 0)
+	if s.DisplayFocusField < 0 || s.DisplayFocusField >= len(displayFieldLineStarts) {
+		return
+	}
+	fieldStart := displayFieldLineStarts[s.DisplayFocusField]
+	fieldEnd := fieldStart + 3
+	if fieldStart < s.DisplayScrollOffset {
+		s.DisplayScrollOffset = fieldStart
+	}
+	if fieldEnd > s.DisplayScrollOffset+layout.middleLines {
+		s.DisplayScrollOffset = fieldEnd - layout.middleLines
+	}
+	if s.DisplayScrollOffset < 0 {
+		s.DisplayScrollOffset = 0
+	}
 }
 
 // handleDisplayFieldActivate is called on Space/Enter for the Display category.
@@ -1962,6 +2157,39 @@ func (a *App) handleDisplayFieldActivate(s *SettingsState) {
 		cfg.GroupingGapMins = next
 	case 6: // Show Members Panel toggle
 		a.uiConfig.ShowMembersList = !a.uiConfig.ShowMembersList
+	case 7: // Show Server List toggle (instant via settings; animated via [ key)
+		cfg.ServerListCollapsed = !cfg.ServerListCollapsed
+		if cfg.ServerListCollapsed {
+			a.serverListAnimWidth = 10
+		} else {
+			a.serverListAnimWidth = 22
+		}
+	case 8: // Collapse Members Panel toggle (instant via settings; animated via ] key)
+		cfg.MembersListCollapsed = !cfg.MembersListCollapsed
+		if cfg.MembersListCollapsed {
+			a.membersAnimWidth = 10
+		} else {
+			a.membersAnimWidth = 30
+		}
+	case 9: // Voice Level Bar toggle
+		cfg.MembersHideVUMeter = !cfg.MembersHideVUMeter
+	case 10: // Connection Quality toggle
+		cfg.MembersHideQuality = !cfg.MembersHideQuality
+	case 11: // Panel Animations toggle
+		cfg.DisablePanelAnimations = !cfg.DisablePanelAnimations
+	case 12: // Typing Animation: cycle through styles
+		curr := cfg.TypingAnimation
+		if curr == "" {
+			curr = "braille"
+		}
+		idx := 0
+		for i, n := range typingAnimNames {
+			if n == curr {
+				idx = i
+				break
+			}
+		}
+		cfg.TypingAnimation = typingAnimNames[(idx+1)%len(typingAnimNames)]
 	}
 	a.saveDisplayConfig()
 	a.updateChatContent()
@@ -2159,8 +2387,8 @@ func (a *App) renderServerSoundPage(width, height int) string {
 			if isCursor {
 				marker = "▶ "
 				style = lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Background)).
-					Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 			} else if isCurrent {
 				style = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green))
 			}
@@ -2192,8 +2420,8 @@ func (a *App) renderServerSoundPage(width, height int) string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Background)).
-		Background(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
 
 	focused := s.FocusOnForm
 

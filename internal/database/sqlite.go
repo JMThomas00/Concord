@@ -102,6 +102,22 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to migrate mutes server-wide: %w", err)
 	}
 
+	if err := wrapper.MigrateVoiceStates(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate voice_states: %w", err)
+	}
+
+	if err := wrapper.MigrateVoiceChannelSettings(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate voice channel settings: %w", err)
+	}
+
+	// Clear any stale voice state from a previous server run
+	if err := wrapper.ClearAllVoiceStates(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to clear stale voice states: %w", err)
+	}
+
 	return wrapper, nil
 }
 
@@ -1145,10 +1161,10 @@ func (db *DB) UpdateChannel(channel *models.Channel) error {
 
 	_, err := db.Exec(`
 		UPDATE channels
-		SET name = ?, topic = ?, category_id = ?, position = ?, sort_order = ?, is_nsfw = ?,
+		SET name = ?, topic = ?, type = ?, category_id = ?, position = ?, sort_order = ?, is_nsfw = ?,
 			is_locked = ?, rate_limit_per_user = ?, updated_at = ?
 		WHERE id = ?`,
-		channel.Name, channel.Topic, categoryID, channel.Position, channel.SortOrder, channel.IsNSFW,
+		channel.Name, channel.Topic, channel.Type, categoryID, channel.Position, channel.SortOrder, channel.IsNSFW,
 		channel.IsLocked, channel.RateLimitPerUser, time.Now(), channel.ID.String())
 
 	return err
@@ -3142,4 +3158,172 @@ func (db *DB) GetMemberKickCount(serverID, userID uuid.UUID) (int, error) {
 		return 0, nil
 	}
 	return count, err
+}
+
+// btoi converts a bool to 0/1 for SQLite INTEGER columns.
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ── Voice State Migrations ─────────────────────────────────────────────────────
+
+// MigrateVoiceStates creates the voice_states table if it doesn't exist.
+func (db *DB) MigrateVoiceStates() error {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='voice_states'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check voice_states table: %w", err)
+	}
+	if count > 0 {
+		return nil // Already exists
+	}
+
+	log.Println("[MIGRATION] Creating voice_states table...")
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS voice_states (
+			user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			server_id           TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			channel_id          TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+			is_self_muted       INTEGER DEFAULT 0,
+			is_self_deafened    INTEGER DEFAULT 0,
+			is_server_muted     INTEGER DEFAULT 0,
+			is_server_deafened  INTEGER DEFAULT 0,
+			joined_at           DATETIME NOT NULL,
+			PRIMARY KEY (user_id, server_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_voice_states_channel ON voice_states(channel_id);
+		CREATE INDEX IF NOT EXISTS idx_voice_states_server  ON voice_states(server_id);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create voice_states table: %w", err)
+	}
+	log.Println("[MIGRATION] voice_states table created")
+	return nil
+}
+
+// MigrateVoiceChannelSettings adds max_users column to channels table.
+func (db *DB) MigrateVoiceChannelSettings() error {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('channels') WHERE name='max_users'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check max_users column: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	log.Println("[MIGRATION] Adding max_users column to channels table...")
+	_, err = db.Exec(`ALTER TABLE channels ADD COLUMN max_users INTEGER DEFAULT 0`)
+	if err != nil {
+		return fmt.Errorf("failed to add max_users column: %w", err)
+	}
+	log.Println("[MIGRATION] max_users column added")
+	return nil
+}
+
+// ── Voice State DB Methods ─────────────────────────────────────────────────────
+
+// ClearAllVoiceStates removes all voice state rows. Called on server startup to
+// discard stale state from a previous run.
+func (db *DB) ClearAllVoiceStates() error {
+	_, err := db.Exec(`DELETE FROM voice_states`)
+	return err
+}
+
+// SetVoiceState upserts a user's voice state (join or update self-mute/deafen).
+func (db *DB) SetVoiceState(userID, serverID, channelID uuid.UUID, selfMuted, selfDeafened bool) error {
+	_, err := db.Exec(`
+		INSERT INTO voice_states (user_id, server_id, channel_id, is_self_muted, is_self_deafened, joined_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, server_id) DO UPDATE SET
+			channel_id       = excluded.channel_id,
+			is_self_muted    = excluded.is_self_muted,
+			is_self_deafened = excluded.is_self_deafened
+	`,
+		userID.String(), serverID.String(), channelID.String(),
+		btoi(selfMuted), btoi(selfDeafened),
+		time.Now().UTC(),
+	)
+	return err
+}
+
+// ClearVoiceState removes a user's voice state (they left all voice channels).
+func (db *DB) ClearVoiceState(userID, serverID uuid.UUID) error {
+	_, err := db.Exec(
+		`DELETE FROM voice_states WHERE user_id = ? AND server_id = ?`,
+		userID.String(), serverID.String(),
+	)
+	return err
+}
+
+// SetServerVoiceMute updates the server-mute / server-deafen flags for a user.
+func (db *DB) SetServerVoiceMute(userID, serverID uuid.UUID, muted, deafened bool) error {
+	_, err := db.Exec(`
+		UPDATE voice_states SET is_server_muted = ?, is_server_deafened = ?
+		WHERE user_id = ? AND server_id = ?`,
+		btoi(muted), btoi(deafened),
+		userID.String(), serverID.String(),
+	)
+	return err
+}
+
+// GetVoiceStatesForChannel returns all active voice states for a channel.
+func (db *DB) GetVoiceStatesForChannel(channelID uuid.UUID) ([]*models.VoiceState, error) {
+	rows, err := db.Query(`
+		SELECT user_id, server_id, channel_id,
+		       is_self_muted, is_self_deafened, is_server_muted, is_server_deafened, joined_at
+		FROM voice_states WHERE channel_id = ?`, channelID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVoiceStates(rows)
+}
+
+// GetVoiceStatesForServer returns all active voice states for a server.
+func (db *DB) GetVoiceStatesForServer(serverID uuid.UUID) ([]*models.VoiceState, error) {
+	rows, err := db.Query(`
+		SELECT user_id, server_id, channel_id,
+		       is_self_muted, is_self_deafened, is_server_muted, is_server_deafened, joined_at
+		FROM voice_states WHERE server_id = ?`, serverID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVoiceStates(rows)
+}
+
+// scanVoiceStates reads voice state rows into a slice.
+func scanVoiceStates(rows *sql.Rows) ([]*models.VoiceState, error) {
+	var states []*models.VoiceState
+	for rows.Next() {
+		var (
+			vs                                                         models.VoiceState
+			userID, serverID, channelID                                string
+			selfMuted, selfDeafened, serverMuted, serverDeafened       int
+		)
+		if err := rows.Scan(
+			&userID, &serverID, &channelID,
+			&selfMuted, &selfDeafened, &serverMuted, &serverDeafened,
+			&vs.JoinedAt,
+		); err != nil {
+			return nil, err
+		}
+		vs.UserID, _   = uuid.Parse(userID)
+		vs.ServerID, _ = uuid.Parse(serverID)
+		vs.ChannelID, _ = uuid.Parse(channelID)
+		vs.IsSelfMuted      = selfMuted != 0
+		vs.IsSelfDeafened   = selfDeafened != 0
+		vs.IsServerMuted    = serverMuted != 0
+		vs.IsServerDeafened = serverDeafened != 0
+		states = append(states, &vs)
+	}
+	return states, rows.Err()
 }

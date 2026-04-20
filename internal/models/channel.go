@@ -27,9 +27,10 @@ type Channel struct {
 	Position    int         `json:"position"`     // Deprecated - kept for compatibility
 	SortOrder   int         `json:"sort_order"`   // NEW: Use for all ordering operations
 	CategoryID  uuid.UUID   `json:"category_id,omitempty"` // Parent category
-	IsNSFW      bool        `json:"is_nsfw"`
-	IsLocked    bool        `json:"is_locked"`             // Restrict posting to users with ManageMessages permission
-	RateLimitPerUser int    `json:"rate_limit_per_user,omitempty"` // Slowmode in seconds
+	IsNSFW           bool `json:"is_nsfw"`
+	IsLocked         bool `json:"is_locked"`              // Restrict posting to users with ManageMessages permission
+	RateLimitPerUser int  `json:"rate_limit_per_user,omitempty"` // Slowmode in seconds
+	MaxUsers         int  `json:"max_users,omitempty"`    // Voice channel capacity (0 = unlimited)
 	CreatedAt   time.Time   `json:"created_at"`
 	UpdatedAt   time.Time   `json:"updated_at"`
 	

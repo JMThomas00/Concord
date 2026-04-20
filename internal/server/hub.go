@@ -10,6 +10,12 @@ import (
 	"github.com/concord-chat/concord/internal/protocol"
 )
 
+// voiceUserEntry tracks a user's current voice channel for disconnect cleanup.
+type voiceUserEntry struct {
+	serverID  uuid.UUID
+	channelID uuid.UUID
+}
+
 // Hub maintains the set of active clients and broadcasts messages
 type Hub struct {
 	// Registered clients by user ID
@@ -20,6 +26,12 @@ type Hub struct {
 
 	// Clients by channel ID for typing indicators and DMs
 	channelClients map[uuid.UUID]map[uuid.UUID]*Client
+
+	// voiceChannelUsers maps channelID → set of userIDs currently in that voice channel.
+	voiceChannelUsers map[uuid.UUID]map[uuid.UUID]struct{}
+
+	// voiceUserChannel maps userID → their current voice channel entry (for fast lookup on disconnect).
+	voiceUserChannel map[uuid.UUID]voiceUserEntry
 
 	// Register requests from clients
 	register chan *Client
@@ -36,6 +48,10 @@ type Hub struct {
 	// Sequence number for dispatch messages
 	sequence int64
 	seqMu    sync.Mutex
+
+	// onVoiceLeave is an optional callback invoked (in a goroutine) when a user
+	// disconnects while in a voice channel. Handlers.go sets this to handle DB cleanup.
+	onVoiceLeave func(userID, serverID, channelID uuid.UUID)
 }
 
 // BroadcastMessage represents a message to be sent to multiple clients
@@ -55,14 +71,25 @@ type BroadcastMessage struct {
 // NewHub creates a new Hub instance
 func NewHub() *Hub {
 	return &Hub{
-		clients:        make(map[uuid.UUID]*Client),
-		serverClients:  make(map[uuid.UUID]map[uuid.UUID]*Client),
-		channelClients: make(map[uuid.UUID]map[uuid.UUID]*Client),
-		register:       make(chan *Client),
-		unregister:     make(chan *Client),
-		broadcast:      make(chan *BroadcastMessage, 256),
-		sequence:       0,
+		clients:           make(map[uuid.UUID]*Client),
+		serverClients:     make(map[uuid.UUID]map[uuid.UUID]*Client),
+		channelClients:    make(map[uuid.UUID]map[uuid.UUID]*Client),
+		voiceChannelUsers: make(map[uuid.UUID]map[uuid.UUID]struct{}),
+		voiceUserChannel:  make(map[uuid.UUID]voiceUserEntry),
+		register:          make(chan *Client),
+		unregister:        make(chan *Client),
+		broadcast:         make(chan *BroadcastMessage, 256),
+		sequence:          0,
 	}
+}
+
+// SetVoiceLeaveCallback registers the callback invoked when a disconnecting user
+// was in a voice channel. The callback is run in a new goroutine to avoid blocking
+// the hub's event loop.
+func (h *Hub) SetVoiceLeaveCallback(fn func(userID, serverID, channelID uuid.UUID)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onVoiceLeave = fn
 }
 
 // Run starts the hub's main loop
@@ -114,6 +141,18 @@ func (h *Hub) unregisterClient(client *Client) {
 	serverIDs := make([]uuid.UUID, len(client.ServerIDs))
 	copy(serverIDs, client.ServerIDs)
 
+	// Capture voice channel membership before removing from maps
+	voiceEntry, wasInVoice := h.voiceUserChannel[client.UserID]
+	if wasInVoice {
+		delete(h.voiceUserChannel, client.UserID)
+		if ch := h.voiceChannelUsers[voiceEntry.channelID]; ch != nil {
+			delete(ch, client.UserID)
+			if len(ch) == 0 {
+				delete(h.voiceChannelUsers, voiceEntry.channelID)
+			}
+		}
+	}
+
 	// Remove from main client map
 	delete(h.clients, client.UserID)
 
@@ -138,6 +177,8 @@ func (h *Hub) unregisterClient(client *Client) {
 	// Close the client's send channel
 	close(client.send)
 
+	cb := h.onVoiceLeave
+
 	h.mu.Unlock()
 
 	HubLog.Info("Client unregistered", "user_id", client.UserID)
@@ -147,6 +188,11 @@ func (h *Hub) unregisterClient(client *Client) {
 		offlineUser := *user
 		offlineUser.Status = models.StatusOffline
 		h.BroadcastPresenceUpdate(&offlineUser, serverIDs)
+	}
+
+	// If the user was in a voice channel, run DB cleanup + broadcast leave event
+	if wasInVoice && cb != nil {
+		go cb(client.UserID, voiceEntry.serverID, voiceEntry.channelID)
 	}
 }
 
@@ -224,6 +270,64 @@ func (h *Hub) GetOnlineUsers(serverID uuid.UUID) []uuid.UUID {
 		for userID := range clients {
 			users = append(users, userID)
 		}
+	}
+	return users
+}
+
+// JoinVoiceChannel records that a user is now in a voice channel.
+// If the user was already in another voice channel (same server), they are moved.
+func (h *Hub) JoinVoiceChannel(userID, serverID, channelID uuid.UUID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Remove from previous voice channel if any
+	if prev, ok := h.voiceUserChannel[userID]; ok {
+		if ch := h.voiceChannelUsers[prev.channelID]; ch != nil {
+			delete(ch, userID)
+			if len(ch) == 0 {
+				delete(h.voiceChannelUsers, prev.channelID)
+			}
+		}
+	}
+
+	// Add to new voice channel
+	if h.voiceChannelUsers[channelID] == nil {
+		h.voiceChannelUsers[channelID] = make(map[uuid.UUID]struct{})
+	}
+	h.voiceChannelUsers[channelID][userID] = struct{}{}
+	h.voiceUserChannel[userID] = voiceUserEntry{serverID: serverID, channelID: channelID}
+}
+
+// LeaveVoiceChannel removes a user from their current voice channel.
+func (h *Hub) LeaveVoiceChannel(userID uuid.UUID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if entry, ok := h.voiceUserChannel[userID]; ok {
+		if ch := h.voiceChannelUsers[entry.channelID]; ch != nil {
+			delete(ch, userID)
+			if len(ch) == 0 {
+				delete(h.voiceChannelUsers, entry.channelID)
+			}
+		}
+		delete(h.voiceUserChannel, userID)
+	}
+}
+
+// CountVoiceUsers returns the number of users currently in a voice channel.
+func (h *Hub) CountVoiceUsers(channelID uuid.UUID) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.voiceChannelUsers[channelID])
+}
+
+// GetVoiceUsers returns the user IDs currently in a voice channel.
+func (h *Hub) GetVoiceUsers(channelID uuid.UUID) []uuid.UUID {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	users := make([]uuid.UUID, 0, len(h.voiceChannelUsers[channelID]))
+	for uid := range h.voiceChannelUsers[channelID] {
+		users = append(users, uid)
 	}
 	return users
 }

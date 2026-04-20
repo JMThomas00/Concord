@@ -178,6 +178,34 @@ type App struct {
 	// Notification settings (mirrors UIConfig.Notifications, kept in sync)
 	notifConfig NotificationConfig
 
+	// Audio settings (mirrors UIConfig.Audio, kept in sync)
+	audioConfig AudioConfig
+
+	// Voice engine state (nil when not in a voice channel)
+	voiceEngine   *VoiceEngine
+	voiceSigOut   chan VoiceSignalOut // engine → server: WebRTC signals
+	voiceEventOut chan interface{}    // engine → bubbletea: state events
+	voiceQuit     chan struct{}       // closed by stopVoiceEngine to unblock waiting cmds
+	voiceQuality  map[uuid.UUID]int     // userID → latest ICE RTT ms (-1 = unknown)
+	voiceLevels   map[uuid.UUID]float32 // userID → latest RMS output level (0.0–1.0)
+
+	// Server list panel animation
+	serverListAnimWidth int  // current animated width (22 expanded, 8 collapsed)
+	serverListAnimating  bool
+
+	// Members panel animation
+	membersAnimWidth int  // current animated width (30 expanded, 8 collapsed)
+	membersAnimating  bool
+
+	// Full-panel slide animations
+	settingsAnimFrame   int  // 0=hidden, panelAnimMaxFrames=fully visible
+	settingsAnimClosing bool // true while sliding out
+	settingsAnimating   bool
+
+	srvMgmtAnimFrame   int
+	srvMgmtAnimClosing bool
+	srvMgmtAnimating   bool
+
 	// AFK tracking
 	lastActivityTime time.Time
 	isAFK            bool
@@ -239,6 +267,13 @@ type MemberContextMenu struct {
 	TargetMember  *MemberDisplay
 	Actions       []MemberAction
 	SelectedIndex int
+	VolumeSlider  *VolumeSliderState // non-nil when in per-user volume adjust mode
+	AnimFrame     int                // 0 = just opened, counts up to contextMenuMaxFrames
+}
+
+// VolumeSliderState holds the in-progress per-user volume adjustment.
+type VolumeSliderState struct {
+	Volume float64 // 0.0–2.0; adjusted with ←/→, applied live
 }
 
 // MemberAction represents a single action in the context menu
@@ -404,6 +439,54 @@ func (a *App) saveNotifConfig() {
 	_ = a.configMgr.SaveAppConfig(cfg)
 }
 
+// serverListAnimTick returns a Cmd that fires one animation frame (16ms ≈ 60fps).
+func serverListAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return serverListAnimTickMsg{}
+	})
+}
+
+// membersAnimTick returns a Cmd that fires one members panel animation frame.
+func membersAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return membersAnimTickMsg{}
+	})
+}
+
+// toggleMembersList flips the collapsed state and starts the slide animation.
+func (a *App) toggleMembersList() tea.Cmd {
+	if a.uiConfig == nil {
+		return nil
+	}
+	a.uiConfig.Display.MembersListCollapsed = !a.uiConfig.Display.MembersListCollapsed
+	a.membersAnimating = true
+	a.saveDisplayConfig()
+	return membersAnimTick()
+}
+
+// toggleServerList flips the collapsed state and starts the slide animation.
+func (a *App) toggleServerList() tea.Cmd {
+	if a.uiConfig == nil {
+		return nil
+	}
+	a.uiConfig.Display.ServerListCollapsed = !a.uiConfig.Display.ServerListCollapsed
+	a.serverListAnimating = true
+	a.saveDisplayConfig()
+	return serverListAnimTick()
+}
+
+// renderViewByID renders the background view used during panel slide animations.
+func (a *App) renderViewByID(v View) string {
+	switch v {
+	case ViewMain:
+		return a.renderMainView()
+	case ViewLogin:
+		return a.renderLoginView()
+	default:
+		return a.renderMainView()
+	}
+}
+
 // saveDisplayConfig persists the current display config and ShowMembersList back to config.json.
 func (a *App) saveDisplayConfig() {
 	if a.configMgr == nil || a.uiConfig == nil {
@@ -415,6 +498,19 @@ func (a *App) saveDisplayConfig() {
 	}
 	cfg.UI.Display = a.uiConfig.Display
 	cfg.UI.ShowMembersList = a.uiConfig.ShowMembersList
+	_ = a.configMgr.SaveAppConfig(cfg)
+}
+
+// saveAudioConfig persists the current audio config back to config.json.
+func (a *App) saveAudioConfig() {
+	if a.configMgr == nil {
+		return
+	}
+	cfg, err := a.configMgr.LoadAppConfig()
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{Version: 1}
+	}
+	cfg.UI.Audio = a.audioConfig
 	_ = a.configMgr.SaveAppConfig(cfg)
 }
 
@@ -606,6 +702,7 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 		mutedChannels:           loadMutedChannels(appConfig),
 		mutedServers:            loadMutedServers(appConfig),
 		notifConfig:             appConfig.UI.Notifications,
+		audioConfig:             defaultAudioConfig(appConfig.UI.Audio),
 		input:                   input,
 		loginEmail:              loginEmail,
 		loginPassword:           loginPassword,
@@ -619,6 +716,20 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 		addServerAddress:        addServerAddress,
 		addServerPort:           addServerPort,
 		addServerUseTLS:         false,
+	}
+
+	// Initialize server list animation width based on saved collapsed state
+	if appConfig.UI.Display.ServerListCollapsed {
+		app.serverListAnimWidth = 10
+	} else {
+		app.serverListAnimWidth = 22
+	}
+
+	// Initialize members panel animation width based on saved collapsed state
+	if appConfig.UI.Display.MembersListCollapsed {
+		app.membersAnimWidth = 10
+	} else {
+		app.membersAnimWidth = 30
 	}
 
 	// Initialize command handler
@@ -678,7 +789,7 @@ func (a *App) Init() tea.Cmd {
 		textinput.Blink,
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
-		tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }),
+		tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }),
 	}
 	// Auto-connect all known servers when identity is configured
 	if a.localIdentity != nil {
@@ -856,7 +967,107 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.rebuildTypingUsers()
 			}
 		}
-		cmds = append(cmds, tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg { return typingTickMsg(t) }))
+		cmds = append(cmds, tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }))
+
+	case serverListAnimTickMsg:
+		target := 22
+		if a.uiConfig != nil && a.uiConfig.Display.ServerListCollapsed {
+			target = 10
+		}
+		if a.serverListAnimWidth < target {
+			a.serverListAnimWidth = min(a.serverListAnimWidth+2, target)
+		} else if a.serverListAnimWidth > target {
+			a.serverListAnimWidth = max(a.serverListAnimWidth-2, target)
+		}
+		a.updateViewportSize()
+		if a.activeConn != nil && a.currentChannel != nil {
+			a.updateChatContent()
+		}
+		if a.serverListAnimWidth != target {
+			cmds = append(cmds, serverListAnimTick())
+		} else {
+			a.serverListAnimating = false
+		}
+
+	case membersAnimTickMsg:
+		target := 30
+		if a.uiConfig != nil && a.uiConfig.Display.MembersListCollapsed {
+			target = 10
+		}
+		if a.membersAnimWidth < target {
+			a.membersAnimWidth = min(a.membersAnimWidth+2, target)
+		} else if a.membersAnimWidth > target {
+			a.membersAnimWidth = max(a.membersAnimWidth-2, target)
+		}
+		a.updateViewportSize()
+		if a.activeConn != nil && a.currentChannel != nil {
+			a.updateChatContent()
+		}
+		if a.membersAnimWidth != target {
+			cmds = append(cmds, membersAnimTick())
+		} else {
+			a.membersAnimating = false
+		}
+
+	case contextMenuAnimTickMsg:
+		if a.memberContextMenu != nil && a.memberContextMenu.AnimFrame < contextMenuMaxFrames {
+			a.memberContextMenu.AnimFrame++
+			if a.memberContextMenu.AnimFrame < contextMenuMaxFrames {
+				cmds = append(cmds, contextMenuAnimTick())
+			}
+		}
+
+	case settingsPanelAnimTickMsg:
+		if a.settingsAnimating {
+			if !a.settingsAnimClosing {
+				a.settingsAnimFrame++
+				if a.settingsAnimFrame < panelAnimMaxFrames {
+					cmds = append(cmds, settingsPanelAnimTick())
+				} else {
+					a.settingsAnimating = false
+				}
+			} else {
+				a.settingsAnimFrame--
+				if a.settingsAnimFrame > 0 {
+					cmds = append(cmds, settingsPanelAnimTick())
+				} else {
+					a.settingsAnimating = false
+					a.settingsAnimClosing = false
+					if a.settingsState != nil {
+						a.view = a.settingsState.PreviousView
+						a.settingsState = nil
+					}
+				}
+			}
+		}
+
+	case srvMgmtPanelAnimTickMsg:
+		if a.srvMgmtAnimating {
+			if !a.srvMgmtAnimClosing {
+				a.srvMgmtAnimFrame++
+				if a.srvMgmtAnimFrame < panelAnimMaxFrames {
+					cmds = append(cmds, srvMgmtPanelAnimTick())
+				} else {
+					a.srvMgmtAnimating = false
+				}
+			} else {
+				a.srvMgmtAnimFrame--
+				if a.srvMgmtAnimFrame > 0 {
+					cmds = append(cmds, srvMgmtPanelAnimTick())
+				} else {
+					a.srvMgmtAnimating = false
+					a.srvMgmtAnimClosing = false
+					if a.serverManagementState != nil {
+						a.view = a.serverManagementState.PreviousView
+						a.serverManagementState = nil
+					}
+				}
+			}
+		}
+
+	case chatReflowMsg:
+		a.updateViewportSize()
+		a.updateChatContent()
 
 	case tea.KeyMsg:
 		// Any key press resets AFK state
@@ -1019,6 +1230,91 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.pingResults[msg.ServerID] = msg.Result
 		}
 
+	case VoiceEngineReadyMsg:
+		a.statusMessage = "Voice engine ready"
+		a.statusError = false
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceEvent())
+			cmds = append(cmds, a.waitForVoiceSignal())
+		}
+
+	case VoiceEngineErrorMsg:
+		a.statusMessage = fmt.Sprintf("Voice error: %v", msg.Err)
+		a.statusError = true
+		a.stopVoiceEngine()
+
+	case VoiceConnectedMsg:
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceEvent())
+		}
+
+	case VoiceDisconnectedMsg:
+		a.stopVoiceEngine()
+
+	case VoicePeerConnectedMsg:
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceEvent())
+		}
+
+	case VoicePeerDisconnectedMsg:
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceEvent())
+		}
+
+	case VoiceQualityMsg:
+		if a.voiceQuality == nil {
+			a.voiceQuality = make(map[uuid.UUID]int)
+		}
+		a.voiceQuality[msg.UserID] = msg.LatencyMs
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceEvent())
+		}
+
+	case VoiceLevelMsg:
+		if a.voiceLevels == nil {
+			a.voiceLevels = make(map[uuid.UUID]float32)
+		}
+		a.voiceLevels[msg.UserID] = msg.Level
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceEvent())
+		}
+
+	case voiceLocalSpeakingMsg:
+		// Forward local speaking state to server so others see the indicator.
+		if a.activeConn != nil && a.activeConn.Connection != nil {
+			chID := a.activeConn.CurrentVoiceChannelID
+			if chID != uuid.Nil {
+				payload := &protocol.VoiceSpeakingPayload{
+					ChannelID:  chID,
+					IsSpeaking: msg.speaking,
+				}
+				if wsMsg, err := protocol.NewMessage(protocol.OpVoiceSpeaking, payload); err == nil {
+					_ = a.activeConn.Connection.Send(wsMsg)
+				}
+			}
+		}
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceEvent())
+		}
+
+	case VoiceSignalOut:
+		// Forward WebRTC signal (offer/answer/candidate) to the target peer via server relay.
+		if a.activeConn != nil && a.activeConn.Connection != nil {
+			payload := &protocol.VoiceSignalPayload{
+				TargetUserID: msg.TargetUserID,
+				ChannelID:    msg.ChannelID,
+				Type:         msg.Type,
+				SDP:          msg.SDP,
+				Candidate:    msg.Candidate,
+			}
+			if wsMsg, err := protocol.NewMessage(protocol.OpVoiceSignal, payload); err == nil {
+				_ = a.activeConn.Connection.Send(wsMsg)
+			}
+		}
+		if a.voiceEngine != nil {
+			cmds = append(cmds, a.waitForVoiceSignal())
+		}
+
 	case ErrorMsg:
 		a.statusMessage = msg.Error
 		a.statusError = true
@@ -1079,8 +1375,22 @@ func (a *App) View() string {
 		baseView = a.renderManageServersView()
 	case ViewSettings:
 		baseView = a.renderSettingsView()
+		if a.settingsAnimating {
+			t := float64(a.settingsAnimFrame) / float64(panelAnimMaxFrames)
+			animWidth := int(easeInOutCubic(t) * float64(a.width))
+			if animWidth < a.width {
+				baseView = clipPanelLeft(baseView, animWidth)
+			}
+		}
 	case ViewServerManagement:
 		baseView = a.renderServerManagementView()
+		if a.srvMgmtAnimating {
+			t := float64(a.srvMgmtAnimFrame) / float64(panelAnimMaxFrames)
+			animWidth := int(easeInOutCubic(t) * float64(a.width))
+			if animWidth < a.width {
+				baseView = clipPanelRight(baseView, animWidth, a.width)
+			}
+		}
 	case ViewThemeBrowser:
 		baseView = a.renderThemeBrowserView()
 	default:
@@ -1127,15 +1437,70 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return a.handleServerManagementKey(msg)
 	}
 
+	// PTT toggle: intercept before view-specific key routing.
+	if a.voiceEngine != nil && a.audioConfig.PTTEnabled && a.audioConfig.PTTKey != "" {
+		if msg.String() == a.audioConfig.PTTKey {
+			a.voiceEngine.TogglePTT()
+			return nil
+		}
+	}
+
+	// Member context menu letter shortcuts: when the action list is visible (not slider mode),
+	// pressing the key shown next to an action directly executes it.
+	if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider == nil {
+		pressedKey := strings.ToUpper(msg.String())
+		for i, action := range a.memberContextMenu.Actions {
+			if strings.ToUpper(action.Key) == pressedKey {
+				a.memberContextMenu.SelectedIndex = i
+				return a.executeMemberAction()
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+q":
 		return tea.Quit
 
+	case "ctrl+m":
+		// Toggle self-mute in voice channel
+		if a.view == ViewMain && a.activeConn != nil && a.currentClientServer != nil {
+			a.activeConn.mu.RLock()
+			vs := a.activeConn.VoiceStates[a.activeConn.User.ID]
+			a.activeConn.mu.RUnlock()
+			if vs != nil {
+				payload := &protocol.VoiceStateUpdatePayload{
+					ServerID:       vs.ServerID,
+					ChannelID:      &vs.ChannelID,
+					IsSelfMuted:    !vs.IsSelfMuted,
+					IsSelfDeafened: vs.IsSelfDeafened,
+				}
+				_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+			}
+		}
+		return nil
+
+	case "ctrl+d":
+		// Toggle self-deafen in voice channel
+		if a.view == ViewMain && a.activeConn != nil && a.currentClientServer != nil {
+			a.activeConn.mu.RLock()
+			vs := a.activeConn.VoiceStates[a.activeConn.User.ID]
+			a.activeConn.mu.RUnlock()
+			if vs != nil {
+				payload := &protocol.VoiceStateUpdatePayload{
+					ServerID:       vs.ServerID,
+					ChannelID:      &vs.ChannelID,
+					IsSelfMuted:    vs.IsSelfMuted,
+					IsSelfDeafened: !vs.IsSelfDeafened,
+				}
+				_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+			}
+		}
+		return nil
+
 	case "ctrl+s":
 		// Context-aware: Open Settings from login/main view, otherwise cycle servers
 		if a.view == ViewLogin || a.view == ViewMain {
-			a.openSettings(a.view)
-			return nil
+			return a.openSettings(a.view)
 		}
 		// Cycle through client servers (forward) when not in login/main view
 		if len(a.clientServers) > 0 {
@@ -1148,8 +1513,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewMain {
 			// Check if user has admin permissions
 			if a.currentUserRoleLevel() >= roleLevelAdmin {
-				a.openServerManagement(ViewMain, 0) // Start on Channels category
-				return nil
+				return a.openServerManagement(ViewMain, 0)
 			}
 		}
 
@@ -1158,6 +1522,18 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewLogin || a.view == ViewMain {
 			a.openThemeBrowser(a.view)
 			return nil
+		}
+
+	case "[":
+		// Toggle server list panel collapse/expand with animation (not while typing)
+		if a.view == ViewMain && a.focus != FocusInput {
+			return a.toggleServerList()
+		}
+
+	case "]":
+		// Toggle members panel collapse/expand with animation (not while typing)
+		if a.view == ViewMain && a.focus != FocusInput {
+			return a.toggleMembersList()
 		}
 
 	case "tab":
@@ -1307,6 +1683,36 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				}
 				return nil
 			}
+			// If focused on channel list and selected channel is a voice channel,
+			// Enter joins the voice channel (or leaves if already in it).
+			if a.focus == FocusChannelList && a.currentChannel != nil &&
+				a.currentChannel.Type == models.ChannelTypeVoice &&
+				a.activeConn != nil && a.currentServer != nil && a.currentClientServer != nil {
+				a.activeConn.mu.RLock()
+				alreadyInThisChannel := a.activeConn.CurrentVoiceChannelID == a.currentChannel.ID
+				a.activeConn.mu.RUnlock()
+
+				if alreadyInThisChannel {
+					// Leave voice
+					payload := &protocol.VoiceStateUpdatePayload{
+						ServerID:  a.currentServer.ID,
+						ChannelID: nil,
+					}
+					_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+					a.stopVoiceEngine()
+					a.statusMessage = "Left voice channel."
+				} else {
+					// Join voice
+					chID := a.currentChannel.ID
+					payload := &protocol.VoiceStateUpdatePayload{
+						ServerID:  a.currentServer.ID,
+						ChannelID: &chID,
+					}
+					_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+					a.statusMessage = fmt.Sprintf("Joined voice: %s", a.currentChannel.Name)
+				}
+				return nil
+			}
 			// If focused on input, send message
 			if a.focus == FocusInput {
 				return a.handleSendMessage()
@@ -1322,6 +1728,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Close help modal if active
 		if a.helpModalState != nil {
 			a.closeHelpModal()
+			return nil
+		}
+		// Volume slider: Esc exits slider mode back to the action list.
+		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider != nil {
+			a.memberContextMenu.VolumeSlider = nil
 			return nil
 		}
 		// Close member context menu if active
@@ -1568,8 +1979,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "s":
 		// Open Settings when focused on server list
 		if a.view == ViewMain && a.focus == FocusServerIcons {
-			a.openSettings(ViewMain)
-			return nil
+			return a.openSettings(ViewMain)
 		}
 
 	case "l":
@@ -1613,13 +2023,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			}
 			return nil
 		}
-		// Member context menu navigation
-		if a.memberContextMenu != nil {
+		// Member context menu navigation (blocked while volume slider is active)
+		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider == nil {
 			a.memberContextMenu.SelectedIndex--
 			if a.memberContextMenu.SelectedIndex < 0 {
 				a.memberContextMenu.SelectedIndex = len(a.memberContextMenu.Actions) - 1
 			}
 			return nil
+		} else if a.memberContextMenu != nil {
+			return nil // absorb key in slider mode
 		}
 		// Message navigation: Level 1 or Level 2
 		if a.messageNavMode {
@@ -1650,13 +2062,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			}
 			return nil
 		}
-		// Member context menu navigation
-		if a.memberContextMenu != nil {
+		// Member context menu navigation (blocked while volume slider is active)
+		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider == nil {
 			a.memberContextMenu.SelectedIndex++
 			if a.memberContextMenu.SelectedIndex >= len(a.memberContextMenu.Actions) {
 				a.memberContextMenu.SelectedIndex = 0
 			}
 			return nil
+		} else if a.memberContextMenu != nil {
+			return nil // absorb key in slider mode
 		}
 		// Message navigation: Level 1 or Level 2
 		if a.messageNavMode {
@@ -1703,6 +2117,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "left":
+		// Volume slider: decrease by 1%
+		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider != nil {
+			a.memberContextMenu.VolumeSlider.Volume -= 0.01
+			if a.memberContextMenu.VolumeSlider.Volume < 0 {
+				a.memberContextMenu.VolumeSlider.Volume = 0
+			}
+			a.applyVolumeAdjust()
+			return nil
+		}
 		// Level 2: Move cursor left one character
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorInMessage(-1, 0, true) // dx = -1 (left), clear selection
@@ -1717,6 +2140,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "right":
+		// Volume slider: increase by 1%
+		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider != nil {
+			a.memberContextMenu.VolumeSlider.Volume += 0.01
+			if a.memberContextMenu.VolumeSlider.Volume > 2.0 {
+				a.memberContextMenu.VolumeSlider.Volume = 2.0
+			}
+			a.applyVolumeAdjust()
+			return nil
+		}
 		// Level 2: Move cursor right one character
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorInMessage(1, 0, true) // dx = 1 (right), clear selection
@@ -2123,80 +2555,132 @@ func (a *App) copyMessageToClipboard() tea.Cmd {
 	return nil
 }
 
-// buildFlatMemberList creates a flat list of members in role-grouped order for navigation
+// buildFlatMemberList creates a flat list of members in the exact order rendered by
+// renderUserList: voice channel groups first, then role sections, then regular members.
+// This guarantees selectedMemberIndex always matches the highlighted row.
 func (a *App) buildFlatMemberList() []*MemberDisplay {
 	if a.activeConn == nil {
 		return nil
 	}
 
 	a.activeConn.mu.RLock()
-	defer a.activeConn.mu.RUnlock()
+	members := a.activeConn.Members
+	voiceStates := a.activeConn.VoiceStates
+	channels := a.activeConn.Channels
+	a.activeConn.mu.RUnlock()
 
 	var flatList []*MemberDisplay
 
-	// Group members by their highest role position and display order
-	type memberWithRole struct {
-		member       *MemberDisplay
-		pos          int
-		displayOrder int
+	// ── 1. Voice channel groups (rendered first) ──────────────────────────────
+	type voiceGroup struct {
+		channelID uuid.UUID
+		position  int
+		name      string
+		members   []*MemberDisplay
 	}
-	var membersWithRoles []memberWithRole
+	voiceUserSet := make(map[uuid.UUID]struct{})
+	groupMap := make(map[uuid.UUID]*voiceGroup)
 
-	for _, member := range a.activeConn.Members {
-		highestPos := 0
-		displayOrder := 0
-		for _, roleID := range member.Member.RoleIDs {
-			// Roles is a map[uuid.UUID][]*models.Role, iterate over all protocol servers
-			for _, roleList := range a.activeConn.Roles {
-				for _, r := range roleList {
-					if r.ID == roleID && r.Position > highestPos {
-						highestPos = r.Position
-						displayOrder = r.DisplayOrder
+	for userID, vs := range voiceStates {
+		voiceUserSet[userID] = struct{}{}
+		if _, exists := groupMap[vs.ChannelID]; !exists {
+			name := vs.ChannelID.String()[:8] // fallback if channel not found
+			pos := 0
+			for _, chList := range channels {
+				for _, ch := range chList {
+					if ch.ID == vs.ChannelID {
+						name = ch.Name
+						pos = ch.Position
+						break
 					}
 				}
 			}
+			groupMap[vs.ChannelID] = &voiceGroup{channelID: vs.ChannelID, position: pos, name: name}
 		}
-		membersWithRoles = append(membersWithRoles, memberWithRole{
-			member:       member,
-			pos:          highestPos,
-			displayOrder: displayOrder,
-		})
 	}
-
-	// Sort by DisplayOrder ASC (lower = top), fallback to Position DESC (higher = top)
-	sort.Slice(membersWithRoles, func(i, j int) bool {
-		iOrder := membersWithRoles[i].displayOrder
-		jOrder := membersWithRoles[j].displayOrder
-
-		// If both have display order set, sort by display order ASC
-		if iOrder > 0 && jOrder > 0 {
-			if iOrder != jOrder {
-				return iOrder < jOrder
+	for _, m := range members {
+		if vs, ok := voiceStates[m.User.ID]; ok {
+			if grp, ok := groupMap[vs.ChannelID]; ok {
+				grp.members = append(grp.members, m)
 			}
-			// Same display order, fallback to username
-			return membersWithRoles[i].member.User.Username < membersWithRoles[j].member.User.Username
 		}
-
-		// If only one has display order, that one comes first
-		if iOrder > 0 {
-			return true
-		}
-		if jOrder > 0 {
-			return false
-		}
-
-		// Neither has display order, use Position DESC (legacy behavior)
-		if membersWithRoles[i].pos != membersWithRoles[j].pos {
-			return membersWithRoles[i].pos > membersWithRoles[j].pos
-		}
-		// Within same role position, sort by username
-		return membersWithRoles[i].member.User.Username < membersWithRoles[j].member.User.Username
-	})
-
-	// Extract sorted members
-	for _, mwr := range membersWithRoles {
-		flatList = append(flatList, mwr.member)
 	}
+	var voiceGroups []voiceGroup
+	for _, g := range groupMap {
+		voiceGroups = append(voiceGroups, *g)
+	}
+	sort.Slice(voiceGroups, func(i, j int) bool {
+		if voiceGroups[i].position != voiceGroups[j].position {
+			return voiceGroups[i].position < voiceGroups[j].position
+		}
+		return voiceGroups[i].name < voiceGroups[j].name
+	})
+	for i := range voiceGroups {
+		sort.Slice(voiceGroups[i].members, func(a, b int) bool {
+			return voiceGroups[i].members[a].User.Username < voiceGroups[i].members[b].User.Username
+		})
+		flatList = append(flatList, voiceGroups[i].members...)
+	}
+
+	// ── 2. Role sections (same insertion-sort as renderUserList) ──────────────
+	type roleSect struct {
+		role    *models.Role
+		members []*MemberDisplay
+	}
+	roleSectionMap := make(map[uuid.UUID]*roleSect)
+	var roleSectionOrder []uuid.UUID
+	var regularMembers []*MemberDisplay
+
+	for _, m := range members {
+		if _, inVoice := voiceUserSet[m.User.ID]; inVoice {
+			continue // already added in voice groups above
+		}
+		if m.HighestRole != nil {
+			rs, exists := roleSectionMap[m.HighestRole.ID]
+			if !exists {
+				rs = &roleSect{role: m.HighestRole}
+				roleSectionMap[m.HighestRole.ID] = rs
+				roleSectionOrder = append(roleSectionOrder, m.HighestRole.ID)
+			}
+			rs.members = append(rs.members, m)
+		} else {
+			regularMembers = append(regularMembers, m)
+		}
+	}
+
+	// Insertion sort matching renderUserList: DisplayOrder ASC, secondary role name ASC.
+	for i := 1; i < len(roleSectionOrder); i++ {
+		for j := i; j > 0; j-- {
+			curr := roleSectionMap[roleSectionOrder[j]]
+			prev := roleSectionMap[roleSectionOrder[j-1]]
+			currOrder := curr.role.DisplayOrder
+			prevOrder := prev.role.DisplayOrder
+			shouldSwap := false
+			if currOrder < prevOrder {
+				shouldSwap = true
+			} else if currOrder == prevOrder {
+				shouldSwap = curr.role.Name < prev.role.Name
+			}
+			if shouldSwap {
+				roleSectionOrder[j], roleSectionOrder[j-1] = roleSectionOrder[j-1], roleSectionOrder[j]
+			} else {
+				break
+			}
+		}
+	}
+	for _, roleID := range roleSectionOrder {
+		rs := roleSectionMap[roleID]
+		sort.Slice(rs.members, func(i, j int) bool {
+			return rs.members[i].User.Username < rs.members[j].User.Username
+		})
+		flatList = append(flatList, rs.members...)
+	}
+
+	// ── 3. Regular members (no role, not in voice) ────────────────────────────
+	sort.Slice(regularMembers, func(i, j int) bool {
+		return regularMembers[i].User.Username < regularMembers[j].User.Username
+	})
+	flatList = append(flatList, regularMembers...)
 
 	return flatList
 }
@@ -2249,7 +2733,7 @@ func (a *App) openMemberContextMenu() tea.Cmd {
 			Actions:       actions,
 			SelectedIndex: 0,
 		}
-		return nil
+		return contextMenuAnimTick()
 	}
 
 	// Check if user can moderate this member
@@ -2257,44 +2741,121 @@ func (a *App) openMemberContextMenu() tea.Cmd {
 
 	// Add moderation actions if user has permission and can moderate this member
 	if canModerate && a.hasPermission(currentUser, models.PermissionKickMembers) {
+		muteAction := MemberAction{Label: "Mute", Key: "M", Handler: handleMuteAction, RequiresPerm: models.PermissionKickMembers}
+		if targetMember.IsMuted {
+			muteAction = MemberAction{Label: "Unmute", Key: "M", Handler: handleUnmuteAction, RequiresPerm: models.PermissionKickMembers}
+		}
 		actions = append(actions,
-			MemberAction{Label: "Mute", Key: "M", Handler: handleMuteAction, RequiresPerm: models.PermissionKickMembers},
+			muteAction,
 			MemberAction{Label: "Kick", Key: "K", Handler: handleKickAction, RequiresPerm: models.PermissionKickMembers},
 			MemberAction{Label: "Timeout", Key: "T", Handler: handleTimeoutAction, RequiresPerm: models.PermissionKickMembers},
 		)
 	}
 
 	if canModerate && a.hasPermission(currentUser, models.PermissionBanMembers) {
-		actions = append(actions,
-			MemberAction{Label: "Ban", Key: "B", Handler: handleBanAction, RequiresPerm: models.PermissionBanMembers},
-		)
+		if targetMember.IsBanned {
+			actions = append(actions,
+				MemberAction{Label: "Unban", Key: "N", Handler: handleUnbanAction, RequiresPerm: models.PermissionBanMembers},
+			)
+		} else {
+			actions = append(actions,
+				MemberAction{Label: "Ban", Key: "B", Handler: handleBanAction, RequiresPerm: models.PermissionBanMembers},
+			)
+		}
 	}
 
 	if a.hasPermission(currentUser, models.PermissionManageRoles) {
 		actions = append(actions,
 			MemberAction{Label: "Assign Role", Key: "R", Handler: handleRoleAction, RequiresPerm: models.PermissionManageRoles},
+			MemberAction{Label: "Remove Role", Key: "E", Handler: handleRemoveRoleAction, RequiresPerm: models.PermissionManageRoles},
 		)
+	}
+
+	// Voice actions — only shown when target user is currently in a voice channel.
+	var isTargetInVoice bool
+	var isServerMuted bool
+	if a.activeConn != nil {
+		a.activeConn.mu.RLock()
+		if vs, ok := a.activeConn.VoiceStates[targetMember.User.ID]; ok {
+			isTargetInVoice = true
+			isServerMuted = vs.IsServerMuted || vs.IsServerDeafened
+		}
+		a.activeConn.mu.RUnlock()
+	}
+	if isTargetInVoice {
+		actions = append(actions,
+			MemberAction{Label: "Adjust Volume", Key: "V", Handler: handleVolumeAdjustAction, RequiresPerm: 0},
+		)
+		if canModerate && a.hasPermission(currentUser, models.PermissionMuteMembers) {
+			actions = append(actions,
+				MemberAction{Label: "Move Voice", Key: "O", Handler: handleMoveVoiceAction, RequiresPerm: models.PermissionMuteMembers},
+			)
+			if isServerMuted {
+				actions = append(actions,
+					MemberAction{Label: "Voice Unmute", Key: "U", Handler: handleVoiceUnmuteAction, RequiresPerm: models.PermissionMuteMembers},
+				)
+			} else {
+				actions = append(actions,
+					MemberAction{Label: "Voice Mute", Key: "X", Handler: handleVoiceMuteAction, RequiresPerm: models.PermissionMuteMembers},
+					MemberAction{Label: "Voice Deafen", Key: "D", Handler: handleVoiceDeafenAction, RequiresPerm: models.PermissionMuteMembers},
+				)
+			}
+		}
 	}
 
 	a.memberContextMenu = &MemberContextMenu{
 		TargetMember:  targetMember,
 		Actions:       actions,
 		SelectedIndex: 0,
+		AnimFrame:     0,
 	}
 
-	return nil
+	return contextMenuAnimTick()
 }
 
-// executeMemberAction executes the selected action from the context menu
+// executeMemberAction executes the selected action from the context menu.
+// When in volume slider mode, Enter confirms and saves.
 func (a *App) executeMemberAction() tea.Cmd {
 	if a.memberContextMenu == nil {
 		return nil
 	}
 
+	// Volume slider: Enter confirms and closes the menu.
+	if a.memberContextMenu.VolumeSlider != nil {
+		return a.confirmVolumeAdjust()
+	}
+
 	action := a.memberContextMenu.Actions[a.memberContextMenu.SelectedIndex]
 	cmd := action.Handler(a, a.memberContextMenu.TargetMember)
-	a.memberContextMenu = nil // Close menu
+	// Only close if the handler didn't enter a sub-mode (e.g. volume slider).
+	if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider == nil {
+		a.memberContextMenu = nil
+	}
 	return cmd
+}
+
+// confirmVolumeAdjust saves the current slider value and closes the menu.
+func (a *App) confirmVolumeAdjust() tea.Cmd {
+	a.applyVolumeAdjust()
+	a.memberContextMenu = nil
+	return nil
+}
+
+// applyVolumeAdjust applies the slider's current volume to the engine and config.
+func (a *App) applyVolumeAdjust() {
+	if a.memberContextMenu == nil || a.memberContextMenu.VolumeSlider == nil {
+		return
+	}
+	userID := a.memberContextMenu.TargetMember.User.ID
+	vol := a.memberContextMenu.VolumeSlider.Volume
+	if a.voiceEngine != nil {
+		a.voiceEngine.SetUserVolume(userID, vol)
+	}
+	if a.audioConfig.PerUserVolumes == nil {
+		a.audioConfig.PerUserVolumes = make(map[string]float64)
+	}
+	a.audioConfig.PerUserVolumes[userID.String()] = vol
+	a.saveAudioConfig()
 }
 
 // getActiveConnection returns the active server connection
@@ -2335,6 +2896,11 @@ func (a *App) hasPermission(user *models.User, perm models.Permission) bool {
 	return false
 }
 
+// hasPermissionForUser is identical to hasPermission but accepts any *models.User (not just the local user).
+func (a *App) hasPermissionForUser(user *models.User, perm models.Permission) bool {
+	return a.hasPermission(user, perm)
+}
+
 // canModerate checks if current user can moderate the target member
 func (a *App) canModerate(targetMember *MemberDisplay) bool {
 	if a.activeConn == nil || a.activeConn.User == nil {
@@ -2346,6 +2912,16 @@ func (a *App) canModerate(targetMember *MemberDisplay) bool {
 	// Can't moderate yourself
 	if currentUser.ID == targetMember.User.ID {
 		return false
+	}
+
+	// Administrator bypasses role hierarchy — can moderate anyone below
+	if a.hasPermission(currentUser, models.PermissionAdministrator) {
+		// Admins cannot moderate other admins unless they themselves are also admin
+		// (both are admin → neither can moderate the other unless one is higher)
+		targetIsAdmin := a.hasPermissionForUser(targetMember.User, models.PermissionAdministrator)
+		if !targetIsAdmin {
+			return true
+		}
 	}
 
 	// Get highest role positions
@@ -2421,6 +2997,60 @@ func handleMuteAction(a *App, member *MemberDisplay) tea.Cmd {
 	return nil
 }
 
+// handleUnmuteAction unmutes a text-muted member
+func handleUnmuteAction(a *App, member *MemberDisplay) tea.Cmd {
+	ch := NewCommandHandler(a)
+	msg, err := ch.Execute(&Command{
+		Name: "unmute",
+		Args: []string{fmt.Sprintf("@%s", member.User.Username)},
+	})
+	if err != nil {
+		a.statusMessage = err.Error()
+		a.statusError = true
+	} else {
+		a.statusMessage = msg
+		a.statusError = false
+	}
+	return nil
+}
+
+// handleUnbanAction lifts a ban from a member
+func handleUnbanAction(a *App, member *MemberDisplay) tea.Cmd {
+	ch := NewCommandHandler(a)
+	msg, err := ch.Execute(&Command{
+		Name: "unban",
+		Args: []string{member.User.Username},
+	})
+	if err != nil {
+		a.statusMessage = err.Error()
+		a.statusError = true
+	} else {
+		a.statusMessage = msg
+		a.statusError = false
+	}
+	return nil
+}
+
+// handleRemoveRoleAction pre-fills the input for role removal
+func handleRemoveRoleAction(a *App, member *MemberDisplay) tea.Cmd {
+	a.input.SetValue(fmt.Sprintf("/role remove @%s ", member.User.Username))
+	a.focus = FocusInput
+	a.input.Focus()
+	a.statusMessage = "Enter role name to remove"
+	a.statusError = false
+	return nil
+}
+
+// handleMoveVoiceAction pre-fills the input to move a user to another voice channel
+func handleMoveVoiceAction(a *App, member *MemberDisplay) tea.Cmd {
+	a.input.SetValue(fmt.Sprintf("/move-voice @%s #", member.User.Username))
+	a.focus = FocusInput
+	a.input.Focus()
+	a.statusMessage = "Enter destination voice channel name"
+	a.statusError = false
+	return nil
+}
+
 // handleKickAction kicks a member from the server
 func handleKickAction(a *App, member *MemberDisplay) tea.Cmd {
 	ch := NewCommandHandler(a)
@@ -2477,6 +3107,56 @@ func handleRoleAction(a *App, member *MemberDisplay) tea.Cmd {
 	a.statusMessage = "Enter role name to assign"
 	a.statusError = false
 	return nil
+}
+
+// ── Voice context-menu actions ─────────────────────────────────────────────
+
+// handleVolumeAdjustAction opens the inline volume slider for the target user.
+func handleVolumeAdjustAction(a *App, member *MemberDisplay) tea.Cmd {
+	if a.memberContextMenu == nil {
+		return nil
+	}
+	vol := 1.0
+	if v, ok := a.audioConfig.PerUserVolumes[member.User.ID.String()]; ok {
+		vol = v
+	}
+	a.memberContextMenu.VolumeSlider = &VolumeSliderState{Volume: vol}
+	return nil
+}
+
+// handleVoiceMuteAction server-mutes the target user in voice.
+func handleVoiceMuteAction(a *App, member *MemberDisplay) tea.Cmd {
+	return sendVoiceServerMute(a, member.User.ID, true, false)
+}
+
+// handleVoiceDeafenAction server-deafens the target user in voice.
+func handleVoiceDeafenAction(a *App, member *MemberDisplay) tea.Cmd {
+	return sendVoiceServerMute(a, member.User.ID, true, true)
+}
+
+// handleVoiceUnmuteAction lifts server mute/deafen from the target user.
+func handleVoiceUnmuteAction(a *App, member *MemberDisplay) tea.Cmd {
+	return sendVoiceServerMute(a, member.User.ID, false, false)
+}
+
+func sendVoiceServerMute(a *App, userID uuid.UUID, muted, deafened bool) tea.Cmd {
+	if a.activeConn == nil || a.activeConn.Connection == nil || a.currentServer == nil {
+		return nil
+	}
+	conn := a.activeConn.Connection
+	serverID := a.currentServer.ID
+	return func() tea.Msg {
+		payload := &protocol.VoiceServerMutePayload{
+			ServerID: serverID,
+			UserID:   userID,
+			Muted:    muted,
+			Deafened: deafened,
+		}
+		if wsMsg, err := protocol.NewMessage(protocol.OpVoiceServerMute, payload); err == nil {
+			_ = conn.Send(wsMsg)
+		}
+		return nil
+	}
 }
 
 // insertCursorIntoMessage inserts a visible cursor character and selection markers
@@ -2972,6 +3652,9 @@ func (a *App) switchToClientServer(index int) {
 		return
 	}
 
+	// Stop voice engine when leaving the current server.
+	a.stopVoiceEngine()
+
 	a.serverIndex = index
 	a.currentClientServer = a.clientServers[index]
 
@@ -3358,11 +4041,12 @@ func (a *App) updateChatContent() {
 
 				// Apply highlight style with background - foreground will be theme color
 				if msg.IsOwn {
-					// Right-align with highlight
+					// Right-align with highlight and symmetric right padding
 					headerStyle := lipgloss.NewStyle().
 						Background(lipgloss.Color(a.theme.Colors.Selection)).
 						Width(viewportWidth).
-						Align(lipgloss.Right)
+						Align(lipgloss.Right).
+						PaddingRight(2)
 					headerLine = headerStyle.Render(plainHeader)
 				} else {
 					// Left-align with highlight and left padding
@@ -3375,14 +4059,12 @@ func (a *App) updateChatContent() {
 			} else {
 				// No highlight
 				if msg.IsOwn {
-					// Right-align: add left padding
-					headerWidth := lipgloss.Width(header)
-					if headerWidth < viewportWidth {
-						padding := viewportWidth - headerWidth
-						headerLine = strings.Repeat(" ", padding) + header
-					} else {
-						headerLine = header
-					}
+					// Right-align with symmetric right padding
+					lineStyle := lipgloss.NewStyle().
+						Width(viewportWidth).
+						Align(lipgloss.Right).
+						PaddingRight(2)
+					headerLine = lineStyle.Render(header)
 				} else {
 					// Left-align with left padding to match right side visual spacing
 					lineStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
@@ -3445,11 +4127,12 @@ func (a *App) updateChatContent() {
 		if isSelected || isInLevel2 {
 			// Apply highlight with alignment
 			if msg.IsOwn {
-				// Right-align with highlight
+				// Right-align with highlight and symmetric right padding
 				contentStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
 					Width(viewportWidth).
-					Align(lipgloss.Right)
+					Align(lipgloss.Right).
+					PaddingRight(2)
 				contentLine = contentStyle.Render(contentLine)
 			} else {
 				// Left-align with highlight and left padding
@@ -3461,14 +4144,17 @@ func (a *App) updateChatContent() {
 			}
 		} else {
 			// No highlight - apply width for proper formatting
-			contentStyle := lipgloss.NewStyle().Width(viewportWidth)
 			if msg.IsOwn {
-				contentStyle = contentStyle.Align(lipgloss.Right)
+				contentStyle := lipgloss.NewStyle().
+					Width(viewportWidth).
+					Align(lipgloss.Right).
+					PaddingRight(2)
+				contentLine = contentStyle.Render(contentLine)
 			} else {
 				// Left-align with left padding to match right side visual spacing
-				contentStyle = contentStyle.PaddingLeft(2)
+				contentStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
+				contentLine = contentStyle.Render(contentLine)
 			}
-			contentLine = contentStyle.Render(contentLine)
 		}
 		content.WriteString(contentLine)
 		// Spacing between messages based on density setting
@@ -3716,14 +4402,24 @@ func (a *App) clearTypingState() {
 // Must use the same column widths and height math as renderMainView / renderChatPanel
 // so that chatViewport.Width is correct before updateChatContent() is called.
 func (a *App) updateViewportSize() {
-	// Must match renderMainView exactly
+	// Must match renderMainView exactly — use animated widths, not hardcoded defaults
 	availableWidth := a.width - 1
-	serverIconsWidth := 22
+	serverIconsWidth := a.serverListAnimWidth
+	if serverIconsWidth < 10 {
+		serverIconsWidth = 10
+	}
 	channelsWidth := 26
-	membersWidth := 30
+	showMembers := a.uiConfig == nil || a.uiConfig.ShowMembersList
+	membersWidth := 0
+	if showMembers {
+		membersWidth = a.membersAnimWidth
+		if membersWidth < 10 {
+			membersWidth = 10
+		}
+	}
 	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
-	if chatWidth < 60 {
-		membersWidth = 20
+	if chatWidth < 60 && showMembers && membersWidth > 10 {
+		membersWidth = 10
 		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
 	}
 
@@ -3751,16 +4447,24 @@ func (a *App) updateViewportSize() {
 
 // isCursorOverChatViewport checks if mouse coordinates are within chat viewport bounds
 func (a *App) isCursorOverChatViewport(x, y int) bool {
-	// Match layout calculation from views.go:574-583
+	// Match layout calculation from views.go renderMainView exactly
 	availableWidth := a.width - 1
-	serverIconsWidth := 22
+	serverIconsWidth := a.serverListAnimWidth
+	if serverIconsWidth < 10 {
+		serverIconsWidth = 10
+	}
 	channelsWidth := 26
-	membersWidth := 30
+	showMembers := a.uiConfig == nil || a.uiConfig.ShowMembersList
+	membersWidth := 0
+	if showMembers {
+		membersWidth = a.membersAnimWidth
+		if membersWidth < 10 {
+			membersWidth = 10
+		}
+	}
 	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
-
-	// Adjust for narrow terminals
-	if chatWidth < 60 {
-		membersWidth = 20
+	if chatWidth < 60 && showMembers && membersWidth > 10 {
+		membersWidth = 10
 		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
 	}
 
@@ -4125,6 +4829,62 @@ type exitNavModeMsg struct {
 // typingTickMsg drives the typing indicator animation and expiry pruning
 type typingTickMsg time.Time
 
+// typingTickDuration returns the tick interval for the current typing animation style.
+func (a *App) typingTickDuration() time.Duration {
+	if a.uiConfig != nil {
+		switch a.uiConfig.Display.TypingAnimation {
+		case "pulse", "meter":
+			return 150 * time.Millisecond
+		case "points", "ellipsis":
+			return 300 * time.Millisecond
+		case "hamburger":
+			return 333 * time.Millisecond
+		}
+	}
+	return 100 * time.Millisecond // "braille", "dot", "line", or default
+}
+
+// serverListAnimTickMsg drives the server list collapse/expand animation
+type serverListAnimTickMsg struct{}
+
+// membersAnimTickMsg drives the members panel collapse/expand animation
+type membersAnimTickMsg struct{}
+
+// contextMenuAnimTickMsg drives the member context menu pop-in animation
+type contextMenuAnimTickMsg struct{}
+
+const contextMenuMaxFrames = 8
+
+func contextMenuAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return contextMenuAnimTickMsg{}
+	})
+}
+
+// panelAnimMaxFrames is shared by the Settings and Server Management slide animations.
+// 60 frames × 16ms = 960ms total.
+const panelAnimMaxFrames = 60
+
+type settingsPanelAnimTickMsg struct{}
+type srvMgmtPanelAnimTickMsg struct{}
+
+func settingsPanelAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return settingsPanelAnimTickMsg{}
+	})
+}
+
+func srvMgmtPanelAnimTick() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return srvMgmtPanelAnimTickMsg{}
+	})
+}
+
+// chatReflowMsg triggers a chat content reflow after panel animation completes.
+// Fired as the final step of an animation so View() has one frame to update
+// chatViewport.Width before updateChatContent() reads it.
+type chatReflowMsg struct{}
+
 // ConnectionFailedMsg indicates connection failed
 type ConnectionFailedMsg struct {
 	ServerID uuid.UUID
@@ -4213,6 +4973,8 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 		if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
 			a.statusMessage = fmt.Sprintf("Disconnected from %s", a.currentClientServer.Name)
 			a.statusError = true
+			// Stop the voice engine if it was running on this server.
+			a.stopVoiceEngine()
 		}
 
 	case ErrorMsg:
@@ -4221,6 +4983,7 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 		if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
 			a.statusMessage = fmt.Sprintf("Error: %s", msg.Error)
 			a.statusError = true
+			a.stopVoiceEngine()
 		}
 	}
 
@@ -4385,6 +5148,10 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.mu.Lock()
 		sc.Roles[payload.Server.ID] = payload.Roles
 		sc.Members = displays
+		// Seed voice states received in SERVER_CREATE
+		for _, vs := range payload.VoiceStates {
+			sc.VoiceStates[vs.UserID] = vs
+		}
 		sc.mu.Unlock()
 
 		log.Printf("Received SERVER_CREATE for %s: %d channels, %d members, %d roles",
@@ -5320,7 +6087,218 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		// Update status message
 		a.statusMessage = fmt.Sprintf("Pruned %d messages", payload.TotalDeleted)
+
+	case protocol.EventVoiceStateUpdate:
+		var payload protocol.VoiceStateEventPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse VOICE_STATE_UPDATE payload: %v", err)
+			return nil
+		}
+
+		sc.mu.Lock()
+		if payload.ChannelID == nil {
+			// User left voice
+			delete(sc.VoiceStates, payload.UserID)
+			delete(sc.VoiceSpeaking, payload.UserID)
+			// Clear our own voice channel tracking
+			if sc.User != nil && payload.UserID == sc.User.ID {
+				sc.CurrentVoiceChannelID = uuid.Nil
+			}
+		} else {
+			vs := &models.VoiceState{
+				UserID:           payload.UserID,
+				ServerID:         payload.ServerID,
+				ChannelID:        *payload.ChannelID,
+				IsSelfMuted:      payload.IsSelfMuted,
+				IsSelfDeafened:   payload.IsSelfDeafened,
+				IsServerMuted:    payload.IsServerMuted,
+				IsServerDeafened: payload.IsServerDeafened,
+			}
+			sc.VoiceStates[payload.UserID] = vs
+			if sc.User != nil && payload.UserID == sc.User.ID {
+				sc.CurrentVoiceChannelID = *payload.ChannelID
+			}
+		}
+		sc.mu.Unlock()
+
+		// Keep the running engine's peer list in sync with the channel roster.
+		if a.voiceEngine != nil && sc.User != nil {
+			if payload.UserID == sc.User.ID {
+				// We ourselves left (or were moved off) this channel — stop the engine.
+				if payload.ChannelID == nil {
+					a.stopVoiceEngine()
+				}
+				// If we were moved to a new channel, startVoiceEngine fires via EventVoiceServerUpdate.
+			} else {
+				sc.mu.RLock()
+				myChannelID := sc.CurrentVoiceChannelID
+				sc.mu.RUnlock()
+				if payload.ChannelID == nil || *payload.ChannelID != myChannelID {
+					a.voiceEngine.RemovePeer(payload.UserID)
+				} else {
+					a.voiceEngine.AddPeer(payload.UserID)
+				}
+			}
+		}
+
+	case protocol.EventVoiceSpeaking:
+		var payload protocol.VoiceSpeakingEventPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse VOICE_SPEAKING payload: %v", err)
+			return nil
+		}
+
+		sc.mu.Lock()
+		sc.VoiceSpeaking[payload.UserID] = payload.IsSpeaking
+		// Mirror speaking state into VoiceState if present
+		if vs, ok := sc.VoiceStates[payload.UserID]; ok {
+			vs.IsSpeaking = payload.IsSpeaking
+		}
+		sc.mu.Unlock()
+
+	case protocol.EventVoiceServerUpdate:
+		var vsPayload protocol.VoiceServerUpdatePayload
+		if err := json.Unmarshal(msg.Data, &vsPayload); err != nil {
+			log.Printf("voice: VOICE_SERVER_UPDATE parse error: %v", err)
+			return nil
+		}
+		return a.startVoiceEngine(sc, &vsPayload)
+
+	case protocol.EventVoiceSignal:
+		var sigPayload protocol.VoiceSignalRelayPayload
+		if err := json.Unmarshal(msg.Data, &sigPayload); err != nil {
+			log.Printf("voice: VOICE_SIGNAL parse error: %v", err)
+			return nil
+		}
+		if a.voiceEngine != nil {
+			a.voiceEngine.HandleSignal(sigPayload.SourceUserID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
+		}
 	}
 
 	return nil
+}
+
+// ── Voice engine lifecycle ────────────────────────────────────────────────────
+
+// startVoiceEngine creates and starts the VoiceEngine in response to a
+// VOICE_SERVER_UPDATE event. It also seeds the peer list with any users
+// already present in the voice channel.
+//
+// In stub builds (no -tags voice) the audio engine is unavailable. Presence
+// still works — VoiceStates is populated via EventVoiceStateUpdate — so we
+// skip the engine entirely and show a quiet status rather than a red error.
+func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServerUpdatePayload) tea.Cmd {
+	if !isVoiceSupported() {
+		// Presence-only mode: user appears in the voice channel member list
+		// but no audio engine runs (stub build has no CGO audio).
+		a.statusMessage = "Joined voice channel (presence only — no mic/speaker in this build)"
+		a.statusError = false
+		return nil
+	}
+
+	a.stopVoiceEngine() // tear down any existing engine first
+
+	if sc.User == nil {
+		return nil
+	}
+
+	a.voiceSigOut   = make(chan VoiceSignalOut, 64)
+	a.voiceEventOut = make(chan interface{}, 64)
+	a.voiceQuit     = make(chan struct{})
+
+	engine := NewVoiceEngine(a.audioConfig, sc.User.ID, a.voiceSigOut, a.voiceEventOut)
+	a.voiceEngine = engine
+
+	// Collect peers already in the channel before starting.
+	sc.mu.RLock()
+	var existingPeers []uuid.UUID
+	for uid, vs := range sc.VoiceStates {
+		if vs.ChannelID == payload.ChannelID && uid != sc.User.ID {
+			existingPeers = append(existingPeers, uid)
+		}
+	}
+	sc.mu.RUnlock()
+
+	serverID  := payload.ServerID
+	channelID := payload.ChannelID
+	stunURLs  := payload.STUNUrls
+
+	startCmd := func() (result tea.Msg) {
+		// Recover from any CGO/malgo panics (e.g. nil audio backend on some
+		// Windows 10 driver configurations) and return them as clean errors.
+		defer func() {
+			if r := recover(); r != nil {
+				result = VoiceEngineErrorMsg{Err: fmt.Errorf("voice engine panic: %v", r)}
+			}
+		}()
+		if err := engine.Start(serverID, channelID, stunURLs); err != nil {
+			return VoiceEngineErrorMsg{Err: err}
+		}
+		for _, uid := range existingPeers {
+			engine.AddPeer(uid)
+		}
+		return nil // VoiceEngineReadyMsg arrives via waitForVoiceEvent
+	}
+
+	return tea.Batch(startCmd, a.waitForVoiceEvent(), a.waitForVoiceSignal())
+}
+
+// stopVoiceEngine tears down the running VoiceEngine and unblocks any pending
+// waitForVoiceEvent / waitForVoiceSignal commands via the quit channel.
+func (a *App) stopVoiceEngine() {
+	if a.voiceEngine == nil {
+		return
+	}
+	engine := a.voiceEngine
+	a.voiceEngine = nil
+	a.voiceQuality = nil // stale data is useless after engine stops
+	a.voiceLevels  = nil
+	if a.voiceQuit != nil {
+		close(a.voiceQuit)
+		a.voiceQuit = nil
+	}
+	go engine.Stop() // non-blocking: malgo device teardown can take a moment
+}
+
+// waitForVoiceEvent returns a Cmd that blocks until the engine pushes an event
+// (speaking state, peer connect/disconnect, ready, etc.) or the engine stops.
+func (a *App) waitForVoiceEvent() tea.Cmd {
+	ch   := a.voiceEventOut
+	quit := a.voiceQuit
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return evt
+		case <-quit:
+			return nil
+		}
+	}
+}
+
+// waitForVoiceSignal returns a Cmd that blocks until the engine queues an
+// outbound WebRTC signal (offer / answer / ICE candidate) to forward to the
+// server, or the engine stops.
+func (a *App) waitForVoiceSignal() tea.Cmd {
+	ch   := a.voiceSigOut
+	quit := a.voiceQuit
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case sig, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return sig
+		case <-quit:
+			return nil
+		}
+	}
 }

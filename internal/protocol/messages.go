@@ -46,6 +46,12 @@ const (
 	OpPruneMessages         OpCode = 43 // Manual prune trigger
 	OpAssignTitle           OpCode = 44 // Assign custom title to member
 
+	// Voice operations (v2)
+	OpVoiceSignal     OpCode = 45 // WebRTC SDP/ICE relay between clients (C↔S↔C)
+	OpVoiceSpeaking   OpCode = 46 // Client reports speaking state (C→S)
+	OpVoiceServerMute OpCode = 47 // Admin: server-mute/deafen a user in voice (C→S)
+	OpMoveVoice       OpCode = 48 // Admin: force-move a user to another voice channel (C→S)
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -115,8 +121,10 @@ const (
 	EventMessagesPruned        EventType = "MESSAGES_PRUNED"
 
 	// Voice events (v2)
-	EventVoiceStateUpdate EventType = "VOICE_STATE_UPDATE"
+	EventVoiceStateUpdate  EventType = "VOICE_STATE_UPDATE"
 	EventVoiceServerUpdate EventType = "VOICE_SERVER_UPDATE"
+	EventVoiceSpeaking     EventType = "VOICE_SPEAKING"
+	EventVoiceSignal       EventType = "VOICE_SIGNAL" // S→C relay of a WebRTC SDP/ICE signal
 )
 
 // Message represents a WebSocket message envelope
@@ -213,17 +221,20 @@ type ChannelCreateRequest struct {
 	Type       models.ChannelType  `json:"type"`
 	CategoryID *uuid.UUID          `json:"category_id,omitempty"`
 	Position   int                 `json:"position,omitempty"`
+	MaxUsers   int                 `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
 }
 
 // ChannelUpdateRequest is sent by clients to update a channel
 type ChannelUpdateRequest struct {
-	ServerID   uuid.UUID  `json:"server_id"`
-	ChannelID  uuid.UUID  `json:"channel_id"`
-	Name       *string    `json:"name,omitempty"`
-	CategoryID *uuid.UUID `json:"category_id,omitempty"`
-	Position   *int       `json:"position,omitempty"`   // Deprecated - kept for compatibility
-	SortOrder  *int       `json:"sort_order,omitempty"` // NEW: Use for all ordering operations
-	IsLocked   *bool      `json:"is_locked,omitempty"`
+	ServerID   uuid.UUID         `json:"server_id"`
+	ChannelID  uuid.UUID         `json:"channel_id"`
+	Name       *string           `json:"name,omitempty"`
+	Type       *models.ChannelType `json:"type,omitempty"` // nil = keep existing type
+	CategoryID *uuid.UUID        `json:"category_id,omitempty"`
+	Position   *int              `json:"position,omitempty"`   // Deprecated - kept for compatibility
+	SortOrder  *int              `json:"sort_order,omitempty"` // NEW: Use for all ordering operations
+	IsLocked   *bool             `json:"is_locked,omitempty"`
+	MaxUsers   *int              `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
 }
 
 // ChannelDeleteRequest is sent by clients to delete a channel
@@ -396,10 +407,11 @@ type ReadyPayload struct {
 // ServerCreatePayload is sent for each server the user is a member of (after READY)
 type ServerCreatePayload struct {
 	*models.Server
-	Channels []*models.Channel      `json:"channels"`
-	Members  []*models.ServerMember `json:"members"`
-	Roles    []*models.Role         `json:"roles"`
-	Users    []*models.User         `json:"users"`
+	Channels    []*models.Channel      `json:"channels"`
+	Members     []*models.ServerMember `json:"members"`
+	Roles       []*models.Role         `json:"roles"`
+	Users       []*models.User         `json:"users"`
+	VoiceStates []*models.VoiceState   `json:"voice_states"`
 }
 
 // --- Event Payloads ---
@@ -591,20 +603,102 @@ type AssignTitlePayload struct {
 type CloseCode int
 
 const (
-	CloseNormal           CloseCode = 1000
-	CloseGoingAway        CloseCode = 1001
-	CloseUnknownError     CloseCode = 4000
-	CloseUnknownOpCode    CloseCode = 4001
-	CloseDecodeError      CloseCode = 4002
-	CloseNotAuthenticated CloseCode = 4003
-	CloseAuthFailed       CloseCode = 4004
-	CloseAlreadyAuth      CloseCode = 4005
-	CloseInvalidSeq       CloseCode = 4007
-	CloseRateLimited      CloseCode = 4008
-	CloseSessionTimeout   CloseCode = 4009
-	CloseInvalidShard     CloseCode = 4010
-	CloseShardingRequired CloseCode = 4011
+	CloseNormal            CloseCode = 1000
+	CloseGoingAway         CloseCode = 1001
+	CloseUnknownError      CloseCode = 4000
+	CloseUnknownOpCode     CloseCode = 4001
+	CloseDecodeError       CloseCode = 4002
+	CloseNotAuthenticated  CloseCode = 4003
+	CloseAuthFailed        CloseCode = 4004
+	CloseAlreadyAuth       CloseCode = 4005
+	CloseInvalidSeq        CloseCode = 4007
+	CloseRateLimited       CloseCode = 4008
+	CloseSessionTimeout    CloseCode = 4009
+	CloseInvalidShard      CloseCode = 4010
+	CloseShardingRequired  CloseCode = 4011
 	CloseInvalidAPIVersion CloseCode = 4012
-	CloseInvalidIntents   CloseCode = 4013
+	CloseInvalidIntents    CloseCode = 4013
 	CloseDisallowedIntents CloseCode = 4014
 )
+
+// ── Voice Payloads ─────────────────────────────────────────────────────────────
+
+// VoiceStateUpdatePayload is sent C→S when joining, leaving, or updating voice state.
+// A nil ChannelID means the user is leaving all voice channels on this server.
+type VoiceStateUpdatePayload struct {
+	ServerID       uuid.UUID  `json:"server_id"`
+	ChannelID      *uuid.UUID `json:"channel_id"` // nil = leave
+	IsSelfMuted    bool       `json:"is_self_muted"`
+	IsSelfDeafened bool       `json:"is_self_deafened"`
+}
+
+// VoiceStateEventPayload is dispatched S→C whenever a member's voice state changes.
+type VoiceStateEventPayload struct {
+	UserID           uuid.UUID    `json:"user_id"`
+	ServerID         uuid.UUID    `json:"server_id"`
+	ChannelID        *uuid.UUID   `json:"channel_id"` // nil = user left voice
+	IsSelfMuted      bool         `json:"is_self_muted"`
+	IsSelfDeafened   bool         `json:"is_self_deafened"`
+	IsServerMuted    bool         `json:"is_server_muted"`
+	IsServerDeafened bool         `json:"is_server_deafened"`
+	User             *models.User `json:"user,omitempty"`
+}
+
+// VoiceServerUpdatePayload is sent S→C to provide WebRTC connection info after
+// a client joins a voice channel. STUNUrls is populated from server config.
+type VoiceServerUpdatePayload struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	Token     string    `json:"token"`              // ephemeral session token
+	Endpoint  string    `json:"endpoint"`           // server host:port for signaling relay
+	STUNUrls  []string  `json:"stun_urls"`
+	TURNUrls  []string  `json:"turn_urls,omitempty"`
+}
+
+// VoiceSignalPayload relays a WebRTC SDP offer/answer or ICE candidate between
+// two clients via the server. The server forwards it without inspecting content.
+type VoiceSignalPayload struct {
+	TargetUserID uuid.UUID       `json:"target_user_id"`
+	ChannelID    uuid.UUID       `json:"channel_id"`
+	Type         string          `json:"type"`                // "offer", "answer", "candidate"
+	SDP          string          `json:"sdp,omitempty"`
+	Candidate    json.RawMessage `json:"candidate,omitempty"` // RTCIceCandidateInit JSON
+}
+
+// VoiceSignalRelayPayload is dispatched S→C when the server relays a WebRTC signal.
+// SourceUserID identifies who sent the original signal so the recipient can route it.
+type VoiceSignalRelayPayload struct {
+	SourceUserID uuid.UUID       `json:"source_user_id"`
+	ChannelID    uuid.UUID       `json:"channel_id"`
+	Type         string          `json:"type"`                // "offer", "answer", "candidate"
+	SDP          string          `json:"sdp,omitempty"`
+	Candidate    json.RawMessage `json:"candidate,omitempty"` // RTCIceCandidateInit JSON
+}
+
+// VoiceSpeakingPayload is sent C→S when the client's speaking state changes.
+type VoiceSpeakingPayload struct {
+	ChannelID  uuid.UUID `json:"channel_id"`
+	IsSpeaking bool      `json:"is_speaking"`
+}
+
+// VoiceSpeakingEventPayload is dispatched S→C when a member starts/stops speaking.
+type VoiceSpeakingEventPayload struct {
+	UserID     uuid.UUID `json:"user_id"`
+	ChannelID  uuid.UUID `json:"channel_id"`
+	IsSpeaking bool      `json:"is_speaking"`
+}
+
+// VoiceServerMutePayload is sent C→S by an admin to server-mute/deafen a user in voice.
+type VoiceServerMutePayload struct {
+	ServerID uuid.UUID `json:"server_id"`
+	UserID   uuid.UUID `json:"user_id"`
+	Muted    bool      `json:"muted"`
+	Deafened bool      `json:"deafened"`
+}
+
+// MoveVoicePayload is sent C→S by an admin to force-move a user to a different voice channel.
+type MoveVoicePayload struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	UserID    uuid.UUID `json:"user_id"`    // user to move
+	ChannelID uuid.UUID `json:"channel_id"` // destination voice channel
+}

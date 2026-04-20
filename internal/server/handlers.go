@@ -294,15 +294,29 @@ func (h *Handlers) HandleRequestGuild(c *Client, msg *protocol.Message) {
 		DBLog.Error("Failed to get members", "server_id", payload.ServerID, "error", err)
 	}
 
-	// Send server create event with full data
-	guildData := map[string]interface{}{
-		"server":   server,
-		"channels": channels,
-		"roles":    roles,
-		"members":  members,
+	// Get voice states
+	voiceStates, err := h.db.GetVoiceStatesForServer(payload.ServerID)
+	if err != nil {
+		DBLog.Error("Failed to get voice states", "server_id", payload.ServerID, "error", err)
 	}
 
-	c.SendDispatch(protocol.EventServerCreate, guildData)
+	// Collect user IDs for member display
+	userIDs := make([]uuid.UUID, 0, len(members))
+	for _, m := range members {
+		userIDs = append(userIDs, m.UserID)
+	}
+	users, _ := h.db.GetUsersByIDs(userIDs)
+
+	guildPayload := &protocol.ServerCreatePayload{
+		Server:      server,
+		Channels:    channels,
+		Members:     members,
+		Roles:       roles,
+		Users:       users,
+		VoiceStates: voiceStates,
+	}
+
+	c.SendDispatch(protocol.EventServerCreate, guildPayload)
 }
 
 // HandleJoinServer handles a user joining a server via invite
@@ -359,6 +373,9 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 		channel.CategoryID = *req.CategoryID
 	}
 	channel.Position = req.Position
+	if req.MaxUsers > 0 {
+		channel.MaxUsers = req.MaxUsers
+	}
 
 	// Save to database
 	if err := h.db.CreateChannel(channel); err != nil {
@@ -413,6 +430,18 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 		}
 		channel.Name = *req.Name
 	}
+	if req.Type != nil {
+		newType := *req.Type
+		if newType != models.ChannelTypeText && newType != models.ChannelTypeVoice && newType != models.ChannelTypeCategory {
+			c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid channel type")
+			return
+		}
+		// Promoting to a category clears any parent it belongs to
+		if newType == models.ChannelTypeCategory && channel.Type != models.ChannelTypeCategory {
+			channel.CategoryID = uuid.Nil
+		}
+		channel.Type = newType
+	}
 	if req.CategoryID != nil {
 		// Safety check: categories cannot have a parent category
 		if channel.Type == models.ChannelTypeCategory && *req.CategoryID != uuid.Nil {
@@ -430,6 +459,9 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 	}
 	if req.IsLocked != nil {
 		channel.IsLocked = *req.IsLocked
+	}
+	if req.MaxUsers != nil {
+		channel.MaxUsers = *req.MaxUsers
 	}
 
 	if err := h.db.UpdateChannel(channel); err != nil {
@@ -1824,3 +1856,246 @@ func (h *Handlers) HandleAssignTitle(c *Client, msg *protocol.Message) {
 
 	Logger.Info("Title updated", "user_id", req.UserID, "server_id", req.ServerID, "title", req.Title)
 }
+
+// ── Voice Handlers ─────────────────────────────────────────────────────────────
+
+// HandleVoiceStateUpdate handles a client joining, leaving, or updating voice state.
+// OpVoiceStateUpdate (6): C→S
+func (h *Handlers) HandleVoiceStateUpdate(c *Client, msg *protocol.Message) {
+	var req protocol.VoiceStateUpdatePayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid voice state payload")
+		return
+	}
+
+	// Leaving voice
+	if req.ChannelID == nil {
+		if err := h.db.ClearVoiceState(c.UserID, req.ServerID); err != nil {
+			DBLog.Error("Failed to clear voice state", "user_id", c.UserID, "error", err)
+		}
+		h.hub.LeaveVoiceChannel(c.UserID)
+
+		// Broadcast departure to server
+		leavePayload := &protocol.VoiceStateEventPayload{
+			UserID:   c.UserID,
+			ServerID: req.ServerID,
+			User:     c.User,
+		}
+		_ = h.hub.BroadcastToServer(req.ServerID, protocol.EventVoiceStateUpdate, leavePayload, nil)
+		Logger.Info("User left voice", "user_id", c.UserID, "server_id", req.ServerID)
+		return
+	}
+
+	// Joining or updating — check capacity
+	channel, err := h.db.GetChannelByID(*req.ChannelID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Voice channel not found")
+		return
+	}
+	if channel.MaxUsers > 0 {
+		current, _ := h.db.GetVoiceStatesForChannel(*req.ChannelID)
+		// Allow if already in this channel (update, not new join)
+		alreadyIn := false
+		for _, vs := range current {
+			if vs.UserID == c.UserID {
+				alreadyIn = true
+				break
+			}
+		}
+		if !alreadyIn && len(current) >= channel.MaxUsers {
+			c.sendError(protocol.ErrorCodeForbidden, "Voice channel is full")
+			return
+		}
+	}
+
+	// Persist voice state
+	if err := h.db.SetVoiceState(c.UserID, req.ServerID, *req.ChannelID, req.IsSelfMuted, req.IsSelfDeafened); err != nil {
+		DBLog.Error("Failed to set voice state", "user_id", c.UserID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to join voice channel")
+		return
+	}
+	h.hub.JoinVoiceChannel(c.UserID, req.ServerID, *req.ChannelID)
+
+	// Broadcast new state to all server members
+	joinPayload := &protocol.VoiceStateEventPayload{
+		UserID:         c.UserID,
+		ServerID:       req.ServerID,
+		ChannelID:      req.ChannelID,
+		IsSelfMuted:    req.IsSelfMuted,
+		IsSelfDeafened: req.IsSelfDeafened,
+		User:           c.User,
+	}
+	_ = h.hub.BroadcastToServer(req.ServerID, protocol.EventVoiceStateUpdate, joinPayload, nil)
+
+	// Send the joining client their WebRTC connection info
+	voiceServerPayload := &protocol.VoiceServerUpdatePayload{
+		ServerID:  req.ServerID,
+		ChannelID: *req.ChannelID,
+		Token:     uuid.New().String(), // ephemeral session token
+		Endpoint:  "", // Phase 4: WebRTC endpoint from server config
+		STUNUrls:  []string{"stun:stun.l.google.com:19302"},
+	}
+	h.hub.SendToUser(c.UserID, protocol.EventVoiceServerUpdate, voiceServerPayload)
+
+	Logger.Info("User joined voice", "user_id", c.UserID, "channel_id", *req.ChannelID)
+}
+
+// HandleVoiceSignal relays a WebRTC SDP/ICE candidate between two clients.
+// The server acts as a dumb relay; it never inspects the SDP content.
+// OpVoiceSignal (45): C→S→C
+func (h *Handlers) HandleVoiceSignal(c *Client, msg *protocol.Message) {
+	var req protocol.VoiceSignalPayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid voice signal payload")
+		return
+	}
+
+	// Build relay payload that includes the source user ID so the recipient
+	// knows whose offer/answer/candidate this is.
+	relay := &protocol.VoiceSignalRelayPayload{
+		SourceUserID: c.UserID,
+		ChannelID:    req.ChannelID,
+		Type:         req.Type,
+		SDP:          req.SDP,
+		Candidate:    req.Candidate,
+	}
+	h.hub.SendToUser(req.TargetUserID, protocol.EventVoiceSignal, relay)
+}
+
+// HandleVoiceSpeaking handles speaking state notification and broadcasts it to
+// other members of the same voice channel.
+// OpVoiceSpeaking (46): C→S
+func (h *Handlers) HandleVoiceSpeaking(c *Client, msg *protocol.Message) {
+	var req protocol.VoiceSpeakingPayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid speaking payload")
+		return
+	}
+
+	event := &protocol.VoiceSpeakingEventPayload{
+		UserID:     c.UserID,
+		ChannelID:  req.ChannelID,
+		IsSpeaking: req.IsSpeaking,
+	}
+	_ = h.hub.BroadcastToChannel(req.ChannelID, protocol.EventVoiceSpeaking, event, &c.UserID)
+}
+
+// HandleVoiceServerMute handles an admin server-muting or deafening a user in voice.
+// OpVoiceServerMute (47): C→S
+func (h *Handlers) HandleVoiceServerMute(c *Client, msg *protocol.Message) {
+	var req protocol.VoiceServerMutePayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid voice server mute payload")
+		return
+	}
+
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionMuteMembers); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to mute members")
+		return
+	}
+
+	if err := h.db.SetServerVoiceMute(req.UserID, req.ServerID, req.Muted, req.Deafened); err != nil {
+		DBLog.Error("Failed to set server voice mute", "user_id", req.UserID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update voice mute")
+		return
+	}
+
+	// Broadcast updated state to server so clients suppress/restore audio
+	event := &protocol.VoiceStateEventPayload{
+		UserID:           req.UserID,
+		ServerID:         req.ServerID,
+		IsServerMuted:    req.Muted,
+		IsServerDeafened: req.Deafened,
+	}
+	_ = h.hub.BroadcastToServer(req.ServerID, protocol.EventVoiceStateUpdate, event, nil)
+
+	Logger.Info("Server voice mute applied", "target_user_id", req.UserID, "muted", req.Muted, "deafened", req.Deafened)
+}
+
+// HandleMoveVoice handles an admin force-moving a user to a different voice channel.
+// OpMoveVoice (48): C→S
+func (h *Handlers) HandleMoveVoice(c *Client, msg *protocol.Message) {
+	var req protocol.MoveVoicePayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid move-voice payload")
+		return
+	}
+
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionMuteMembers); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to move members")
+		return
+	}
+
+	// Destination must be a voice channel.
+	destChannel, err := h.db.GetChannelByID(req.ChannelID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Destination channel not found")
+		return
+	}
+	if destChannel.Type != models.ChannelTypeVoice {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Destination must be a voice channel")
+		return
+	}
+
+	// Enforce capacity on destination.
+	if destChannel.MaxUsers > 0 {
+		current, _ := h.db.GetVoiceStatesForChannel(req.ChannelID)
+		if len(current) >= destChannel.MaxUsers {
+			c.sendError(protocol.ErrorCodeForbidden, "Destination voice channel is full")
+			return
+		}
+	}
+
+	// Broadcast leave from current channel (ChannelID nil = left voice).
+	leavePayload := &protocol.VoiceStateEventPayload{
+		UserID:   req.UserID,
+		ServerID: req.ServerID,
+	}
+	_ = h.hub.BroadcastToServer(req.ServerID, protocol.EventVoiceStateUpdate, leavePayload, nil)
+
+	// Update DB and hub to new channel.
+	if err := h.db.SetVoiceState(req.UserID, req.ServerID, req.ChannelID, false, false); err != nil {
+		DBLog.Error("Failed to set voice state for move", "user_id", req.UserID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to move user")
+		return
+	}
+	h.hub.JoinVoiceChannel(req.UserID, req.ServerID, req.ChannelID)
+
+	// Broadcast join in new channel.
+	joinPayload := &protocol.VoiceStateEventPayload{
+		UserID:    req.UserID,
+		ServerID:  req.ServerID,
+		ChannelID: &req.ChannelID,
+	}
+	_ = h.hub.BroadcastToServer(req.ServerID, protocol.EventVoiceStateUpdate, joinPayload, nil)
+
+	// Send the moved user a new VoiceServerUpdate so their client reconnects.
+	voiceServerPayload := &protocol.VoiceServerUpdatePayload{
+		ServerID:  req.ServerID,
+		ChannelID: req.ChannelID,
+		Token:     uuid.New().String(),
+		Endpoint:  "",
+		STUNUrls:  []string{"stun:stun.l.google.com:19302"},
+	}
+	h.hub.SendToUser(req.UserID, protocol.EventVoiceServerUpdate, voiceServerPayload)
+
+	Logger.Info("User moved in voice", "admin_id", c.UserID, "target_id", req.UserID, "channel_id", req.ChannelID)
+}
+
+// handleVoiceLeave is invoked by the hub's voice-leave callback when a client
+// disconnects while still in a voice channel. It cleans up DB state and broadcasts
+// the departure event to the server.
+func (h *Handlers) handleVoiceLeave(userID, serverID, channelID uuid.UUID) {
+	if err := h.db.ClearVoiceState(userID, serverID); err != nil {
+		DBLog.Error("Failed to clear voice state on disconnect", "user_id", userID, "error", err)
+	}
+
+	leavePayload := &protocol.VoiceStateEventPayload{
+		UserID:   userID,
+		ServerID: serverID,
+		// ChannelID nil → client left voice
+	}
+	_ = h.hub.BroadcastToServer(serverID, protocol.EventVoiceStateUpdate, leavePayload, nil)
+	Logger.Info("Voice state cleared on disconnect", "user_id", userID, "channel_id", channelID)
+}
+
