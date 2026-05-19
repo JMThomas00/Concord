@@ -86,6 +86,12 @@ func bitrateForPreset(preset string) int {
 // A 20 ms frame at 128 kbps is at most 320 bytes; 4000 gives ample headroom.
 const maxOpusPacketBytes = 4000
 
+// opusAppVoIP is OPUS_APPLICATION_VOIP (2048) expressed as a plain Go constant
+// so that gopls can evaluate it without running the C preprocessor. Using
+// opus.AppVoIP directly causes a "constant unknown with invalid type" IDE error
+// because gopls cannot resolve CGO-defined constants at analysis time.
+const opusAppVoIP opus.Application = 2048
+
 // ── peerConn ─────────────────────────────────────────────────────────────────
 
 // peerConn holds the WebRTC connection to one remote user.
@@ -309,7 +315,7 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 	log.Printf("voice: codec preset=%q → %d Hz / %d bps (Opus)", e.cfg.CodecPreset, sampleRate, bitrate)
 
 	// ── Opus encoder ─────────────────────────────────────────────────────────
-	enc, err := opus.NewEncoder(int(sampleRate), voiceChannels, opus.AppVoIP)
+	enc, err := opus.NewEncoder(int(sampleRate), voiceChannels, opusAppVoIP)
 	if err != nil {
 		freeCtx()
 		return fmt.Errorf("opus encoder: %w", err)

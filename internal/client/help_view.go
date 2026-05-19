@@ -439,12 +439,19 @@ Desktop notifications for @mentions and DMs when Concord is running in the backg
 `
 
 // renderHelpContent renders the full user guide using glamour markdown rendering.
+// The right edge of the content area carries a scrollbar showing position in the document.
 func (a *App) renderHelpContent(width, height int) string {
 	s := a.settingsState
 
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	dimStyle   := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Bold(true)
+	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Yellow))
+	trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+
 	layout := calculateSettingsLayout(width, height, 2, 0)
+
+	// Reserve 2 chars on the right of each middle line for the scrollbar (" █" / " │").
+	contentWidth := layout.interiorWidth - 2
 
 	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
@@ -453,12 +460,11 @@ func (a *App) renderHelpContent(width, height int) string {
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
-	// ── MIDDLE — glamour-rendered markdown, scrolled ──
-	// Cache the rendered lines in SettingsState to avoid re-rendering on every frame.
-	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderWidth != layout.interiorWidth) {
-		lines := renderHelpMarkdown(layout.interiorWidth)
-		s.HelpRenderedLines = lines
-		s.HelpRenderWidth = layout.interiorWidth
+	// ── MIDDLE — glamour-rendered markdown with inline scrollbar ──
+	// Cache rendered lines; invalidate when content width changes.
+	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderWidth != contentWidth) {
+		s.HelpRenderedLines = renderHelpMarkdown(contentWidth)
+		s.HelpRenderWidth = contentWidth
 	}
 
 	var allLines []string
@@ -466,11 +472,14 @@ func (a *App) renderHelpContent(width, height int) string {
 		allLines = s.HelpRenderedLines
 	}
 
+	totalLines  := len(allLines)
+	trackHeight := layout.middleLines
+
 	// Clamp scroll offset.
 	offset := 0
 	if s != nil {
 		offset = s.HelpScrollOffset
-		maxOffset := len(allLines) - layout.middleLines
+		maxOffset := totalLines - trackHeight
 		if maxOffset < 0 {
 			maxOffset = 0
 		}
@@ -484,41 +493,55 @@ func (a *App) renderHelpContent(width, height int) string {
 		}
 	}
 
-	end := offset + layout.middleLines
-	if end > len(allLines) {
-		end = len(allLines)
+	end := offset + trackHeight
+	if end > totalLines {
+		end = totalLines
 	}
 	window := allLines[offset:end]
 
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
-	for _, line := range window {
-		middle.writeLine(line)
+	// Compute scrollbar thumb position and size.
+	thumbPos, thumbSize := helpScrollbarThumb(offset, totalLines, trackHeight)
+
+	// Build each middle line as [content padded to contentWidth] + [2-char scrollbar].
+	var middleBuf strings.Builder
+	for i := 0; i < trackHeight; i++ {
+		// Content — pad/clip to contentWidth so the scrollbar column stays aligned.
+		contentLine := ""
+		if i < len(window) {
+			contentLine = window[i]
+		}
+		line := lipgloss.NewStyle().Width(contentWidth).Render(contentLine)
+
+		// Scrollbar glyph: thumb (█) or track (│), shown only when content overflows.
+		var scrollGlyph string
+		if totalLines > trackHeight {
+			if i >= thumbPos && i < thumbPos+thumbSize {
+				scrollGlyph = thumbStyle.Render(" █")
+			} else {
+				scrollGlyph = trackStyle.Render(" │")
+			}
+		} else {
+			scrollGlyph = "  "
+		}
+
+		middleBuf.WriteString(line + scrollGlyph)
+		if i < trackHeight-1 {
+			middleBuf.WriteString("\n")
+		}
 	}
-	middle.pad()
 
 	// ── BOTTOM ──
 	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
-
 	focused := s != nil && s.FocusOnForm
-	hint := "Tab to scroll · Esc close"
 	if focused {
-		// Show scroll position when focused.
-		total := len(allLines)
-		pct := 0
-		if total > 0 {
-			pct = (offset + layout.middleLines) * 100 / total
-			if pct > 100 {
-				pct = 100
-			}
-		}
-		hint = "↑↓ / PgUp PgDn scroll · Tab back to menu · Esc close"
-		_ = pct
+		bottom.writeLine(dimStyle.Render("↑↓ / PgUp PgDn / scroll wheel · Tab back to menu · Esc close"))
+	} else {
+		bottom.writeLine(dimStyle.Render("Tab for keyboard scroll · scroll wheel anywhere · Esc close"))
 	}
-	bottom.writeLine(dimStyle.Render(hint))
 	bottom.pad()
 
-	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middleBuf.String(), bottom.String())
 	borderColor := lipgloss.Color(a.theme.Colors.Comment)
 	if focused {
 		borderColor = lipgloss.Color(a.theme.Colors.Yellow)
@@ -528,6 +551,23 @@ func (a *App) renderHelpContent(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Padding(0, 1).Render(content)
+}
+
+// helpScrollbarThumb computes the scrollbar thumb start row and height in track coordinates.
+func helpScrollbarThumb(offset, totalLines, trackHeight int) (thumbPos, thumbSize int) {
+	if totalLines <= trackHeight {
+		return 0, trackHeight
+	}
+	thumbSize = trackHeight * trackHeight / totalLines
+	if thumbSize < 1 {
+		thumbSize = 1
+	}
+	maxThumbPos := trackHeight - thumbSize
+	maxOffset   := totalLines - trackHeight
+	if maxOffset > 0 {
+		thumbPos = offset * maxThumbPos / maxOffset
+	}
+	return
 }
 
 // renderHelpMarkdown renders the help markdown document via glamour and returns
