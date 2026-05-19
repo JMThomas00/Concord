@@ -69,6 +69,11 @@ type SettingsState struct {
 	AudioPickerCursor  int           // highlighted row in the picker list
 	AudioPickerDevices []AudioDevice // cached at picker-open time
 
+	// Help & Guide category state
+	HelpScrollOffset  int      // current scroll position in lines
+	HelpRenderedLines []string // cached glamour output lines; nil = not yet rendered
+	HelpRenderWidth   int      // content width used for the cached render
+
 	// Server sound override sub-page state (Manage Servers → S key)
 	ServerSoundPageOpen  bool       // server sound override sub-page open
 	ServerSoundServerID  *uuid.UUID // which server is being edited
