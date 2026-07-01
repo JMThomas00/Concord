@@ -1129,6 +1129,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+		// Help & Guide page mouse wheel scrolling (works regardless of FocusOnForm)
+		if a.view == ViewSettings && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
+			s := a.settingsState
+			if s != nil && s.SelectedCategory == len(s.Categories)-1 {
+				if msg.Type == tea.MouseWheelUp {
+					if s.HelpScrollOffset > 0 {
+						s.HelpScrollOffset--
+					}
+				} else {
+					s.HelpScrollOffset++
+				}
+			}
+		}
 
 	case ServerScopedMsg:
 		// Handle server-scoped messages from ConnectionManager

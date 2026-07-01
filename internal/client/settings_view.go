@@ -210,7 +210,7 @@ func (a *App) openSettings(returnTo View) tea.Cmd {
 		}
 	}
 
-	categories := []string{"Theme", "Notifications", "Display", "Audio", "Manage Servers"}
+	categories := []string{"Theme", "Notifications", "Display", "Audio", "Manage Servers", "Help & Guide"}
 
 	a.settingsState = &SettingsState{
 		Categories:       categories,
@@ -334,6 +334,10 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.SelectedServer > 0 {
 					s.SelectedServer--
 				}
+			case len(s.Categories) - 1: // Help & Guide — scroll up
+				if s.HelpScrollOffset > 0 {
+					s.HelpScrollOffset--
+				}
 			}
 		}
 
@@ -375,8 +379,25 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.SelectedServer < serverCount-1 {
 					s.SelectedServer++
 				}
+			case len(s.Categories) - 1: // Help & Guide — scroll down
+				s.HelpScrollOffset++
 			}
 		}
+
+	case "pgup":
+		if s.FocusOnForm && s.SelectedCategory == len(s.Categories)-1 {
+			s.HelpScrollOffset -= 10
+			if s.HelpScrollOffset < 0 {
+				s.HelpScrollOffset = 0
+			}
+		}
+		return nil
+
+	case "pgdown":
+		if s.FocusOnForm && s.SelectedCategory == len(s.Categories)-1 {
+			s.HelpScrollOffset += 10
+		}
+		return nil
 
 	case "tab":
 		// When leaving theme form, auto-apply the selected theme
@@ -948,26 +969,36 @@ func (a *App) renderSettingsView() string {
 		Render("↑↓ navigate · Tab switch"))
 	catBuf.WriteString("\n\n")
 
+	helpIdx := len(s.Categories) - 1 // "Help & Guide" is always last
 	for i, category := range s.Categories {
 		var line string
 		selected := i == s.SelectedCategory
+		isHelp := i == helpIdx
+
+		// "Help & Guide" uses yellow to visually separate it from the other entries.
+		accentColor := lipgloss.Color(a.theme.Colors.Purple)
+		labelColor := lipgloss.Color(a.theme.Colors.Foreground)
+		if isHelp {
+			accentColor = lipgloss.Color(a.theme.Colors.Yellow)
+			labelColor = lipgloss.Color(a.theme.Colors.Yellow)
+		}
 
 		if selected && !s.FocusOnForm {
 			line = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Background)).
-				Background(lipgloss.Color(a.theme.Colors.Purple)).
+				Background(accentColor).
 				Bold(true).
 				Width(catWidth - 2).
 				Render("▶ " + category)
 		} else if selected {
 			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Purple)).
+				Foreground(accentColor).
 				Bold(true).
 				Width(catWidth - 2).
 				Render("▶ " + category)
 		} else {
 			line = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Foreground(labelColor).
 				Width(catWidth - 2).
 				Render("  " + category)
 		}
@@ -1009,8 +1040,11 @@ func (a *App) renderSettingsView() string {
 		} else {
 			contentBuf.WriteString(a.renderManageServersContent(s, contentWidth, contentHeight))
 		}
+	case len(s.Categories) - 1: // Help & Guide
+		contentBuf.WriteString(a.renderHelpContent(contentWidth, contentHeight))
 	default:
-		contentBuf.WriteString("Coming soon...")
+		// No-op: navigation clamps SelectedCategory to valid range; this guards
+		// against future category additions that forget a matching content case.
 	}
 
 	contentPanel := contentBuf.String()
