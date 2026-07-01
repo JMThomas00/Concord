@@ -334,7 +334,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.SelectedServer > 0 {
 					s.SelectedServer--
 				}
-			case 5: // Help & Guide — scroll up
+			case len(s.Categories) - 1: // Help & Guide — scroll up
 				if s.HelpScrollOffset > 0 {
 					s.HelpScrollOffset--
 				}
@@ -379,13 +379,13 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				if s.SelectedServer < serverCount-1 {
 					s.SelectedServer++
 				}
-			case 5: // Help & Guide — scroll down
+			case len(s.Categories) - 1: // Help & Guide — scroll down
 				s.HelpScrollOffset++
 			}
 		}
 
 	case "pgup":
-		if s.FocusOnForm && s.SelectedCategory == 5 {
+		if s.FocusOnForm && s.SelectedCategory == len(s.Categories)-1 {
 			s.HelpScrollOffset -= 10
 			if s.HelpScrollOffset < 0 {
 				s.HelpScrollOffset = 0
@@ -394,7 +394,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "pgdown":
-		if s.FocusOnForm && s.SelectedCategory == 5 {
+		if s.FocusOnForm && s.SelectedCategory == len(s.Categories)-1 {
 			s.HelpScrollOffset += 10
 		}
 		return nil
@@ -1040,8 +1040,11 @@ func (a *App) renderSettingsView() string {
 		} else {
 			contentBuf.WriteString(a.renderManageServersContent(s, contentWidth, contentHeight))
 		}
-	case 5: // Help & Guide
+	case len(s.Categories) - 1: // Help & Guide
 		contentBuf.WriteString(a.renderHelpContent(contentWidth, contentHeight))
+	default:
+		// No-op: navigation clamps SelectedCategory to valid range; this guards
+		// against future category additions that forget a matching content case.
 	}
 
 	contentPanel := contentBuf.String()
