@@ -51,6 +51,7 @@ type UIConfig struct {
 	Notifications       NotificationConfig           `json:"notifications"`
 	Display             DisplayConfig                `json:"display"`
 	Audio               AudioConfig                  `json:"audio"`
+	HubURLs             []string                     `json:"hub_urls,omitempty"` // Grapevine hub URLs; nil = use built-in default
 }
 
 // defaultAudioConfig fills in zero-value fields with sensible defaults.

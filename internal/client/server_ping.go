@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,7 +33,7 @@ func PingServer(address string, port int, useTLS bool, timeout time.Duration) *P
 	maxAttempts := 3
 	attemptTimeout := timeout / time.Duration(maxAttempts)
 
-	addr := fmt.Sprintf("%s:%d", address, port)
+	addr := net.JoinHostPort(address, strconv.Itoa(port))
 	protocol := "http"
 	if useTLS {
 		protocol = "https"

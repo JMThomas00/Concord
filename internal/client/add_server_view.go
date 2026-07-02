@@ -132,7 +132,7 @@ func (a *App) renderAddServerView() string {
 		Width(dialogWidth - 4).
 		Align(lipgloss.Center)
 
-	content.WriteString(helpStyle.Render("[Tab] Next  [Space] Toggle TLS  [Enter] Add  [Esc] Cancel"))
+	content.WriteString(helpStyle.Render("[Tab] Next  [Space] Toggle TLS  [Enter] Add  [Ctrl+G] Discover Servers  [Esc] Cancel"))
 
 	// Wrap in dialog box
 	dialogStyle := lipgloss.NewStyle().

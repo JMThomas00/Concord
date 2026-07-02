@@ -443,6 +443,13 @@ func (h *Hub) SendToUser(userID uuid.UUID, eventType protocol.EventType, data in
 	return nil
 }
 
+// ConnectedClientCount returns the number of currently authenticated WebSocket clients.
+func (h *Hub) ConnectedClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
 // IsUserOnline reports whether a user with the given ID has an active connection.
 func (h *Hub) IsUserOnline(userID uuid.UUID) bool {
 	h.mu.RLock()

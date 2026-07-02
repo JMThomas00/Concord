@@ -12,6 +12,7 @@ GOMOD=$(GOCMD) mod
 # Binary names
 SERVER_BINARY=concord-server
 CLIENT_BINARY=concord
+HUB_BINARY=concord-hub
 
 # Build directories
 BUILD_DIR=build
@@ -28,13 +29,13 @@ LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X 
 # Platforms for cross-compilation
 PLATFORMS=linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-.PHONY: all build build-server build-client clean test deps run-server run-client install dist help
+.PHONY: all build build-server build-client build-hub clean test deps run-server run-client run-hub install dist help
 
 # Default target
 all: build
 
 # Build both server and client
-build: build-server build-client
+build: build-server build-client build-hub
 
 # Build server
 build-server:
@@ -47,6 +48,17 @@ build-client:
 	@echo "Building client (with voice)..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
+
+# Build hub (pure Go, no CGO)
+build-hub:
+	@echo "Building hub..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(HUB_BINARY) ./cmd/hub
+
+# Run hub (development)
+run-hub: build-hub
+	@echo "Starting hub..."
+	./$(BUILD_DIR)/$(HUB_BINARY)
 
 # Build client without voice/audio (no C toolchain required)
 build-client-novoice:
@@ -119,6 +131,7 @@ build-windows-voice:
 	@echo "Building for Windows with voice support..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(HUB_BINARY).exe ./cmd/hub
 	PATH="C:/msys64/mingw64/bin:$(PATH)" CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
 	@echo "Build complete: $(BUILD_DIR)/$(CLIENT_BINARY).exe"
 

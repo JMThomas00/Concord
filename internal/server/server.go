@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
@@ -33,6 +34,7 @@ type Config struct {
 	MessagePruning MessagePruningConfig `toml:"message_pruning"`
 	TermsAccepted  bool                 `toml:"terms_accepted"` // Whether ToS has been accepted
 	AdminEmail     string               `toml:"admin_email"`    // Admin email for auto-granting admin role
+	Grapevine      GrapevineConfig      `toml:"grapevine"`
 }
 
 // MessagePruningConfig configures automatic message pruning
@@ -70,6 +72,11 @@ type Server struct {
 	dashboardMode bool
 	dashboard     *dashboard.Model
 	stats         *StatsTracker
+
+	// Grapevine discovery
+	configPath      string
+	grapevine       *GrapevineClient
+	grapevineTokens *tokenStore
 }
 
 // New creates a new server instance
@@ -105,22 +112,81 @@ func New(config *Config) (*Server, error) {
 
 	// Create server
 	s := &Server{
-		config:   config,
-		hub:      hub,
-		handlers: handlers,
-		db:       db,
-		stats:    stats,
+		config:          config,
+		hub:             hub,
+		handlers:        handlers,
+		db:              db,
+		stats:           stats,
+		grapevineTokens: newTokenStore(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
-				// In production, you should check the origin
 				return true
 			},
 		},
 	}
 
 	return s, nil
+}
+
+// SetConfigPath tells the server where its config file lives so Grapevine can
+// write back server_id and registration_secret after first registration.
+func (s *Server) SetConfigPath(path string) {
+	s.configPath = path
+}
+
+// saveConfig re-marshals the entire Config and writes it back to disk.
+func (s *Server) saveConfig() error {
+	if s.configPath == "" {
+		return fmt.Errorf("config path not set")
+	}
+	data, err := toml.Marshal(s.config)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(s.configPath, data, 0644)
+}
+
+// startGrapevine registers Grapevine routes on mux and starts the background client.
+func (s *Server) startGrapevine(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/grapevine/ping", s.handleGrapevinePing)
+	mux.HandleFunc("/v1/grapevine/signal", s.handleGrapevineSignal)
+	mux.HandleFunc("/v1/grapevine/join", s.handleGrapevineJoin)
+
+	// Periodic cleanup of expired join tokens.
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.grapevineTokens.purgeExpired()
+		}
+	}()
+
+	// Resolve public host/port for registration.
+	cfg := &s.config.Grapevine
+	publicHost := cfg.PublicHost
+	if publicHost == "" {
+		publicHost = s.config.Host
+		if publicHost == "0.0.0.0" || publicHost == "" {
+			publicHost = "localhost"
+		}
+	}
+	publicPort := cfg.PublicPort
+	if publicPort == 0 {
+		publicPort = s.config.Port
+	}
+
+	s.grapevine = newGrapevineClient(
+		cfg,
+		s.config.ServerName,
+		publicHost,
+		publicPort,
+		func() int { return s.db.GetTotalMemberCount() },
+		func() int { return s.hub.ConnectedClientCount() },
+		s.saveConfig,
+	)
+	s.grapevine.Start()
 }
 
 // Run starts the server
@@ -147,6 +213,9 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/register", s.handleRegister)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	if s.config.Grapevine.Enabled {
+		s.startGrapevine(mux)
+	}
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
@@ -179,6 +248,11 @@ func (s *Server) handleShutdown() {
 
 	<-sigChan
 	Logger.Warn("Shutting down server...")
+
+	// Deregister from Grapevine hub before closing
+	if s.grapevine != nil {
+		s.grapevine.Stop()
+	}
 
 	// Create a deadline for shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -626,6 +700,9 @@ func (s *Server) runWithDashboard() error {
 	mux.HandleFunc("/api/register", s.handleRegister)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	if s.config.Grapevine.Enabled {
+		s.startGrapevine(mux)
+	}
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
@@ -804,6 +881,9 @@ func (s *Server) runWithHybridDashboard() error {
 	mux.HandleFunc("/api/register", s.handleRegister)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	if s.config.Grapevine.Enabled {
+		s.startGrapevine(mux)
+	}
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.httpServer = &http.Server{

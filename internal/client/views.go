@@ -153,7 +153,7 @@ func (a *App) renderLoginView() string {
 		}
 		b.WriteString("\n\n")
 
-		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+S: Settings  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
+		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+G: Discover Servers  •  Ctrl+S: Settings  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
 	}
 
 	// Create the form box with padding and fixed width

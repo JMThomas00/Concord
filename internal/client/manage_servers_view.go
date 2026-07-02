@@ -51,7 +51,7 @@ func (a *App) renderManageServersView() string {
 	// Instructions
 	instructions := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Render("↑/↓: Navigate  •  Shift+↑/↓: Reorder  •  P: Ping  •  E: Edit  •  D: Delete  •  Enter: Select  •  Esc: Close")
+		Render("↑/↓: Navigate  •  Shift+↑/↓: Reorder  •  P: Ping  •  E: Edit  •  D: Delete  •  B: Browse Hub  •  Enter: Select  •  Esc: Close")
 
 	content.WriteString(instructions + "\n\n")
 
@@ -428,6 +428,12 @@ func (a *App) handleManageServersKey(msg tea.KeyMsg) tea.Cmd {
 					delete(a.pingResults, serverID)
 				}
 			}
+		}
+		return nil
+
+	case "b", "B":
+		if a.deleteConfirmServerID == nil {
+			return a.openHubBrowser()
 		}
 		return nil
 

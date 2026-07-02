@@ -82,7 +82,7 @@ func main() {
 		}
 
 		// Run setup with existing values
-		fmt.Println("\n🔧 Reconfiguring server settings...\n")
+		fmt.Println("\n🔧 Reconfiguring server settings...")
 		config = runFirstRunSetup(existingConfig)
 		config.TermsAccepted = existingConfig.TermsAccepted // Preserve ToS acceptance
 	} else {
@@ -175,6 +175,13 @@ func main() {
 	if err != nil {
 		server.Logger.Fatal("Failed to create server", "error", err)
 	}
+
+	// Tell the server where its config lives so Grapevine can persist credentials.
+	effectiveConfigPath := configFilename
+	if *configPath != "" {
+		effectiveConfigPath = *configPath
+	}
+	srv.SetConfigPath(effectiveConfigPath)
 
 	// Enable hybrid mode if requested
 	if *hybridMode {

@@ -20,3 +20,24 @@ debug = false
 [message_pruning]
 enabled = true
 interval_hours = 24  # Run pruning daily
+
+# Grapevine — decentralized server discovery (opt-in)
+[grapevine]
+enabled = false
+hub_url = "http://grapevine.concord.chat"  # Official hub; or point to your own concord-hub instance
+description = "A place to chat."
+category = ""   # e.g. "Gaming", "Technology", "Art", "Tabletop", "General"
+tags = []       # e.g. ["friendly", "18+", "english"]
+max_members = 1000
+heartbeat_interval_seconds = 30
+
+# public_host / public_port: your server's externally reachable address.
+# Required when the bind host is 0.0.0.0 or a private IP.
+# Example: public_host = "myserver.example.com"
+public_host = ""
+public_port = 0
+
+# Auto-populated after first successful registration — do not edit manually.
+# Hub→server signals are verified with an HMAC of the registration_secret.
+# server_id = ""
+# registration_secret = ""
