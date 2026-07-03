@@ -49,12 +49,19 @@ type HubBrowserState struct {
 	searchInput    textinput.Model
 	searchFocused  bool
 
+	// Sort order for the server list (cycled with S)
+	sortMode int
+
+	// Per-hub reachability from background probes: +1 ok, -1 bad, 0 unknown
+	hubHealth map[string]int
+
 	// Detail view
 	detailServer *HubServerEntry
 
 	// Add hub flow
 	addHubInput textinput.Model
 	addHubErr   string
+	peerCursor  int // highlighted discovered peer (-1 = none); ↑/↓ selects
 
 	// Join in progress
 	joining bool
@@ -66,6 +73,34 @@ type HubBrowserState struct {
 	// Layout
 	width, height int
 }
+
+// maxDiscoveredPeers caps how many discovered peer hubs the Add Hub dialog offers.
+const maxDiscoveredPeers = 5
+
+// Server-list sort orders, cycled with S. Grouping (local first, then per
+// federated hub) always applies; the sort orders rows within each group.
+const (
+	hubSortName    = iota // A→Z (default)
+	hubSortOnline         // most users online first
+	hubSortMembers        // most members first
+	hubSortCount          // number of modes (for cycling)
+)
+
+func hubSortLabel(mode int) string {
+	switch mode {
+	case hubSortOnline:
+		return "online"
+	case hubSortMembers:
+		return "members"
+	default:
+		return "name"
+	}
+}
+
+// defaultHubURL is the built-in fallback hub, used when the user's hub list is
+// empty. It is a fallback, not a pinned entry: users may remove it (x) as long
+// as another hub remains, e.g. to use only a private hub.
+const defaultHubURL = "http://grapevine.concord.chat"
 
 // hubListRow is one row in the rendered server list — either a section header or a server entry.
 type hubListRow struct {
@@ -135,6 +170,8 @@ func newHubBrowserState(hubURLs []string, w, h int) HubBrowserState {
 		categories:  []string{"All"},
 		searchInput: si,
 		addHubInput: ai,
+		peerCursor:  -1,
+		hubHealth:   map[string]int{},
 		width:       w,
 		height:      h,
 	}
@@ -185,19 +222,30 @@ func (s *HubBrowserState) applyFilter() {
 		s.filtered = append(s.filtered, sv)
 	}
 
-	// Sort: local servers first, then federated grouped by hub name, then by server name.
+	// Sort: local servers first, then federated grouped by hub name; within
+	// each group, order by the active sort mode (name / online / members).
 	sort.Slice(s.filtered, func(i, j int) bool {
 		a, b := s.filtered[i], s.filtered[j]
-		if a.FromHub == b.FromHub {
-			return a.Name < b.Name
+		if a.FromHub != b.FromHub {
+			if a.FromHub == "" {
+				return true
+			}
+			if b.FromHub == "" {
+				return false
+			}
+			return a.FromHub < b.FromHub
 		}
-		if a.FromHub == "" {
-			return true
+		switch s.sortMode {
+		case hubSortOnline:
+			if a.OnlineCount != b.OnlineCount {
+				return a.OnlineCount > b.OnlineCount
+			}
+		case hubSortMembers:
+			if a.MemberCount != b.MemberCount {
+				return a.MemberCount > b.MemberCount
+			}
 		}
-		if b.FromHub == "" {
-			return false
-		}
-		return a.FromHub < b.FromHub
+		return a.Name < b.Name
 	})
 
 	if s.cursor >= len(s.filtered) {
@@ -290,7 +338,7 @@ func checkHubHealth(rawURL string) tea.Cmd {
 func (a *App) openHubBrowser() tea.Cmd {
 	hubURLs := a.uiConfig.HubURLs
 	if len(hubURLs) == 0 {
-		hubURLs = []string{"http://grapevine.concord.chat"}
+		hubURLs = []string{defaultHubURL}
 	}
 	a.hubBrowser = newHubBrowserState(hubURLs, a.width, a.height)
 	a.hubBrowser.returnView = a.view
@@ -299,7 +347,36 @@ func (a *App) openHubBrowser() tea.Cmd {
 
 	client := a.hubBrowser.currentClient()
 	hubURL := a.hubBrowser.currentHubURL()
-	return fetchHubServers(client, hubURL)
+
+	// Probe every tab so unreachable hubs are marked before they're opened.
+	cmds := []tea.Cmd{fetchHubServers(client, hubURL)}
+	for _, u := range a.hubBrowser.hubURLs {
+		cmds = append(cmds, probeHubTab(u))
+	}
+	return tea.Batch(cmds...)
+}
+
+// probeHubTab checks a hub's health endpoint for the tab indicator.
+func probeHubTab(hubURL string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := newGrapevineHTTPClient(hubURL).CheckHealth()
+		return hubTabHealthMsg{hubURL: hubURL, ok: err == nil}
+	}
+}
+
+// isHubServerJoined reports whether a hub listing is already in the user's
+// configured server list (matched by the Grapevine listing ID recorded when
+// a server is joined through a hub).
+func (a *App) isHubServerJoined(hubServerID string) bool {
+	if hubServerID == "" {
+		return false
+	}
+	for _, cs := range a.clientServers {
+		if cs.HubServerID == hubServerID {
+			return true
+		}
+	}
+	return false
 }
 
 // closeHubBrowser resets hub browser state and returns to the originating view.
@@ -371,6 +448,22 @@ func (a *App) handleHubBrowserListKey(msg tea.KeyMsg) tea.Cmd {
 			s.joinErr = ""
 		}
 
+	case "a", "A":
+		// Join the highlighted server directly (opens details for the
+		// join progress/error UI, then starts the join immediately).
+		if len(s.filtered) > 0 && !s.joining {
+			sv := s.filtered[s.cursor]
+			s.detailServer = &sv
+			s.mode = hubModeDetail
+			s.joining = true
+			s.joinErr = ""
+			return requestJoinServer(s.currentClient(), sv.ID)
+		}
+
+	case "s", "S":
+		s.sortMode = (s.sortMode + 1) % hubSortCount
+		s.applyFilter()
+
 	case "/":
 		s.searchFocused = true
 		s.searchInput.Focus()
@@ -405,9 +498,49 @@ func (a *App) handleHubBrowserListKey(msg tea.KeyMsg) tea.Cmd {
 		s.addHubInput.Reset()
 		s.addHubInput.Focus()
 		s.addHubErr = ""
+		s.peerCursor = -1
+
+	case "x", "X":
+		return a.removeCurrentHub()
 	}
 
 	return nil
+}
+
+// removeCurrentHub drops the selected hub tab and persists the change.
+// Removing the last hub falls back to the built-in default hub.
+func (a *App) removeCurrentHub() tea.Cmd {
+	s := &a.hubBrowser
+	if s.selectedHub >= len(s.hubURLs) {
+		return nil
+	}
+	delete(s.hubClients, s.hubURLs[s.selectedHub])
+	s.hubURLs = append(s.hubURLs[:s.selectedHub], s.hubURLs[s.selectedHub+1:]...)
+	s.hubNames = append(s.hubNames[:s.selectedHub], s.hubNames[s.selectedHub+1:]...)
+
+	if len(s.hubURLs) == 0 {
+		s.hubURLs = []string{defaultHubURL}
+		s.hubNames = []string{hubDisplayName(defaultHubURL)}
+	}
+	if s.selectedHub >= len(s.hubURLs) {
+		s.selectedHub = len(s.hubURLs) - 1
+	}
+	if s.hubClients[s.currentHubURL()] == nil {
+		s.hubClients[s.currentHubURL()] = newGrapevineHTTPClient(s.currentHubURL())
+	}
+
+	a.persistHubURLs()
+	return a.refreshCurrentHub()
+}
+
+// persistHubURLs writes the current hub tab list to the client config.
+func (a *App) persistHubURLs() {
+	s := &a.hubBrowser
+	a.uiConfig.HubURLs = s.hubURLs
+	if ac, err := a.configMgr.LoadAppConfig(); err == nil {
+		ac.UI.HubURLs = s.hubURLs
+		_ = a.configMgr.SaveAppConfig(ac)
+	}
 }
 
 func (a *App) handleHubBrowserDetailKey(msg tea.KeyMsg) tea.Cmd {
@@ -450,19 +583,31 @@ func (a *App) handleHubBrowserAddHubKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return checkHubHealth(rawURL)
 
-	case "1", "2", "3", "4", "5":
-		// Quick-add a discovered peer hub by number.
-		idx := int(msg.String()[0] - '1')
-		if idx < len(s.discoveredPeers) {
-			rawURL := s.discoveredPeers[idx].URL
-			if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-				rawURL = "http://" + rawURL
-			}
-			s.addHubInput.SetValue(rawURL)
-			return checkHubHealth(rawURL)
+	// ↑/↓ select a discovered peer hub, filling the URL input; Enter adds it.
+	// Deliberately NOT digit shortcuts: digits must type into the input —
+	// hub URLs are full of them (ports, IP addresses).
+	case "up", "down":
+		n := len(s.discoveredPeers)
+		if n > maxDiscoveredPeers {
+			n = maxDiscoveredPeers
 		}
+		if n == 0 {
+			return nil
+		}
+		if msg.String() == "down" {
+			s.peerCursor = (s.peerCursor + 1) % n
+		} else {
+			s.peerCursor = (s.peerCursor - 1 + n) % n
+		}
+		rawURL := s.discoveredPeers[s.peerCursor].URL
+		if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+			rawURL = "http://" + rawURL
+		}
+		s.addHubInput.SetValue(rawURL)
+		s.addHubInput.CursorEnd()
 
 	default:
+		s.peerCursor = -1 // editing by hand drops the peer selection
 		var cmd tea.Cmd
 		s.addHubInput, cmd = s.addHubInput.Update(msg)
 		return cmd
@@ -493,6 +638,7 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 
 	switch m := msg.(type) {
 	case hubServersLoadedMsg:
+		s.hubHealth[m.hubURL] = 1
 		if m.hubURL != s.currentHubURL() {
 			return true, nil // stale response from a previous hub selection
 		}
@@ -506,11 +652,20 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		return true, fetchHubPeers(s.currentClient(), m.hubURL)
 
 	case hubLoadErrorMsg:
+		s.hubHealth[m.hubURL] = -1
 		if m.hubURL != s.currentHubURL() {
 			return true, nil
 		}
 		s.loading = false
 		s.err = m.err
+		return true, nil
+
+	case hubTabHealthMsg:
+		if m.ok {
+			s.hubHealth[m.hubURL] = 1
+		} else {
+			s.hubHealth[m.hubURL] = -1
+		}
 		return true, nil
 
 	case hubJoinResponseMsg:
@@ -522,12 +677,22 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		s.joining = false
 		// Build ClientServerInfo from join response
 		info := &ClientServerInfo{
-			Name:    m.resp.DisplayName,
-			Address: m.resp.Host,
-			Port:    m.resp.Port,
+			Name:        m.resp.DisplayName,
+			Address:     m.resp.Host,
+			Port:        m.resp.Port,
+			HubServerID: m.resp.ServerID,
 		}
-		// Try to add; ignore "already exists" error
-		_ = a.configMgr.AddServer(info)
+		// Try to add; on "already exists", record the hub listing ID on the
+		// existing entry so the browser's ✓ joined badge still applies.
+		if err := a.configMgr.AddServer(info); err != nil {
+			for _, cs := range a.clientServers {
+				if cs.Address == info.Address && cs.Port == info.Port && cs.HubServerID == "" {
+					cs.HubServerID = m.resp.ServerID
+					_ = a.configMgr.UpdateServer(cs)
+					break
+				}
+			}
+		}
 		// Reload client server list
 		if servers := a.configMgr.GetClientServers(); len(servers) > 0 {
 			a.clientServers = servers
@@ -568,16 +733,12 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		}
 		s.hubNames = append(s.hubNames, name)
 		s.hubClients[rawURL] = newGrapevineHTTPClient(rawURL)
+		s.hubHealth[rawURL] = 1
 		s.selectedHub = len(s.hubURLs) - 1
 		s.mode = hubModeList
 		s.addHubInput.Blur()
 
-		// Persist to config
-		a.uiConfig.HubURLs = s.hubURLs
-		if ac, err := a.configMgr.LoadAppConfig(); err == nil {
-			ac.UI.HubURLs = s.hubURLs
-			_ = a.configMgr.SaveAppConfig(ac)
-		}
+		a.persistHubURLs()
 		return true, a.refreshCurrentHub()
 
 	case hubHealthCheckErrMsg:
@@ -637,15 +798,23 @@ func (a *App) renderHubBrowserView() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(accent)
 	title := titleStyle.Render("Grapevine Hub Browser")
 
-	// Hub tabs
+	// Hub tabs (✗ marks hubs whose background health probe failed)
 	var hubTabParts []string
 	for i, name := range s.hubNames {
-		if i == s.selectedHub {
+		label := "[" + name + "]"
+		if s.hubHealth[s.hubURLs[i]] == -1 {
+			label = "[✗ " + name + "]"
+		}
+		switch {
+		case i == s.selectedHub:
 			hubTabParts = append(hubTabParts, lipgloss.NewStyle().
-				Bold(true).Foreground(accent).Render("["+name+"]"))
-		} else {
+				Bold(true).Foreground(accent).Render(label))
+		case s.hubHealth[s.hubURLs[i]] == -1:
 			hubTabParts = append(hubTabParts, lipgloss.NewStyle().
-				Foreground(dim).Render("["+name+"]"))
+				Foreground(red).Render(label))
+		default:
+			hubTabParts = append(hubTabParts, lipgloss.NewStyle().
+				Foreground(dim).Render(label))
 		}
 	}
 	hubTabStr := strings.Join(hubTabParts, " ")
@@ -699,10 +868,21 @@ func (a *App) renderHubBrowserView() string {
 		statusStr = lipgloss.NewStyle().Foreground(dim).Render(cnt)
 	}
 
-	searchLine := searchLabel + searchBox + "   " + statusStr
+	sortStr := lipgloss.NewStyle().Foreground(dim).Render("sort: " + hubSortLabel(s.sortMode))
+	searchLine := searchLabel + searchBox + "   " + statusStr + "   " + sortStr
 
 	// ── Server list ────────────────────────────────────────────────────────────
+	// Online/Members/Status are fixed; Server and Category flex to fill the
+	// row (minimums 30/12, which the header+separators put at 71 columns).
 	colW := []int{30, 12, 7, 8, 10} // Name, Category, Online, Members, Status
+	if extra := innerW - 71; extra > 0 {
+		catExtra := extra * 2 / 5
+		if catExtra > 20 {
+			catExtra = 20 // categories are short; give the rest to names
+		}
+		colW[1] += catExtra
+		colW[0] += extra - catExtra
+	}
 	colHeaders := []string{"Server", "Category", "Online", "Members", "Status"}
 	var colHeaderParts []string
 	for i, h2 := range colHeaders {
@@ -786,7 +966,11 @@ func (a *App) renderHubBrowserView() string {
 					return "offline"
 				}())
 
-			nameCell := truncate(sv.Name, colW[0]-2)
+			nameCell := sv.Name
+			if a.isHubServerJoined(sv.ID) {
+				nameCell += " ✓"
+			}
+			nameCell = truncate(nameCell, colW[0]-2)
 			catCell := truncate(sv.Category, colW[1])
 			onlineCell := fmt.Sprintf("%d", sv.OnlineCount)
 			memberCell := fmt.Sprintf("%d", sv.MemberCount)
@@ -809,7 +993,7 @@ func (a *App) renderHubBrowserView() string {
 
 	// ── Footer ────────────────────────────────────────────────────────────────
 	footer := lipgloss.NewStyle().Foreground(dim).Render(
-		"↑/↓ Navigate  Enter Details  A Add Server  / Search  Tab Category  H/L Hubs  + Add Hub  Esc Back")
+		"↑/↓ Navigate  Enter Details  A Join  / Search  S Sort  Tab Category  H/L Hubs  +/X Add/Remove Hub  Esc Back")
 
 	// ── Assemble ──────────────────────────────────────────────────────────────
 	var body strings.Builder
@@ -940,22 +1124,29 @@ func (a *App) renderAddHubOverlay(base string) string {
 
 	// Show discovered peer hubs from the current hub's GET /v1/hubs response.
 	var discoveredSection string
+	hints := "[Enter] Confirm   [Esc] Cancel"
 	if len(s.discoveredPeers) > 0 {
 		var peerLines []string
-		max5 := s.discoveredPeers
-		if len(max5) > 5 {
-			max5 = max5[:5]
+		peers := s.discoveredPeers
+		if len(peers) > maxDiscoveredPeers {
+			peers = peers[:maxDiscoveredPeers]
 		}
-		for i, p := range max5 {
+		for i, p := range peers {
 			name := p.Name
 			if name == "" {
 				name = hubDisplayName(p.URL)
 			}
-			peerLines = append(peerLines, fmt.Sprintf("  [%d] %s", i+1, truncate(name+" — "+p.URL, pw-8)))
+			line := truncate(name+" — "+p.URL, pw-8)
+			if i == s.peerCursor {
+				peerLines = append(peerLines, lipgloss.NewStyle().Foreground(accent).Bold(true).Render("  ▶ "+line))
+			} else {
+				peerLines = append(peerLines, lipgloss.NewStyle().Foreground(fg).Render("    "+line))
+			}
 		}
 		discoveredSection = "\n\n" +
-			lipgloss.NewStyle().Foreground(dim).Render("Discovered peer hubs (press number to quick-add):") +
-			"\n" + lipgloss.NewStyle().Foreground(fg).Render(strings.Join(peerLines, "\n"))
+			lipgloss.NewStyle().Foreground(dim).Render("Discovered peer hubs (↑/↓ to select):") +
+			"\n" + strings.Join(peerLines, "\n")
+		hints = "[↑/↓] Pick Hub   " + hints
 	}
 
 	content := title + "\n\n" +
@@ -963,7 +1154,7 @@ func (a *App) renderAddHubOverlay(base string) string {
 		s.addHubInput.View() +
 		errLine +
 		discoveredSection + "\n\n" +
-		lipgloss.NewStyle().Foreground(dim).Render("[Enter] Confirm   [Esc] Cancel")
+		lipgloss.NewStyle().Foreground(dim).Render(hints)
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

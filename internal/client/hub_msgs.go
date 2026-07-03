@@ -40,6 +40,14 @@ type hubHealthCheckErrMsg struct {
 	err    string
 }
 
+// hubTabHealthMsg reports a background reachability probe of a hub tab
+// (fired for every tab when the browser opens, so unreachable hubs are
+// marked before the user switches to them).
+type hubTabHealthMsg struct {
+	hubURL string
+	ok     bool
+}
+
 // hubPeersLoadedMsg is sent when a hub's peer listing finishes loading.
 type hubPeersLoadedMsg struct {
 	peers  []HubEntry

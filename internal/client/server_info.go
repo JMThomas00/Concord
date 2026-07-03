@@ -23,6 +23,7 @@ type ClientServerInfo struct {
 	IconLetter       string               `json:"icon_letter"`               // Letter shown in server icon (1-2 chars)
 	IconColor        string               `json:"icon_color"`                // Hex color for server icon
 	SoundOverride    *ServerSoundOverride `json:"sound_override,omitempty"`  // Per-server sound settings (nil = use global)
+	HubServerID      string               `json:"hub_server_id,omitempty"`   // Grapevine listing ID when joined via a hub (for the "joined" badge)
 }
 
 // SavedCredentials stores login credentials for auto-connect
