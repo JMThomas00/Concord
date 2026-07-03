@@ -175,8 +175,8 @@ help:
 	@echo "  build         Build both server and client"
 	@echo "  build-server  Build only the server"
 	@echo "  build-client  Build only the client"
-	@echo "  build-windows       Build Windows executables (no audio)
-  build-windows-voice Build Windows with full voice/audio (requires MSYS2 GCC)"
+	@echo "  build-windows       Build Windows executables (no audio)"
+	@echo "  build-windows-voice Build Windows with full voice/audio (requires MSYS2 GCC)"
 	@echo "  clean         Remove build artifacts"
 	@echo "  test          Run tests"
 	@echo "  deps          Download and tidy dependencies"

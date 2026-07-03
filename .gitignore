@@ -18,6 +18,9 @@ vendor/
 # Server config (generated at runtime)
 concord-server.toml
 
+# Local Grapevine hub deployment (contains admin token)
+grapevine-local/
+
 # Claude Code local settings
 .claude/
 
