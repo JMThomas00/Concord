@@ -31,12 +31,13 @@ const (
 // hubSetupModel is the bubbletea model for first-run hub configuration.
 // Mirrors the style of the concord-server setup wizard.
 type hubSetupModel struct {
-	inputs  []textinput.Model
-	focused int
-	done    bool
-	err     string
-	width   int
-	height  int
+	inputs    []textinput.Model
+	focused   int
+	done      bool
+	cancelled bool
+	err       string
+	width     int
+	height    int
 
 	phase      hubSetupPhase
 	adminOptIn bool
@@ -90,8 +91,10 @@ func (m hubSetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "esc" {
-			fmt.Fprintln(os.Stderr, "Setup cancelled.")
-			os.Exit(1)
+			// Quit through bubbletea (not os.Exit) so terminal modes are
+			// restored; runSetupWizard exits after p.Run() returns.
+			m.cancelled = true
+			return m, tea.Quit
 		}
 
 		switch m.phase {
@@ -321,6 +324,10 @@ func runSetupWizard() (*hub.Config, error) {
 	}
 
 	final := result.(hubSetupModel)
+	if final.cancelled {
+		fmt.Fprintln(os.Stderr, "Setup cancelled.")
+		os.Exit(1)
+	}
 	if !final.done {
 		os.Exit(0)
 	}

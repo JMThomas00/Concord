@@ -2,7 +2,6 @@ package hub
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 )
@@ -15,7 +14,7 @@ func (h *Hub) FederationLoop(syncInterval time.Duration) {
 	for range ticker.C {
 		hubs, err := h.db.ListPeerHubs()
 		if err != nil {
-			log.Printf("[hub/federation] list peer hubs: %v", err)
+			FedLog.Error("list peer hubs failed", "error", err)
 			continue
 		}
 		for _, ph := range hubs {
@@ -34,32 +33,32 @@ func (h *Hub) syncHub(ph *PeerHub) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(ph.URL + "/v1/servers?federation=1")
 	if err != nil {
-		log.Printf("[hub/federation] sync %s (%s): %v", ph.Name, ph.URL, err)
+		FedLog.Error("sync failed", "peer", ph.Name, "url", ph.URL, "error", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[hub/federation] sync %s: HTTP %d", ph.Name, resp.StatusCode)
+		FedLog.Error("sync failed", "peer", ph.Name, "status", resp.StatusCode)
 		return
 	}
 
 	var listings []ServerListing
 	if err := json.NewDecoder(resp.Body).Decode(&listings); err != nil {
-		log.Printf("[hub/federation] decode from %s: %v", ph.Name, err)
+		FedLog.Error("decode listing failed", "peer", ph.Name, "error", err)
 		return
 	}
 
 	for i := range listings {
 		listings[i].FromHub = ph.Name
 		if err := h.db.UpsertFederatedServer(ph.ID, &listings[i]); err != nil {
-			log.Printf("[hub/federation] upsert from %s: %v", ph.Name, err)
+			FedLog.Error("upsert listing failed", "peer", ph.Name, "error", err)
 		}
 	}
 
 	if err := h.db.MarkHubSynced(ph.ID, time.Now()); err != nil {
-		log.Printf("[hub/federation] mark synced %s: %v", ph.Name, err)
+		FedLog.Error("mark synced failed", "peer", ph.Name, "error", err)
 	}
 	h.stats.FederationSyncs.Add(1)
-	log.Printf("[hub/federation] synced %d servers from %s", len(listings), ph.Name)
+	FedLog.Info("synced listings", "count", len(listings), "peer", ph.Name)
 }

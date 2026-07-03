@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	charmlog "github.com/charmbracelet/log"
 	"github.com/concord-chat/concord/internal/hub"
 )
 
@@ -24,20 +24,20 @@ func main() {
 	dashboard := flag.Bool("dashboard", false, "run with a live TUI dashboard (stats, server list, activity log)")
 	flag.Parse()
 
+	logLevel := charmlog.InfoLevel
 	if *debug {
-		log.SetFlags(log.LstdFlags | log.Lshortfile)
-	} else {
-		log.SetFlags(log.LstdFlags)
+		logLevel = charmlog.DebugLevel
 	}
+	hub.InitLogger(os.Stderr, logLevel)
 
 	cfg, err := loadOrSetup(*setup)
 	if err != nil {
-		log.Fatalf("configuration: %v", err)
+		hub.SysLog.Fatal("configuration failed", "error", err)
 	}
 
 	h, err := hub.New(cfg)
 	if err != nil {
-		log.Fatalf("init hub: %v", err)
+		hub.SysLog.Fatal("hub init failed", "error", err)
 	}
 
 	// Handle SIGINT / SIGTERM gracefully.
@@ -46,32 +46,36 @@ func main() {
 
 	go func() {
 		<-quit
-		log.Println("[hub] shutting down…")
+		hub.SysLog.Info("shutting down…")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := h.Shutdown(ctx); err != nil {
-			log.Printf("[hub] shutdown error: %v", err)
+			hub.SysLog.Error("shutdown error", "error", err)
 		}
 	}()
 
 	if *dashboard {
-		runWithDashboard(h)
+		runWithDashboard(h, logLevel)
 		return
 	}
 
-	printBanner(cfg)
+	// Clear screen for clean hub startup (plain mode only, like the server)
+	fmt.Print("\033[2J\033[H")
+	hub.PrintBanner()
+	h.PrintStartupInfo()
 
 	if err := h.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("hub error: %v", err)
+		hub.SysLog.Fatal("hub error", "error", err)
 	}
-	log.Println("[hub] stopped")
+	hub.SysLog.Info("stopped")
 }
 
 // runWithDashboard serves the hub with the live TUI dashboard in the
 // foreground. Log output is redirected into the dashboard's activity pane.
-func runWithDashboard(h *hub.Hub) {
-	log.SetFlags(log.Ltime)
-	log.SetOutput(h.Stats()) // feed the dashboard's log pane
+func runWithDashboard(h *hub.Hub, logLevel charmlog.Level) {
+	// Re-init the loggers onto the stats ring buffer: a non-terminal writer,
+	// so lines land uncolored in the dashboard's log pane.
+	hub.InitLogger(h.Stats(), logLevel)
 
 	p := tea.NewProgram(hub.NewDashboard(h), tea.WithAltScreen())
 
@@ -92,12 +96,12 @@ func runWithDashboard(h *hub.Hub) {
 	defer cancel()
 	_ = h.Shutdown(ctx)
 
-	log.SetOutput(os.Stderr)
+	hub.InitLogger(os.Stderr, logLevel)
 	select {
 	case err := <-startErrCh:
-		log.Fatalf("hub error: %v", err)
+		hub.SysLog.Fatal("hub error", "error", err)
 	default:
-		log.Println("[hub] stopped")
+		hub.SysLog.Info("stopped")
 	}
 }
 
@@ -108,12 +112,7 @@ func loadOrSetup(forceSetup bool) (*hub.Config, error) {
 			return hub.LoadConfig(configPath)
 		}
 		// First run.
-		log.Println("[hub] no config found, starting setup wizard…")
+		hub.SysLog.Info("no config found, starting setup wizard…")
 	}
 	return runSetupWizard()
-}
-
-func printBanner(cfg *hub.Config) {
-	fmt.Printf("\n  Grapevine Hub · %s\n", cfg.HubName)
-	fmt.Printf("  Listening on %s:%d\n\n", cfg.Host, cfg.Port)
 }

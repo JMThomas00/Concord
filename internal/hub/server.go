@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 )
@@ -65,7 +64,7 @@ func (h *Hub) Start() error {
 	// Always run: peer hubs can be added at runtime via POST /v1/hubs.
 	go h.FederationLoop(syncInterval)
 
-	log.Printf("[hub] listening on %s", h.srv.Addr)
+	SysLog.Info("listening", "addr", h.srv.Addr)
 	return h.srv.ListenAndServe()
 }
 
@@ -87,9 +86,9 @@ func (h *Hub) seedPeerHubs() {
 		}
 		ph := &PeerHub{Name: pc.Name, URL: pc.URL, IsActive: true}
 		if err := h.db.UpsertPeerHub(ph); err != nil {
-			log.Printf("[hub] seed peer hub %s: %v", pc.URL, err)
+			FedLog.Error("seed peer hub failed", "url", pc.URL, "error", err)
 		} else {
-			log.Printf("[hub] peer hub registered: %s (%s)", pc.Name, pc.URL)
+			FedLog.Info("peer hub registered", "name", pc.Name, "url", pc.URL)
 		}
 	}
 }

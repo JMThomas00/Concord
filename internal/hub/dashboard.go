@@ -21,6 +21,10 @@ type DashboardModel struct {
 	fedCount int
 	logLines []string
 	dbErr    string
+
+	// confirmQuit gates tea.Quit — quitting the dashboard shuts the hub down,
+	// so a stray 'q' must not take the hub offline without confirmation.
+	confirmQuit bool
 }
 
 // NewDashboard creates a dashboard bound to a (running) hub.
@@ -69,9 +73,24 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case tea.KeyMsg:
+		if m.confirmQuit {
+			switch msg.String() {
+			// ctrl+c is here so a second reflexive ctrl+c confirms instead
+			// of cancelling the dialog it just opened.
+			case "y", "Y", "q", "enter", "ctrl+c":
+				return m, tea.Quit
+			// On Windows a Ctrl keydown arrives as a stray NUL key event
+			// before the real ctrl+c — ignore it or it cancels the dialog.
+			case "\x00":
+				return m, nil
+			default: // n, esc, or anything else keeps the hub running
+				m.confirmQuit = false
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
-			return m, tea.Quit
+			m.confirmQuit = true
 		}
 
 	case dashTickMsg:
@@ -106,6 +125,10 @@ func (m DashboardModel) View() string {
 		return "Terminal too small for the hub dashboard."
 	}
 
+	if m.confirmQuit {
+		return m.renderQuitConfirm()
+	}
+
 	header := m.renderHeader()
 	serversBox := m.renderServers()
 
@@ -117,6 +140,21 @@ func (m DashboardModel) View() string {
 	logBox := m.renderLog(logHeight)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, serversBox, logBox)
+}
+
+// renderQuitConfirm draws the shutdown-confirmation dialog centered on screen.
+func (m DashboardModel) renderQuitConfirm() string {
+	warnSt := lipgloss.NewStyle().Foreground(dashYellow).Bold(true)
+	dialog := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dashRed).
+		Padding(1, 3).
+		Render(warnSt.Render("⚠  Shut down the hub?") + "\n\n" +
+			dashTextSt.Render("Quitting the dashboard stops the Grapevine hub.") + "\n" +
+			dashTextSt.Render("Registered servers and clients will lose discovery") + "\n" +
+			dashTextSt.Render("until it is started again.") + "\n\n" +
+			dashDimSt.Render("[y] shut down    [n / esc] keep running"))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
 }
 
 func (m DashboardModel) renderHeader() string {

@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"log"
 	"time"
 )
 
@@ -13,7 +12,7 @@ func (h *Hub) MarkOfflineLoop(timeout time.Duration) {
 	for range ticker.C {
 		cutoff := time.Now().Add(-timeout)
 		if err := h.db.MarkOfflineIfStale(cutoff); err != nil {
-			log.Printf("[hub] mark-offline sweep: %v", err)
+			RegLog.Error("mark-offline sweep failed", "error", err)
 		}
 	}
 }
@@ -29,12 +28,12 @@ func (h *Hub) CleanupLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		if err := h.db.CleanupExpiredTokens(); err != nil {
-			log.Printf("[hub] token cleanup: %v", err)
+			RegLog.Error("token cleanup failed", "error", err)
 		}
 		if n, err := h.db.PurgeStaleServers(time.Now().Add(-stalePurgeAge)); err != nil {
-			log.Printf("[hub] stale server purge: %v", err)
+			RegLog.Error("stale server purge failed", "error", err)
 		} else if n > 0 {
-			log.Printf("[hub] purged %d server(s) offline for over %s", n, stalePurgeAge)
+			RegLog.Info("purged stale servers", "count", n, "offline_for", stalePurgeAge)
 		}
 	}
 }

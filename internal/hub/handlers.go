@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -142,13 +141,13 @@ func (h *Hub) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.CreateServer(srv); err != nil {
-		log.Printf("[hub] register: %v", err)
+		ApiLog.Error("register failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to register server")
 		return
 	}
 
 	h.stats.Registrations.Add(1)
-	log.Printf("[hub] registered server %q (%s) from %s:%d", srv.Name, srv.ID, srv.Host, srv.Port)
+	ApiLog.Info("server registered", "name", srv.Name, "id", srv.ID, "addr", fmt.Sprintf("%s:%d", srv.Host, srv.Port))
 	writeJSON(w, http.StatusCreated, RegisterResponse{
 		ServerID:           srv.ID,
 		RegistrationSecret: secret,
@@ -173,13 +172,13 @@ func (h *Hub) handleDeregister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.MarkServerOffline(id); err != nil {
-		log.Printf("[hub] deregister %s: %v", id, err)
+		ApiLog.Error("deregister failed", "id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to deregister")
 		return
 	}
 
 	h.stats.Deregistrations.Add(1)
-	log.Printf("[hub] deregistered server %s (%s) — marked offline", srv.Name, id)
+	ApiLog.Info("server deregistered, marked offline", "name", srv.Name, "id", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -204,12 +203,13 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.UpdateHeartbeat(id, req.MemberCount, req.OnlineCount); err != nil {
-		log.Printf("[hub] heartbeat %s: %v", id, err)
+		ApiLog.Error("heartbeat update failed", "id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to update heartbeat")
 		return
 	}
 
 	h.stats.Heartbeats.Add(1)
+	ApiLog.Debug("heartbeat", "name", srv.Name, "members", req.MemberCount, "online", req.OnlineCount)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -222,7 +222,7 @@ func (h *Hub) handleListServers(w http.ResponseWriter, r *http.Request) {
 
 	servers, err := h.db.ListServers(category, query, all)
 	if err != nil {
-		log.Printf("[hub] list servers: %v", err)
+		ApiLog.Error("list servers failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list servers")
 		return
 	}
@@ -237,7 +237,7 @@ func (h *Hub) handleListServers(w http.ResponseWriter, r *http.Request) {
 	if q.Get("federation") != "1" {
 		fed, err := h.db.ListFederatedServers(category, query)
 		if err != nil {
-			log.Printf("[hub] list federated: %v", err)
+			ApiLog.Error("list federated failed", "error", err)
 		} else {
 			for _, s := range fed {
 				listings = append(listings, *s)
@@ -298,12 +298,12 @@ func (h *Hub) handleJoin(w http.ResponseWriter, r *http.Request) {
 	// connection details. This both pre-authorizes the client's redeem step and
 	// proves the listed host/port actually belongs to the registered server.
 	if err := h.signalServer(srv, tokenStr); err != nil {
-		log.Printf("[hub] signal server %s: %v", srv.ID, err)
+		ApiLog.Error("join signal to server failed", "id", srv.ID, "error", err)
 		writeError(w, http.StatusBadGateway, "server did not respond to join signal")
 		return
 	}
 	h.stats.JoinsServed.Add(1)
-	log.Printf("[hub] join served for %q (%s)", srv.Name, srv.ID)
+	ApiLog.Info("join served", "name", srv.Name, "id", srv.ID)
 
 	jt := &JoinToken{
 		Token:     tokenStr,
@@ -312,7 +312,7 @@ func (h *Hub) handleJoin(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: time.Now().Add(2 * time.Minute),
 	}
 	if err := h.db.CreateJoinToken(jt); err != nil {
-		log.Printf("[hub] create join token: %v", err)
+		ApiLog.Error("create join token failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create token")
 		return
 	}
@@ -344,13 +344,13 @@ func (h *Hub) proxyJoin(w http.ResponseWriter, serverID, originURL string) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[hub] proxy join %s via %s: %v", serverID, originURL, err)
+		ApiLog.Error("proxy join failed", "id", serverID, "via", originURL, "error", err)
 		writeError(w, http.StatusBadGateway, "origin hub unreachable")
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("[hub] proxied join for %s via %s (HTTP %d)", serverID, originURL, resp.StatusCode)
+	ApiLog.Info("join proxied to origin hub", "id", serverID, "via", originURL, "status", resp.StatusCode)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
@@ -388,7 +388,7 @@ func (h *Hub) signalServer(srv *RegisteredServer, token string) error {
 func (h *Hub) handleListHubs(w http.ResponseWriter, r *http.Request) {
 	hubs, err := h.db.ListPeerHubs()
 	if err != nil {
-		log.Printf("[hub] list hubs: %v", err)
+		ApiLog.Error("list hubs failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list hubs")
 		return
 	}
@@ -419,12 +419,12 @@ func (h *Hub) handleAddHub(w http.ResponseWriter, r *http.Request) {
 
 	ph := &PeerHub{Name: req.Name, URL: req.URL, IsActive: true}
 	if err := h.db.UpsertPeerHub(ph); err != nil {
-		log.Printf("[hub] add hub: %v", err)
+		ApiLog.Error("add peer hub failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to add hub")
 		return
 	}
 
-	log.Printf("[hub] added peer hub %s (%s)", req.Name, req.URL)
+	ApiLog.Info("peer hub added", "name", req.Name, "url", req.URL)
 	w.WriteHeader(http.StatusCreated)
 }
 
