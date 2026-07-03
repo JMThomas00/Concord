@@ -37,7 +37,6 @@ const (
 	ViewSettings
 	ViewServerManagement
 	ViewAddServer
-	ViewManageServers
 	ViewThemeBrowser
 )
 
@@ -135,8 +134,7 @@ type App struct {
 	addServerFocus   int
 	addServerError   string
 
-	// Manage Servers view
-	manageServersFocus  int
+	// Manage Servers (Settings sub-page)
 	pingResults         map[uuid.UUID]*PingResult
 	editingServerID     *uuid.UUID // Set when editing an existing server
 	editingServerIndex  int        // Index in clientServers of the server being edited
@@ -240,6 +238,10 @@ type App struct {
 	// Member panel navigation state
 	selectedMemberIndex int                // Index in flattened member list
 	memberContextMenu   *MemberContextMenu // Context menu state (nil when closed)
+
+	// Hub Browser overlay
+	showHubBrowser bool
+	hubBrowser     HubBrowserState
 }
 
 // Position represents a cursor position in a message (for Level 2 navigation)
@@ -1069,6 +1071,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.updateViewportSize()
 		a.updateChatContent()
 
+	case hubServersLoadedMsg, hubLoadErrorMsg, hubJoinResponseMsg, hubJoinVerifiedMsg,
+		hubJoinErrorMsg, hubHealthCheckMsg, hubHealthCheckErrMsg, hubPeersLoadedMsg,
+		hubPeersLoadErrMsg:
+		if handled, cmd := a.handleHubMsg(msg); handled {
+			return a, cmd
+		}
+
 	case tea.KeyMsg:
 		// Any key press resets AFK state
 		a.lastActivityTime = time.Now()
@@ -1370,6 +1379,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model
 func (a *App) View() string {
+	// Hub browser is a full-screen overlay; render it before the normal view switch.
+	if a.showHubBrowser {
+		return a.renderHubBrowserView()
+	}
+
 	var baseView string
 	switch a.view {
 	case ViewToS:
@@ -1384,8 +1398,6 @@ func (a *App) View() string {
 		baseView = a.renderMainView()
 	case ViewAddServer:
 		baseView = a.renderAddServerView()
-	case ViewManageServers:
-		baseView = a.renderManageServersView()
 	case ViewSettings:
 		baseView = a.renderSettingsView()
 		if a.settingsAnimating {
@@ -1430,15 +1442,17 @@ func (a *App) View() string {
 
 // handleKeyPress handles keyboard input
 func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
+	// Hub browser intercepts all keys when visible
+	if a.showHubBrowser {
+		return a.handleHubBrowserKey(msg)
+	}
+
 	// Route to view-specific handlers first
 	if a.view == ViewToS {
 		return a.handleToSKey(msg)
 	}
 	if a.view == ViewIdentitySetup {
 		return a.handleIdentitySetupKey(msg)
-	}
-	if a.view == ViewManageServers {
-		return a.handleManageServersKey(msg)
 	}
 	if a.view == ViewThemeBrowser {
 		return a.handleThemeBrowserKey(msg)
@@ -1535,6 +1549,16 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewLogin || a.view == ViewMain {
 			a.openThemeBrowser(a.view)
 			return nil
+		}
+
+	case "ctrl+g":
+		// Open the Grapevine Hub Browser (public server discovery).
+		// Only where Settings > Manage Servers (the primary entry, key B)
+		// is not reachable — i.e. before the user has any server to log
+		// into. From the main view, use Settings > Manage Servers.
+		switch a.view {
+		case ViewLogin, ViewAddServer:
+			return a.openHubBrowser()
 		}
 
 	case "[":

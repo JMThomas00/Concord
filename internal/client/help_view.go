@@ -68,7 +68,8 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 |-----|--------|
 | ` + "`Ctrl+Q`" + ` | Quit |
 | ` + "`Ctrl+S`" + ` | Open Settings |
-| ` + "`Ctrl+B`" + ` | Open Server Management |
+| ` + "`Ctrl+B`" + ` | Open Server Management (admin) |
+| ` + "`Ctrl+G`" + ` | Open Grapevine Hub Browser (login / add-server screens) |
 | ` + "`Ctrl+T`" + ` | Open Theme Browser |
 | ` + "`[`" + ` | Toggle server list panel (collapse / expand) |
 | ` + "`]`" + ` | Toggle members list panel (collapse / expand) |
@@ -274,64 +275,128 @@ A member with the **Administrator** permission bypasses all role-position hierar
 
 ### Server Admin Panel
 
-Open with **Ctrl+B**, select a server, then press the admin key. The panel has three tabs:
+Open with **Ctrl+B**, select a server, then press the admin key. The panel has four tabs:
 
-- **Roles** — create, edit, reorder, delete roles
 - **Channels** — manage channels and categories, set MaxUsers on voice channels
+- **Roles** — create, edit, reorder, delete roles with a full permissions editor
 - **Members** — view all members, assign roles, manage bans
+- **Messages** — retention policies (age- and count-based), manual prune, prune history
 
 ### Hosting Your Own Server
 
-Build the server binary:
+Build the server binary (pure Go — no C compiler needed):
 
 ` + "```" + `bash
-# Server (no CGO required)
+make build-server
+# or directly:
 go build -o build/concord-server ./cmd/server
-
-# Windows
-go build -o build/concord-server.exe ./cmd/server
 ` + "```" + `
 
 Run it:
 
 ` + "```" + `bash
-./concord-server --port 8080
+./concord-server
 ` + "```" + `
 
-Default port is ` + "`8080`" + `. The server creates a SQLite database (` + "`concord.db`" + `) in the working directory on first run. No separate database setup is needed.
+The first run walks you through a **setup wizard**: Terms of Service, server name, bind host, port (default ` + "`8080`" + `), database path, optional admin email — and an optional final step to **list your server on Grapevine** (see the Grapevine section below). A SQLite database is created automatically; no separate database setup is needed.
 
-The first client to connect and register on a fresh server is automatically granted **Admin**. Share your IP and port with others and they can connect immediately.
+Useful flags: ` + "`--reconfigure`" + ` re-runs the wizard, ` + "`--hybrid`" + ` shows a live dashboard beside the logs, ` + "`--debug`" + ` enables verbose logging.
+
+The first client to connect and register on a fresh server is automatically granted **Admin**. Share your address and port with others and they can connect immediately.
 
 ### Server Configuration
 
-The server reads ` + "`config.toml`" + ` from the working directory if present:
+Settings are stored in ` + "`concord-server.toml`" + ` in the working directory (written by the wizard, editable by hand):
 
 ` + "```" + `toml
-[server]
+host = "0.0.0.0"
 port = 8080
-name = "My Concord Server"
+server_name = "My Concord Server"
+database_path = "concord.db"
 
-[voice]
-stun_urls = ["stun:stun.l.google.com:19302"]
-# turn_urls = ["turn:your-turn-server:3478"]
+[message_pruning]
+enabled = true
+interval_hours = 24
+
+[grapevine]
+enabled = false   # opt-in public listing — see the Grapevine section
 ` + "```" + `
 
-Without a TURN server, roughly 15% of WebRTC voice connections may fail due to symmetric NAT. Google's public STUN server is the fallback when no STUN URL is configured.
+### Voice Across the Internet (NAT)
+
+Voice is peer-to-peer WebRTC. Concord uses Google's public STUN server for NAT traversal, which works across most home networks with no configuration. A TURN relay fallback is not yet supported, so a small share of connections (symmetric NAT, some mobile/CGNAT networks) may fail to establish audio — configurable STUN/TURN is planned.
 
 ### Building the Client (Voice-Enabled)
 
-Voice support requires a C compiler (GCC) and libopus:
+Voice is part of the standard client build and requires a C compiler (GCC) and libopus:
 
 ` + "```" + `bash
 # Windows (MSYS2 MinGW)
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-opus mingw-w64-x86_64-opusfile
 
 export PATH="/c/msys64/mingw64/bin:$PATH"
-CGO_ENABLED=1 go build -o build/concord-client-voice.exe ./cmd/client
+CGO_ENABLED=1 go build -o build/concord-client.exe ./cmd/client
 
-# No-voice build (pure Go, no CGO)
-CGO_ENABLED=0 go build -tags novoice -o build/concord-client.exe ./cmd/client
+# Headless/CI build without voice (pure Go, no CGO)
+CGO_ENABLED=0 go build -tags novoice -o build/concord-client-novoice.exe ./cmd/client
 ` + "```" + `
+
+---
+
+## Grapevine — Server Discovery
+
+**Grapevine** is Concord's decentralized server directory. Server owners opt in to list their server on a **hub**; anyone can browse a hub from inside the client and join a listed server in a couple of keystrokes. There is no central authority — anyone can host a hub, and hubs can federate to share listings.
+
+### Browsing Servers (Hub Browser)
+
+Open **Settings → Manage Servers** and press **B** to browse servers via a hub. Before you have any servers (login screen or the Add Server dialog), **Ctrl+G** opens it directly.
+
+| Key | Action |
+|-----|--------|
+| ` + "`↑/↓ or j/k`" + ` | Navigate the server list |
+| ` + "`Enter`" + ` | Open server details |
+| ` + "`A`" + ` (in details) | Join — adds the server and opens login |
+| ` + "`/`" + ` | Search by name, description, or tags |
+| ` + "`Tab / Shift+Tab`" + ` | Cycle category filter |
+| ` + "`H / L`" + ` | Switch between your hubs |
+| ` + "`R`" + ` | Refresh the listing |
+| ` + "`+`" + ` | Add a hub by URL (pick discovered peer hubs with ` + "`↑/↓`" + `) |
+| ` + "`X`" + ` | Remove the selected hub (removing the last one restores the default) |
+| ` + "`Esc`" + ` | Back / close |
+
+Servers listed by federated peer hubs appear under a ` + "`── via <hub> ──`" + ` header. Added hubs are saved to your client config.
+
+### How Joining Works (Address Privacy)
+
+Server addresses are **never shown in the public listing** — only name, description, category, tags, and member counts. When you join, the hub first confirms the server is reachable and hands it a **single-use join token**; only then does the hub give you the address, and your client redeems the token with the server before adding it. You then land on the normal login screen with the connection details pre-filled. The address is visible to you once you join (it is your direct connection), just never published in the directory.
+
+### Listing Your Server
+
+Opt in during the server's **first-run wizard** (or later with ` + "`--reconfigure`" + `), or edit ` + "`concord-server.toml`" + ` by hand:
+
+` + "```" + `toml
+[grapevine]
+enabled = true
+hub_url = "http://grapevine.concord.chat"   # or your own hub
+description = "A place to chat."
+category = "Gaming"
+tags = ["friendly", "english"]
+public_host = "myserver.example.com"        # your externally reachable address
+` + "```" + `
+
+Registration is automatic on startup; the server heartbeats the hub every 30 seconds so the listing stays live, and recovers on its own if the hub forgets it. Listing is **opt-out by default** — nothing is published unless you enable it.
+
+### Hosting Your Own Hub
+
+The hub is its own lightweight binary:
+
+` + "```" + `bash
+make build-hub
+./concord-hub            # first run launches a setup wizard
+./concord-hub --dashboard   # live TUI: stats, server list, activity log
+` + "```" + `
+
+Hubs can **federate**: add peer hubs in ` + "`grapevine-hub.toml`" + ` and their listings appear in yours (marked with the origin hub). Point clients at your hub with the **+** key in the Hub Browser.
 
 ---
 
@@ -343,7 +408,7 @@ Open settings with **Ctrl+S**. Navigate categories with **↑/↓**, press **Tab
 
 Live-preview available themes. **Enter** or **Tab** to apply. **Esc** reverts to the theme you had when settings were opened.
 
-Available themes: **Dracula**, **Alucard Dark**, **Alucard Light**.
+Over 40 themes are embedded, including **Dracula**, **Alucard Dark/Light**, **Nord**, **Gruvbox**, **Catppuccin Mocha**, **Tokyo Night**, **Kanagawa Wave**, **Everforest**, **Solarized Dark**, and **Terminal Default**. Apply one instantly with ` + "`/theme <name>`" + ` or browse with **Ctrl+T**.
 
 ### Notifications
 
@@ -395,19 +460,6 @@ Available themes: **Dracula**, **Alucard Dark**, **Alucard Light**.
 ## Coming Soon
 
 The following features are planned and will be available in future releases.
-
-### 🌐 Grapevine — Server Discovery
-
-*Coming in v0.2.0*
-
-**Grapevine** is a decentralized server discovery layer. Server owners opt in to list their server on a hub. Clients can browse hubs to find new servers and join them without ever seeing a raw IP address.
-
-Key design goals:
-
-- **Zero IP exposure** — hubs store server addresses but never return them in search results. The hub acts as a signaling intermediary; the client connects directly once the handshake completes.
-- **Spoke-and-wheel federation** — hubs can link to other hubs, enabling a fully decentralized discovery graph.
-- **In-app experience** — browse, search, and join entirely within the Concord TUI.
-- **Self-hostable hubs** — run ` + "`concord-server --mode hub`" + ` to operate your own Grapevine node.
 
 ### 🔌 Plugin System
 

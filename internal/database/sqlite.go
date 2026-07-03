@@ -2038,6 +2038,13 @@ func (db *DB) IncrementMemberKickCount(userID, serverID uuid.UUID) error {
 	return nil
 }
 
+// GetTotalMemberCount returns the number of distinct non-banned users across all servers.
+func (db *DB) GetTotalMemberCount() int {
+	var count int
+	db.QueryRow(`SELECT COUNT(DISTINCT user_id) FROM server_members WHERE COALESCE(is_banned,0)=0`).Scan(&count)
+	return count
+}
+
 // GetServerMembers retrieves all members of a server, including their role IDs
 func (db *DB) GetServerMembers(serverID uuid.UUID) ([]*models.ServerMember, error) {
 	rows, err := db.Query(`

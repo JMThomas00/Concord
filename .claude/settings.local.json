@@ -36,7 +36,22 @@
       "Bash(go run:*)",
       "Read(//d/Concord/$\\(go env GOPATH\\)/pkg/mod/github.com/charmbracelet/lipgloss@v1.1.0/**)",
       "Read(//d/Concord/$\\(go env GOPATH\\)/pkg/mod/github.com/**)",
-      "Read(//d/Concord/$\\(go env GOPATH\\)/pkg/mod/github.com/charmbracelet/**)"
+      "Read(//d/Concord/$\\(go env GOPATH\\)/pkg/mod/github.com/charmbracelet/**)",
+      "WebFetch(domain:github.com)",
+      "Bash(find /d/Concord/internal/server -name \"client.go\" -exec wc -l {} \\\\;)",
+      "WebSearch",
+      "Bash(git -C /d/Concord log --oneline -10 Grapevine)",
+      "Bash(git -C /d/Concord diff --stat main...Grapevine)",
+      "Bash(rm -rf /c/Users/JMTho/AppData/Local/Temp/claude/D--Concord/0a2a230c-ad9a-4bac-94bf-7c1a5c0dd27e/scratchpad/gv-test)",
+      "Bash(mkdir -p /c/Users/JMTho/AppData/Local/Temp/claude/D--Concord/0a2a230c-ad9a-4bac-94bf-7c1a5c0dd27e/scratchpad/gv-test/hub1 /c/Users/JMTho/AppData/Local/Temp/claude/D--Concord/0a2a230c-ad9a-4bac-94bf-7c1a5c0dd27e/scratchpad/gv-test/hub2 /c/Users/JMTho/AppData/Local/Temp/claude/D--Concord/0a2a230c-ad9a-4bac-94bf-7c1a5c0dd27e/scratchpad/gv-test/server1)",
+      "Bash(cat)",
+      "Read(//c/Users/JMTho/AppData/Local/Temp/claude/D--Concord/0a2a230c-ad9a-4bac-94bf-7c1a5c0dd27e/scratchpad/**)",
+      "Bash(/d/Concord/build/concord-hub.exe)",
+      "Bash(echo \"HUB1_PID=$!\")",
+      "Bash(curl -s http://127.0.0.1:7777/v1/health)",
+      "Bash(curl -s http://127.0.0.1:7777/v1/servers)",
+      "Bash(go test *)",
+      "Bash(gofmt -d cmd/server/setup.go)"
     ]
   }
 }
