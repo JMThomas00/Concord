@@ -69,7 +69,7 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 | ` + "`Ctrl+Q`" + ` | Quit |
 | ` + "`Ctrl+S`" + ` | Open Settings |
 | ` + "`Ctrl+B`" + ` | Open Server Management (admin) |
-| ` + "`Ctrl+G`" + ` | Open Grapevine Hub Browser (discover servers) |
+| ` + "`Ctrl+G`" + ` | Open Grapevine Hub Browser (login / add-server screens) |
 | ` + "`Ctrl+T`" + ` | Open Theme Browser |
 | ` + "`[`" + ` | Toggle server list panel (collapse / expand) |
 | ` + "`]`" + ` | Toggle members list panel (collapse / expand) |
@@ -349,7 +349,7 @@ CGO_ENABLED=0 go build -tags novoice -o build/concord-client-novoice.exe ./cmd/c
 
 ### Browsing Servers (Hub Browser)
 
-Press **Ctrl+G** from the login screen, the main view, or the Add Server dialog to open the Hub Browser.
+Open **Settings → Manage Servers** and press **B** to browse servers via a hub. Before you have any servers (login screen or the Add Server dialog), **Ctrl+G** opens it directly.
 
 | Key | Action |
 |-----|--------|
@@ -360,7 +360,8 @@ Press **Ctrl+G** from the login screen, the main view, or the Add Server dialog 
 | ` + "`Tab / Shift+Tab`" + ` | Cycle category filter |
 | ` + "`H / L`" + ` | Switch between your hubs |
 | ` + "`R`" + ` | Refresh the listing |
-| ` + "`+`" + ` | Add a hub by URL (discovered peer hubs can be quick-added with ` + "`1`–`5`" + `) |
+| ` + "`+`" + ` | Add a hub by URL (pick discovered peer hubs with ` + "`↑/↓`" + `) |
+| ` + "`X`" + ` | Remove the selected hub (removing the last one restores the default) |
 | ` + "`Esc`" + ` | Back / close |
 
 Servers listed by federated peer hubs appear under a ` + "`── via <hub> ──`" + ` header. Added hubs are saved to your client config.

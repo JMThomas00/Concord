@@ -316,7 +316,7 @@ Grapevine is Concord's opt-in, decentralized server directory. A **hub** (`build
 
 - **Hub** (`cmd/hub`, `internal/hub`) — standalone REST service, config in `grapevine-hub.toml` (Bubbletea wizard on first run, `--setup` to re-run), SQLite storage (`grapevine.db`). `--dashboard` runs a live TUI: pinned stats (servers/users online, joins served, rate-limited, heartbeats, federation syncs, uptime), registered-server table, and scrolling activity log
 - **Server integration** (`internal/server/grapevine.go`) — opt-in via `[grapevine]` in `concord-server.toml` or the first-run wizard's Grapevine step (also in `--reconfigure`); registers with a hub, heartbeats member/online counts, persists `server_id` + `registration_secret` back into its config
-- **Client Hub Browser** (`internal/client/hub_browser_view.go`) — full-screen overlay: **Ctrl+G** from Login, Main, or Add Server views (returns to the originating view on Esc). Hub tabs (h/l), category tabs (Tab), search (/), refresh (r), add hub (+, digits quick-add discovered peers), join (Enter → A)
+- **Client Hub Browser** (`internal/client/hub_browser_view.go`) — full-screen overlay. Primary entry: **Settings → Manage Servers → B**; **Ctrl+G** still works from Login and Add Server (pre-login discovery). Esc returns to the originating view. Hub tabs (h/l), category tabs (Tab), search (/), refresh (r), add hub (+, ↑/↓ picks discovered peers), remove hub (x — removing the last falls back to `defaultHubURL`), join (Enter → A). Hub list persists in `~/.concord/config.json` `ui.hub_urls`
 
 ### Hub REST API (`/v1/`)
 

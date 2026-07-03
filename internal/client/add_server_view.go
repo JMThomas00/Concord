@@ -203,7 +203,7 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 			} else if a.serverManagementState != nil {
 				a.view = ViewServerManagement
 			} else {
-				a.view = ViewManageServers
+				a.view = ViewMain
 			}
 			a.addServerError = ""
 
@@ -222,7 +222,7 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 		} else if a.serverManagementState != nil {
 			a.view = ViewServerManagement
 		} else {
-			a.view = ViewManageServers
+			a.view = ViewMain
 		}
 		return nil
 	}

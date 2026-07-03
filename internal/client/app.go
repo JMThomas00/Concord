@@ -37,7 +37,6 @@ const (
 	ViewSettings
 	ViewServerManagement
 	ViewAddServer
-	ViewManageServers
 	ViewThemeBrowser
 )
 
@@ -135,8 +134,7 @@ type App struct {
 	addServerFocus   int
 	addServerError   string
 
-	// Manage Servers view
-	manageServersFocus  int
+	// Manage Servers (Settings sub-page)
 	pingResults         map[uuid.UUID]*PingResult
 	editingServerID     *uuid.UUID // Set when editing an existing server
 	editingServerIndex  int        // Index in clientServers of the server being edited
@@ -1400,8 +1398,6 @@ func (a *App) View() string {
 		baseView = a.renderMainView()
 	case ViewAddServer:
 		baseView = a.renderAddServerView()
-	case ViewManageServers:
-		baseView = a.renderManageServersView()
 	case ViewSettings:
 		baseView = a.renderSettingsView()
 		if a.settingsAnimating {
@@ -1457,9 +1453,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	}
 	if a.view == ViewIdentitySetup {
 		return a.handleIdentitySetupKey(msg)
-	}
-	if a.view == ViewManageServers {
-		return a.handleManageServersKey(msg)
 	}
 	if a.view == ViewThemeBrowser {
 		return a.handleThemeBrowserKey(msg)
@@ -1560,9 +1553,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 
 	case "ctrl+g":
 		// Open the Grapevine Hub Browser (public server discovery).
-		// ViewManageServers has its own handler and opens it with plain B.
+		// Only where Settings > Manage Servers (the primary entry, key B)
+		// is not reachable — i.e. before the user has any server to log
+		// into. From the main view, use Settings > Manage Servers.
 		switch a.view {
-		case ViewLogin, ViewMain, ViewAddServer:
+		case ViewLogin, ViewAddServer:
 			return a.openHubBrowser()
 		}
 

@@ -191,6 +191,16 @@ func (a *App) renderSeparator(width int) string {
 }
 
 // openSettings transitions the app into the Settings view with a slide-from-left animation.
+// Indexes into SettingsState.Categories — keep in sync with the categories
+// literal in openSettings.
+const (
+	settingsCatTheme         = 0
+	settingsCatNotifications = 1
+	settingsCatDisplay       = 2
+	settingsCatAudio         = 3
+	settingsCatManageServers = 4
+)
+
 func (a *App) openSettings(returnTo View) tea.Cmd {
 	names := themes.ListAvailableThemes()
 	if len(names) == 0 {
@@ -330,7 +340,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				} else if s.AudioFocusField > 0 {
 					s.AudioFocusField--
 				}
-			case 4: // Manage Servers category
+			case settingsCatManageServers:
 				if s.SelectedServer > 0 {
 					s.SelectedServer--
 				}
@@ -374,9 +384,8 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				} else if s.AudioFocusField < 10 {
 					s.AudioFocusField++
 				}
-			case 4: // Manage Servers category
-				serverCount := len(a.connMgr.GetAllConnections())
-				if s.SelectedServer < serverCount-1 {
+			case settingsCatManageServers:
+				if s.SelectedServer < len(a.clientServers)-1 {
 					s.SelectedServer++
 				}
 			case len(s.Categories) - 1: // Help & Guide — scroll down
@@ -447,47 +456,35 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "shift+up":
-		if s.FocusOnForm && s.SelectedCategory == 3 {
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers {
 			// Reorder servers: move selected server up
-			servers := a.connMgr.GetAllConnections()
-			if s.SelectedServer > 0 && s.SelectedServer < len(servers) {
-				// Swap server positions in the list
-				servers[s.SelectedServer], servers[s.SelectedServer-1] =
-					servers[s.SelectedServer-1], servers[s.SelectedServer]
-
-				// Reassign Order values based on new positions
-				for i, srv := range servers {
-					srv.ServerInfo.Order = i
+			if s.SelectedServer > 0 && s.SelectedServer < len(a.clientServers) {
+				a.clientServers[s.SelectedServer], a.clientServers[s.SelectedServer-1] =
+					a.clientServers[s.SelectedServer-1], a.clientServers[s.SelectedServer]
+				for i, cs := range a.clientServers {
+					cs.Order = i
 				}
-
 				s.SelectedServer--
-				// Save the updated order
 				a.saveServerOrder()
 			}
 		}
 
 	case "shift+down":
-		if s.FocusOnForm && s.SelectedCategory == 3 {
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers {
 			// Reorder servers: move selected server down
-			servers := a.connMgr.GetAllConnections()
-			if s.SelectedServer >= 0 && s.SelectedServer < len(servers)-1 {
-				// Swap server positions in the list
-				servers[s.SelectedServer], servers[s.SelectedServer+1] =
-					servers[s.SelectedServer+1], servers[s.SelectedServer]
-
-				// Reassign Order values based on new positions
-				for i, srv := range servers {
-					srv.ServerInfo.Order = i
+			if s.SelectedServer >= 0 && s.SelectedServer < len(a.clientServers)-1 {
+				a.clientServers[s.SelectedServer], a.clientServers[s.SelectedServer+1] =
+					a.clientServers[s.SelectedServer+1], a.clientServers[s.SelectedServer]
+				for i, cs := range a.clientServers {
+					cs.Order = i
 				}
-
 				s.SelectedServer++
-				// Save the updated order
 				a.saveServerOrder()
 			}
 		}
 
 	case "ctrl+n":
-		if s.SelectedCategory == 3 {
+		if s.SelectedCategory == settingsCatManageServers {
 			// Open add server form as sub-page
 			a.editingServerID = nil
 			a.initAddServerForm()
@@ -496,47 +493,37 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "e":
-		if s.FocusOnForm && s.SelectedCategory == 3 {
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers {
 			// Edit selected server as sub-page
-			servers := a.connMgr.GetAllConnections()
-			if s.SelectedServer >= 0 && s.SelectedServer < len(servers) {
-				srv := servers[s.SelectedServer]
-
-				// Find this server in clientServers
-				for i, cs := range a.clientServers {
-					if cs.ID == srv.ServerInfo.ID {
-						a.editingServerIndex = i
-						serverID := cs.ID
-						a.editingServerID = &serverID
-						break
-					}
-				}
+			if s.SelectedServer >= 0 && s.SelectedServer < len(a.clientServers) {
+				cs := a.clientServers[s.SelectedServer]
+				a.editingServerIndex = s.SelectedServer
+				serverID := cs.ID
+				a.editingServerID = &serverID
 
 				// Pre-fill add server form with existing values
 				a.initAddServerForm()
-				a.addServerName.SetValue(srv.ServerInfo.Name)
-				a.addServerAddress.SetValue(srv.ServerInfo.Address)
-				a.addServerPort.SetValue(fmt.Sprintf("%d", srv.ServerInfo.Port))
-				a.addServerUseTLS = srv.ServerInfo.UseTLS
+				a.addServerName.SetValue(cs.Name)
+				a.addServerAddress.SetValue(cs.Address)
+				a.addServerPort.SetValue(fmt.Sprintf("%d", cs.Port))
+				a.addServerUseTLS = cs.UseTLS
 				a.addServerName.Focus()
 				s.ServerFormOpen = true
 			}
 		}
 
 	case "d":
-		if s.FocusOnForm && s.SelectedCategory == 3 {
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers {
 			// Delete selected server - show confirmation
-			servers := a.connMgr.GetAllConnections()
-			if s.SelectedServer >= 0 && s.SelectedServer < len(servers) {
-				srv := servers[s.SelectedServer]
-				serverID := srv.ServerInfo.ID
+			if s.SelectedServer >= 0 && s.SelectedServer < len(a.clientServers) {
+				serverID := a.clientServers[s.SelectedServer].ID
 				a.deleteConfirmServerID = &serverID
 			}
 		}
 
 	case "y", "Y":
 		// Confirm delete (when confirmation dialog is shown)
-		if a.deleteConfirmServerID != nil && s.SelectedCategory == 3 {
+		if a.deleteConfirmServerID != nil && s.SelectedCategory == settingsCatManageServers {
 			serverID := *a.deleteConfirmServerID
 			a.deleteConfirmServerID = nil
 
@@ -614,37 +601,35 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "p":
-		if s.FocusOnForm && s.SelectedCategory == 3 {
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers {
 			// Ping selected server
-			servers := a.connMgr.GetAllConnections()
-			if s.SelectedServer >= 0 && s.SelectedServer < len(servers) {
-				srv := servers[s.SelectedServer]
-
-				// Initialize ping results map if needed
+			if s.SelectedServer >= 0 && s.SelectedServer < len(a.clientServers) {
+				cs := a.clientServers[s.SelectedServer]
 				if a.pingResults == nil {
 					a.pingResults = make(map[uuid.UUID]*PingResult)
 				}
-
-				// Mark as in progress
-				a.pingResults[srv.ServerInfo.ID] = &PingResult{InProgress: true}
-
-				// Trigger ping
-				return PingServerCmd(srv.ServerInfo)
+				a.pingResults[cs.ID] = &PingResult{InProgress: true}
+				return PingServerCmd(cs)
 			}
 		}
 
 	case "s", "S":
-		if s.FocusOnForm && s.SelectedCategory == 3 {
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers {
 			// Open per-server sound override sub-page
-			servers := a.connMgr.GetAllConnections()
-			if s.SelectedServer >= 0 && s.SelectedServer < len(servers) {
-				srv := servers[s.SelectedServer]
-				serverID := srv.ServerInfo.ID
+			if s.SelectedServer >= 0 && s.SelectedServer < len(a.clientServers) {
+				serverID := a.clientServers[s.SelectedServer].ID
 				s.ServerSoundServerID = &serverID
 				s.ServerSoundFocus = 0
 				s.ServerSoundPickerOpen = false
 				s.ServerSoundPageOpen = true
 			}
+		}
+
+	case "b", "B":
+		// Browse servers via Grapevine hub (opens the Hub Browser overlay;
+		// Esc returns here, and joined servers appear in this list).
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers && a.deleteConfirmServerID == nil {
+			return a.openHubBrowser()
 		}
 	}
 
@@ -1379,11 +1364,12 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	top.writeLine(subtitleStyle.Render("Configure your server connections"))
 
-	// Server count/status
-	servers := a.connMgr.GetAllConnections()
+	// Server count/status — list every configured server (not just connected
+	// ones) so servers added or joined via the hub appear immediately.
+	servers := a.clientServers
 	connectedCount := 0
-	for _, srv := range servers {
-		if srv.State == StateReady {
+	for _, cs := range servers {
+		if conn := a.connMgr.GetConnection(cs.ID); conn != nil && conn.State == StateReady {
 			connectedCount++
 		}
 	}
@@ -1435,25 +1421,25 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 
 	// Show visible servers
 	for i := visibleStart; i < visibleEnd; i++ {
-		srv := servers[i]
-		name := srv.ServerInfo.Name
+		cs := servers[i]
+		name := cs.Name
 		if name == "" {
-			name = srv.ServerInfo.Address
+			name = cs.Address
 		}
 
 		// Online indicator
 		indicator := "●"
-		indicatorColor := a.theme.Colors.Green
-		if srv.State != StateReady {
-			indicatorColor = a.theme.Colors.Comment
+		indicatorColor := a.theme.Colors.Comment
+		if conn := a.connMgr.GetConnection(cs.ID); conn != nil && conn.State == StateReady {
+			indicatorColor = a.theme.Colors.Green
 		}
 
-		address := fmt.Sprintf("%s:%d", srv.ServerInfo.Address, srv.ServerInfo.Port)
+		address := fmt.Sprintf("%s:%d", cs.Address, cs.Port)
 
 		// Ping status
 		var pingStatus string
 		if a.pingResults != nil {
-			if result, exists := a.pingResults[srv.ServerInfo.ID]; exists {
+			if result, exists := a.pingResults[cs.ID]; exists {
 				if result.InProgress {
 					pingStatus = " (pinging...)"
 				} else if result.Success {
@@ -1533,7 +1519,7 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 	navStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(navStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
-	bottom.writeLine(navStyle.Render("Actions: Ctrl+N add · E edit · D delete · P ping · S sounds"))
+	bottom.writeLine(navStyle.Render("Actions: Ctrl+N add · E edit · D delete · P ping · S sounds · B browse hub"))
 
 	// Fill remaining bottom section space
 	bottom.pad()
@@ -2235,14 +2221,9 @@ func (a *App) saveServerOrder() {
 		return
 	}
 
-	// Get all servers from connection manager
-	servers := a.connMgr.GetAllConnections()
-
-	// Build ServerInfo array with updated order
-	serverInfos := make([]*ClientServerInfo, len(servers))
-	for i, srv := range servers {
-		serverInfos[i] = srv.ServerInfo
-	}
+	// Persist the config list's current order
+	serverInfos := make([]*ClientServerInfo, len(a.clientServers))
+	copy(serverInfos, a.clientServers)
 
 	// Load current config
 	config, err := a.configMgr.LoadServers()
