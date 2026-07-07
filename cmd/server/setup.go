@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/concord-chat/concord/internal/hub"
 	"github.com/concord-chat/concord/internal/server"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -20,6 +21,16 @@ const (
 	phaseServer        setupPhase = iota // main server settings form
 	phaseGrapevineAsk                    // "list on Grapevine?" yes/no
 	phaseGrapevineForm                   // Grapevine listing details form
+	phaseHubAsk                          // "host a Grapevine hub?" 3-way choice
+)
+
+// hubChoice is the user's hub-hosting preference from phaseHubAsk.
+type hubChoice int
+
+const (
+	hubChoiceMirror        hubChoice = 0 // run a failover mirror synced from the official hub
+	hubChoiceCustom        hubChoice = 1 // run a standalone hub (no official peer pre-configured)
+	hubChoiceNotInterested hubChoice = 2 // skip hub hosting entirely
 )
 
 // setupModel is a minimal bubbletea model for first-run server configuration.
@@ -36,6 +47,9 @@ type setupModel struct {
 	gvOptIn   bool // highlighted choice on the ask screen
 	gvInputs  []textinput.Model
 	gvFocused int
+
+	// Hub hosting step
+	hubChoice hubChoice // default: hubChoiceNotInterested
 }
 
 const (
@@ -165,9 +179,10 @@ func newSetupModel(existingConfig *server.Config) setupModel {
 	gvInputs[gvFieldPublicPort].CharLimit = 5
 
 	return setupModel{
-		inputs:   inputs,
-		gvInputs: gvInputs,
-		gvOptIn:  gv != nil && gv.Enabled,
+		inputs:    inputs,
+		gvInputs:  gvInputs,
+		gvOptIn:   gv != nil && gv.Enabled,
+		hubChoice: hubChoiceNotInterested,
 	}
 }
 
@@ -223,8 +238,8 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			case "n", "N":
 				m.gvOptIn = false
-				m.done = true
-				return m, tea.Quit
+				m.phase = phaseHubAsk
+				return m, nil
 			case "left", "right", "tab", "h", "l":
 				m.gvOptIn = !m.gvOptIn
 			case "enter":
@@ -233,8 +248,8 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.gvInputs[m.gvFocused].Focus()
 					return m, textinput.Blink
 				}
-				m.done = true
-				return m, tea.Quit
+				m.phase = phaseHubAsk
+				return m, nil
 			}
 			return m, nil
 
@@ -255,8 +270,8 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.err = ""
-					m.done = true
-					return m, tea.Quit
+					m.phase = phaseHubAsk
+					return m, nil
 				}
 				m.gvInputs[m.gvFocused].Blur()
 				m.gvFocused = (m.gvFocused + 1) % numGvFields
@@ -267,6 +282,28 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gvFocused = (m.gvFocused - 1 + numGvFields) % numGvFields
 				m.gvInputs[m.gvFocused].Focus()
 			}
+
+		case phaseHubAsk:
+			switch msg.String() {
+			case "left", "shift+tab":
+				if m.hubChoice > hubChoiceMirror {
+					m.hubChoice--
+				}
+			case "right", "tab":
+				if m.hubChoice < hubChoiceNotInterested {
+					m.hubChoice++
+				}
+			case "1":
+				m.hubChoice = hubChoiceMirror
+			case "2":
+				m.hubChoice = hubChoiceCustom
+			case "3":
+				m.hubChoice = hubChoiceNotInterested
+			case "enter":
+				m.done = true
+				return m, tea.Quit
+			}
+			return m, nil
 		}
 	}
 
@@ -340,6 +377,11 @@ func (m setupModel) View() string {
 			m.gvInputs,
 		)
 
+	case phaseHubAsk:
+		title = "Host a Grapevine Hub"
+		instruction = "Optional: run a discovery hub alongside your server to help the network"
+		form = m.renderHubAsk()
+
 	default:
 		title = "First-Run Setup"
 		instruction = "Configure your Concord server"
@@ -389,6 +431,8 @@ func (m setupModel) View() string {
 	hint := "[Tab] Next Field · [Shift+Tab] Previous Field · [Enter] Confirm · [Esc] Cancel"
 	if m.phase == phaseGrapevineAsk {
 		hint = "[Y] Yes · [N] No · [←/→] Toggle · [Enter] Confirm · [Esc] Cancel"
+	} else if m.phase == phaseHubAsk {
+		hint = "[1] Mirror  [2] Custom  [3] Skip · [←/→] Navigate · [Enter] Confirm · [Esc] Cancel"
 	}
 	content.WriteString(hintStyled.Render(hint))
 
@@ -473,6 +517,60 @@ func (m setupModel) renderGrapevineAsk() string {
 		"You can change this later with --reconfigure or in concord-server.toml."))
 	b.WriteString("\n\n")
 	b.WriteString(yes + "   " + no)
+	return b.String()
+}
+
+// renderHubAsk renders the 3-way hub-hosting choice screen.
+func (m setupModel) renderHubAsk() string {
+	questionStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#f8f8f2")).
+		Bold(true)
+
+	bodyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#6272a4"))
+
+	warnStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#ffb86c"))
+
+	pill := lipgloss.NewStyle().Padding(0, 2).MarginRight(1)
+	selectedPill := pill.
+		Foreground(lipgloss.Color("#282a36")).
+		Background(lipgloss.Color("#BD93F9")).
+		Bold(true)
+
+	labels := []string{"[1] Mirror Hub", "[2] Custom Hub", "[3] Not Interested"}
+	var rendered []string
+	for i, label := range labels {
+		if hubChoice(i) == m.hubChoice {
+			rendered = append(rendered, selectedPill.Render(label))
+		} else {
+			rendered = append(rendered, pill.Render(label))
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(questionStyle.Render("Host a Grapevine discovery hub?"))
+	b.WriteString("\n\n")
+	b.WriteString(bodyStyle.Render(
+		"A Grapevine hub lets Concord clients discover servers. Hosting one\n"+
+			"alongside your server helps the network stay resilient.\n\n"+
+			"Mirror Hub      — syncs the official Grapevine listing. Acts as a\n"+
+			"                  failover for clients who add your hub URL. Requires\n"+
+			"                  a public IP or Cloudflare Tunnel (see Obsidian note).\n\n"+
+			"Custom Hub      — standalone hub; no official sync by default.\n\n"+
+			"Not Interested  — skip. You can run concord-hub separately any time.",
+	))
+	b.WriteString("\n\n")
+
+	if m.hubChoice == hubChoiceMirror {
+		b.WriteString(warnStyle.Render(
+			"! Your hub URL will be publicly visible — your server's IP address\n"+
+				"  or domain name will be discoverable. On a home server, use a\n"+
+				"  Cloudflare Tunnel to hide your real IP (see CLOUDFLARE TUNNEL SETUP.md)."))
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString(strings.Join(rendered, ""))
 	return b.String()
 }
 
@@ -570,9 +668,52 @@ func runFirstRunSetup(existingConfig *server.Config) *server.Config {
 	} else {
 		fmt.Println("Grapevine listing skipped — opt in later with --reconfigure.")
 	}
-	fmt.Println("Tip: anyone can host their own discovery hub with the concord-hub binary.")
+
+	// Write grapevine-hub.toml if the user opted into hosting a hub.
+	if final.hubChoice != hubChoiceNotInterested {
+		writeHubConfig(final.hubChoice, serverName)
+	}
+
 	fmt.Println()
 	return cfg
+}
+
+const hubConfigFilename = "grapevine-hub.toml"
+
+// writeHubConfig writes grapevine-hub.toml based on the chosen hub mode.
+func writeHubConfig(choice hubChoice, serverName string) {
+	hubCfg := hub.DefaultConfig()
+	hubCfg.HubName = serverName + " Hub"
+
+	if choice == hubChoiceMirror {
+		hubCfg.PeerHubs = []hub.PeerHubConfig{
+			{Name: "Official Grapevine Hub", URL: defaultHubURL},
+		}
+	}
+
+	if err := hubCfg.Save(hubConfigFilename); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not write hub config: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\nHub config written to %s\n", hubConfigFilename)
+	fmt.Printf("Start your hub:  ./concord-hub\n")
+
+	if choice == hubChoiceMirror {
+		fmt.Println()
+		fmt.Println("MIRROR HUB — IP ADDRESS NOTICE")
+		fmt.Println("-------------------------------")
+		fmt.Println("Your hub URL will be publicly listed so clients can discover it")
+		fmt.Println("as a fallback when the official Grapevine hub is unreachable.")
+		fmt.Println("This means your server's IP address or domain will be visible.")
+		fmt.Println()
+		fmt.Println("On a home server or LXC container, use a Cloudflare Tunnel to")
+		fmt.Println("hide your real IP address. See: CONCORD - CLOUDFLARE TUNNEL SETUP.md")
+		fmt.Println()
+		fmt.Printf("Federation sync: every %d minutes from %s\n", hubCfg.FederationSync, defaultHubURL)
+		fmt.Println("Share your hub URL with users, or contact the official hub operator")
+		fmt.Println("to register it as a discoverable peer in the network.")
+	}
 }
 
 // parseTags splits a comma-separated tag string into trimmed, non-empty tags.

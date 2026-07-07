@@ -67,6 +67,11 @@ type HubBrowserState struct {
 	joining bool
 	joinErr string
 
+	// autoFallback is true during the initial open() load sequence — if a hub fails,
+	// the browser automatically tries the next one in hubURLs. Set to false on any
+	// manual refresh or explicit hub tab switch so the user's intent is respected.
+	autoFallback bool
+
 	// Peer hubs discovered from GET /v1/hubs (not yet in hubURLs)
 	discoveredPeers []HubEntry
 
@@ -344,6 +349,7 @@ func (a *App) openHubBrowser() tea.Cmd {
 	a.hubBrowser.returnView = a.view
 	a.showHubBrowser = true
 	a.hubBrowser.loading = true
+	a.hubBrowser.autoFallback = true // silently try next hub if this one is unreachable
 
 	client := a.hubBrowser.currentClient()
 	hubURL := a.hubBrowser.currentHubURL()
@@ -622,6 +628,7 @@ func (a *App) refreshCurrentHub() tea.Cmd {
 	s.allServers = nil
 	s.filtered = nil
 	s.cursor = 0
+	s.autoFallback = false // manual refresh — respect the chosen hub, don't switch
 	client := s.currentClient()
 	hubURL := s.currentHubURL()
 	return fetchHubServers(client, hubURL)
@@ -656,8 +663,19 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		if m.hubURL != s.currentHubURL() {
 			return true, nil
 		}
+		// Auto-fallback: silently try the next hub in the list if this is an
+		// automatic open (not a user-initiated refresh or explicit tab switch).
+		if s.autoFallback && s.selectedHub < len(s.hubURLs)-1 {
+			s.selectedHub++
+			return true, fetchHubServers(s.currentClient(), s.currentHubURL())
+		}
 		s.loading = false
-		s.err = m.err
+		s.autoFallback = false
+		if len(s.hubURLs) > 1 && s.selectedHub == len(s.hubURLs)-1 {
+			s.err = "All configured hubs are unreachable. Add a mirror hub with [+]."
+		} else {
+			s.err = m.err
+		}
 		return true, nil
 
 	case hubTabHealthMsg:
