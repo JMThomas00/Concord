@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"sort"
 	"sync"
 	"time"
@@ -122,7 +121,6 @@ func (sc *ServerConnection) GetChannels(protocolServerID uuid.UUID) []*models.Ch
 func (sc *ServerConnection) SetChannels(protocolServerID uuid.UUID, channels []*models.Channel) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	log.Printf("DEBUG SetChannels: ServerConnection=%p, protocolServerID=%s, setting %d channels", sc, protocolServerID, len(channels))
 	sc.Channels[protocolServerID] = channels
 }
 

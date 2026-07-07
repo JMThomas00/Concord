@@ -490,7 +490,7 @@ func (h *Hub) BroadcastPresenceUpdate(user *models.User, serverIDs []uuid.UUID) 
 }
 
 // TypingTimeout is how long typing indicators last
-const TypingTimeout = 10 * time.Second
+const TypingTimeout = 5 * time.Second
 
 // TypingIndicator tracks active typing users
 type TypingIndicator struct {
@@ -545,13 +545,21 @@ func (tm *TypingManager) StartTyping(userID, channelID, serverID uuid.UUID) {
 	tm.hub.BroadcastToChannel(channelID, protocol.EventTypingStart, payload, &userID)
 }
 
-// StopTyping removes typing indicator (called when message is sent)
+// StopTyping removes typing indicator and notifies channel peers (called when message is sent)
 func (tm *TypingManager) StopTyping(userID, channelID uuid.UUID) {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
-	if tm.indicators[channelID] != nil {
+	exists := tm.indicators[channelID] != nil
+	if exists {
 		delete(tm.indicators[channelID], userID)
+	}
+	tm.mu.Unlock()
+
+	if exists {
+		payload := &protocol.TypingStopEventPayload{
+			ChannelID: channelID,
+			UserID:    userID,
+		}
+		tm.hub.BroadcastToChannel(channelID, protocol.EventTypingStop, payload, &userID)
 	}
 }
 

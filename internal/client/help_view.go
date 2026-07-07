@@ -140,6 +140,8 @@ Type ` + "`/`" + ` followed by a command name. Available to all users:
 | ` + "`/status <message>`" + ` | Set your status (` + "`/status clear`" + ` to remove) |
 | ` + "`/mute`" + ` | Mute the current channel (hide unread badges) |
 | ` + "`/unmute`" + ` | Unmute the current channel |
+| ` + "`/join-voice [#channel]`" + ` | Join a voice channel (or the currently selected one) |
+| ` + "`/leave-voice`" + ` | Leave the current voice channel |
 
 Moderator commands:
 
@@ -155,6 +157,9 @@ Moderator commands:
 | ` + "`/kick @user [reason]`" + ` | Kick a member |
 | ` + "`/timeout @user <minutes>`" + ` | Temporarily ban a member |
 | ` + "`/pin [N]`" + ` | Pin the Nth most recent message |
+| ` + "`/mute-voice @user`" + ` | Server-mute a user in voice |
+| ` + "`/deafen-voice @user`" + ` | Server-deafen a user in voice |
+| ` + "`/unmute-voice @user`" + ` | Lift voice mute/deafen from a user |
 
 Admin commands:
 
@@ -166,6 +171,7 @@ Admin commands:
 | ` + "`/title @user <title>`" + ` | Set a display title (` + "`/title @user clear`" + ` to remove) |
 | ` + "`/ban @user [reason]`" + ` | Permanently ban a member |
 | ` + "`/unban @user`" + ` | Lift a ban |
+| ` + "`/move-voice @user <channel>`" + ` | Force-move a user to a voice channel |
 
 ### @Mentions
 
@@ -392,7 +398,8 @@ The hub is its own lightweight binary:
 
 ` + "```" + `bash
 make build-hub
-./concord-hub            # first run launches a setup wizard
+./concord-hub               # first run launches a setup wizard
+./concord-hub --setup       # re-run the setup wizard
 ./concord-hub --dashboard   # live TUI: stats, server list, activity log
 ` + "```" + `
 

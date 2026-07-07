@@ -410,6 +410,8 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 		"/status <message>          - Set your status (use /status clear to remove)",
 		"/mute                      - Mute current channel (suppress unread badges)",
 		"/unmute                    - Unmute current channel",
+		"/join-voice [#channel]     - Join a voice channel",
+		"/leave-voice               - Leave the current voice channel",
 	}
 
 	if level >= roleLevelMod {
@@ -424,6 +426,9 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 			"/unlock                    - Unlock current channel (all users can post)",
 			"/mute @user [minutes]      - Server-mute a member",
 			"/unmute @user              - Server-unmute a member",
+			"/mute-voice @user          - Server-mute a user in voice",
+			"/deafen-voice @user        - Server-deafen a user in voice",
+			"/unmute-voice @user        - Lift voice mute/deafen",
 			"/kick @user [reason]       - Kick a member from the server",
 			"/timeout @user <minutes>   - Temporarily ban a member",
 			"/pin [N]                   - Pin the Nth most recent message (default: 1)",
@@ -439,6 +444,7 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 			"/title @user <title>       - Assign a custom title to a member (use clear to remove)",
 			"/ban @user [reason]        - Permanently ban a member",
 			"/unban @user               - Lift a ban from a member",
+			"/move-voice @user <channel> - Force-move user to a voice channel",
 		)
 	}
 
@@ -963,8 +969,15 @@ func (ch *CommandHandler) handleTheme(args []string) (string, error) {
 
 	// Direct apply: /theme nord
 	name := strings.ToLower(strings.Join(args, "-"))
+	t, err := themes.GetTheme(name)
+	if err != nil {
+		return "", fmt.Errorf("theme %q not found — use /theme to browse available themes", name)
+	}
 	ch.app.applyAndSaveTheme(name)
-	displayName := themes.GetThemeDisplayName(name)
+	displayName := t.Meta.Name
+	if displayName == "" {
+		displayName = name
+	}
 	return fmt.Sprintf("Theme set to %q", displayName), nil
 }
 

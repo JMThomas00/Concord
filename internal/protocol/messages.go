@@ -95,6 +95,7 @@ const (
 	// User events
 	EventPresenceUpdate   EventType = "PRESENCE_UPDATE"
 	EventTypingStart      EventType = "TYPING_START"
+	EventTypingStop       EventType = "TYPING_STOP"
 	EventUserUpdate       EventType = "USER_UPDATE"
 	
 	// Whisper events
@@ -461,6 +462,12 @@ type TypingStartEventPayload struct {
 	UserID    uuid.UUID    `json:"user_id"`
 	Timestamp time.Time    `json:"timestamp"`
 	Member    *models.ServerMember `json:"member,omitempty"`
+}
+
+// TypingStopEventPayload is dispatched when a user stops typing (message sent)
+type TypingStopEventPayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 // PresenceUpdateEventPayload is dispatched when a user's presence changes

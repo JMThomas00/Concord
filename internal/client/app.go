@@ -296,6 +296,7 @@ type MessageDisplay struct {
 	ShowHeader    bool // Show author/timestamp (false for consecutive messages)
 	IsWhisper     bool // Ephemeral DM from /whisper
 	IsSystem      bool // Server-wide moderation/system announcement
+	IsDeleted     bool // Soft-deleted; rendered as [message deleted] placeholder
 }
 
 // MemberDisplay wraps a member with display information
@@ -826,21 +827,11 @@ func (a *App) connectServerAsync(serverID uuid.UUID, token string) tea.Cmd {
 		// Set active connection ONLY if it's nil (first connection)
 		// OR if this is the server the user currently has selected.
 		// This prevents background connections from overwriting activeConn.
-		oldConn := a.activeConn
 		shouldSetActive := a.activeConn == nil ||
 			(a.currentClientServer != nil && a.currentClientServer.ID == serverID)
 
 		if shouldSetActive {
 			a.activeConn = a.connMgr.GetConnection(serverID)
-			log.Printf("DEBUG connectServerAsync: Changed activeConn from %p to %p (serverID=%s, reason=%s)",
-				oldConn, a.activeConn, serverID,
-				func() string {
-					if oldConn == nil { return "first connection" }
-					return "user's current server"
-				}())
-		} else {
-			log.Printf("DEBUG connectServerAsync: SKIPPED setting activeConn (serverID=%s, currentClientServer=%v)",
-				serverID, a.currentClientServer != nil)
 		}
 
 		// Set token on the connection we just made (not necessarily activeConn)
@@ -882,10 +873,13 @@ func (a *App) scheduleReconnect(serverID uuid.UUID) tea.Cmd {
 	token := sc.Token
 	sc.mu.Unlock()
 
+	// Once past the initial backoff ramp, cap RetryCount so delay stays at MaxDelay
+	// rather than climbing forever. Never give up — keep polling until the server returns.
 	if !strategy.ShouldRetry(attemptCount) {
-		return func() tea.Msg {
-			return ErrorMsg{Error: "Max reconnection attempts reached"}
-		}
+		sc.mu.Lock()
+		sc.RetryCount = strategy.MaxRetries
+		sc.mu.Unlock()
+		attemptCount = strategy.MaxRetries
 	}
 
 	delay := strategy.NextDelay(attemptCount)
@@ -1107,7 +1101,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.view == ViewMain && a.focus == FocusInput &&
 			len(a.input.Value()) > 0 &&
 			a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil &&
-			time.Since(a.lastTypingSent) > 4*time.Second {
+			time.Since(a.lastTypingSent) > 2*time.Second {
 			a.lastTypingSent = time.Now()
 			serverID := a.currentClientServer.ID
 			channelID := a.currentChannel.ID
@@ -2335,19 +2329,10 @@ func (a *App) cycleFocusReverse() {
 
 // getCurrentChannels returns channels for the current protocol server
 func (a *App) getCurrentChannels() []*models.Channel {
-	log.Printf("DEBUG getCurrentChannels: activeConn=%p (exists=%v), currentServer=%v",
-		a.activeConn, a.activeConn != nil, a.currentServer != nil)
 	if a.activeConn == nil || a.currentServer == nil {
-		log.Printf("DEBUG getCurrentChannels: Returning empty (nil activeConn or currentServer)")
 		return []*models.Channel{}
 	}
-	channels := a.activeConn.GetChannels(a.currentServer.ID)
-	log.Printf("DEBUG getCurrentChannels: Got %d channels for server %s (ID=%s) from ServerConnection=%p",
-		len(channels),
-		func() string { if a.currentServer != nil { return a.currentServer.Name }; return "nil" }(),
-		a.currentServer.ID,
-		a.activeConn)
-	return channels
+	return a.activeConn.GetChannels(a.currentServer.ID)
 }
 
 // navigateServerList navigates the client server list
@@ -2370,28 +2355,18 @@ func (a *App) navigateServerList(delta int) {
 
 // navigateChannelList navigates the channel list for the current server
 func (a *App) navigateChannelList(delta int) {
-	log.Printf("DEBUG navigateChannelList: channelTree=%v, flatListLen=%d, currentChannel=%v",
-		a.channelTree != nil,
-		func() int { if a.channelTree != nil { return len(a.channelTree.FlatList) }; return 0 }(),
-		a.currentChannel != nil)
 	if a.channelTree == nil || len(a.channelTree.FlatList) == 0 {
-		log.Printf("DEBUG navigateChannelList: EARLY RETURN - channelTree is nil or empty")
 		return
 	}
 
 	// Find current channel in flat list (including categories)
 	currentIdx := -1
 	for i, node := range a.channelTree.FlatList {
-		log.Printf("DEBUG navigateChannelList: FlatList[%d]: IsCategory=%v, ChannelName=%s",
-			i, node.IsCategory,
-			func() string { if node.Channel != nil { return node.Channel.Name }; return "nil" }())
 		if a.currentChannel != nil && node.Channel.ID == a.currentChannel.ID {
 			currentIdx = i
-			log.Printf("DEBUG navigateChannelList: Found current channel at index %d", i)
 			break
 		}
 	}
-	log.Printf("DEBUG navigateChannelList: currentIdx=%d, delta=%d", currentIdx, delta)
 
 	// Navigate to next/previous item (including categories)
 	newIdx := currentIdx + delta
@@ -2399,15 +2374,12 @@ func (a *App) navigateChannelList(delta int) {
 	// Wrap around
 	if newIdx < 0 {
 		newIdx = len(a.channelTree.FlatList) - 1
-		log.Printf("DEBUG navigateChannelList: Wrapped to end, newIdx=%d", newIdx)
 	} else if newIdx >= len(a.channelTree.FlatList) {
 		newIdx = 0
-		log.Printf("DEBUG navigateChannelList: Wrapped to start, newIdx=%d", newIdx)
 	}
 
 	// Select the item at newIdx (could be channel or category)
 	if newIdx >= 0 && newIdx < len(a.channelTree.FlatList) {
-		log.Printf("DEBUG navigateChannelList: Selecting item at index %d", newIdx)
 		a.selectChannelByID(a.channelTree.FlatList[newIdx].Channel.ID)
 	}
 }
@@ -3595,16 +3567,12 @@ func (a *App) getSelectedText() string {
 // selectChannelByID selects a channel by its UUID, requesting message history from the server
 func (a *App) selectChannelByID(channelID uuid.UUID) {
 	channels := a.getCurrentChannels()
-	log.Printf("DEBUG selectChannelByID: Looking for channel %s in %d channels", channelID, len(channels))
 	for i, ch := range channels {
-		log.Printf("DEBUG selectChannelByID: channels[%d] = %s (ID=%s)", i, ch.Name, ch.ID)
 		if ch.ID == channelID {
-			log.Printf("DEBUG selectChannelByID: FOUND at index %d, calling selectChannel(%d)", i, i)
 			a.selectChannel(i)
 			return
 		}
 	}
-	log.Printf("DEBUG selectChannelByID: Channel %s NOT FOUND in channels array!", channelID)
 }
 
 // handleCollapseCategory collapses the current channel's parent category (or current category if on one)
@@ -3696,10 +3664,7 @@ func (a *App) switchToClientServer(index int) {
 	a.currentClientServer = a.clientServers[index]
 
 	// Get or create connection
-	oldConn := a.activeConn
 	a.activeConn = a.connMgr.GetConnection(a.currentClientServer.ID)
-	log.Printf("DEBUG switchToClientServer: Changed activeConn from %p to %p (clientServerID=%s, name=%s)",
-		oldConn, a.activeConn, a.currentClientServer.ID, a.currentClientServer.Name)
 
 	// If not connected, clear stale state and show prompt
 	if a.activeConn == nil || a.activeConn.GetState() != StateReady {
@@ -3744,24 +3709,16 @@ func (a *App) loadChannelsForServer() {
 
 // loadChannelTree builds the channel tree from the current server's channels
 func (a *App) loadChannelTree() {
-	log.Printf("DEBUG loadChannelTree: activeConn=%v, currentServer=%v, view=%v",
-		a.activeConn != nil, a.currentServer != nil, a.view)
 	if a.activeConn == nil || a.currentServer == nil {
-		log.Printf("DEBUG loadChannelTree: Setting channelTree to nil (no activeConn or currentServer)")
 		a.channelTree = nil
 		return
 	}
 
 	// Get channels for current server
 	channels := a.activeConn.GetChannels(a.currentServer.ID)
-	log.Printf("DEBUG loadChannelTree: Got %d channels for server %s",
-		len(channels),
-		func() string { if a.currentServer != nil { return a.currentServer.Name }; return "nil" }())
 
 	// Build tree
 	a.channelTree = BuildChannelTree(channels)
-	log.Printf("DEBUG loadChannelTree: Built channelTree with %d items in FlatList",
-		func() int { if a.channelTree != nil { return len(a.channelTree.FlatList) }; return 0 }())
 
 	// Load collapsed state from config
 	if a.uiConfig != nil && a.uiConfig.CollapsedCategories != nil {
@@ -4015,8 +3972,14 @@ func (a *App) updateChatContent() {
 				if len([]rune(msg.AuthorName)) > 0 {
 					initial = strings.ToUpper(string([]rune(msg.AuthorName)[:1]))
 				}
+				avatarColor := a.theme.Colors.Purple
+				if msg.IsWhisper {
+					avatarColor = a.theme.Colors.Orange
+				} else if msg.IsSystem {
+					avatarColor = a.theme.Colors.Comment
+				}
 				avatarStyle := lipgloss.NewStyle().
-					Foreground(lipgloss.Color(msg.AuthorColor)).
+					Foreground(lipgloss.Color(avatarColor)).
 					Bold(true)
 				circle := avatarStyle.Render("(" + initial + ")")
 				authorText = circle + " " + authorStyle.Render(msg.AuthorName)
@@ -4114,7 +4077,12 @@ func (a *App) updateChatContent() {
 
 		// Render message content
 		var contentLine string
-		if isSystemMsg {
+		if msg.IsDeleted {
+			deletedStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Italic(true)
+			contentLine = deletedStyle.Render("[message deleted]")
+		} else if isSystemMsg {
 			// Render as a centered announcement with fixed-length bars: ─── message text ───
 			// Simplified approach: fixed 5 bars on each side
 
@@ -5007,11 +4975,21 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 
 	case DisconnectedMsg:
 		sc.SetState(StateDisconnected)
+		sc.mu.Lock()
+		hasToken := sc.Token != ""
+		sc.RetryCount = 0 // reset so each fresh disconnect starts a new backoff cycle
+		sc.mu.Unlock()
 		if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
-			a.statusMessage = fmt.Sprintf("Disconnected from %s", a.currentClientServer.Name)
+			if hasToken {
+				a.statusMessage = fmt.Sprintf("Disconnected from %s — reconnecting...", a.currentClientServer.Name)
+			} else {
+				a.statusMessage = fmt.Sprintf("Disconnected from %s", a.currentClientServer.Name)
+			}
 			a.statusError = true
-			// Stop the voice engine if it was running on this server.
 			a.stopVoiceEngine()
+		}
+		if hasToken {
+			return a.scheduleReconnect(serverID)
 		}
 
 	case ErrorMsg:
@@ -5083,17 +5061,17 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	sc.Servers = payload.Servers
 	sc.mu.Unlock()
 
-	// Mark as ready
+	// Mark as ready and clear any reconnect backoff state
 	sc.SetState(StateReady)
+	sc.mu.Lock()
+	sc.RetryCount = 0
+	sc.mu.Unlock()
 
 	// Update UI if this is the server the user currently has selected.
 	// We also set a.activeConn here to correct any race from connectServerAsync goroutines
 	// (multiple servers connecting in parallel can overwrite a.activeConn from different goroutines).
 	if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
-		oldConn := a.activeConn
 		a.activeConn = sc // ensure activeConn points to the selected server
-		log.Printf("DEBUG handleReady: Changed activeConn from %p to %p (serverID=%s, currentClientServer=%s)",
-			oldConn, a.activeConn, serverID, a.currentClientServer.Name)
 		// Select first protocol server if available
 		if len(payload.Servers) > 0 {
 			a.currentServer = payload.Servers[0]
@@ -5194,55 +5172,29 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		log.Printf("Received SERVER_CREATE for %s: %d channels, %d members, %d roles",
 			payload.Server.Name, len(payload.Channels), len(displays), len(payload.Roles))
 
-		// Debug logging for channel selection
-		log.Printf("DEBUG: activeConn=%v, activeConn.ServerID=%v, serverID=%v",
-			a.activeConn != nil,
-			func() uuid.UUID { if a.activeConn != nil { return a.activeConn.ServerID }; return uuid.Nil }(),
-			serverID)
-		log.Printf("DEBUG: currentServer=%v, currentServer.ID=%v, payload.Server.ID=%v",
-			a.currentServer != nil,
-			func() uuid.UUID { if a.currentServer != nil { return a.currentServer.ID }; return uuid.Nil }(),
-			payload.Server.ID)
-
 		// If this is the active connection and current server, update UI
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
-			log.Printf("DEBUG: First condition passed (activeConn matches)")
 			if a.currentServer != nil && a.currentServer.ID == payload.Server.ID {
-				log.Printf("DEBUG: Second condition passed (currentServer matches), loading channels")
 				a.loadChannelTree()
 				if a.currentChannel == nil && len(payload.Channels) > 0 {
 					// First connection: select the first channel
-					log.Printf("DEBUG: Selecting first channel")
 					a.channelIndex = 0
 					a.selectChannel(0)
 				} else if a.currentChannel != nil {
 					// Reconnect: re-request history for the channel we were viewing
 					// (message history may be stale or empty after a forced disconnect)
-					log.Printf("DEBUG: Re-selecting current channel")
 					a.selectChannelByID(a.currentChannel.ID)
 				}
-			} else {
-				log.Printf("DEBUG: Second condition FAILED - currentServer=%v matches payload=%v",
-					func() uuid.UUID { if a.currentServer != nil { return a.currentServer.ID }; return uuid.Nil }(),
-					payload.Server.ID)
 			}
-		} else {
-			log.Printf("DEBUG: First condition FAILED - activeConn.ServerID=%v vs serverID=%v",
-				func() uuid.UUID { if a.activeConn != nil { return a.activeConn.ServerID }; return uuid.Nil }(),
-				serverID)
 		}
 
 		// FALLBACK: If this is the currently selected client server but conditions above failed,
 		// ensure channels are loaded anyway (fixes race condition on first login)
 		if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
 			if a.channelTree == nil || len(a.channelTree.FlatList) == 0 {
-				log.Printf("DEBUG: FALLBACK - Current client server matches but channelTree not loaded, forcing load")
 				// Set activeConn and currentServer if not already set
 				if a.activeConn == nil {
-					oldConn := a.activeConn
 					a.activeConn = sc
-					log.Printf("DEBUG handleReady FALLBACK: Changed activeConn from %p to %p (serverID=%s)",
-						oldConn, a.activeConn, serverID)
 				}
 				if a.currentServer == nil && len(sc.Servers) > 0 {
 					a.currentServer = sc.Servers[0]
@@ -5447,17 +5399,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 
-		// Remove message from connection's message history
+		// Mark the message as deleted in-place so the placeholder renders
 		sc.mu.Lock()
-		if messages, ok := sc.Messages[payload.ChannelID]; ok {
-			// Filter out the deleted message
-			filtered := make([]*MessageDisplay, 0, len(messages))
-			for _, msg := range messages {
-				if msg.ID != payload.ID {
-					filtered = append(filtered, msg)
-				}
+		for _, m := range sc.Messages[payload.ChannelID] {
+			if m.ID == payload.ID {
+				m.IsDeleted = true
+				break
 			}
-			sc.Messages[payload.ChannelID] = filtered
 		}
 		sc.mu.Unlock()
 
@@ -5519,7 +5467,6 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			if a.serverManagementState.SelectedCategory == 2 { // Members category
 				serverID := a.getActiveServerID()
 				if serverID != uuid.Nil && sc != nil && serverID == payload.ServerID {
-					log.Printf("DEBUG: Refreshing member list in Server Management view")
 					a.loadMemberListForManagement()
 				}
 			}
@@ -5545,10 +5492,6 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
 			log.Printf("Failed to parse SERVER_MEMBER_UPDATE payload: %v", err)
 			return nil
-		}
-		if payload.Member != nil {
-			log.Printf("DEBUG EventServerMemberUpdate received: UserID=%s, IsBanned=%v, KickCount=%d",
-				payload.Member.UserID, payload.Member.IsBanned, payload.Member.KickCount)
 		}
 		// Rebuild role map from payload roles
 		roleMap := make(map[uuid.UUID]*models.Role, len(payload.Roles))
@@ -5594,7 +5537,6 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			if a.serverManagementState.SelectedCategory == 2 { // Members category
 				serverID := a.getActiveServerID()
 				if serverID != uuid.Nil && sc != nil && serverID == payload.ServerID {
-					log.Printf("DEBUG: Refreshing member list in Server Management view")
 					a.loadMemberListForManagement()
 				}
 			}
@@ -5764,8 +5706,18 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if a.typingExpiry == nil {
 			a.typingExpiry = make(map[uuid.UUID]time.Time)
 		}
-		a.typingExpiry[typingPayload.UserID] = time.Now().Add(10 * time.Second)
+		a.typingExpiry[typingPayload.UserID] = time.Now().Add(5 * time.Second)
 		a.rebuildTypingUsers()
+
+	case protocol.EventTypingStop:
+		var stopPayload protocol.TypingStopEventPayload
+		if err := json.Unmarshal(msg.Data, &stopPayload); err != nil {
+			return nil
+		}
+		if a.typingExpiry != nil {
+			delete(a.typingExpiry, stopPayload.UserID)
+			a.rebuildTypingUsers()
+		}
 
 	case protocol.EventChannelCreate:
 		// Parse channel payload

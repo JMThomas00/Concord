@@ -2,7 +2,6 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"sort"
 	"strings"
@@ -348,7 +347,6 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 			return nil
 		}
 		a.loginError = ""
-		log.Printf("DEBUG handleLoginSubmit: Changing view to ViewMain, setting focus to FocusServerIcons")
 		a.view = ViewMain
 		a.focus = FocusServerIcons // Start on server icons (consistent with auto-login)
 
@@ -359,23 +357,15 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 		allConnected := true
 		for _, server := range servers {
 			conn := a.connMgr.GetConnection(server.ID)
-			log.Printf("DEBUG handleLoginSubmit: Server %s - conn=%v, state=%v",
-				server.Name, conn != nil,
-				func() string { if conn != nil { return fmt.Sprintf("%v", conn.GetState()) }; return "nil" }())
 			if conn == nil || conn.GetState() != StateReady {
-				log.Printf("DEBUG handleLoginSubmit: Server %s NOT ready, calling autoConnectServer", server.Name)
 				cmds = append(cmds, a.autoConnectServer(server.ID))
 				allConnected = false
-			} else {
-				log.Printf("DEBUG handleLoginSubmit: Server %s already connected, skipping reconnect", server.Name)
 			}
 		}
 
 		if allConnected {
-			log.Printf("DEBUG handleLoginSubmit: All servers already connected")
 			a.statusMessage = "Ready"
 		} else {
-			log.Printf("DEBUG handleLoginSubmit: Some servers not connected, reconnecting")
 			a.statusMessage = "Connecting to servers..."
 		}
 
@@ -474,10 +464,7 @@ func (a *App) handleRegisterSubmit() tea.Cmd {
 		}
 
 		// Set active connection
-		oldConn := a.activeConn
 		a.activeConn = a.connMgr.GetConnection(serverID)
-		log.Printf("DEBUG handleAddServerSubmit: Changed activeConn from %p to %p (serverID=%s)",
-			oldConn, a.activeConn, serverID)
 
 		return LoginSuccessMsg{
 			User:    user,

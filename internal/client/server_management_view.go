@@ -2,7 +2,6 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -2297,9 +2296,6 @@ func (a *App) handleKickConfirmKey(msg tea.KeyMsg) tea.Cmd {
 			channelID := uuid.Nil
 			if a.currentChannel != nil {
 				channelID = a.currentChannel.ID
-				log.Printf("DEBUG: Kicking from Server Settings - channelID: %s (channel: %s)", channelID, a.currentChannel.Name)
-			} else {
-				log.Printf("DEBUG: Kicking from Server Settings - currentChannel is nil!")
 			}
 			req := &protocol.KickMemberRequest{
 				ServerID:  serverID,
@@ -2320,9 +2316,6 @@ func (a *App) handleKickConfirmKey(msg tea.KeyMsg) tea.Cmd {
 			channelID := uuid.Nil
 			if a.currentChannel != nil {
 				channelID = a.currentChannel.ID
-				log.Printf("DEBUG: Kicking from Server Settings (quick) - channelID: %s (channel: %s)", channelID, a.currentChannel.Name)
-			} else {
-				log.Printf("DEBUG: Kicking from Server Settings (quick) - currentChannel is nil!")
 			}
 			req := &protocol.KickMemberRequest{
 				ServerID:  serverID,
