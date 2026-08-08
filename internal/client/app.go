@@ -242,6 +242,12 @@ type App struct {
 	// Hub Browser overlay
 	showHubBrowser bool
 	hubBrowser     HubBrowserState
+
+	// Plugin platform: kinds advertised at READY (keyed "pluginID:kind"), and
+	// the active remote-pane state when currentChannel is plugin-provided.
+	// The client never needs plugin-specific code — see plugin_pane.go.
+	pluginChannelKinds map[string]protocol.PluginChannelKindInfo
+	pluginPane         *PluginPaneState
 }
 
 // Position represents a cursor position in a message (for Level 2 navigation)
@@ -1122,6 +1128,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.updateChatContent()
 			a.scrollToBottom()
 		}
+		a.resizePluginPane()
 
 	case tea.MouseMsg:
 		// Handle mouse wheel scrolling over chat viewport (regardless of focus)
@@ -1355,8 +1362,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := a.updateAddServerForm(msg)
 		cmds = append(cmds, cmd)
 	case ViewMain:
-		// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode
-		if a.focus == FocusInput && !a.messageNavMode {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID {
+			// A remote-pane plugin channel replaces both the chat viewport and
+			// the message entry field — every key not already claimed by a
+			// global keybind above forwards to the owning plugin process.
+			a.forwardPluginPaneInput(keyMsg)
+		} else if a.focus == FocusInput && !a.messageNavMode {
+			// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode
 			var cmd tea.Cmd
 			a.input, cmd = a.input.Update(msg)
 			cmds = append(cmds, cmd)
@@ -3798,6 +3810,15 @@ func (a *App) selectChannel(index int) {
 		}
 	}
 
+	// Leave whatever plugin pane was active before switching.
+	a.leavePluginPane()
+
+	if a.currentChannel != nil && a.isRemotePaneChannel(a.currentChannel) {
+		a.enterPluginPane(a.currentChannel)
+		a.updateChatContent()
+		return
+	}
+
 	// Clear messages for this channel (they'll be loaded from server)
 	if a.activeConn != nil && a.currentChannel != nil {
 		a.activeConn.ClearMessages(a.currentChannel.ID)
@@ -5061,6 +5082,15 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	sc.Servers = payload.Servers
 	sc.mu.Unlock()
 
+	// Cache plugin-provided channel kinds so the client can render/create
+	// plugin channels generically without any plugin-specific code compiled in.
+	if a.pluginChannelKinds == nil {
+		a.pluginChannelKinds = make(map[string]protocol.PluginChannelKindInfo)
+	}
+	for _, kind := range payload.PluginChannelKinds {
+		a.pluginChannelKinds[kind.PluginID+":"+kind.Kind] = kind
+	}
+
 	// Mark as ready and clear any reconnect backoff state
 	sc.SetState(StateReady)
 	sc.mu.Lock()
@@ -5688,6 +5718,16 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				a.updateChatContent()
 				a.scrollToBottom()
 			}
+		}
+
+	case protocol.EventPluginPaneFrame:
+		var payload protocol.PluginPaneFramePayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse PLUGIN_PANE_FRAME payload: %v", err)
+			return nil
+		}
+		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			a.applyPluginPaneFrame(payload)
 		}
 
 	case protocol.EventTypingStart:

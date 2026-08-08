@@ -892,10 +892,7 @@ func (a *App) renderChannelRow(node *ChannelTreeNode, width int) string {
 	}
 
 	// Channel prefix
-	prefix := "# "
-	if node.Channel.Type == models.ChannelTypeVoice {
-		prefix = "♪ "
-	}
+	prefix := a.channelIcon(node.Channel)
 
 	// Add lock icon for locked channels
 	lockIcon := ""
@@ -1206,6 +1203,13 @@ func (a *App) renderChatPanel(width, height int) string {
 		hasMessages = len(messages) > 0
 	}
 
+	// Plugin channels replace the normal chat viewport with whatever frame
+	// the owning plugin process last rendered — Concord just displays it.
+	if a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID {
+		chatContent = a.renderPluginPaneFrame(interiorWidth, chatHeight-2-pinnedHeaderLines)
+		hasMessages = true // Suppress the "No messages yet" empty state
+	}
+
 	if !hasMessages {
 		emptyStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
@@ -1268,6 +1272,12 @@ func (a *App) renderChatPanel(width, height int) string {
 
 	// Prepare input content with optional reply quote
 	inputContent := a.injectMentionGhost(a.input.View())
+	if a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID {
+		hintStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+			Italic(true)
+		inputContent = hintStyle.Render("Keys are forwarded to " + a.channelTypeLabel(a.currentChannel) + " — no text entry here")
+	}
 	if a.replyTarget != nil {
 		// Show reply quote above input (styled, dimmed, italic)
 		replyStyle := lipgloss.NewStyle().

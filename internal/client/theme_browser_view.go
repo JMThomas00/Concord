@@ -225,11 +225,28 @@ type ChannelFormState struct {
 	Mode              string          // "create" or "edit"
 	EditingChannelID  *uuid.UUID      // Channel being edited (nil for create)
 	NameTextInput     textinput.Model // Text input for channel name
-	TypeIndex         int             // 0=Text, 1=Voice, 2=Category
+	TypeIndex         int             // 0=Text, 1=Voice, 2=Category, 3+=plugin kind (see pluginKindOptions)
 	MaxUsersInput     textinput.Model // Voice channel capacity (0 = unlimited)
 	CategoryID        *uuid.UUID      // Pre-filled based on selection
-	FocusField        int             // 0=name, 1=type, 2=max-users (voice only), 3=submit, 4=cancel
+	FocusField        int             // 0=name, 1=type, [plugin fields], [max-users if voice], submit, cancel
 	ErrorMsg          string
+
+	// Plugin channel creation (TypeIndex >= 3). PluginFields/TextInputs/Values
+	// are parallel arrays, one entry per manifest-declared create_field.
+	// text/number fields are edited via TextInputs; boolean/select/channel_select
+	// fields are edited via Values, cycled with left/right like the type radio.
+	PluginID         string
+	PluginKind       string
+	PluginFields     []protocol.PluginField
+	PluginTextInputs []textinput.Model
+	PluginValues     []string
+
+	// OriginalType is set in edit mode to the channel's type before editing.
+	// A plugin channel's type/kind can't be changed via this form (the server
+	// rejects it) — when OriginalType is ChannelTypePlugin, the type field
+	// renders as a locked label and is never sent in the update request.
+	OriginalType      models.ChannelType
+	PluginDisplayLabel string
 }
 
 // MoveDialogState holds state for the move channel dialog

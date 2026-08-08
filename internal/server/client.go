@@ -451,9 +451,10 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 	// Send READY response
 	servers, _ := c.handlers.GetUserServers(user.ID)
 	readyPayload := &protocol.ReadyPayload{
-		SessionID: c.SessionID,
-		User:      user,
-		Servers:   servers,
+		SessionID:          c.SessionID,
+		User:               user,
+		Servers:            servers,
+		PluginChannelKinds: c.handlers.PluginChannelKindInfos(),
 	}
 
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)

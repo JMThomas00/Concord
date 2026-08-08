@@ -870,13 +870,21 @@ func (a *App) handleEditAction() {
 			nameInput.Width = 40
 			nameInput.Focus()
 
-			// Determine type index: 0=Text, 1=Voice, 2=Category
+			// Determine type index: 0=Text, 1=Voice, 2=Category. Plugin
+			// channels keep TypeIndex 0 internally but are never editable to
+			// a different type (see OriginalType below) — this number is
+			// otherwise unused for them.
 			typeIndex := 0
 			switch selectedCh.Type {
 			case models.ChannelTypeVoice:
 				typeIndex = 1
 			case models.ChannelTypeCategory:
 				typeIndex = 2
+			}
+
+			pluginLabel := ""
+			if selectedCh.Type == models.ChannelTypePlugin {
+				pluginLabel = a.channelTypeLabel(selectedCh)
 			}
 
 			// MaxUsers input
@@ -897,13 +905,15 @@ func (a *App) handleEditAction() {
 
 			s.ChannelFormOpen = true
 			s.ChannelFormState = &ChannelFormState{
-				Mode:             "edit",
-				EditingChannelID: &chID,
-				NameTextInput:    nameInput,
-				TypeIndex:        typeIndex,
-				MaxUsersInput:    maxUsersInput,
-				CategoryID:       catID,
-				FocusField:       0,
+				Mode:               "edit",
+				EditingChannelID:   &chID,
+				NameTextInput:      nameInput,
+				TypeIndex:          typeIndex,
+				MaxUsersInput:      maxUsersInput,
+				CategoryID:         catID,
+				FocusField:         0,
+				OriginalType:       selectedCh.Type,
+				PluginDisplayLabel: pluginLabel,
 			}
 		}
 	case 1: // Edit Role
@@ -1453,13 +1463,28 @@ func (a *App) handleCreateChannelOverride() {
 // Placeholder key handlers for forms/dialogs
 func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 	state := a.serverManagementState.ChannelFormState
+	layout := computeChannelFormLayout(state)
 
-	// maxFields: name(0), type(1), max-users(2, voice only), submit(3), cancel(4)
-	// When not voice, max-users field is skipped: name(0), type(1), submit(2), cancel(3)
-	isVoice := state.TypeIndex == 1
-	maxField := 3 // non-voice: 0-3
-	if isVoice {
-		maxField = 4 // voice: 0-4
+	blurAll := func() {
+		state.NameTextInput.Blur()
+		state.MaxUsersInput.Blur()
+		for i := range state.PluginTextInputs {
+			state.PluginTextInputs[i].Blur()
+		}
+	}
+	focusField := func(field int) {
+		switch {
+		case field == 0:
+			state.NameTextInput.Focus()
+		case layout.isVoice && field == layout.maxUsersField:
+			state.MaxUsersInput.Focus()
+		case layout.isPlugin && field >= layout.pluginStart && field < layout.pluginStart+len(state.PluginFields):
+			idx := field - layout.pluginStart
+			ft := state.PluginFields[idx].Type
+			if ft == "text" || ft == "number" {
+				state.PluginTextInputs[idx].Focus()
+			}
+		}
 	}
 
 	switch msg.String() {
@@ -1469,77 +1494,77 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "tab":
-		state.FocusField = (state.FocusField + 1) % (maxField + 1)
-		// Skip max-users field if not voice
-		if !isVoice && state.FocusField == 2 {
-			state.FocusField = 3
-		}
-		state.NameTextInput.Blur()
-		state.MaxUsersInput.Blur()
-		switch state.FocusField {
-		case 0:
-			state.NameTextInput.Focus()
-		case 2:
-			state.MaxUsersInput.Focus()
-		}
+		state.FocusField = (state.FocusField + 1) % (layout.cancelField + 1)
+		blurAll()
+		focusField(state.FocusField)
 		return nil
 
 	case "shift+tab":
 		state.FocusField--
 		if state.FocusField < 0 {
-			state.FocusField = maxField
+			state.FocusField = layout.cancelField
 		}
-		// Skip max-users field if not voice
-		if !isVoice && state.FocusField == 2 {
-			state.FocusField = 1
-		}
-		state.NameTextInput.Blur()
-		state.MaxUsersInput.Blur()
-		switch state.FocusField {
-		case 0:
-			state.NameTextInput.Focus()
-		case 2:
-			state.MaxUsersInput.Focus()
-		}
+		blurAll()
+		focusField(state.FocusField)
 		return nil
 
 	case "up", "down", "left", "right":
-		if state.FocusField == 1 {
-			// Cycle through types: 0=Text → 1=Voice → 2=Category → 0=Text
-			if msg.String() == "up" || msg.String() == "left" {
-				state.TypeIndex = (state.TypeIndex + 2) % 3
+		dir := 1
+		if msg.String() == "up" || msg.String() == "left" {
+			dir = -1
+		}
+		pluginTypeLocked := state.Mode == "edit" && state.OriginalType == models.ChannelTypePlugin
+		if state.FocusField == 1 && !pluginTypeLocked {
+			// Cycle through built-in types (Text/Voice/Category) then every
+			// plugin-provided kind advertised at READY.
+			pluginKinds := a.pluginKindOptions()
+			total := 3 + len(pluginKinds)
+			state.TypeIndex = (state.TypeIndex + dir + total) % total
+			if state.TypeIndex >= 3 {
+				setPluginKind(state, pluginKinds[state.TypeIndex-3])
 			} else {
-				state.TypeIndex = (state.TypeIndex + 1) % 3
+				state.PluginFields = nil
+				state.PluginTextInputs = nil
+				state.PluginValues = nil
+			}
+		} else if layout.isPlugin && state.FocusField >= layout.pluginStart && state.FocusField < layout.pluginStart+len(state.PluginFields) {
+			idx := state.FocusField - layout.pluginStart
+			field := state.PluginFields[idx]
+			if field.Type != "text" && field.Type != "number" {
+				state.PluginValues[idx] = cyclePluginFieldValue(field, state.PluginValues[idx], dir, a.textChannelNames())
 			}
 		}
 		return nil
 
 	case "enter":
-		submitField := 3
-		cancelField := 4
-		if !isVoice {
-			submitField = 2
-			cancelField = 3
-		}
-		if state.FocusField == submitField {
+		if state.FocusField == layout.submitField {
 			return a.handleChannelFormSubmit()
-		} else if state.FocusField == cancelField {
+		} else if state.FocusField == layout.cancelField {
 			a.serverManagementState.ChannelFormOpen = false
 			a.serverManagementState.ChannelFormState = nil
 		}
 		return nil
 	}
 
-	// Forward keystrokes to focused text input
+	// Forward keystrokes to the focused text input, if any.
 	if state.FocusField == 0 {
 		var cmd tea.Cmd
 		state.NameTextInput, cmd = state.NameTextInput.Update(msg)
 		return cmd
 	}
-	if state.FocusField == 2 && isVoice {
+	if layout.isVoice && state.FocusField == layout.maxUsersField {
 		var cmd tea.Cmd
 		state.MaxUsersInput, cmd = state.MaxUsersInput.Update(msg)
 		return cmd
+	}
+	if layout.isPlugin && state.FocusField >= layout.pluginStart && state.FocusField < layout.pluginStart+len(state.PluginFields) {
+		idx := state.FocusField - layout.pluginStart
+		ft := state.PluginFields[idx].Type
+		if ft == "text" || ft == "number" {
+			var cmd tea.Cmd
+			state.PluginTextInputs[idx], cmd = state.PluginTextInputs[idx].Update(msg)
+			return cmd
+		}
 	}
 
 	return nil
@@ -1565,15 +1590,32 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 		return nil
 	}
 
-	// Determine type: 0=Text, 1=Voice, 2=Category
+	pluginTypeLocked := state.Mode == "edit" && state.OriginalType == models.ChannelTypePlugin
+
+	// Determine type: 0=Text, 1=Voice, 2=Category, 3+=plugin kind
 	var channelType models.ChannelType
-	switch state.TypeIndex {
-	case 1:
+	switch {
+	case pluginTypeLocked:
+		channelType = models.ChannelTypePlugin
+	case state.TypeIndex == 1:
 		channelType = models.ChannelTypeVoice
-	case 2:
+	case state.TypeIndex == 2:
 		channelType = models.ChannelTypeCategory
+	case state.TypeIndex >= 3:
+		channelType = models.ChannelTypePlugin
 	default:
 		channelType = models.ChannelTypeText
+	}
+
+	// Client-side required-field check for plugin channels, mirroring the
+	// server's own validation so the error surfaces immediately.
+	if channelType == models.ChannelTypePlugin && !pluginTypeLocked {
+		for _, f := range state.PluginFields {
+			if f.Required && pluginConfigValues(state)[f.Key] == "" {
+				state.ErrorMsg = fmt.Sprintf("%s is required", f.Label)
+				return nil
+			}
+		}
 	}
 
 	// Parse MaxUsers (voice channels only)
@@ -1589,28 +1631,40 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 	var opCode protocol.OpCode
 
 	if state.Mode == "create" {
-		// Categories are always top-level (no parent)
+		// Categories and plugin channels are always top-level (no parent)
 		var categoryID *uuid.UUID
 		if channelType == models.ChannelTypeText || channelType == models.ChannelTypeVoice {
 			categoryID = state.CategoryID
 		}
 
-		req = &protocol.ChannelCreateRequest{
+		createReq := &protocol.ChannelCreateRequest{
 			ServerID:   serverID,
 			Name:       name,
 			Type:       channelType,
 			CategoryID: categoryID,
 			MaxUsers:   maxUsers,
 		}
+		if channelType == models.ChannelTypePlugin {
+			createReq.PluginID = state.PluginID
+			createReq.PluginChannelKind = state.PluginKind
+			createReq.PluginConfig = pluginConfigValues(state)
+		}
+		req = createReq
 		opCode = protocol.OpChannelCreate
 	} else {
-		req = &protocol.ChannelUpdateRequest{
+		updateReq := &protocol.ChannelUpdateRequest{
 			ServerID:  serverID,
 			ChannelID: *state.EditingChannelID,
 			Name:      &name,
-			Type:      &channelType,
 			MaxUsers:  &maxUsers,
 		}
+		// A plugin channel's type/kind can't be changed via this form — the
+		// server rejects Type: ChannelTypePlugin on update, so leave it nil
+		// (meaning "unchanged") rather than risk silently converting it.
+		if !pluginTypeLocked {
+			updateReq.Type = &channelType
+		}
+		req = updateReq
 		opCode = protocol.OpChannelUpdate
 	}
 
@@ -3034,7 +3088,7 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 	top.writeLine(descStyle.Render("Manage text, voice channels, and categories"))
 
 	// Stats
-	textCount, voiceCount, categoryCount := 0, 0, 0
+	textCount, voiceCount, categoryCount, pluginCount := 0, 0, 0, 0
 	for _, ch := range s.ChannelList {
 		switch ch.Type {
 		case models.ChannelTypeText:
@@ -3043,11 +3097,17 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 			voiceCount++
 		case models.ChannelTypeCategory:
 			categoryCount++
+		case models.ChannelTypePlugin:
+			pluginCount++
 		}
 	}
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(statsStyle.Render(fmt.Sprintf("%d text · %d voice · %d groups", textCount, voiceCount, categoryCount)))
+	statsLine := fmt.Sprintf("%d text · %d voice · %d groups", textCount, voiceCount, categoryCount)
+	if pluginCount > 0 {
+		statsLine += fmt.Sprintf(" · %d plugin", pluginCount)
+	}
+	top.writeLine(statsStyle.Render(statsLine))
 	top.writeBlank()
 
 	// Top section separator
@@ -3180,15 +3240,7 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 			}
 		}
 
-		var channelName string
-		switch ch.Type {
-		case models.ChannelTypeCategory:
-			channelName = fmt.Sprintf("▼ %s", ch.Name)
-		case models.ChannelTypeVoice:
-			channelName = fmt.Sprintf("♪ %s", ch.Name)
-		default:
-			channelName = fmt.Sprintf("# %s", ch.Name)
-		}
+		channelName := fmt.Sprintf("%s%s", a.channelIcon(ch), ch.Name)
 
 		var line string
 		if selected {
@@ -4235,13 +4287,11 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	layout := calculateSettingsLayout(width, height, 2, 0) // 2 = 2 padding lines, 0 = bottom is correct
 
 	// Determine layout vars
-	isVoice := state.TypeIndex == 1
-	submitField := 2
-	cancelField := 3
-	if isVoice {
-		submitField = 3
-		cancelField = 4
-	}
+	formLayout := computeChannelFormLayout(state)
+	isVoice := formLayout.isVoice
+	pluginTypeLocked := state.Mode == "edit" && state.OriginalType == models.ChannelTypePlugin
+	submitField := formLayout.submitField
+	cancelField := formLayout.cancelField
 
 	// ── TOP SECTION ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
@@ -4253,10 +4303,12 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 
 	title := "Create Channel"
 	if state.Mode == "edit" {
-		switch state.TypeIndex {
-		case 1:
+		switch {
+		case pluginTypeLocked:
+			title = "Edit " + state.PluginDisplayLabel + " Channel"
+		case state.TypeIndex == 1:
 			title = "Edit Voice Channel"
-		case 2:
+		case state.TypeIndex == 2:
 			title = "Edit Channel Group"
 		default:
 			title = "Edit Text Channel"
@@ -4268,7 +4320,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	subtitleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
-	subtitle := "Create a text channel, voice channel, or channel group"
+	subtitle := "Create a text channel, voice channel, channel group, or plugin channel"
 	if state.Mode == "edit" {
 		subtitle = "Edit channel settings"
 	}
@@ -4310,30 +4362,53 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	// Type selection
 	middle.writeLine(labelStyle.Render("▸ Type:"))
 
-	typeStyle := lipgloss.NewStyle()
-	if state.FocusField == 1 {
-		typeStyle = typeStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
-	}
-
-	typeOptions := []struct {
-		label  string
-		idx    int
-		hint   string
-	}{
-		{"Text Channel", 0, "# Text-only messaging"},
-		{"Voice Channel", 1, "♪ Voice + text messaging"},
-		{"Channel Group", 2, "▼ Groups channels together"},
-	}
-	for _, opt := range typeOptions {
-		radio := "( ) "
-		if state.TypeIndex == opt.idx {
-			radio = "(●) "
+	if pluginTypeLocked {
+		lockedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(lockedStyle.Render("  " + state.PluginDisplayLabel + " (type cannot be changed)"))
+	} else {
+		typeStyle := lipgloss.NewStyle()
+		if state.FocusField == 1 {
+			typeStyle = typeStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
 		}
-		hint := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-			Render("  " + opt.hint)
-		middle.writeLine(typeStyle.Render("  " + radio + opt.label))
-		middle.writeLine(hint)
+
+		typeOptions := []struct {
+			label string
+			idx   int
+			hint  string
+		}{
+			{"Text Channel", 0, "# Text-only messaging"},
+			{"Voice Channel", 1, "♪ Voice + text messaging"},
+			{"Channel Group", 2, "▼ Groups channels together"},
+		}
+		for _, opt := range typeOptions {
+			radio := "( ) "
+			if state.TypeIndex == opt.idx {
+				radio = "(●) "
+			}
+			hint := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Render("  " + opt.hint)
+			middle.writeLine(typeStyle.Render("  " + radio + opt.label))
+			middle.writeLine(hint)
+		}
+		// Plugin-provided kinds, advertised at READY — a folder dropped into
+		// Plugins/ shows up here with zero changes to this rendering code.
+		for i, kind := range a.pluginKindOptions() {
+			idx := 3 + i
+			radio := "( ) "
+			if state.TypeIndex == idx {
+				radio = "(●) "
+			}
+			icon := kind.Icon
+			if icon == "" {
+				icon = "▤"
+			}
+			hint := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+				Render(fmt.Sprintf("  %s Plugin channel", icon))
+			middle.writeLine(typeStyle.Render("  " + radio + kind.DisplayName))
+			middle.writeLine(hint)
+		}
 	}
 	middle.writeBlank()
 
@@ -4341,7 +4416,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	if isVoice {
 		middle.writeLine(labelStyle.Render("▸ Max Users (0 = unlimited):"))
 		maxUsersView := state.MaxUsersInput.View()
-		if state.FocusField == 2 {
+		if state.FocusField == formLayout.maxUsersField {
 			middle.writeLine(lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 				Render("  " + maxUsersView))
@@ -4351,8 +4426,43 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 		middle.writeBlank()
 	}
 
-	// Show parent group if applicable (text/voice only, categories are always top-level)
-	if state.TypeIndex != 2 && state.CategoryID != nil && a.activeConn != nil {
+	// Plugin-declared create_fields, one per manifest field — the same
+	// generic field renderer will be reused for Settings > Plugins config.
+	if formLayout.isPlugin {
+		for i, f := range state.PluginFields {
+			focused := state.FocusField == formLayout.pluginStart+i
+			fieldLabelStyle := labelStyle
+			required := ""
+			if f.Required {
+				required = " *"
+			}
+			middle.writeLine(fieldLabelStyle.Render("▸ " + f.Label + required + ":"))
+
+			switch f.Type {
+			case "text", "number":
+				view := state.PluginTextInputs[i].View()
+				if focused {
+					middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Render("  " + view))
+				} else {
+					middle.writeLine("  " + view)
+				}
+			default: // boolean, select, channel_select
+				valStyle := lipgloss.NewStyle()
+				if focused {
+					valStyle = valStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
+				}
+				val := state.PluginValues[i]
+				if val == "" {
+					val = "(none)"
+				}
+				middle.writeLine(valStyle.Render("  ◂ " + val + " ▸"))
+			}
+			middle.writeBlank()
+		}
+	}
+
+	// Show parent group if applicable (text/voice only, categories and plugin channels are always top-level)
+	if state.TypeIndex != 2 && !formLayout.isPlugin && state.CategoryID != nil && a.activeConn != nil {
 		a.activeConn.mu.RLock()
 		if a.currentServer != nil {
 			if channels, ok := a.activeConn.Channels[a.currentServer.ID]; ok {

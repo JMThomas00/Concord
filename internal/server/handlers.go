@@ -37,6 +37,33 @@ func NewHandlers(db *database.DB, hub *Hub, stats *StatsTracker, pluginManager *
 	return h
 }
 
+// PluginChannelKindInfos converts every discovered plugin's declared channel
+// kinds into the client-facing shape sent at READY, so the client can render
+// and offer plugin channel types generically without any compiled-in
+// knowledge of which plugins are installed.
+func (h *Handlers) PluginChannelKindInfos() []protocol.PluginChannelKindInfo {
+	var infos []protocol.PluginChannelKindInfo
+	for _, manifest := range h.plugins.Registry().All() {
+		for _, ck := range manifest.ChannelKinds {
+			info := protocol.PluginChannelKindInfo{
+				PluginID:    manifest.Plugin.ID,
+				Kind:        ck.Kind,
+				DisplayName: ck.DisplayName,
+				Icon:        ck.Icon,
+				RemotePane:  ck.RemotePane,
+			}
+			for _, f := range ck.CreateFields {
+				info.CreateFields = append(info.CreateFields, protocol.PluginField{
+					Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,
+					Default: f.Default, Required: f.Required,
+				})
+			}
+			infos = append(infos, info)
+		}
+	}
+	return infos
+}
+
 // AuthenticatePlugin validates a plugin process's token (issued by
 // plugins.Manager at spawn time) and returns its service-account user.
 // Unlike Authenticate, there's no session/ban/timeout check — a plugin's
