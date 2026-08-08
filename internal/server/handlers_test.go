@@ -16,7 +16,7 @@ func TestNewHandlers(t *testing.T) {
 	hub := NewHub()
 	stats := NewStatsTracker()
 
-	handlers := NewHandlers(nil, hub, stats)
+	handlers := NewHandlers(nil, hub, stats, nil)
 
 	if handlers == nil {
 		t.Fatal("NewHandlers returned nil")
@@ -157,7 +157,7 @@ func TestCheckPermissionLogic(t *testing.T) {
 func TestTypingManager(t *testing.T) {
 	hub := NewHub()
 	stats := NewStatsTracker()
-	handlers := NewHandlers(nil, hub, stats)
+	handlers := NewHandlers(nil, hub, stats, nil)
 
 	if handlers.typingManager == nil {
 		t.Fatal("typingManager not initialized")

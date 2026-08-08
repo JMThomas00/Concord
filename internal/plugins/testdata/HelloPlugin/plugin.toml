@@ -1,0 +1,34 @@
+[plugin]
+id = "HelloPlugin"
+name = "Hello Plugin"
+version = "0.1.0"
+author = "Concord"
+description = "Minimal test plugin used to verify the plugin platform end-to-end."
+
+[process]
+working_dir = "."
+restart_on_crash = true
+max_restarts = 3
+restart_backoff_seconds = 1
+startup_timeout_seconds = 5
+
+[process.entrypoint.windows]
+bin = "testplugin.exe"
+
+[process.entrypoint.linux]
+bin = "testplugin"
+
+[process.entrypoint.darwin]
+bin = "testplugin"
+
+[[channel_kind]]
+kind = "counter"
+display_name = "Hello Counter"
+icon = "🔢"
+remote_pane = true
+
+[[server_config_field]]
+key = "activity_notify_channel"
+label = "Activity Notification Channel"
+type = "channel_select"
+required = false

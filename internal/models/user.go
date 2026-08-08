@@ -32,6 +32,7 @@ type User struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 	LastSeenAt   time.Time  `json:"last_seen_at,omitempty"`
 	IsBot        bool       `json:"is_bot"`
+	IsServiceAccount bool   `json:"is_service_account,omitempty"` // Synthetic account owned by a plugin process
 }
 
 // NewUser creates a new user with a generated UUID

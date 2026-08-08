@@ -52,6 +52,17 @@ const (
 	OpVoiceServerMute OpCode = 47 // Admin: server-mute/deafen a user in voice (C→S)
 	OpMoveVoice       OpCode = 48 // Admin: force-move a user to another voice channel (C→S)
 
+	// Plugin platform operations. Generic on purpose — a new plugin never
+	// needs a new opcode, only a new {plugin_id, kind, payload} envelope.
+	OpPluginPaneEnter  OpCode = 49 // C→S: client entered a remote-pane plugin channel
+	OpPluginPaneInput  OpCode = 50 // C→S: forwarded key input for a remote-pane channel
+	OpPluginPaneResize OpCode = 51 // C→S: viewport width/height report
+	OpPluginPaneLeave  OpCode = 52 // C→S: client left a remote-pane plugin channel
+	OpPluginPaneFrame  OpCode = 53 // Plugin(as client)→S: rendered frame push for one viewer
+	OpPluginEvent      OpCode = 54 // Bidirectional: generic {plugin_id, kind, payload} envelope
+	OpPluginConfigGet  OpCode = 55 // C→S: request installed plugin list + config (Settings > Plugins)
+	OpPluginConfigSet  OpCode = 56 // C→S: update a plugin's enabled flag and/or server config fields
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -126,6 +137,15 @@ const (
 	EventVoiceServerUpdate EventType = "VOICE_SERVER_UPDATE"
 	EventVoiceSpeaking     EventType = "VOICE_SPEAKING"
 	EventVoiceSignal       EventType = "VOICE_SIGNAL" // S→C relay of a WebRTC SDP/ICE signal
+
+	// Plugin platform events
+	EventPluginPaneFrame  EventType = "PLUGIN_PANE_FRAME"  // S→C: relay plugin's rendered frame to the viewer
+	EventPluginPaneInput  EventType = "PLUGIN_PANE_INPUT"  // S→plugin: relay a viewer's input
+	EventPluginPaneEnter  EventType = "PLUGIN_PANE_ENTER"  // S→plugin: relay viewer-entered
+	EventPluginPaneLeave  EventType = "PLUGIN_PANE_LEAVE"  // S→plugin: relay viewer-left
+	EventPluginPaneResize EventType = "PLUGIN_PANE_RESIZE" // S→plugin: relay resize
+	EventPluginEvent      EventType = "PLUGIN_EVENT"       // S→C or S→plugin: generic relay
+	EventPluginConfigUpdate EventType = "PLUGIN_CONFIG_UPDATE" // S→C: plugin list/config changed
 )
 
 // Message represents a WebSocket message envelope
@@ -169,6 +189,10 @@ func NewDispatch(eventType EventType, seq int64, data interface{}) (*Message, er
 type IdentifyPayload struct {
 	Token      string            `json:"token"`
 	Properties ConnectionProperties `json:"properties,omitempty"`
+	// ClientType distinguishes a plugin process from a normal user client.
+	// Empty/"user" (default) = normal client; "plugin" = authenticate via a
+	// plugin token (see Handlers.AuthenticatePlugin) instead of a session token.
+	ClientType string `json:"client_type,omitempty"`
 }
 
 // ConnectionProperties contains client information
@@ -223,6 +247,11 @@ type ChannelCreateRequest struct {
 	CategoryID *uuid.UUID          `json:"category_id,omitempty"`
 	Position   int                 `json:"position,omitempty"`
 	MaxUsers   int                 `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
+
+	// Plugin-provided channels (Type == models.ChannelTypePlugin)
+	PluginID          string            `json:"plugin_id,omitempty"`
+	PluginChannelKind string            `json:"plugin_channel_kind,omitempty"`
+	PluginConfig      map[string]string `json:"plugin_config,omitempty"` // Values for the kind's declared create_fields
 }
 
 // ChannelUpdateRequest is sent by clients to update a channel
@@ -403,6 +432,32 @@ type ReadyPayload struct {
 	Servers     []*models.Server `json:"servers"`
 	PrivateChannels []*models.Channel `json:"private_channels,omitempty"`
 	ResumeURL   string           `json:"resume_url,omitempty"`
+	// PluginChannelKinds advertises every channel kind installed plugins
+	// provide, so the client can render/create plugin channels generically
+	// without any plugin-specific code compiled in.
+	PluginChannelKinds []PluginChannelKindInfo `json:"plugin_channel_kinds,omitempty"`
+}
+
+// PluginChannelKindInfo is the client-facing description of one channel kind
+// a plugin provides, sourced from that plugin's manifest.
+type PluginChannelKindInfo struct {
+	PluginID     string        `json:"plugin_id"`
+	Kind         string        `json:"kind"`
+	DisplayName  string        `json:"display_name"`
+	Icon         string        `json:"icon"`
+	RemotePane   bool          `json:"remote_pane"`
+	CreateFields []PluginField `json:"create_fields,omitempty"`
+}
+
+// PluginField describes one manifest-declared, generically-rendered config
+// field (used for both channel-creation fields and server-config fields).
+type PluginField struct {
+	Key      string   `json:"key"`
+	Label    string   `json:"label"`
+	Type     string   `json:"type"` // text | number | boolean | select | channel_select
+	Options  []string `json:"options,omitempty"`
+	Default  string   `json:"default,omitempty"`
+	Required bool     `json:"required,omitempty"`
 }
 
 // ServerCreatePayload is sent for each server the user is a member of (after READY)
@@ -502,6 +557,11 @@ type ServerMemberUpdatePayload struct {
 // ChannelCreatePayload is dispatched when a channel is created
 type ChannelCreatePayload struct {
 	*models.Channel
+	// PluginConfig carries the create_fields values (e.g. Tukan's "board_name")
+	// straight to the plugin's own service-account client in the same
+	// broadcast, so the plugin can initialize its own record with zero extra
+	// round trip.
+	PluginConfig map[string]string `json:"plugin_config,omitempty"`
 }
 
 // ChannelUpdatePayload is dispatched when a channel is updated
@@ -523,6 +583,105 @@ type ReactionPayload struct {
 	MessageID uuid.UUID `json:"message_id"`
 	ServerID  uuid.UUID `json:"server_id,omitempty"`
 	Emoji     string    `json:"emoji"`
+}
+
+// --- Plugin Platform Payloads ---
+//
+// A generic "remote pane" relay: a plugin process renders its own UI to a
+// plain string per viewer and ships it over the wire; Concord's client and
+// Hub never parse plugin-specific content, only these envelopes. See
+// PluginEventPayload for the catch-all bidirectional channel (used today for
+// activity notifications; reusable for anything else a plugin needs later
+// without a protocol change).
+
+// PluginPaneEnterPayload is sent when a client opens a remote-pane plugin channel.
+type PluginPaneEnterPayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ViewerID  uuid.UUID `json:"viewer_id,omitempty"` // Server-stamped on relay; ignored if client-supplied
+	Width     int       `json:"width"`
+	Height    int       `json:"height"`
+}
+
+// PluginPaneResizePayload reports a viewport size change for an active pane.
+type PluginPaneResizePayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
+	Width     int       `json:"width"`
+	Height    int       `json:"height"`
+}
+
+// PluginPaneInputPayload forwards one keypress from a viewer to the plugin
+// owning the channel. Runes/KeyType let a bubbletea-based plugin reconstruct
+// a real tea.KeyMsg; KeyString is provided for non-bubbletea plugins.
+type PluginPaneInputPayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
+	KeyType   int       `json:"key_type"`
+	Runes     []rune    `json:"runes,omitempty"`
+	Alt       bool      `json:"alt,omitempty"`
+	KeyString string    `json:"key_string"`
+}
+
+// PluginPaneLeavePayload is sent when a client navigates away from a plugin channel.
+type PluginPaneLeavePayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
+}
+
+// PluginPaneFramePayload is pushed by a plugin process (as its service-account
+// client) with the rendered View() for one specific viewer.
+type PluginPaneFramePayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ViewerID  uuid.UUID `json:"viewer_id"`
+	Frame     string    `json:"frame"`
+	Seq       int64     `json:"seq"` // Monotonic per viewer; client drops frames with Seq <= last-applied
+}
+
+// PluginEventPayload is the generic, opaque envelope for anything that isn't
+// pane rendering — e.g. a plugin posting a "notify" event to trigger a system
+// message. Kind is plugin-defined; Concord only special-cases "notify" today.
+type PluginEventPayload struct {
+	PluginID string          `json:"plugin_id"`
+	Kind     string          `json:"kind"`
+	Payload  json.RawMessage `json:"payload"`
+}
+
+// PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
+type PluginNotifyEventPayload struct {
+	Content string `json:"content"`
+}
+
+// PluginInfo describes one installed plugin for the Settings > Plugins UI.
+type PluginInfo struct {
+	ID           string        `json:"id"`
+	Name         string        `json:"name"`
+	Version      string        `json:"version"`
+	Enabled      bool          `json:"enabled"`
+	Status       string        `json:"status"`
+	LastError    string        `json:"last_error,omitempty"`
+	ConfigFields []PluginField `json:"config_fields,omitempty"`
+	ConfigValues map[string]string `json:"config_values,omitempty"`
+}
+
+// PluginConfigListPayload answers OpPluginConfigGet.
+type PluginConfigListPayload struct {
+	Plugins []PluginInfo `json:"plugins"`
+}
+
+// PluginConfigGetRequest requests the installed plugin list + config for the
+// Settings > Plugins page. ServerID gates the request behind that server's
+// PermissionManageServer, same as the rest of Server Settings.
+type PluginConfigGetRequest struct {
+	ServerID uuid.UUID `json:"server_id"`
+}
+
+// PluginConfigSetRequest is sent by clients (server admins) to update a
+// plugin's enabled flag and/or its server-wide config field values.
+type PluginConfigSetRequest struct {
+	ServerID uuid.UUID         `json:"server_id"`
+	PluginID string            `json:"plugin_id"`
+	Enabled  *bool             `json:"enabled,omitempty"`
+	Config   map[string]string `json:"config,omitempty"`
 }
 
 // --- Error Payloads ---

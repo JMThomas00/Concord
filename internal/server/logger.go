@@ -18,6 +18,7 @@ var (
 	MsgLog    *log.Logger
 	DBLog     *log.Logger
 	ClientLog *log.Logger
+	PluginLog *log.Logger
 )
 
 // InitLogger initializes the server logger with beautiful styling
@@ -38,6 +39,7 @@ func InitLogger(level log.Level) {
 	MsgLog = Logger.With("component", "MSG")
 	DBLog = Logger.With("component", "DB")
 	ClientLog = Logger.With("component", "CLIENT")
+	PluginLog = Logger.With("component", "PLUGIN")
 }
 
 // customStyles returns beautifully styled log level rendering

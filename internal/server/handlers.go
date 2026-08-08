@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/plugins"
 	"github.com/concord-chat/concord/internal/protocol"
 )
 
@@ -21,17 +22,35 @@ type Handlers struct {
 	hub           *Hub
 	typingManager *TypingManager
 	stats         *StatsTracker
+	plugins       *plugins.Manager
 }
 
 // NewHandlers creates a new Handlers instance
-func NewHandlers(db *database.DB, hub *Hub, stats *StatsTracker) *Handlers {
+func NewHandlers(db *database.DB, hub *Hub, stats *StatsTracker, pluginManager *plugins.Manager) *Handlers {
 	h := &Handlers{
-		db:    db,
-		hub:   hub,
-		stats: stats,
+		db:      db,
+		hub:     hub,
+		stats:   stats,
+		plugins: pluginManager,
 	}
 	h.typingManager = NewTypingManager(hub)
 	return h
+}
+
+// AuthenticatePlugin validates a plugin process's token (issued by
+// plugins.Manager at spawn time) and returns its service-account user.
+// Unlike Authenticate, there's no session/ban/timeout check — a plugin's
+// identity is Concord-issued and process-scoped, not a login.
+func (h *Handlers) AuthenticatePlugin(token string) (*models.User, string, error) {
+	installed, err := h.plugins.AuthenticateToken(token)
+	if err != nil {
+		return nil, "", err
+	}
+	user, err := h.db.GetUserByID(installed.ServiceUserID)
+	if err != nil {
+		return nil, "", fmt.Errorf("plugin service account not found: %w", err)
+	}
+	return user, installed.ID, nil
 }
 
 // Authenticate validates a token and returns the associated user
@@ -358,6 +377,19 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 		channel = models.NewVoiceChannel(req.ServerID, req.Name)
 	case models.ChannelTypeCategory:
 		channel = models.NewCategory(req.ServerID, req.Name)
+	case models.ChannelTypePlugin:
+		kindDef, ok := h.plugins.Registry().Lookup(req.PluginID, req.PluginChannelKind)
+		if !ok {
+			c.sendError(protocol.ErrorCodeInvalidPayload, "Unknown plugin channel kind")
+			return
+		}
+		for _, f := range kindDef.CreateFields {
+			if f.Required && req.PluginConfig[f.Key] == "" {
+				c.sendError(protocol.ErrorCodeInvalidPayload, fmt.Sprintf("Missing required field %q", f.Label))
+				return
+			}
+		}
+		channel = models.NewPluginChannel(req.ServerID, req.Name, req.PluginID, req.PluginChannelKind)
 	default:
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid channel type")
 		return
@@ -383,6 +415,12 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	if channel.Type == models.ChannelTypePlugin && len(req.PluginConfig) > 0 {
+		if err := h.db.SetPluginChannelConfig(channel.ID, req.PluginConfig); err != nil {
+			MsgLog.Error("Failed to persist plugin channel config", "channel_id", channel.ID, "error", err)
+		}
+	}
+
 	// Auto-join all connected users on this server to the new channel
 	onlineUsers := h.hub.GetOnlineUsers(req.ServerID)
 	for _, userID := range onlineUsers {
@@ -390,8 +428,11 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 	}
 	HubLog.Info("Auto-joined users to new channel", "user_count", len(onlineUsers), "channel_name", channel.Name, "channel_id", channel.ID)
 
-	// Broadcast to all server members
-	payload := protocol.ChannelCreatePayload{Channel: channel}
+	// Broadcast to all server members. Plugin config rides along in the same
+	// broadcast so the owning plugin's service-account client (a normal
+	// broadcast recipient like any other) can initialize its own record with
+	// zero extra round trip.
+	payload := protocol.ChannelCreatePayload{Channel: channel, PluginConfig: req.PluginConfig}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventChannelCreate, payload, nil)
 }
 
@@ -2097,5 +2138,244 @@ func (h *Handlers) handleVoiceLeave(userID, serverID, channelID uuid.UUID) {
 	}
 	_ = h.hub.BroadcastToServer(serverID, protocol.EventVoiceStateUpdate, leavePayload, nil)
 	Logger.Info("Voice state cleared on disconnect", "user_id", userID, "channel_id", channelID)
+}
+
+// ── Plugin Platform Handlers ────────────────────────────────────────────────
+//
+// The Hub relays every plugin pane/event message without parsing it: a human
+// client's Enter/Input/Resize/Leave gets routed to the owning plugin's
+// service-account connection, and a plugin's Frame push gets routed to the
+// one viewer it named. Concord never understands what's inside a frame.
+
+// pluginServiceClient resolves the connected Client for the plugin that owns
+// a channel, or sends an error and returns nil if the channel isn't a plugin
+// channel or that plugin isn't currently connected.
+func (h *Handlers) pluginServiceClient(c *Client, channelID uuid.UUID) *Client {
+	channel, err := h.db.GetChannelByID(channelID)
+	if err != nil || channel.Type != models.ChannelTypePlugin {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Not a plugin channel")
+		return nil
+	}
+	serviceUserID, err := h.plugins.ServiceUserIDFor(channel.PluginID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Plugin not installed")
+		return nil
+	}
+	target := h.hub.GetClient(serviceUserID)
+	if target == nil {
+		c.sendError(protocol.ErrorCodeServerError, "Plugin is not currently running")
+		return nil
+	}
+	return target
+}
+
+// HandlePluginPaneEnter relays a viewer opening a plugin channel to that
+// plugin's process, stamping ViewerID server-side (never trust the client).
+func (h *Handlers) HandlePluginPaneEnter(c *Client, msg *protocol.Message) {
+	var req protocol.PluginPaneEnterPayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	req.ViewerID = c.UserID
+	target := h.pluginServiceClient(c, req.ChannelID)
+	if target == nil {
+		return
+	}
+	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneEnter, req); err != nil {
+		MsgLog.Error("Failed to relay plugin pane enter", "channel_id", req.ChannelID, "error", err)
+	}
+}
+
+// HandlePluginPaneResize relays a viewport size change.
+func (h *Handlers) HandlePluginPaneResize(c *Client, msg *protocol.Message) {
+	var req protocol.PluginPaneResizePayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	req.ViewerID = c.UserID
+	target := h.pluginServiceClient(c, req.ChannelID)
+	if target == nil {
+		return
+	}
+	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneResize, req); err != nil {
+		MsgLog.Error("Failed to relay plugin pane resize", "channel_id", req.ChannelID, "error", err)
+	}
+}
+
+// HandlePluginPaneInput relays one forwarded keypress to the owning plugin.
+func (h *Handlers) HandlePluginPaneInput(c *Client, msg *protocol.Message) {
+	var req protocol.PluginPaneInputPayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	req.ViewerID = c.UserID
+	target := h.pluginServiceClient(c, req.ChannelID)
+	if target == nil {
+		return
+	}
+	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneInput, req); err != nil {
+		MsgLog.Error("Failed to relay plugin pane input", "channel_id", req.ChannelID, "error", err)
+	}
+}
+
+// HandlePluginPaneLeave relays a viewer navigating away from a plugin channel.
+func (h *Handlers) HandlePluginPaneLeave(c *Client, msg *protocol.Message) {
+	var req protocol.PluginPaneLeavePayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	req.ViewerID = c.UserID
+	target := h.pluginServiceClient(c, req.ChannelID)
+	if target == nil {
+		return
+	}
+	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneLeave, req); err != nil {
+		MsgLog.Error("Failed to relay plugin pane leave", "channel_id", req.ChannelID, "error", err)
+	}
+}
+
+// HandlePluginPaneFrame relays a plugin's rendered frame to the one viewer it
+// named. Only a connection that identified as that plugin may push frames.
+func (h *Handlers) HandlePluginPaneFrame(c *Client, msg *protocol.Message) {
+	if !c.IsPlugin {
+		c.sendError(protocol.ErrorCodeForbidden, "Only plugin connections may push frames")
+		return
+	}
+	var req protocol.PluginPaneFramePayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	if err := h.hub.SendToUser(req.ViewerID, protocol.EventPluginPaneFrame, req); err != nil {
+		MsgLog.Error("Failed to relay plugin pane frame", "channel_id", req.ChannelID, "viewer_id", req.ViewerID, "error", err)
+	}
+}
+
+// HandlePluginEvent handles the generic {plugin_id, kind, payload} envelope.
+// Today only Kind == "notify" is understood: it posts a system message into
+// the plugin's server-admin-configured activity channel, reusing
+// sendSystemMessage verbatim — the exact function moderation actions already
+// use. Any other Kind is relayed back to the plugin's own client unchanged,
+// keeping the envelope future-proof without a protocol change.
+func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
+	if !c.IsPlugin {
+		c.sendError(protocol.ErrorCodeForbidden, "Only plugin connections may send plugin events")
+		return
+	}
+	var req protocol.PluginEventPayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	req.PluginID = c.PluginID // never trust a client-claimed plugin id
+
+	if req.Kind != "notify" {
+		MsgLog.Warn("Unhandled plugin event kind", "plugin_id", req.PluginID, "kind", req.Kind)
+		return
+	}
+
+	var notify protocol.PluginNotifyEventPayload
+	if err := json.Unmarshal(req.Payload, &notify); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid notify payload")
+		return
+	}
+
+	config, err := h.db.GetPluginServerConfig(req.PluginID)
+	if err != nil {
+		MsgLog.Error("Failed to load plugin server config", "plugin_id", req.PluginID, "error", err)
+		return
+	}
+	channelIDStr := config["activity_notify_channel"]
+	if channelIDStr == "" {
+		return // Admin hasn't configured a notification channel — silently drop
+	}
+	channelID, err := uuid.Parse(channelIDStr)
+	if err != nil {
+		return
+	}
+	h.sendSystemMessage(channelID, notify.Content)
+}
+
+// HandleGetPluginConfig answers the Settings > Plugins list/config request.
+func (h *Handlers) HandleGetPluginConfig(c *Client, msg *protocol.Message) {
+	var req protocol.PluginConfigGetRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageServer); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	installedList, err := h.db.ListInstalledPlugins()
+	if err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to load plugins")
+		return
+	}
+
+	infos := make([]protocol.PluginInfo, 0, len(installedList))
+	for _, installed := range installedList {
+		manifest, _ := h.plugins.Registry().Manifest(installed.ID)
+		info := protocol.PluginInfo{
+			ID:        installed.ID,
+			Name:      installed.Name,
+			Version:   installed.Version,
+			Enabled:   installed.Enabled,
+			Status:    installed.Status,
+			LastError: installed.LastError,
+		}
+		if manifest != nil {
+			for _, f := range manifest.ServerConfigFields {
+				info.ConfigFields = append(info.ConfigFields, protocol.PluginField{
+					Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,
+					Default: f.Default, Required: f.Required,
+				})
+			}
+		}
+		values, err := h.db.GetPluginServerConfig(installed.ID)
+		if err == nil {
+			info.ConfigValues = values
+		}
+		infos = append(infos, info)
+	}
+
+	reply, err := protocol.NewMessage(protocol.OpDispatch, protocol.PluginConfigListPayload{Plugins: infos})
+	if err == nil {
+		reply.Type = protocol.EventPluginConfigUpdate
+		c.send <- reply
+	}
+}
+
+// HandleSetPluginConfig toggles a plugin's enabled flag and/or updates its
+// server-wide config field values from the Settings > Plugins page.
+func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
+	var req protocol.PluginConfigSetRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageServer); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	if req.Enabled != nil {
+		if err := h.plugins.SetEnabled(req.PluginID, *req.Enabled); err != nil {
+			c.sendError(protocol.ErrorCodeServerError, "Failed to update plugin: "+err.Error())
+			return
+		}
+	}
+	for key, value := range req.Config {
+		if err := h.db.SetPluginServerConfig(req.PluginID, key, value); err != nil {
+			MsgLog.Error("Failed to persist plugin server config", "plugin_id", req.PluginID, "key", key, "error", err)
+		}
+	}
+
+	h.HandleGetPluginConfig(c, msg) // re-send the updated list
 }
 

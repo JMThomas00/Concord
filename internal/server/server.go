@@ -18,6 +18,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/plugins"
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/concord-chat/concord/internal/server/dashboard"
 	"golang.org/x/crypto/bcrypt"
@@ -35,6 +36,7 @@ type Config struct {
 	TermsAccepted  bool                 `toml:"terms_accepted"` // Whether ToS has been accepted
 	AdminEmail     string               `toml:"admin_email"`    // Admin email for auto-granting admin role
 	Grapevine      GrapevineConfig      `toml:"grapevine"`
+	PluginsDir     string               `toml:"plugins_dir"` // Folder scanned for plugin.toml subfolders at startup
 }
 
 // MessagePruningConfig configures automatic message pruning
@@ -56,6 +58,7 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			IntervalHours: 24,
 		},
+		PluginsDir: "Plugins",
 	}
 }
 
@@ -77,6 +80,9 @@ type Server struct {
 	configPath      string
 	grapevine       *GrapevineClient
 	grapevineTokens *tokenStore
+
+	// Plugin platform
+	plugins *plugins.Manager
 }
 
 // New creates a new server instance
@@ -101,8 +107,17 @@ func New(config *Config) (*Server, error) {
 	// Create stats tracker
 	stats := NewStatsTracker()
 
+	// Plugin platform: connect host defaults to loopback since "0.0.0.0" is a
+	// bind address, not something a locally-spawned plugin process can dial.
+	connectHost := config.Host
+	if connectHost == "" || connectHost == "0.0.0.0" {
+		connectHost = "127.0.0.1"
+	}
+	wsURL := fmt.Sprintf("ws://%s:%d/ws", connectHost, config.Port)
+	pluginManager := plugins.NewManager(db, wsURL, PluginLog)
+
 	// Create handlers
-	handlers := NewHandlers(db, hub, stats)
+	handlers := NewHandlers(db, hub, stats, pluginManager)
 
 	// Register voice disconnect cleanup callback so the hub can trigger DB/broadcast
 	// cleanup without importing the handlers package (avoids circular dependency).
@@ -118,6 +133,7 @@ func New(config *Config) (*Server, error) {
 		db:              db,
 		stats:           stats,
 		grapevineTokens: newTokenStore(),
+		plugins:         pluginManager,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -125,6 +141,14 @@ func New(config *Config) (*Server, error) {
 				return true
 			},
 		},
+	}
+
+	pluginsDir := config.PluginsDir
+	if pluginsDir == "" {
+		pluginsDir = "Plugins"
+	}
+	if err := pluginManager.LoadAll(pluginsDir); err != nil {
+		DBLog.Warn("plugin platform failed to load", "error", err)
 	}
 
 	return s, nil
@@ -252,6 +276,12 @@ func (s *Server) handleShutdown() {
 	// Deregister from Grapevine hub before closing
 	if s.grapevine != nil {
 		s.grapevine.Stop()
+	}
+
+	// Stop all supervised plugin processes before closing the database they
+	// (and Concord) share.
+	if s.plugins != nil {
+		s.plugins.Shutdown()
 	}
 
 	// Create a deadline for shutdown

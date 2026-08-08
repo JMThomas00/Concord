@@ -15,6 +15,7 @@ const (
 	ChannelTypeCategory                    // Channel category/folder
 	ChannelTypeDM                          // Direct message
 	ChannelTypeGroupDM                     // Group direct message
+	ChannelTypePlugin                      // Plugin-provided channel; see PluginID/PluginChannelKind
 )
 
 // Channel represents a communication channel within a server
@@ -39,6 +40,10 @@ type Channel struct {
 	
 	// For DM channels
 	RecipientIDs []uuid.UUID `json:"recipient_ids,omitempty"`
+
+	// For plugin-provided channels (Type == ChannelTypePlugin)
+	PluginID          string `json:"plugin_id,omitempty"`
+	PluginChannelKind string `json:"plugin_channel_kind,omitempty"`
 }
 
 // PermissionOverwrite allows/denies specific permissions for a role or user
@@ -91,6 +96,22 @@ func NewCategory(serverID uuid.UUID, name string) *Channel {
 	}
 }
 
+// NewPluginChannel creates a new plugin-provided channel
+func NewPluginChannel(serverID uuid.UUID, name, pluginID, pluginChannelKind string) *Channel {
+	now := time.Now()
+	return &Channel{
+		ID:                uuid.New(),
+		ServerID:          serverID,
+		Name:              name,
+		Type:              ChannelTypePlugin,
+		Position:          0,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		PluginID:          pluginID,
+		PluginChannelKind: pluginChannelKind,
+	}
+}
+
 // NewDMChannel creates a new direct message channel between users
 func NewDMChannel(userIDs ...uuid.UUID) *Channel {
 	now := time.Now()
@@ -117,6 +138,11 @@ func (c *Channel) IsVoiceBased() bool {
 // IsDM returns true if this is a direct message channel
 func (c *Channel) IsDM() bool {
 	return c.Type == ChannelTypeDM || c.Type == ChannelTypeGroupDM
+}
+
+// IsPluginChannel returns true if this channel is provided by a plugin
+func (c *Channel) IsPluginChannel() bool {
+	return c.Type == ChannelTypePlugin
 }
 
 // SetCategory sets the parent category for this channel

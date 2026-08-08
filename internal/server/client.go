@@ -47,6 +47,12 @@ type Client struct {
 	User      *models.User
 	SessionID string
 
+	// Set when this connection identified with ClientType "plugin" — the
+	// service-account user above belongs to this plugin's process, and only
+	// this plugin's own frames/events are accepted from it.
+	IsPlugin bool
+	PluginID string
+
 	// Server memberships
 	ServerIDs []uuid.UUID
 
@@ -333,6 +339,46 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleMoveVoice(c, msg)
 		})
 
+	case protocol.OpPluginPaneEnter:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginPaneEnter(c, msg)
+		})
+
+	case protocol.OpPluginPaneInput:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginPaneInput(c, msg)
+		})
+
+	case protocol.OpPluginPaneResize:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginPaneResize(c, msg)
+		})
+
+	case protocol.OpPluginPaneLeave:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginPaneLeave(c, msg)
+		})
+
+	case protocol.OpPluginPaneFrame:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginPaneFrame(c, msg)
+		})
+
+	case protocol.OpPluginEvent:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginEvent(c, msg)
+		})
+
+	case protocol.OpPluginConfigGet:
+		c.requireAuth(func() {
+			c.handlers.HandleGetPluginConfig(c, msg)
+		})
+
+	case protocol.OpPluginConfigSet:
+		c.requireAuth(func() {
+			c.handlers.HandleSetPluginConfig(c, msg)
+		})
+
 	default:
 		ClientLog.Warn("Unknown opcode", "user_id", c.UserID, "opcode", msg.Op)
 		c.sendError(protocol.ErrorCodeUnknown, "Unknown operation")
@@ -352,6 +398,11 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 	var payload protocol.IdentifyPayload
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid identify payload")
+		return
+	}
+
+	if payload.ClientType == "plugin" {
+		c.identifyAsPlugin(payload.Token)
 		return
 	}
 
@@ -480,6 +531,47 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 	c.hub.BroadcastPresenceUpdate(user, serverIDs)
 
 	AuthLog.Info("User authenticated successfully", "username", user.Username, "user_id", user.ID, "server_count", len(serverIDs))
+}
+
+// identifyAsPlugin authenticates a plugin process (ClientType: "plugin") and
+// registers it with the hub under its service-account identity. Called with
+// c.authMu already held by the caller (handleIdentify). Plugins skip the
+// ban/timeout checks and the full server sync a human client gets — they
+// only need to be reachable via Hub.SendToUser for relayed pane/event traffic.
+func (c *Client) identifyAsPlugin(token string) {
+	user, pluginID, err := c.handlers.AuthenticatePlugin(token)
+	if err != nil {
+		AuthLog.Warn("Plugin authentication failed", "error", err)
+		c.sendInvalidSession("Plugin authentication failed")
+		return
+	}
+
+	c.UserID = user.ID
+	c.User = user
+	c.IsPlugin = true
+	c.PluginID = pluginID
+	c.SessionID = uuid.New().String()
+	c.authenticated = true
+
+	c.hub.register <- c
+	c.handlers.stats.RecordConnection()
+
+	if err := c.handlers.plugins.MarkRunning(pluginID); err != nil {
+		PluginLog.Warn("failed to mark plugin running", "plugin_id", pluginID, "error", err)
+	}
+
+	readyPayload := &protocol.ReadyPayload{
+		SessionID: c.SessionID,
+		User:      user,
+	}
+	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
+	if err != nil {
+		ClientLog.Error("Failed to create ready message for plugin", "plugin_id", pluginID, "error", err)
+		return
+	}
+	c.send <- readyMsg
+
+	AuthLog.Info("Plugin authenticated successfully", "plugin_id", pluginID, "service_user_id", user.ID)
 }
 
 // handleHeartbeat processes heartbeat messages

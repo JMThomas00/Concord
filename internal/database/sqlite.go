@@ -112,6 +112,11 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to migrate voice channel settings: %w", err)
 	}
 
+	if err := wrapper.MigratePluginPlatform(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate plugin platform: %w", err)
+	}
+
 	// Clear any stale voice state from a previous server run
 	if err := wrapper.ClearAllVoiceStates(); err != nil {
 		db.Close()
@@ -807,11 +812,11 @@ func (db *DB) MigrateServerMembersIsBanned() error {
 // CreateUser inserts a new user into the database
 func (db *DB) CreateUser(user *models.User, passwordHash string) error {
 	_, err := db.Exec(`
-		INSERT INTO users (id, username, discriminator, display_name, email, password_hash, 
-			status, created_at, updated_at, is_bot)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO users (id, username, discriminator, display_name, email, password_hash,
+			status, created_at, updated_at, is_bot, is_service_account)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.ID.String(), user.Username, user.Discriminator, user.DisplayName,
-		user.Email, passwordHash, user.Status, user.CreatedAt, user.UpdatedAt, user.IsBot)
+		user.Email, passwordHash, user.Status, user.CreatedAt, user.UpdatedAt, user.IsBot, user.IsServiceAccount)
 	return err
 }
 
@@ -824,11 +829,11 @@ func (db *DB) GetUserByID(id uuid.UUID) (*models.User, error) {
 
 	err := db.QueryRow(`
 		SELECT id, username, discriminator, display_name, email, avatar_hash,
-			status, status_text, created_at, updated_at, last_seen_at, is_bot
+			status, status_text, created_at, updated_at, last_seen_at, is_bot, is_service_account
 		FROM users WHERE id = ?`, id.String()).Scan(
 		&idStr, &user.Username, &user.Discriminator, &displayName,
 		&user.Email, &avatarHash, &user.Status, &statusText,
-		&user.CreatedAt, &user.UpdatedAt, &lastSeenAt, &user.IsBot)
+		&user.CreatedAt, &user.UpdatedAt, &lastSeenAt, &user.IsBot, &user.IsServiceAccount)
 	if err != nil {
 		return nil, err
 	}
@@ -1071,13 +1076,21 @@ func (db *DB) CreateChannel(channel *models.Channel) error {
 	channel.SortOrder = maxOrder + 10
 	channel.Position = channel.SortOrder // Keep in sync
 
+	var pluginID, pluginChannelKind sql.NullString
+	if channel.PluginID != "" {
+		pluginID = sql.NullString{String: channel.PluginID, Valid: true}
+	}
+	if channel.PluginChannelKind != "" {
+		pluginChannelKind = sql.NullString{String: channel.PluginChannelKind, Valid: true}
+	}
+
 	_, err = db.Exec(`
 		INSERT INTO channels (id, server_id, name, topic, type, position, sort_order, category_id,
-			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at, plugin_id, plugin_channel_kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		channel.ID.String(), serverID, channel.Name, channel.Topic, channel.Type,
 		channel.Position, channel.SortOrder, categoryID, channel.IsNSFW, channel.IsLocked, channel.RateLimitPerUser,
-		channel.CreatedAt, channel.UpdatedAt)
+		channel.CreatedAt, channel.UpdatedAt, pluginID, pluginChannelKind)
 	return err
 }
 
@@ -1085,7 +1098,7 @@ func (db *DB) CreateChannel(channel *models.Channel) error {
 func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 	rows, err := db.Query(`
 		SELECT id, server_id, name, topic, type, position, sort_order, category_id,
-			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at
+			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at, plugin_id, plugin_channel_kind
 		FROM channels WHERE server_id = ?
 		ORDER BY sort_order`, serverID.String())
 	if err != nil {
@@ -1097,11 +1110,11 @@ func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 	for rows.Next() {
 		ch := &models.Channel{}
 		var idStr, serverIDStr string
-		var categoryID sql.NullString
+		var categoryID, pluginID, pluginChannelKind sql.NullString
 
 		err := rows.Scan(&idStr, &serverIDStr, &ch.Name, &ch.Topic, &ch.Type,
 			&ch.Position, &ch.SortOrder, &categoryID, &ch.IsNSFW, &ch.IsLocked, &ch.RateLimitPerUser,
-			&ch.CreatedAt, &ch.UpdatedAt)
+			&ch.CreatedAt, &ch.UpdatedAt, &pluginID, &pluginChannelKind)
 		if err != nil {
 			return nil, err
 		}
@@ -1110,6 +1123,12 @@ func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 		ch.ServerID, _ = uuid.Parse(serverIDStr)
 		if categoryID.Valid {
 			ch.CategoryID, _ = uuid.Parse(categoryID.String)
+		}
+		if pluginID.Valid {
+			ch.PluginID = pluginID.String
+		}
+		if pluginChannelKind.Valid {
+			ch.PluginChannelKind = pluginChannelKind.String
 		}
 
 		channels = append(channels, ch)
@@ -1123,14 +1142,15 @@ func (db *DB) GetChannelByID(channelID uuid.UUID) (*models.Channel, error) {
 	var ch models.Channel
 	var idStr, serverIDStr string
 	var topic sql.NullString
-	var categoryID sql.NullString
+	var categoryID, pluginID, pluginChannelKind sql.NullString
 
 	err := db.QueryRow(`
 		SELECT id, server_id, name, topic, type, position, sort_order, category_id,
-			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at
+			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at, plugin_id, plugin_channel_kind
 		FROM channels WHERE id = ?`, channelID.String()).
 		Scan(&idStr, &serverIDStr, &ch.Name, &topic, &ch.Type, &ch.Position, &ch.SortOrder,
-			&categoryID, &ch.IsNSFW, &ch.IsLocked, &ch.RateLimitPerUser, &ch.CreatedAt, &ch.UpdatedAt)
+			&categoryID, &ch.IsNSFW, &ch.IsLocked, &ch.RateLimitPerUser, &ch.CreatedAt, &ch.UpdatedAt,
+			&pluginID, &pluginChannelKind)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("channel not found")
@@ -1146,6 +1166,12 @@ func (db *DB) GetChannelByID(channelID uuid.UUID) (*models.Channel, error) {
 	}
 	if categoryID.Valid {
 		ch.CategoryID, _ = uuid.Parse(categoryID.String)
+	}
+	if pluginID.Valid {
+		ch.PluginID = pluginID.String
+	}
+	if pluginChannelKind.Valid {
+		ch.PluginChannelKind = pluginChannelKind.String
 	}
 
 	return &ch, nil
@@ -3235,6 +3261,89 @@ func (db *DB) MigrateVoiceChannelSettings() error {
 	return nil
 }
 
+// MigratePluginPlatform creates the tables backing the plugin platform
+// (installed_plugins, plugin_server_config, plugin_channel_config) and adds
+// the plugin_id/plugin_channel_kind columns to channels and the
+// is_service_account column to users.
+func (db *DB) MigratePluginPlatform() error {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installed_plugins'
+	`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check installed_plugins table: %w", err)
+	}
+	if count == 0 {
+		log.Println("[MIGRATION] Creating plugin platform tables...")
+		_, err = db.Exec(`
+			CREATE TABLE IF NOT EXISTS installed_plugins (
+				id               TEXT PRIMARY KEY,
+				name             TEXT NOT NULL,
+				version          TEXT NOT NULL,
+				manifest_path    TEXT NOT NULL,
+				enabled          INTEGER NOT NULL DEFAULT 1,
+				auth_token_hash  TEXT NOT NULL,
+				service_user_id  TEXT REFERENCES users(id),
+				status           TEXT NOT NULL DEFAULT 'stopped',
+				last_error       TEXT,
+				discovered_at    DATETIME NOT NULL,
+				updated_at       DATETIME NOT NULL
+			);
+
+			CREATE TABLE IF NOT EXISTS plugin_server_config (
+				plugin_id TEXT NOT NULL REFERENCES installed_plugins(id) ON DELETE CASCADE,
+				field_key TEXT NOT NULL,
+				value     TEXT,
+				PRIMARY KEY (plugin_id, field_key)
+			);
+
+			CREATE TABLE IF NOT EXISTS plugin_channel_config (
+				channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+				field_key  TEXT NOT NULL,
+				value      TEXT,
+				PRIMARY KEY (channel_id, field_key)
+			);
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create plugin platform tables: %w", err)
+		}
+		log.Println("[MIGRATION] Plugin platform tables created")
+	}
+
+	if err := addColumnIfMissing(db, "channels", "plugin_id", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "channels", "plugin_channel_kind", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "users", "is_service_account", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// addColumnIfMissing adds a column to a table if it doesn't already exist.
+// Shared helper for simple additive migrations.
+func addColumnIfMissing(db *DB, table, column, sqlType string) error {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?
+	`, table, column).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check %s.%s column: %w", table, column, err)
+	}
+	if count > 0 {
+		return nil
+	}
+	log.Printf("[MIGRATION] Adding %s column to %s table...", column, table)
+	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, sqlType))
+	if err != nil {
+		return fmt.Errorf("failed to add %s.%s column: %w", table, column, err)
+	}
+	return nil
+}
+
 // ── Voice State DB Methods ─────────────────────────────────────────────────────
 
 // ClearAllVoiceStates removes all voice state rows. Called on server startup to
@@ -3333,4 +3442,203 @@ func scanVoiceStates(rows *sql.Rows) ([]*models.VoiceState, error) {
 		states = append(states, &vs)
 	}
 	return states, rows.Err()
+}
+
+// ── Plugin Platform DB Methods ──────────────────────────────────────────────
+
+// GetInstalledPlugin retrieves a plugin's persisted record by its manifest id.
+func (db *DB) GetInstalledPlugin(pluginID string) (*models.InstalledPlugin, error) {
+	p := &models.InstalledPlugin{ID: pluginID}
+	var enabled int
+	var serviceUserID, lastError sql.NullString
+
+	err := db.QueryRow(`
+		SELECT name, version, manifest_path, enabled, auth_token_hash, service_user_id,
+			status, last_error, discovered_at, updated_at
+		FROM installed_plugins WHERE id = ?`, pluginID).Scan(
+		&p.Name, &p.Version, &p.ManifestPath, &enabled, &p.AuthTokenHash, &serviceUserID,
+		&p.Status, &lastError, &p.DiscoveredAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	p.Enabled = enabled != 0
+	if serviceUserID.Valid {
+		p.ServiceUserID, _ = uuid.Parse(serviceUserID.String)
+	}
+	if lastError.Valid {
+		p.LastError = lastError.String
+	}
+	return p, nil
+}
+
+// ListInstalledPlugins returns every plugin record Concord has ever discovered.
+func (db *DB) ListInstalledPlugins() ([]*models.InstalledPlugin, error) {
+	rows, err := db.Query(`
+		SELECT id, name, version, manifest_path, enabled, auth_token_hash, service_user_id,
+			status, last_error, discovered_at, updated_at
+		FROM installed_plugins ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var plugins []*models.InstalledPlugin
+	for rows.Next() {
+		p := &models.InstalledPlugin{}
+		var enabled int
+		var serviceUserID, lastError sql.NullString
+		if err := rows.Scan(&p.ID, &p.Name, &p.Version, &p.ManifestPath, &enabled, &p.AuthTokenHash,
+			&serviceUserID, &p.Status, &lastError, &p.DiscoveredAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		p.Enabled = enabled != 0
+		if serviceUserID.Valid {
+			p.ServiceUserID, _ = uuid.Parse(serviceUserID.String)
+		}
+		if lastError.Valid {
+			p.LastError = lastError.String
+		}
+		plugins = append(plugins, p)
+	}
+	return plugins, rows.Err()
+}
+
+// CreateInstalledPlugin inserts a plugin's first-run record (service account
+// + token already provisioned by the caller).
+func (db *DB) CreateInstalledPlugin(p *models.InstalledPlugin) error {
+	_, err := db.Exec(`
+		INSERT INTO installed_plugins (id, name, version, manifest_path, enabled, auth_token_hash,
+			service_user_id, status, last_error, discovered_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Version, p.ManifestPath, btoi(p.Enabled), p.AuthTokenHash,
+		p.ServiceUserID.String(), p.Status, p.LastError, p.DiscoveredAt, p.UpdatedAt)
+	return err
+}
+
+// UpdateInstalledPluginMeta refreshes name/version/manifest_path on rediscovery
+// (the plugin folder's contents may have been upgraded since Concord last ran).
+func (db *DB) UpdateInstalledPluginMeta(pluginID, name, version, manifestPath string) error {
+	_, err := db.Exec(`
+		UPDATE installed_plugins SET name = ?, version = ?, manifest_path = ?, updated_at = ?
+		WHERE id = ?`,
+		name, version, manifestPath, time.Now(), pluginID)
+	return err
+}
+
+// SetPluginEnabled toggles a plugin's enabled flag (Settings > Plugins).
+func (db *DB) SetPluginEnabled(pluginID string, enabled bool) error {
+	_, err := db.Exec(`UPDATE installed_plugins SET enabled = ?, updated_at = ? WHERE id = ?`,
+		btoi(enabled), time.Now(), pluginID)
+	return err
+}
+
+// SetPluginAuthTokenHash rotates a plugin's stored auth token hash (a fresh
+// token is issued to the plugin process on every start; the old one stops
+// validating immediately).
+func (db *DB) SetPluginAuthTokenHash(pluginID, hash string) error {
+	_, err := db.Exec(`UPDATE installed_plugins SET auth_token_hash = ?, updated_at = ? WHERE id = ?`,
+		hash, time.Now(), pluginID)
+	return err
+}
+
+// SetPluginStatus records the supervisor's current view of a plugin process.
+func (db *DB) SetPluginStatus(pluginID, status, lastError string) error {
+	_, err := db.Exec(`UPDATE installed_plugins SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+		status, sql.NullString{String: lastError, Valid: lastError != ""}, time.Now(), pluginID)
+	return err
+}
+
+// GetInstalledPluginByTokenHash resolves a plugin identity from the SHA-256
+// hash of the token it presented in OpIdentify.
+func (db *DB) GetInstalledPluginByTokenHash(tokenHash string) (*models.InstalledPlugin, error) {
+	var pluginID string
+	err := db.QueryRow(`SELECT id FROM installed_plugins WHERE auth_token_hash = ?`, tokenHash).Scan(&pluginID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return db.GetInstalledPlugin(pluginID)
+}
+
+// GetPluginServerConfig returns all server-wide config field values for a plugin.
+func (db *DB) GetPluginServerConfig(pluginID string) (map[string]string, error) {
+	rows, err := db.Query(`SELECT field_key, value FROM plugin_server_config WHERE plugin_id = ?`, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	values := make(map[string]string)
+	for rows.Next() {
+		var key string
+		var value sql.NullString
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		values[key] = value.String
+	}
+	return values, rows.Err()
+}
+
+// SetPluginServerConfig upserts one server-wide config field for a plugin.
+func (db *DB) SetPluginServerConfig(pluginID, key, value string) error {
+	_, err := db.Exec(`
+		INSERT INTO plugin_server_config (plugin_id, field_key, value)
+		VALUES (?, ?, ?)
+		ON CONFLICT(plugin_id, field_key) DO UPDATE SET value = excluded.value`,
+		pluginID, key, value)
+	return err
+}
+
+// GetPluginChannelConfig returns the per-channel config field values captured
+// when a plugin channel was created (e.g. Tukan's "Board Name").
+func (db *DB) GetPluginChannelConfig(channelID uuid.UUID) (map[string]string, error) {
+	rows, err := db.Query(`SELECT field_key, value FROM plugin_channel_config WHERE channel_id = ?`, channelID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	values := make(map[string]string)
+	for rows.Next() {
+		var key string
+		var value sql.NullString
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		values[key] = value.String
+	}
+	return values, rows.Err()
+}
+
+// SetPluginChannelConfig persists the create-time config fields for a new
+// plugin channel (one row per declared field).
+func (db *DB) SetPluginChannelConfig(channelID uuid.UUID, fields map[string]string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO plugin_channel_config (channel_id, field_key, value)
+		VALUES (?, ?, ?)
+		ON CONFLICT(channel_id, field_key) DO UPDATE SET value = excluded.value`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for key, value := range fields {
+		if _, err := stmt.Exec(channelID.String(), key, value); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
