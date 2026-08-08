@@ -196,6 +196,25 @@ type ServerManagementState struct {
 	// Remove exempt picker
 	RemoveExemptPickerOpen bool
 	RemoveExemptSelected   int
+
+	// Plugins category state
+	PluginList         []protocol.PluginInfo
+	SelectedPlugin      int
+	PluginConfigState   *PluginConfigFormState
+}
+
+// PluginConfigFormState holds state for a single plugin's config sub-page
+// (Settings > Plugins > <name>) — a manifest-driven form built from the same
+// generic field renderer the channel-creation form uses, so a plugin's
+// server_config_field declarations render without Concord knowing anything
+// about that specific plugin.
+type PluginConfigFormState struct {
+	PluginID     string
+	Fields       []protocol.PluginField
+	TextInputs   []textinput.Model // parallel to Fields, used for text/number
+	Values       []string          // parallel to Fields, used for boolean/select/channel_select
+	FocusField   int               // 0..len(Fields)-1 fields, then save, then back
+	ErrorMsg     string
 }
 
 // RoleFormState holds state for the role creation/edit modal

@@ -2,6 +2,7 @@ package client
 
 import (
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/concord-chat/concord/internal/protocol"
 )
 
@@ -34,33 +35,64 @@ func computeChannelFormLayout(state *ChannelFormState) channelFormFieldLayout {
 	return l
 }
 
-// setPluginKind switches the form to a plugin channel kind, rebuilding the
-// text inputs / default values for that kind's declared create_fields.
+// buildFieldEditors constructs the parallel textInputs/values slices for a
+// list of manifest-declared fields, seeded from currentValues (server-known
+// values, e.g. an existing plugin's saved config) falling back to each
+// field's declared Default. Shared by the channel-creation plugin fields and
+// the Settings > Plugins config sub-page — the only two places that render
+// manifest-declared fields generically.
+func buildFieldEditors(fields []protocol.PluginField, currentValues map[string]string) ([]textinput.Model, []string) {
+	textInputs := make([]textinput.Model, len(fields))
+	values := make([]string, len(fields))
+
+	for i, f := range fields {
+		val, ok := currentValues[f.Key]
+		if !ok {
+			val = f.Default
+		}
+		switch f.Type {
+		case "text", "number":
+			ti := textinput.New()
+			ti.SetValue(val)
+			ti.CharLimit = 100
+			ti.Width = 40
+			textInputs[i] = ti
+		default: // boolean, select, channel_select
+			if f.Type == "boolean" && val == "" {
+				val = "false"
+			}
+			if f.Type == "select" && val == "" && len(f.Options) > 0 {
+				val = f.Options[0]
+			}
+			values[i] = val
+		}
+	}
+	return textInputs, values
+}
+
+// collectFieldValues reads the current values out of a set of field editors
+// into the map shape both ChannelCreateRequest.PluginConfig and
+// PluginConfigSetRequest.Config expect.
+func collectFieldValues(fields []protocol.PluginField, textInputs []textinput.Model, values []string) map[string]string {
+	result := make(map[string]string, len(fields))
+	for i, f := range fields {
+		switch f.Type {
+		case "text", "number":
+			result[f.Key] = textInputs[i].Value()
+		default:
+			result[f.Key] = values[i]
+		}
+	}
+	return result
+}
+
+// setPluginKind switches the channel-creation form to a plugin channel kind,
+// rebuilding the field editors for that kind's declared create_fields.
 func setPluginKind(state *ChannelFormState, info protocol.PluginChannelKindInfo) {
 	state.PluginID = info.PluginID
 	state.PluginKind = info.Kind
 	state.PluginFields = info.CreateFields
-	state.PluginTextInputs = make([]textinput.Model, len(info.CreateFields))
-	state.PluginValues = make([]string, len(info.CreateFields))
-
-	for i, f := range info.CreateFields {
-		switch f.Type {
-		case "text", "number":
-			ti := textinput.New()
-			ti.SetValue(f.Default)
-			ti.CharLimit = 100
-			ti.Width = 40
-			state.PluginTextInputs[i] = ti
-		default: // boolean, select, channel_select
-			state.PluginValues[i] = f.Default
-			if f.Type == "boolean" && state.PluginValues[i] == "" {
-				state.PluginValues[i] = "false"
-			}
-			if f.Type == "select" && state.PluginValues[i] == "" && len(f.Options) > 0 {
-				state.PluginValues[i] = f.Options[0]
-			}
-		}
-	}
+	state.PluginTextInputs, state.PluginValues = buildFieldEditors(info.CreateFields, nil)
 }
 
 // cyclePluginFieldValue advances a boolean/select field's value by one step
@@ -96,17 +128,155 @@ func cycleOption(options []string, current string, dir int) string {
 	return options[idx]
 }
 
-// pluginConfigValues collects the current field values into the map shape
-// ChannelCreateRequest.PluginConfig expects.
+// pluginConfigValues collects the channel-creation form's current field
+// values into the map shape ChannelCreateRequest.PluginConfig expects.
 func pluginConfigValues(state *ChannelFormState) map[string]string {
-	values := make(map[string]string, len(state.PluginFields))
-	for i, f := range state.PluginFields {
-		switch f.Type {
-		case "text", "number":
-			values[f.Key] = state.PluginTextInputs[i].Value()
-		default:
-			values[f.Key] = state.PluginValues[i]
+	return collectFieldValues(state.PluginFields, state.PluginTextInputs, state.PluginValues)
+}
+
+// newPluginConfigFormState builds the Settings > Plugins config sub-page
+// state for one plugin, seeded from its currently-saved server config values.
+func newPluginConfigFormState(info protocol.PluginInfo) *PluginConfigFormState {
+	textInputs, values := buildFieldEditors(info.ConfigFields, info.ConfigValues)
+	return &PluginConfigFormState{
+		PluginID:   info.ID,
+		Fields:     info.ConfigFields,
+		TextInputs: textInputs,
+		Values:     values,
+	}
+}
+
+// pluginConfigFormValues collects the config sub-page's current field values
+// into the map shape PluginConfigSetRequest.Config expects.
+func pluginConfigFormValues(state *PluginConfigFormState) map[string]string {
+	return collectFieldValues(state.Fields, state.TextInputs, state.Values)
+}
+
+// handleOpenPluginConfigAction opens the Settings > Plugins > <name> config
+// sub-page for the currently selected plugin (Enter on the plugin list).
+func (a *App) handleOpenPluginConfigAction() {
+	s := a.serverManagementState
+	if s.SelectedPlugin < 0 || s.SelectedPlugin >= len(s.PluginList) {
+		return
+	}
+	s.PluginConfigState = newPluginConfigFormState(s.PluginList[s.SelectedPlugin])
+}
+
+// handleTogglePluginAction flips the selected plugin's enabled flag ("t" on
+// the plugin list) — the Manager starts/stops its Supervisor live, no
+// restart of Concord required.
+func (a *App) handleTogglePluginAction() {
+	s := a.serverManagementState
+	if s.SelectedPlugin < 0 || s.SelectedPlugin >= len(s.PluginList) {
+		return
+	}
+	newEnabled := !s.PluginList[s.SelectedPlugin].Enabled
+	a.sendPluginConfigSet(s.PluginList[s.SelectedPlugin].ID, &newEnabled, nil)
+}
+
+// sendPluginConfigSet sends OpPluginConfigSet with whichever of
+// enabled/config the caller wants to change (either may be nil/empty).
+func (a *App) sendPluginConfigSet(pluginID string, enabled *bool, config map[string]string) {
+	if a.activeConn == nil || a.currentServer == nil {
+		return
+	}
+	req := &protocol.PluginConfigSetRequest{
+		ServerID: a.currentServer.ID,
+		PluginID: pluginID,
+		Enabled:  enabled,
+		Config:   config,
+	}
+	msg, err := protocol.NewMessage(protocol.OpPluginConfigSet, req)
+	if err == nil {
+		_ = a.activeConn.Connection.Send(msg)
+	}
+}
+
+// handlePluginConfigKey drives the Settings > Plugins > <name> config
+// sub-page: tab/shift+tab cycle fields (then Save, then Back), up/down/
+// left/right cycle boolean/select/channel_select values, and text/number
+// fields forward keystrokes to their textinput.Model — mirroring
+// handleChannelFormKey's pattern for the same generic field types.
+func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
+	state := a.serverManagementState.PluginConfigState
+	saveField := len(state.Fields)
+	backField := len(state.Fields) + 1
+
+	blurAll := func() {
+		for i := range state.TextInputs {
+			state.TextInputs[i].Blur()
 		}
 	}
-	return values
+	focusField := func(f int) {
+		if f < 0 || f >= len(state.Fields) {
+			return
+		}
+		ft := state.Fields[f].Type
+		if ft == "text" || ft == "number" {
+			state.TextInputs[f].Focus()
+		}
+	}
+
+	switch msg.String() {
+	case "esc":
+		a.serverManagementState.PluginConfigState = nil
+		return nil
+
+	case "tab":
+		state.FocusField = (state.FocusField + 1) % (backField + 1)
+		blurAll()
+		focusField(state.FocusField)
+		return nil
+
+	case "shift+tab":
+		state.FocusField--
+		if state.FocusField < 0 {
+			state.FocusField = backField
+		}
+		blurAll()
+		focusField(state.FocusField)
+		return nil
+
+	case "up", "down", "left", "right":
+		if state.FocusField >= 0 && state.FocusField < len(state.Fields) {
+			f := state.Fields[state.FocusField]
+			if f.Type != "text" && f.Type != "number" {
+				dir := 1
+				if msg.String() == "up" || msg.String() == "left" {
+					dir = -1
+				}
+				state.Values[state.FocusField] = cyclePluginFieldValue(f, state.Values[state.FocusField], dir, a.textChannelNames())
+			}
+		}
+		return nil
+
+	case "enter":
+		if state.FocusField == saveField {
+			return a.handleSavePluginConfig()
+		} else if state.FocusField == backField {
+			a.serverManagementState.PluginConfigState = nil
+		}
+		return nil
+	}
+
+	if state.FocusField >= 0 && state.FocusField < len(state.Fields) {
+		f := state.Fields[state.FocusField]
+		if f.Type == "text" || f.Type == "number" {
+			var cmd tea.Cmd
+			state.TextInputs[state.FocusField], cmd = state.TextInputs[state.FocusField].Update(msg)
+			return cmd
+		}
+	}
+	return nil
+}
+
+// handleSavePluginConfig sends the edited server_config_field values and
+// closes the sub-page; the refreshed plugin list arrives via
+// EventPluginConfigUpdate like any other config change.
+func (a *App) handleSavePluginConfig() tea.Cmd {
+	state := a.serverManagementState.PluginConfigState
+	a.sendPluginConfigSet(state.PluginID, nil, pluginConfigFormValues(state))
+	a.serverManagementState.PluginConfigState = nil
+	a.statusMessage = "Saving plugin configuration..."
+	return nil
 }

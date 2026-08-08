@@ -188,6 +188,78 @@ func TestPluginPlatformEndToEnd(t *testing.T) {
 	}
 }
 
+// testWSClient wraps a raw WebSocket connection with the send/receive
+// helpers every plugin-platform integration test in this file needs —
+// factored out so each test isn't reimplementing its own protocol plumbing.
+type testWSClient struct {
+	t    *testing.T
+	conn *websocket.Conn
+}
+
+func newTestWSClient(t *testing.T, wsURL string) *testWSClient {
+	t.Helper()
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return &testWSClient{t: t, conn: conn}
+}
+
+func (c *testWSClient) send(op protocol.OpCode, payload interface{}) {
+	c.t.Helper()
+	msg, err := protocol.NewMessage(op, payload)
+	if err != nil {
+		c.t.Fatalf("failed to build message: %v", err)
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		c.t.Fatalf("failed to marshal message: %v", err)
+	}
+	if err := c.conn.WriteMessage(websocket.TextMessage, raw); err != nil {
+		c.t.Fatalf("failed to send message: %v", err)
+	}
+}
+
+func (c *testWSClient) readUntil(timeout time.Duration, match func(*protocol.Message) bool) *protocol.Message {
+	c.t.Helper()
+	c.conn.SetReadDeadline(time.Now().Add(timeout))
+	for {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
+			c.t.Fatalf("read failed while waiting for message: %v", err)
+		}
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		if match(&msg) {
+			return &msg
+		}
+	}
+}
+
+// identify sends OpIdentify with token and waits for OpReady.
+func (c *testWSClient) identify(token string) {
+	c.send(protocol.OpIdentify, protocol.IdentifyPayload{Token: token})
+	c.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Op == protocol.OpReady })
+}
+
+// createTestUserAndToken provisions a real human user + session token, the
+// same way a normal client authenticates.
+func createTestUserAndToken(t *testing.T, srv *Server, username string) (*models.User, string) {
+	t.Helper()
+	user := models.NewUser(username, username+"@test.local")
+	if err := srv.db.CreateUser(user, "unused-hash"); err != nil {
+		t.Fatalf("failed to create test user: %v", err)
+	}
+	token, err := srv.handlers.CreateAuthToken(user.ID, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatalf("failed to create auth token: %v", err)
+	}
+	return user, token
+}
+
 // TestPluginPaneRoundTrip drives the exact wire protocol Concord's real
 // client (internal/client/plugin_pane.go) uses for a remote-pane channel: a
 // real "human" WebSocket connection identifies, opens a plugin channel
@@ -208,59 +280,13 @@ func TestPluginPaneRoundTrip(t *testing.T) {
 		t.Fatalf("failed to create plugin channel: %v", err)
 	}
 
-	// Provision a real human user + session token, the same way a normal
-	// client authenticates.
-	user := models.NewUser("tester", "tester@test.local")
-	if err := srv.db.CreateUser(user, "unused-hash"); err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
-	token, err := srv.handlers.CreateAuthToken(user.ID, "127.0.0.1", "test")
-	if err != nil {
-		t.Fatalf("failed to create auth token: %v", err)
-	}
+	_, token := createTestUserAndToken(t, srv, "tester")
+	client := newTestWSClient(t, wsURL)
+	client.identify(token)
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("failed to dial: %v", err)
-	}
-	defer conn.Close()
+	client.send(protocol.OpPluginPaneEnter, protocol.PluginPaneEnterPayload{ChannelID: channel.ID, Width: 80, Height: 24})
 
-	send := func(op protocol.OpCode, payload interface{}) {
-		msg, err := protocol.NewMessage(op, payload)
-		if err != nil {
-			t.Fatalf("failed to build message: %v", err)
-		}
-		raw, err := json.Marshal(msg)
-		if err != nil {
-			t.Fatalf("failed to marshal message: %v", err)
-		}
-		if err := conn.WriteMessage(websocket.TextMessage, raw); err != nil {
-			t.Fatalf("failed to send message: %v", err)
-		}
-	}
-	readUntil := func(timeout time.Duration, match func(*protocol.Message) bool) *protocol.Message {
-		conn.SetReadDeadline(time.Now().Add(timeout))
-		for {
-			_, data, err := conn.ReadMessage()
-			if err != nil {
-				t.Fatalf("read failed while waiting for message: %v", err)
-			}
-			var msg protocol.Message
-			if err := json.Unmarshal(data, &msg); err != nil {
-				continue
-			}
-			if match(&msg) {
-				return &msg
-			}
-		}
-	}
-
-	send(protocol.OpIdentify, protocol.IdentifyPayload{Token: token})
-	readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Op == protocol.OpReady })
-
-	send(protocol.OpPluginPaneEnter, protocol.PluginPaneEnterPayload{ChannelID: channel.ID, Width: 80, Height: 24})
-
-	firstFrame := readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginPaneFrame })
+	firstFrame := client.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginPaneFrame })
 	var framePayload protocol.PluginPaneFramePayload
 	if err := json.Unmarshal(firstFrame.Data, &framePayload); err != nil {
 		t.Fatalf("failed to parse first frame: %v", err)
@@ -269,9 +295,9 @@ func TestPluginPaneRoundTrip(t *testing.T) {
 		t.Fatalf("expected initial frame Seq=0, got %d", framePayload.Seq)
 	}
 
-	send(protocol.OpPluginPaneInput, protocol.PluginPaneInputPayload{ChannelID: channel.ID, KeyString: "x"})
+	client.send(protocol.OpPluginPaneInput, protocol.PluginPaneInputPayload{ChannelID: channel.ID, KeyString: "x"})
 
-	secondFrame := readUntil(5*time.Second, func(m *protocol.Message) bool {
+	secondFrame := client.readUntil(5*time.Second, func(m *protocol.Message) bool {
 		if m.Type != protocol.EventPluginPaneFrame {
 			return false
 		}
@@ -285,7 +311,82 @@ func TestPluginPaneRoundTrip(t *testing.T) {
 		t.Fatalf("expected frame after input to have Seq=1 (counter incremented), got %d", framePayload.Seq)
 	}
 
-	send(protocol.OpPluginPaneLeave, protocol.PluginPaneLeavePayload{ChannelID: channel.ID})
+	client.send(protocol.OpPluginPaneLeave, protocol.PluginPaneLeavePayload{ChannelID: channel.ID})
+}
+
+// TestPluginEnableDisableToggle verifies Settings > Plugins > toggle
+// enabled/disabled actually starts/stops the plugin's Supervisor live — no
+// Concord restart required — and that toggling back on works, mirroring
+// what a server admin driving OpPluginConfigSet from the real client does.
+func TestPluginEnableDisableToggle(t *testing.T) {
+	srv, defaultServer, wsURL := startTestPluginServer(t)
+
+	// Make the test user the server owner so checkPermission's
+	// PermissionManageServer gate (required for OpPluginConfigSet) passes.
+	admin, token := createTestUserAndToken(t, srv, "admin")
+	if err := srv.db.UpdateServerOwner(defaultServer.ID, admin.ID); err != nil {
+		t.Fatalf("failed to make test user server owner: %v", err)
+	}
+
+	client := newTestWSClient(t, wsURL)
+	client.identify(token)
+
+	// Disable HelloPlugin.
+	disabled := false
+	client.send(protocol.OpPluginConfigSet, protocol.PluginConfigSetRequest{
+		ServerID: defaultServer.ID,
+		PluginID: "HelloPlugin",
+		Enabled:  &disabled,
+	})
+	resp := client.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginConfigUpdate })
+	var list protocol.PluginConfigListPayload
+	if err := json.Unmarshal(resp.Data, &list); err != nil {
+		t.Fatalf("failed to parse plugin config list: %v", err)
+	}
+	if len(list.Plugins) != 1 || list.Plugins[0].Enabled {
+		t.Fatalf("expected HelloPlugin to be disabled in the response, got %+v", list.Plugins)
+	}
+
+	// Confirm the process actually stopped (Supervisor.Stop completed before
+	// Manager.SetEnabled returned, which is before the response was sent).
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		installed, err := srv.db.GetInstalledPlugin("HelloPlugin")
+		if err != nil {
+			t.Fatalf("failed to load installed plugin: %v", err)
+		}
+		if installed.Status == models.PluginStatusStopped {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("plugin never reached status=stopped after disable, last status=%q", installed.Status)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Re-enable it and confirm it actually restarts and re-identifies.
+	enabled := true
+	client.send(protocol.OpPluginConfigSet, protocol.PluginConfigSetRequest{
+		ServerID: defaultServer.ID,
+		PluginID: "HelloPlugin",
+		Enabled:  &enabled,
+	})
+	client.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginConfigUpdate })
+
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		installed, err := srv.db.GetInstalledPlugin("HelloPlugin")
+		if err != nil {
+			t.Fatalf("failed to load installed plugin: %v", err)
+		}
+		if installed.Status == models.PluginStatusRunning {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("plugin never returned to status=running after re-enable, last status=%q", installed.Status)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // findChannelByName looks up a channel by name within a server — a small

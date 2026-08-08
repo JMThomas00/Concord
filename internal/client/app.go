@@ -6098,6 +6098,27 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 		}
 
+	case protocol.EventPluginConfigUpdate:
+		// Parse installed plugin list + config payload (response to
+		// OpPluginConfigGet, or a broadcast after OpPluginConfigSet)
+		var payload protocol.PluginConfigListPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse PLUGIN_CONFIG_UPDATE payload: %v", err)
+			return nil
+		}
+
+		if a.view == ViewServerManagement && a.serverManagementState != nil {
+			if a.serverManagementState.Categories[a.serverManagementState.SelectedCategory] == "Plugins" {
+				a.serverManagementState.PluginList = payload.Plugins
+				if a.serverManagementState.SelectedPlugin >= len(payload.Plugins) {
+					a.serverManagementState.SelectedPlugin = len(payload.Plugins) - 1
+				}
+				if a.serverManagementState.SelectedPlugin < 0 {
+					a.serverManagementState.SelectedPlugin = 0
+				}
+			}
+		}
+
 	case protocol.EventMessagesPruned:
 		// Parse messages pruned payload
 		var payload protocol.MessagesPrunedPayload

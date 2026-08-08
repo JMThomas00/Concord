@@ -187,9 +187,16 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	// os.Interrupt is best-effort on Windows (no real SIGINT); Kill is the
-	// reliable fallback there. Try the graceful path first regardless.
-	_ = cmd.Process.Signal(os.Interrupt)
+	// os.Interrupt isn't implemented on Windows — Process.Signal returns an
+	// error immediately rather than delivering anything, so waiting out the
+	// full ctx timeout for a graceful exit that will never happen would make
+	// every disable/restart take as long as the timeout. If the signal
+	// wasn't actually delivered, go straight to Kill instead of waiting.
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		_ = cmd.Process.Kill()
+		<-s.done
+		return nil
+	}
 
 	select {
 	case <-s.done:

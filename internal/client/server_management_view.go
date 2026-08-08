@@ -37,7 +37,7 @@ func (a *App) openServerManagement(returnTo View, categoryIndex int) tea.Cmd {
 		return nil
 	}
 
-	categories := []string{"Channels", "Roles", "Members", "Messages"}
+	categories := []string{"Channels", "Roles", "Members", "Messages", "Plugins"}
 
 	// Load initial data for the selected category
 	serverID := a.getActiveServerID()
@@ -70,6 +70,11 @@ func (a *App) openServerManagement(returnTo View, categoryIndex int) tea.Cmd {
 	// Load retention policy for Messages category
 	if categoryIndex == 3 {
 		a.loadRetentionPolicyForManagement(serverID)
+	}
+
+	// Load installed plugin list for Plugins category
+	if categoryIndex == 4 {
+		a.loadPluginListForManagement(serverID)
 	}
 
 	a.view = ViewServerManagement
@@ -259,6 +264,20 @@ func (a *App) loadRetentionPolicyForManagement(serverID uuid.UUID) {
 		ServerID: serverID,
 	}
 	msg, err := protocol.NewMessage(protocol.OpGetRetentionPolicy, req)
+	if err == nil {
+		_ = a.activeConn.Connection.Send(msg)
+	}
+}
+
+// loadPluginListForManagement requests the installed plugin list + config
+// for the Plugins category (Settings > Plugins). The response arrives async
+// as EventPluginConfigUpdate — see app.go's dispatch handling.
+func (a *App) loadPluginListForManagement(serverID uuid.UUID) {
+	if a.activeConn == nil {
+		return
+	}
+	req := &protocol.PluginConfigGetRequest{ServerID: serverID}
+	msg, err := protocol.NewMessage(protocol.OpPluginConfigGet, req)
 	if err == nil {
 		_ = a.activeConn.Connection.Send(msg)
 	}
@@ -497,6 +516,9 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	if s.PruneConfirmOpen {
 		return a.handlePruneConfirmKey(msg)
 	}
+	if s.PluginConfigState != nil {
+		return a.handlePluginConfigKey(msg)
+	}
 
 	switch msg.String() {
 	case "esc":
@@ -556,6 +578,8 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 		if !s.FocusOnForm {
 			// Enter into the selected category
 			s.FocusOnForm = true
+		} else if s.SelectedCategory == 4 {
+			a.handleOpenPluginConfigAction()
 		}
 
 	case "c", "C":
@@ -644,6 +668,12 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 		if s.FocusOnForm && s.SelectedCategory == 3 {
 			a.handleCreateChannelOverride()
 		}
+
+	case "t", "T":
+		// Toggle enabled/disabled (Plugins)
+		if s.FocusOnForm && s.SelectedCategory == 4 {
+			a.handleTogglePluginAction()
+		}
 	}
 
 	return nil
@@ -665,6 +695,9 @@ func (a *App) loadCategoryData(categoryIndex int) {
 		a.serverManagementState.SelectedMember = 0
 	case 3: // Messages
 		a.loadRetentionPolicyForManagement(serverID)
+	case 4: // Plugins
+		a.loadPluginListForManagement(serverID)
+		a.serverManagementState.SelectedPlugin = 0
 	}
 }
 
@@ -762,6 +795,10 @@ func (a *App) navigateUpInCategory() {
 		if s.SelectedOverride > 0 {
 			s.SelectedOverride--
 		}
+	case 4: // Plugins
+		if s.SelectedPlugin > 0 {
+			s.SelectedPlugin--
+		}
 	}
 }
 
@@ -800,6 +837,10 @@ func (a *App) navigateDownInCategory() {
 	case 3: // Messages
 		if s.ChannelOverrides != nil && s.SelectedOverride < len(s.ChannelOverrides)-1 {
 			s.SelectedOverride++
+		}
+	case 4: // Plugins
+		if s.SelectedPlugin < len(s.PluginList)-1 {
+			s.SelectedPlugin++
 		}
 	}
 }
@@ -2973,6 +3014,12 @@ func (a *App) renderServerManagementView() string {
 		} else {
 			contentPanel = a.renderMessagesCategory(contentWidth, totalHeight-2, s)
 		}
+	case 4: // Plugins
+		if s.PluginConfigState != nil {
+			contentPanel = a.renderPluginConfigPage(contentWidth, totalHeight-2, s)
+		} else {
+			contentPanel = a.renderPluginsCategory(contentWidth, totalHeight-2, s)
+		}
 	}
 
 	// ── Assemble ───────────────────────────────────────────────────
@@ -3468,6 +3515,216 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 		bottom.String(),
 	)
 
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderPluginsCategory renders the Settings > Plugins list page: every
+// plugin discovered under the server's Plugins directory, its version,
+// process status, and enabled/disabled state — a Minecraft-mods-style view
+// with zero per-plugin code, sourced entirely from OpPluginConfigGet.
+func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState) string {
+	layout := calculateSettingsLayout(width, height, 3, 1)
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	top.writeLine(headerStyle.Render("Plugins"))
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(descStyle.Render("Drop a plugin's folder into Plugins/ and restart to install it"))
+
+	enabledCount := 0
+	for _, p := range s.PluginList {
+		if p.Enabled {
+			enabledCount++
+		}
+	}
+	statsStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(statsStyle.Render(fmt.Sprintf("%d plugins · %d enabled", len(s.PluginList), enabledCount)))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	if len(s.PluginList) == 0 {
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(dimStyle.Render("  No plugins installed"))
+	} else {
+		for i, p := range s.PluginList {
+			selected := s.FocusOnForm && i == s.SelectedPlugin
+
+			prefix := "  "
+			if selected {
+				prefix = "▶ "
+			}
+
+			statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+			switch p.Status {
+			case "running":
+				statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green))
+			case "crashed":
+				statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red))
+			}
+
+			toggle := "[ ]"
+			if p.Enabled {
+				toggle = "[x]"
+			}
+
+			line := fmt.Sprintf("%s v%s", p.Name, p.Version)
+			status := statusStyle.Render(p.Status)
+
+			var rendered string
+			if selected {
+				rendered = lipgloss.NewStyle().
+					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
+					Bold(true).
+					Width(layout.interiorWidth).
+					Render(fmt.Sprintf("%s%s %s — %s", prefix, toggle, line, p.Status))
+			} else {
+				rendered = fmt.Sprintf("%s%s %s — %s", prefix, toggle, line, status)
+			}
+			middle.writeLine(rendered)
+
+			if p.LastError != "" && (selected || p.Status == "crashed") {
+				errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Italic(true)
+				middle.writeLine(errStyle.Render("    ⚠ " + p.LastError))
+			}
+		}
+	}
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Esc close"))
+	bottom.writeLine(helpStyle.Render("Actions: Enter configure · T toggle enabled"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderPluginConfigPage renders the Settings > Plugins > <name> config
+// sub-page: one row per server_config_field declared in that plugin's
+// manifest, using the same generic field renderer as the channel-creation
+// form's plugin fields (text/number/boolean/select/channel_select).
+func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState) string {
+	state := s.PluginConfigState
+	if state == nil {
+		return ""
+	}
+
+	layout := calculateSettingsLayout(width, height, 2, 0)
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	top.writeLine(headerStyle.Render("Configure " + state.PluginID))
+
+	subtitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(subtitleStyle.Render("Server-wide settings for this plugin"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	if state.ErrorMsg != "" {
+		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Bold(true)
+		middle.writeLine(errorStyle.Render("⚠ " + state.ErrorMsg))
+		middle.writeBlank()
+	}
+
+	if len(state.Fields) == 0 {
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(dimStyle.Render("  This plugin has no server-wide settings."))
+		middle.writeBlank()
+	}
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	for i, f := range state.Fields {
+		focused := state.FocusField == i
+		required := ""
+		if f.Required {
+			required = " *"
+		}
+		middle.writeLine(labelStyle.Render("▸ " + f.Label + required + ":"))
+
+		switch f.Type {
+		case "text", "number":
+			view := state.TextInputs[i].View()
+			if focused {
+				middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Render("  " + view))
+			} else {
+				middle.writeLine("  " + view)
+			}
+		default:
+			valStyle := lipgloss.NewStyle()
+			if focused {
+				valStyle = valStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
+			}
+			val := state.Values[i]
+			if val == "" {
+				val = "(none)"
+			}
+			middle.writeLine(valStyle.Render("  ◂ " + val + " ▸"))
+		}
+		middle.writeBlank()
+	}
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	saveField := len(state.Fields)
+	backField := len(state.Fields) + 1
+
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	var saveButton, backButton string
+	if state.FocusField == saveField {
+		saveButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Green)).
+			Bold(true).Padding(0, 2).Render("Save")
+	} else {
+		saveButton = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Render("[Save]")
+	}
+	if state.FocusField == backField {
+		backButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(a.theme.Colors.Background)).
+			Background(lipgloss.Color(a.theme.Colors.Comment)).
+			Bold(true).Padding(0, 2).Render("Back")
+	} else {
+		backButton = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Render("[Back]")
+	}
+	bottom.writeLine("  " + saveButton + "    " + backButton)
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).
