@@ -10,8 +10,16 @@ GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 
 # Binary names
+#
+# Concord ships exactly three binaries: concord-server(.exe), concord-client(.exe),
+# concord-hub(.exe). Voice is a foundational feature of the client, not an optional
+# add-on — concord-client(.exe) always includes it. The `novoice` build tag / targets
+# below exist ONLY as a CGO-free fallback for environments without a C toolchain
+# (CI runners, a dev machine without MSYS2 installed, etc.) — they are a build
+# convenience, not a second product line, and their output is never named
+# concord-client(.exe) so it can't be mistaken for the real thing.
 SERVER_BINARY=concord-server
-CLIENT_BINARY=concord
+CLIENT_BINARY=concord-client
 HUB_BINARY=concord-hub
 
 # Build directories
@@ -104,9 +112,12 @@ install: build
 	install -d $(DESTDIR)/usr/local/share/concord/themes
 	install -m 644 configs/themes/*.toml $(DESTDIR)/usr/local/share/concord/themes/
 
-# Build distribution packages for all platforms (novoice — CGO cross-compilation not practical)
+# Build distribution packages for all platforms (novoice — CGO cross-compilation
+# across platforms isn't practical from one host; this is a cross-compile
+# limitation, not a product decision). Use build-windows on Windows for the real,
+# voice-included concord-client.exe.
 dist:
-	@echo "Building distribution packages (novoice — use build-windows-voice for audio)..."
+	@echo "Building distribution packages (novoice — use build-windows on Windows for a voice-included client)..."
 	@mkdir -p $(DIST_DIR)
 	@for platform in $(PLATFORMS); do \
 		CGO_ENABLED=0 GOOS=$${platform%/*} GOARCH=$${platform#*/} \
@@ -116,24 +127,30 @@ dist:
 		echo "Built for $${platform}"; \
 	done
 
-# Build for Windows specifically (no audio)
+# Build all three Windows binaries — THE canonical Windows build (requires MinGW
+# GCC via MSYS2 for the client's voice engine: install from https://www.msys2.org/
+# then `pacman -S mingw-w64-x86_64-gcc`). Voice is compiled into concord-client.exe
+# unconditionally; there is no separate "with voice" target because there is no
+# without-voice product.
+# Output: build/concord-server.exe, build/concord-client.exe, build/concord-hub.exe
 build-windows:
-	@echo "Building for Windows..."
-	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
-
-# Build for Windows with voice audio support (requires MinGW GCC via MSYS2)
-# Install MSYS2 from https://www.msys2.org/ then: pacman -S mingw-w64-x86_64-gcc
-# Output: build/concord-client.exe (with WASAPI audio — voice is now the default)
-#         build/concord-server.exe (unchanged, no CGO needed)
-build-windows-voice:
-	@echo "Building for Windows with voice support..."
+	@echo "Building for Windows (server, client with voice, hub)..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(HUB_BINARY).exe ./cmd/hub
 	PATH="C:/msys64/mingw64/bin:$(PATH)" CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
-	@echo "Build complete: $(BUILD_DIR)/$(CLIENT_BINARY).exe"
+	@echo "Build complete: $(BUILD_DIR)/$(SERVER_BINARY).exe $(BUILD_DIR)/$(CLIENT_BINARY).exe $(BUILD_DIR)/$(HUB_BINARY).exe"
+
+# Fallback only — no MSYS2/GCC available (e.g. CI, or a dev machine without the
+# toolchain installed). Produces a CGO-free, voice-STRIPPED client. Deliberately
+# named -novoice, never concord-client.exe, so it can't get deployed as if it were
+# the real client. Prefer build-windows whenever a C toolchain is available.
+build-windows-novoice:
+	@echo "Building for Windows without voice (fallback — no C toolchain found)..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(HUB_BINARY).exe ./cmd/hub
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -tags novoice $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY)-novoice.exe ./cmd/client
 
 # Development: watch for changes and rebuild
 dev-server:
@@ -175,8 +192,8 @@ help:
 	@echo "  build         Build both server and client"
 	@echo "  build-server  Build only the server"
 	@echo "  build-client  Build only the client"
-	@echo "  build-windows       Build Windows executables (no audio)"
-	@echo "  build-windows-voice Build Windows with full voice/audio (requires MSYS2 GCC)"
+	@echo "  build-windows         Build all 3 Windows binaries — server, client (voice included), hub"
+	@echo "  build-windows-novoice Fallback only: no MSYS2/GCC on this machine, voice-stripped client"
 	@echo "  clean         Remove build artifacts"
 	@echo "  test          Run tests"
 	@echo "  deps          Download and tidy dependencies"

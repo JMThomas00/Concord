@@ -16,11 +16,13 @@ Concord is a self-hosted, terminal-first chat platform built in Go. Each server 
 
 ## Build System
 
-**Voice build tag:** The client uses a `novoice` build tag. Without it (the default), voice is compiled in. Add `-tags novoice` to exclude it:
+**Concord ships exactly three binaries, always:** `concord-server.exe`, `concord-client.exe`, `concord-hub.exe`. Voice is a **foundational feature of the client, not an optional variant** — `concord-client.exe` always includes it. There is no supported voice/novoice split as two parallel products; don't reintroduce one.
+
+**`make build-windows`** is the canonical build on this platform — produces all three binaries, client with voice (requires MSYS2 GCC on `PATH`: `pacman -S mingw-w64-x86_64-gcc`). `make build-windows-novoice` exists only as a fallback for a machine with no C toolchain (CI, a fresh dev box); its client output is always suffixed `-novoice` and is never deployed as `concord-client.exe`.
+
+**Voice build tag (implementation detail, not a release axis):** the client uses a `novoice` build tag internally so it can still compile without CGO when needed (see `-novoice` fallback above). Without it (the default), voice is compiled in:
 - `voice_engine.go` — `//go:build !novoice` (real audio engine, CGO)
 - `voice_engine_stub.go` — `//go:build novoice` (stub, CGO-free)
-
-**Output:** `build/concord.exe` (client), `build/concord-server.exe` (server), `build/concord-hub.exe` (Grapevine hub)
 
 ---
 
