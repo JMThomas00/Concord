@@ -97,10 +97,10 @@ func (a *App) loadChannelListForManagement(serverID uuid.UUID) {
 	defer a.activeConn.mu.RUnlock()
 
 	if channels, ok := a.activeConn.Channels[serverID]; ok {
-		// Include text, voice channels AND categories (not DMs)
+		// Include text, voice, plugin channels, AND categories (not DMs)
 		var channelList []*models.Channel
 		for _, ch := range channels {
-			if ch.Type == models.ChannelTypeText || ch.Type == models.ChannelTypeVoice || ch.Type == models.ChannelTypeCategory {
+			if ch.Type == models.ChannelTypeText || ch.Type == models.ChannelTypeVoice || ch.Type == models.ChannelTypeCategory || ch.Type == models.ChannelTypePlugin {
 				channelList = append(channelList, ch)
 			}
 		}
@@ -1672,9 +1672,12 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 	var opCode protocol.OpCode
 
 	if state.Mode == "create" {
-		// Categories and plugin channels are always top-level (no parent)
+		// Categories are always top-level (no parent) — nesting a category
+		// inside a category is rejected server-side. Text, voice, and
+		// plugin channels can all have a parent group; the server applies
+		// CategoryID uniformly to any non-category channel type.
 		var categoryID *uuid.UUID
-		if channelType == models.ChannelTypeText || channelType == models.ChannelTypeVoice {
+		if channelType != models.ChannelTypeCategory {
 			categoryID = state.CategoryID
 		}
 

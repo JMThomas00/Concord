@@ -114,8 +114,16 @@ func (a *App) renderPluginPaneFrame(width, height int) string {
 			Align(lipgloss.Center, lipgloss.Center).
 			Render("Waiting for plugin…")
 	}
+	// Centered, not left-aligned: a plugin's frame doesn't always exactly
+	// fill the box it's given (e.g. Tukan's own lane-width math rounds
+	// down rather than ever risking rendering wider than reported, since
+	// an oversized frame gets word-wrapped here and corrupts every line —
+	// see the laneWidth fix in Tukan's own history). A slightly narrower
+	// frame should sit centered in the pane, not jammed into the top-left
+	// corner with all the slack on the right.
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).
+		Align(lipgloss.Center, lipgloss.Center).
 		Render(a.pluginPane.Frame)
 }

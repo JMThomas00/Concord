@@ -455,12 +455,29 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 	}
 	HubLog.Info("Auto-joined users to new channel", "user_count", len(onlineUsers), "channel_name", channel.Name, "channel_id", channel.ID)
 
-	// Broadcast to all server members. Plugin config rides along in the same
-	// broadcast so the owning plugin's service-account client (a normal
-	// broadcast recipient like any other) can initialize its own record with
-	// zero extra round trip.
+	// Broadcast to all server members.
 	payload := protocol.ChannelCreatePayload{Channel: channel, PluginConfig: req.PluginConfig}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventChannelCreate, payload, nil)
+
+	// Plugin connections are deliberately never registered in the
+	// per-server broadcast list (identifyAsPlugin skips populating
+	// ServerIDs, so a plugin isn't a recipient of every server-wide
+	// broadcast — role changes, bans, member updates, etc., which a
+	// narrowly-scoped service account has no business seeing) — so the
+	// BroadcastToServer call above never actually reaches a plugin's own
+	// service-account connection, contrary to what this function used to
+	// assume. For a newly created plugin channel, directly notify the
+	// specific plugin that owns it instead, using the same
+	// ServiceUserIDFor+SendToUser pattern every pane-lifecycle handler
+	// below already relies on.
+	if channel.Type == models.ChannelTypePlugin {
+		serviceUserID, err := h.plugins.ServiceUserIDFor(channel.PluginID)
+		if err != nil {
+			MsgLog.Warn("Plugin not running, could not notify of new channel", "plugin_id", channel.PluginID, "channel_id", channel.ID, "error", err)
+		} else if err := h.hub.SendToUser(serviceUserID, protocol.EventChannelCreate, payload); err != nil {
+			MsgLog.Error("Failed to notify plugin of its new channel", "plugin_id", channel.PluginID, "channel_id", channel.ID, "error", err)
+		}
+	}
 }
 
 // HandleUpdateChannel handles channel update requests
@@ -2283,11 +2300,13 @@ func (h *Handlers) HandlePluginPaneFrame(c *Client, msg *protocol.Message) {
 }
 
 // HandlePluginEvent handles the generic {plugin_id, kind, payload} envelope.
-// Today only Kind == "notify" is understood: it posts a system message into
-// the plugin's server-admin-configured activity channel, reusing
-// sendSystemMessage verbatim — the exact function moderation actions already
-// use. Any other Kind is relayed back to the plugin's own client unchanged,
-// keeping the envelope future-proof without a protocol change.
+// Kind == "notify" posts a system message into the plugin's server-admin-
+// configured activity channel, reusing sendSystemMessage verbatim — the
+// exact function moderation actions already use. Any Kind sent with
+// ViewerID set is relayed unchanged to that specific viewer's own client
+// via EventPluginEvent — e.g. a plugin telling one viewer's pane to close
+// (Kind "leave_pane") — letting a plugin add new viewer-directed signals
+// without a protocol change. Anything else is logged and dropped.
 func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
 	if !c.IsPlugin {
 		c.sendError(protocol.ErrorCodeForbidden, "Only plugin connections may send plugin events")
@@ -2301,6 +2320,12 @@ func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
 	req.PluginID = c.PluginID // never trust a client-claimed plugin id
 
 	if req.Kind != "notify" {
+		if req.ViewerID != uuid.Nil {
+			if err := h.hub.SendToUser(req.ViewerID, protocol.EventPluginEvent, req); err != nil {
+				MsgLog.Error("Failed to relay plugin event to viewer", "plugin_id", req.PluginID, "viewer_id", req.ViewerID, "kind", req.Kind, "error", err)
+			}
+			return
+		}
 		MsgLog.Warn("Unhandled plugin event kind", "plugin_id", req.PluginID, "kind", req.Kind)
 		return
 	}

@@ -639,16 +639,31 @@ type PluginPaneFramePayload struct {
 
 // PluginEventPayload is the generic, opaque envelope for anything that isn't
 // pane rendering — e.g. a plugin posting a "notify" event to trigger a system
-// message. Kind is plugin-defined; Concord only special-cases "notify" today.
+// message. Kind is plugin-defined; Concord special-cases "notify" (posts to
+// the admin-configured activity channel) and, when ViewerID is set, relays
+// the envelope unchanged to that specific viewer's own client via
+// EventPluginEvent — e.g. a plugin telling one viewer's pane to close
+// itself (Kind "leave_pane") without needing a dedicated opcode.
 type PluginEventPayload struct {
 	PluginID string          `json:"plugin_id"`
 	Kind     string          `json:"kind"`
 	Payload  json.RawMessage `json:"payload"`
+	ViewerID uuid.UUID       `json:"viewer_id,omitempty"`
 }
 
 // PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
 type PluginNotifyEventPayload struct {
 	Content string `json:"content"`
+}
+
+// PluginPaneClosePayload is the Payload shape for
+// PluginEventPayload{Kind: "leave_pane"} — tells the named viewer's client
+// to leave a plugin pane it's currently displaying, e.g. because the
+// plugin's own UI reached a state (its main/top-level view) where a
+// designated "quit" keypress should back out to Concord's own navigation
+// instead of being interpreted by the plugin.
+type PluginPaneClosePayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
 }
 
 // PluginInfo describes one installed plugin for the Settings > Plugins UI.

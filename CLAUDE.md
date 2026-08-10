@@ -14,134 +14,13 @@ Concord is a self-hosted, terminal-first chat platform built in Go. Each server 
 
 ---
 
-## Technology Stack
-
-| Layer | Library | Notes |
-|---|---|---|
-| Language | Go 1.24.0 | CGO required for voice client |
-| TUI framework | charmbracelet/bubbletea v1.2.4 | Elm Architecture |
-| Styling | charmbracelet/lipgloss v1.1.0 | Declarative layout |
-| UI components | charmbracelet/bubbles v0.20.0 | Textarea, viewport, list |
-| Markdown | charmbracelet/glamour v0.8.0 | Chat message rendering |
-| Logging | charmbracelet/log v0.4.2 | Structured, colorized |
-| WebSocket | gorilla/websocket v1.5.3 | Client/server transport |
-| Database | modernc.org/sqlite v1.34.4 | **Pure Go, no CGO** |
-| Voice audio | gen2brain/malgo v0.11.24 | miniaudio wrapper (CGO) |
-| Voice codec | hraban/opus | libopus wrapper (CGO) |
-| Voice transport | pion/webrtc/v3 v3.3.6 | Pure Go WebRTC |
-| Config (client) | encoding/json (stdlib) | `~/.concord/` JSON files |
-| Config (server) | pelletier/go-toml/v2 v2.2.3 | `concord-server.toml` |
-| IDs | google/uuid v1.6.0 | All entities use UUID |
-| Auth | golang.org/x/crypto bcrypt | Cost 14 |
-| Notifications | gen2brain/beeep v0.11.2 | Cross-platform OS alerts |
-
----
-
 ## Build System
-
-```bash
-make build                  # Server + client + hub (voice enabled, needs CGO)
-make build-server           # Server only (CGO_ENABLED=0, pure Go)
-make build-client           # Client with voice (CGO_ENABLED=1)
-make build-client-novoice   # Client without voice (CGO_ENABLED=0)
-make build-hub              # Grapevine hub (CGO_ENABLED=0, pure Go)
-make build-windows-voice    # Windows client with WASAPI audio (requires MSYS2 GCC)
-make test                   # Run all tests
-make fmt                    # gofmt
-```
 
 **Voice build tag:** The client uses a `novoice` build tag. Without it (the default), voice is compiled in. Add `-tags novoice` to exclude it:
 - `voice_engine.go` — `//go:build !novoice` (real audio engine, CGO)
 - `voice_engine_stub.go` — `//go:build novoice` (stub, CGO-free)
 
 **Output:** `build/concord.exe` (client), `build/concord-server.exe` (server), `build/concord-hub.exe` (Grapevine hub)
-
----
-
-## Project Structure
-
-```
-concord/
-├── cmd/
-│   ├── client/main.go          # Client entry point (auto-connect, identity wizard)
-│   ├── hub/
-│   │   ├── main.go             # Grapevine hub entry point (--setup, --debug, --dashboard)
-│   │   └── setup.go            # First-run Bubbletea setup wizard
-│   └── server/
-│       ├── main.go             # Server entry point (--debug, --hybrid, --dashboard flags)
-│       ├── setup.go            # First-run TUI setup wizard (Bubbletea form)
-│       └── tos_setup.go        # Terms of service acceptance flow
-│
-├── internal/
-│   ├── client/                 # Full TUI application
-│   │   ├── app.go              # App struct, Init(), Update() — central state machine
-│   │   ├── views.go            # View() and all rendering functions
-│   │   ├── commands.go         # Slash command parser and handlers
-│   │   ├── connection.go       # WebSocket client, protocol handling
-│   │   ├── connection_manager.go # Multi-server connection management
-│   │   ├── config.go           # ~/.concord/config.json + servers.json R/W
-│   │   ├── channel_tree.go     # Category/channel tree data structure
-│   │   ├── notifications.go    # OS notification dispatch (beeep)
-│   │   ├── reconnect_strategy.go # Exponential backoff reconnection
-│   │   ├── voice_engine.go     # WebRTC+Opus voice engine (!novoice build)
-│   │   ├── voice_engine_stub.go # No-op stub (novoice build)
-│   │   ├── voice_msgs.go       # Voice-related Bubbletea messages
-│   │   ├── wasapi_devices_windows.go  # Windows WASAPI audio enumeration
-│   │   ├── wasapi_devices_other.go    # Stub for non-Windows
-│   │   ├── hub_browser_view.go # Grapevine Hub Browser overlay (Ctrl+G)
-│   │   ├── grapevine_http.go   # HTTP client for hub REST API + token redemption
-│   │   ├── hub_msgs.go         # Hub-browser Bubbletea messages
-│   │   ├── *_view.go           # Individual settings/UI panels (10+ files)
-│   │   ├── banners.go          # ASCII art banner definitions
-│   │   └── banners_generated.go # Embedded banner data
-│   │
-│   ├── server/
-│   │   ├── server.go           # HTTP + WebSocket server setup
-│   │   ├── handlers.go         # Auth, message, channel, role, voice, retention handlers
-│   │   ├── grapevine.go        # Grapevine client: hub registration, heartbeats, join tokens
-│   │   ├── hub.go              # Central goroutine hub pattern
-│   │   ├── client.go           # Per-connection client state
-│   │   ├── stats_tracker.go    # Live connection/message statistics
-│   │   ├── logger.go           # Structured log categories (Auth, Hub, Voice, etc.)
-│   │   ├── banner.go           # Server startup ASCII banner
-│   │   └── dashboard/          # Server dashboard TUI (--hybrid / --dashboard flag)
-│   │       ├── dashboard.go
-│   │       ├── activity_feed.go
-│   │       ├── client_list.go
-│   │       ├── message_stats.go
-│   │       ├── system_stats.go
-│   │       └── hybrid_renderer.go
-│   │
-│   ├── hub/                    # Grapevine hub (standalone discovery service)
-│   │   ├── server.go           # HTTP server, route setup, background loops
-│   │   ├── handlers.go         # REST handlers, HMAC auth, rate limiting, join proxy
-│   │   ├── database.go         # Hub SQLite schema and queries
-│   │   ├── federation.go       # Peer hub sync loop
-│   │   ├── registry.go         # Offline sweep + stale purge loops
-│   │   ├── auth.go             # Secret generation, HMAC sign/verify
-│   │   ├── config.go           # grapevine-hub.toml loading
-│   │   ├── models.go           # RegisteredServer, ServerListing, JoinToken, etc.
-│   │   ├── stats.go            # Live counters + log ring buffer (dashboard)
-│   │   └── dashboard.go        # --dashboard live TUI (stats, servers, activity)
-│   │
-│   ├── database/sqlite.go      # All DB operations + migrations (3330 lines)
-│   ├── models/                 # Shared data models
-│   │   ├── user.go, server.go, channel.go, message.go, role.go, voice.go, retention.go
-│   ├── protocol/messages.go    # All OpCodes, EventTypes, and payload structs
-│   ├── themes/
-│   │   ├── theme.go            # Theme struct and loading logic
-│   │   ├── embedded.go         # go:embed for all theme TOML files
-│   │   └── themes/             # 40+ TOML theme files (dracula, nord, gruvbox, etc.)
-│   └── testutil/testutil.go    # Shared test helpers
-│
-├── pkg/crypto/crypto.go        # Token hashing utilities
-├── legal/                      # Client Terms.md, Server Terms.md
-├── configs/themes/             # Legacy theme location (alucard.toml, dracula.toml)
-├── concord-server.toml.example # Documented server config template
-├── generate_themes.go          # Tool to regenerate embedded.go from theme files
-├── go.mod / go.sum
-└── Makefile
-```
 
 ---
 
@@ -152,49 +31,7 @@ concord/
 { "op": 3, "d": { ... }, "s": 42, "t": "EVENT_NAME" }
 ```
 
-### OpCodes — Client → Server (0–9, 16–48)
-
-| Op | Name | Description |
-|---|---|---|
-| 0 | OpIdentify | Authenticate with session token |
-| 1 | OpHeartbeat | Keep-alive ping |
-| 2 | OpRequestGuild | Request full server data |
-| 3 | OpSendMessage | Send chat message (with optional reply_to_id) |
-| 4 | OpTypingStart | Typing indicator |
-| 5 | OpPresenceUpdate | Change status/status_text |
-| 6 | OpVoiceStateUpdate | Join/leave voice channel |
-| 7 | OpChannelCreate | Create text or voice channel |
-| 8 | OpChannelUpdate | Rename, reorder, type-change, lock channel |
-| 9 | OpChannelDelete | Delete channel (cascades to children) |
-| 16 | OpRequestMessages | Load message history (paginated) |
-| 17–18 | OpRoleAssign / OpRoleRemove | Manage member roles |
-| 19–20 | OpKickMember / OpBanMember | Kick or ban a user |
-| 21 | OpMuteMember | Server-mute a user |
-| 22 | OpWhisper | Ephemeral private message (in-channel DM) |
-| 23–24 | OpPinMessage / OpUnpinMessage | Pin/unpin messages |
-| 25 | OpTimeoutMember | Temporary ban for N minutes |
-| 26 | OpUnbanMember | Lift a ban |
-| 27–29 | OpCreateRole / OpUpdateRole / OpDeleteRole | Role CRUD |
-| 30 | OpEditMessage | Edit own message content |
-| 31 | OpDeleteMessage | Soft-delete a message |
-| 32 | OpUnmuteMember | Lift a server-wide mute |
-| 40–43 | OpGetRetentionPolicy … OpPruneMessages | Message retention management |
-| 44 | OpAssignTitle | Give member a custom title |
-| 45 | OpVoiceSignal | WebRTC SDP/ICE relay (C↔S↔C) |
-| 46 | OpVoiceSpeaking | Report speaking state |
-| 47 | OpVoiceServerMute | Admin: server-mute a voice user |
-| 48 | OpMoveVoice | Admin: force-move user to another voice channel |
-
-### OpCodes — Server → Client (10–15)
-
-| Op | Name | Description |
-|---|---|---|
-| 10 | OpDispatch | Event dispatch (carries `t` EventType) |
-| 11 | OpHeartbeatAck | Heartbeat acknowledgment |
-| 12 | OpHello | Initial handshake (heartbeat_interval) |
-| 13 | OpReady | Auth success + user/server data |
-| 14 | OpInvalidSession | Auth failure |
-| 15 | OpReconnect | Server requests client reconnect |
+OpCodes are defined in `internal/protocol/messages.go`.
 
 ### Connection Flow
 ```
@@ -213,19 +50,7 @@ Client                          Server
 
 ## Database Schema
 
-**Tables:** users, servers, channels, messages, roles, server_members, member_roles, sessions, bans, timeouts, mutes, invites, dm_recipients, message_mentions, message_reactions, permission_overwrites, message_retention_policies, message_prune_history, voice_states (via migration)
-
-**Key migrations run on startup:**
-- `MigrateChannelSortOrder` — adds `sort_order` column, replaces `position`
-- `MigrateRoleDisplayOrder` — adds `display_order` to roles
-- `MigrateServerMemberCustomTitle` — adds `custom_title` to server_members
-- `MigrateMessageWhisperFields` — adds `is_whisper`, `recipient_id` to messages
-- `MigrateMessageSoftDelete` — adds `is_deleted`, `deleted_at`, `deleted_by`
-- `MigrateChannelIsLocked` — adds `is_locked` to channels
-- `MigrateMemberKickCount` — adds `kick_count` to server_members
-- `MigrateServerMembersIsBanned` — adds `is_banned` flag
-- `MigrateMutesServerWide` — makes `mutes.channel_id` nullable
-- `MigrateVoiceStates` / `MigrateVoiceChannelSettings` — voice state tables
+Schema and migrations live in `internal/database/sqlite.go`.
 
 **Important:** SQLite uses `modernc.org/sqlite` (pure Go) for the **server**. CGO is only needed for the **client** voice engine (malgo + opus).
 
@@ -243,20 +68,7 @@ Key config structs: `AppConfig`, `UIConfig`, `AudioConfig`, `NotificationConfig`
 
 ## Server Configuration
 
-`concord-server.toml` (auto-generated by first-run wizard):
-```toml
-host = "0.0.0.0"
-port = 8080
-server_name = "Concord Server"
-database_path = "concord.db"
-max_connections = 1000
-debug = false
-admin_email = ""       # Optional; first registrant becomes owner
-
-[message_pruning]
-enabled = true
-interval_hours = 24
-```
+`concord-server.toml` (auto-generated by first-run wizard; see `concord-server.toml.example` for the documented template).
 
 **Server flags:** `--debug`, `--hybrid` (log + dashboard side-by-side), `--dashboard` (dashboard only), `--setup` (re-run first-run wizard)
 
@@ -264,34 +76,7 @@ interval_hours = 24
 
 ## Slash Commands (client-side)
 
-| Command | Description |
-|---|---|
-| `/create-channel <name>` | Create text channel (in current category if focused) |
-| `/create-group <name>` | Create category |
-| `/delete-channel <name>` | Delete channel |
-| `/rename-channel <old> <new>` | Rename channel |
-| `/move-channel` | Reorder (also Shift+↑/↓ in sidebar) |
-| `/theme <name>` | Switch theme live |
-| `/mute` / `/unmute` | Mute current channel (self) |
-| `/mute @user [minutes]` | Server-mute a member |
-| `/role @user <role>` | Assign role |
-| `/create-role <name>` | Create new role |
-| `/kick @user [reason]` | Kick member |
-| `/ban @user [reason]` | Ban member |
-| `/unban <username>` | Unban member |
-| `/timeout @user <minutes>` | Temporary ban |
-| `/pin` / `/unpin` | Pin/unpin highlighted message |
-| `/whisper @user <text>` | Send whisper (ephemeral DM) |
-| `/links` | Show links in current channel |
-| `/status <text>` | Set status text |
-| `/title @user <title>` | Assign custom title |
-| `/lock` / `/unlock` | Lock/unlock channel |
-| `/join-voice <channel>` | Join voice channel |
-| `/leave-voice` | Leave voice channel |
-| `/mute-voice @user` | Server-mute in voice |
-| `/deafen-voice @user` | Server-deafen in voice |
-| `/move-voice @user <channel>` | Force-move user |
-| `/help` | Show command reference |
+Parsed and handled in `internal/client/commands.go`.
 
 ---
 
@@ -318,17 +103,7 @@ Grapevine is Concord's opt-in, decentralized server directory. A **hub** (`build
 - **Server integration** (`internal/server/grapevine.go`) — opt-in via `[grapevine]` in `concord-server.toml` or the first-run wizard's Grapevine step (also in `--reconfigure`); registers with a hub, heartbeats member/online counts, persists `server_id` + `registration_secret` back into its config
 - **Client Hub Browser** (`internal/client/hub_browser_view.go`) — full-screen overlay. Primary entry: **Settings → Manage Servers → B**; **Ctrl+G** still works from Login and Add Server (pre-login discovery). Esc returns to the originating view. Hub tabs (h/l), category tabs (Tab), search (/), refresh (r), add hub (+, ↑/↓ picks discovered peers), remove hub (x — removing the last falls back to `defaultHubURL`), join (Enter → A). Hub list persists in `~/.concord/config.json` `ui.hub_urls`
 
-### Hub REST API (`/v1/`)
-
-| Endpoint | Auth | Purpose |
-|---|---|---|
-| `GET /v1/health` | — | Liveness + hub name |
-| `POST /v1/servers` | — | Register server → `{server_id, registration_secret}` |
-| `POST /v1/servers/{id}/heartbeat` | HMAC | Update stats; marks online (204) |
-| `DELETE /v1/servers/{id}` | HMAC | Deregister — marks offline, row retained |
-| `GET /v1/servers` | — | Public listing (`?category=`, `?q=`, `?all=1`, `?federation=1` local-only) |
-| `POST /v1/join/{id}` | rate-limited | Issue join token; proxies to origin hub for federated entries |
-| `GET /v1/hubs` / `POST /v1/hubs` | — / admin token | List / add peer hubs |
+Hub REST routes are registered in `internal/hub/handlers.go` (`/v1/...`).
 
 ### Security model
 
@@ -399,25 +174,3 @@ Custom themes: add a TOML file to `internal/themes/themes/`, then run `go genera
 3. **Some permissions not enforced** — 13 of 19 permissions are defined in the role editor but not yet checked server-side (file uploads, reactions, pins, @everyone, etc. await their feature implementations).
 4. **Auto re-connect after server offline** — Users currently have to re-login after a server goes offline and comes back. Seamless reconnect with saved token should be implemented.
 5. **Typing indicator latency** — Response time for typing indicators can be tightened.
-
----
-
-## Building & Running
-
-```bash
-# Server (pure Go, no CGO)
-make build-server
-./build/concord-server                    # First run: launches TUI setup wizard
-./build/concord-server --hybrid           # Log + dashboard side-by-side
-
-# Client (with voice, requires GCC/MSYS2 on Windows)
-make build-client
-./build/concord
-
-# Client without voice (pure Go)
-make build-client-novoice
-./build/concord-novoice
-
-# Windows with voice (requires MSYS2 GCC at C:/msys64/mingw64/bin)
-make build-windows-voice
-```
