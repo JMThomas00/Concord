@@ -577,6 +577,22 @@ func (c *Client) identifyAsPlugin(token string) {
 	}
 	c.send <- readyMsg
 
+	// A plugin has no other way to learn its own server_config_field values
+	// at cold start (or after a crash-restart): OpPluginConfigGet is gated
+	// behind PermissionManageServer for a human client, and HandleSetPluginConfig's
+	// own targeted push only fires when an admin actually changes something —
+	// silent after every process restart otherwise. Push it once here too, right
+	// alongside Ready, so a plugin's config-dependent behavior (e.g. an AI
+	// Passthrough install's mention_enabled) is correct from its very first
+	// message, not just from the next time an admin happens to re-save it.
+	if installed, err := c.handlers.db.GetInstalledPlugin(pluginID); err == nil && installed != nil {
+		info := c.handlers.buildPluginInfo(installed)
+		if configMsg, err := protocol.NewMessage(protocol.OpDispatch, protocol.PluginConfigListPayload{Plugins: []protocol.PluginInfo{info}}); err == nil {
+			configMsg.Type = protocol.EventPluginConfigUpdate
+			c.send <- configMsg
+		}
+	}
+
 	AuthLog.Info("Plugin authenticated successfully", "plugin_id", pluginID, "service_user_id", user.ID)
 }
 

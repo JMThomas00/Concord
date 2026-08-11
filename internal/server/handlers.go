@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -311,12 +312,85 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 	// Broadcast to channel
 	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageCreate, responsePayload, nil)
 
+	if channel != nil {
+		h.relayMessageToPlugins(channel, newMsg, c)
+	}
+
 	// Record message stats
 	if h.stats != nil {
 		h.stats.RecordMessage()
 	}
 
 	MsgLog.Info("Message sent", "channel_id", payload.ChannelID, "author", c.User.Username, "message_id", newMsg.ID)
+}
+
+// relayMessageToPlugins delivers a just-created message to any plugin
+// service-account connection that needs to see it but was never a
+// BroadcastToChannel recipient — plugin connections skip Hub.JoinChannel
+// entirely (see identifyAsPlugin), so BroadcastToChannel above never reaches
+// them. Two independent, additive conditions, both using the same targeted
+// h.hub.SendToUser pattern HandleCreateChannel already relies on for the
+// identical EventChannelCreate gap:
+//
+//  1. Owned-channel mode: channel.Type == ChannelTypePlugin — deliver to the
+//     one plugin that owns this channel, so an "AI Passthrough" dedicated
+//     channel sees every message posted into it.
+//  2. Mention mode: any OTHER running plugin that has opted into mention
+//     relay via its server_config_field (mention_enabled/mention_trigger)
+//     and whose trigger word appears in the message — lets a plugin respond
+//     to e.g. "@burt" typed in an ordinary text channel it doesn't own.
+//
+// Messages authored by a plugin's own service account never trigger mention
+// mode (skipped entirely when c.IsPlugin) — a deliberate v1 choice that
+// makes bot-to-bot relay loops structurally impossible rather than merely
+// rate-limited away.
+func (h *Handlers) relayMessageToPlugins(channel *models.Channel, message *models.Message, c *Client) {
+	responsePayload := &protocol.MessageCreatePayload{Message: message, Author: c.User}
+
+	delivered := make(map[string]bool)
+
+	if channel.Type == models.ChannelTypePlugin && channel.PluginID != "" {
+		if serviceUserID, err := h.plugins.ServiceUserIDFor(channel.PluginID); err == nil {
+			if err := h.hub.SendToUser(serviceUserID, protocol.EventMessageCreate, responsePayload); err != nil {
+				MsgLog.Warn("Failed to relay message to owning plugin", "plugin_id", channel.PluginID, "channel_id", channel.ID, "error", err)
+			}
+			delivered[channel.PluginID] = true
+		}
+	}
+
+	if c.IsPlugin {
+		return
+	}
+	for _, manifest := range h.plugins.Registry().All() {
+		pluginID := manifest.Plugin.ID
+		if delivered[pluginID] {
+			continue // already got it above, e.g. posted in its own dedicated channel
+		}
+		cfg, err := h.db.GetPluginServerConfig(pluginID)
+		if err != nil || cfg["mention_enabled"] != "true" {
+			continue
+		}
+		trigger := cfg["mention_trigger"]
+		if trigger == "" || !mentionsTrigger(message.Content, trigger) {
+			continue
+		}
+		serviceUserID, err := h.plugins.ServiceUserIDFor(pluginID)
+		if err != nil {
+			continue // plugin not currently running
+		}
+		if err := h.hub.SendToUser(serviceUserID, protocol.EventMessageCreate, responsePayload); err != nil {
+			MsgLog.Warn("Failed to relay mention to plugin", "plugin_id", pluginID, "channel_id", channel.ID, "error", err)
+		}
+	}
+}
+
+// mentionsTrigger reports whether content contains an @-mention of trigger
+// as a whole word — e.g. trigger "burt" matches "@burt" but not "@burton",
+// so a plain strings.Contains isn't enough.
+func mentionsTrigger(content, trigger string) bool {
+	pattern := `(?i)@` + regexp.QuoteMeta(trigger) + `\b`
+	matched, err := regexp.MatchString(pattern, content)
+	return err == nil && matched
 }
 
 // HandleTypingStart processes a typing indicator
@@ -2494,28 +2568,7 @@ func (h *Handlers) HandleGetPluginConfig(c *Client, msg *protocol.Message) {
 
 	infos := make([]protocol.PluginInfo, 0, len(installedList))
 	for _, installed := range installedList {
-		manifest, _ := h.plugins.Registry().Manifest(installed.ID)
-		info := protocol.PluginInfo{
-			ID:        installed.ID,
-			Name:      installed.Name,
-			Version:   installed.Version,
-			Enabled:   installed.Enabled,
-			Status:    installed.Status,
-			LastError: installed.LastError,
-		}
-		if manifest != nil {
-			for _, f := range manifest.ServerConfigFields {
-				info.ConfigFields = append(info.ConfigFields, protocol.PluginField{
-					Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,
-					Default: f.Default, Required: f.Required,
-				})
-			}
-		}
-		values, err := h.db.GetPluginServerConfig(installed.ID)
-		if err == nil {
-			info.ConfigValues = values
-		}
-		infos = append(infos, info)
+		infos = append(infos, h.buildPluginInfo(installed))
 	}
 
 	reply, err := protocol.NewMessage(protocol.OpDispatch, protocol.PluginConfigListPayload{Plugins: infos})
@@ -2523,6 +2576,36 @@ func (h *Handlers) HandleGetPluginConfig(c *Client, msg *protocol.Message) {
 		reply.Type = protocol.EventPluginConfigUpdate
 		c.send <- reply
 	}
+}
+
+// buildPluginInfo assembles one plugin's Settings > Plugins row: its
+// manifest-declared server_config_field definitions plus its currently
+// stored values. Factored out of HandleGetPluginConfig so
+// HandleSetPluginConfig's self-notify push (below) can build the same shape
+// for a single plugin without re-querying every installed plugin.
+func (h *Handlers) buildPluginInfo(installed *models.InstalledPlugin) protocol.PluginInfo {
+	manifest, _ := h.plugins.Registry().Manifest(installed.ID)
+	info := protocol.PluginInfo{
+		ID:        installed.ID,
+		Name:      installed.Name,
+		Version:   installed.Version,
+		Enabled:   installed.Enabled,
+		Status:    installed.Status,
+		LastError: installed.LastError,
+	}
+	if manifest != nil {
+		for _, f := range manifest.ServerConfigFields {
+			info.ConfigFields = append(info.ConfigFields, protocol.PluginField{
+				Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,
+				Default: f.Default, Required: f.Required,
+			})
+		}
+	}
+	values, err := h.db.GetPluginServerConfig(installed.ID)
+	if err == nil {
+		info.ConfigValues = values
+	}
+	return info
 }
 
 // HandleSetPluginConfig toggles a plugin's enabled flag and/or updates its
@@ -2550,6 +2633,22 @@ func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
 		}
 	}
 
-	h.HandleGetPluginConfig(c, msg) // re-send the updated list
+	h.HandleGetPluginConfig(c, msg) // re-send the updated list to the admin who made the change
+
+	// A plugin has no other way to learn its own server_config_field values
+	// changed (OpPluginConfigGet is gated behind PermissionManageServer for
+	// a human client — there's no analogous self-query a plugin's own
+	// connection can make). Push it the same targeted way HandleCreateChannel
+	// already notifies a plugin about its own new channel, so e.g. an AI
+	// Passthrough install can react live when an admin flips mention_enabled
+	// on, rather than only picking it up on its next reconnect.
+	if installed, err := h.db.GetInstalledPlugin(req.PluginID); err == nil && installed != nil {
+		if serviceUserID, err := h.plugins.ServiceUserIDFor(req.PluginID); err == nil {
+			info := h.buildPluginInfo(installed)
+			if err := h.hub.SendToUser(serviceUserID, protocol.EventPluginConfigUpdate, protocol.PluginConfigListPayload{Plugins: []protocol.PluginInfo{info}}); err != nil {
+				MsgLog.Warn("Failed to push updated config to plugin", "plugin_id", req.PluginID, "error", err)
+			}
+		}
+	}
 }
 
