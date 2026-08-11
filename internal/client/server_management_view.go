@@ -290,6 +290,20 @@ type permissionItem struct {
 	Category string
 }
 
+// getOverwriteablePermissionList returns the permissions a channel
+// overwrite editor should expose. Deliberately a small subset of
+// getPermissionList(), not all of it: PermissionCalculator.ComputeOverwrites
+// is correct for every bit, but server-side enforcement (hasChannelPermission
+// in internal/server/handlers.go) only actually checks PermissionSendMessages
+// today — showing togglable overwrites for permissions nothing enforces
+// would be a UI promise Concord can't keep. Add an entry here the same
+// session real enforcement lands for that permission, not before.
+func getOverwriteablePermissionList() []permissionItem {
+	return []permissionItem{
+		{Name: "Send Messages", Bit: models.PermissionSendMessages, Category: "Text Channels"},
+	}
+}
+
 // getPermissionList returns all permissions organized by category
 func getPermissionList() []permissionItem {
 	return []permissionItem{
@@ -477,6 +491,12 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	if s.PermissionsEditorOpen {
 		return a.handlePermissionsEditorKey(msg)
 	}
+	if s.OverwriteEditorOpen {
+		return a.handleOverwriteEditorKey(msg)
+	}
+	if s.OverwriteTargetPicker {
+		return a.handleOverwriteTargetPickerKey(msg)
+	}
 	if s.DeleteConfirmOpen {
 		return a.handleDeleteConfirmKey(msg)
 	}
@@ -607,9 +627,11 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "p", "P":
-		// Permissions editor (Roles) or Prune (Messages)
+		// Permission overwrites (Channels), permissions editor (Roles), or Prune (Messages)
 		if s.FocusOnForm {
-			if s.SelectedCategory == 1 {
+			if s.SelectedCategory == 0 {
+				a.handleChannelOverwritesAction()
+			} else if s.SelectedCategory == 1 {
 				a.handlePermissionsAction()
 			} else if s.SelectedCategory == 3 {
 				a.handlePruneAction()
@@ -1086,6 +1108,85 @@ func (a *App) handlePermissionsAction() {
 		s.PermSelectedIndex = 0
 		s.PermScrollOffset = 0
 	}
+}
+
+// handleChannelOverwritesAction opens the permission-overwrite target picker
+// for the currently-selected channel in the Channels category. Categories
+// are skipped — Concord's overwrite system has no cascade-to-children
+// concept (ComputeOverwrites reads one channel's own PermissionOverwrites
+// only), so an overwrite on a category wouldn't do anything.
+func (a *App) handleChannelOverwritesAction() {
+	s := a.serverManagementState
+	if s.SelectedChannel < 0 || s.SelectedChannel >= len(s.ChannelList) {
+		return
+	}
+	channel := s.ChannelList[s.SelectedChannel]
+	if channel.Type == models.ChannelTypeCategory {
+		a.statusMessage = "Categories don't have their own permissions — set overwrites on individual channels"
+		return
+	}
+
+	serverID := a.getActiveServerID()
+	a.loadRoleListForManagement(serverID)
+	a.loadMemberListForManagement()
+
+	s.OverwriteChannel = channel
+	s.OverwriteTargetPicker = true
+	s.OverwriteTargetIndex = 0
+}
+
+// overwriteTargetItem is one row in the role/member target picker.
+type overwriteTargetItem struct {
+	ID           uuid.UUID
+	Name         string
+	Type         string // "role" or "member"
+	HasOverwrite bool
+}
+
+// overwriteTargets lists every role, then every member, for the channel
+// currently being edited, flagging which ones already have a stored
+// overwrite so the picker can show that at a glance.
+func (a *App) overwriteTargets() []overwriteTargetItem {
+	s := a.serverManagementState
+	if s.OverwriteChannel == nil {
+		return nil
+	}
+
+	existing := make(map[uuid.UUID]bool, len(s.OverwriteChannel.PermissionOverwrites))
+	for _, ow := range s.OverwriteChannel.PermissionOverwrites {
+		existing[ow.ID] = true
+	}
+
+	items := make([]overwriteTargetItem, 0, len(s.RoleList)+len(s.MemberList))
+	for _, role := range s.RoleList {
+		name := role.Name
+		if role.IsDefault {
+			name = "@everyone"
+		}
+		items = append(items, overwriteTargetItem{ID: role.ID, Name: name, Type: "role", HasOverwrite: existing[role.ID]})
+	}
+	for _, member := range s.MemberList {
+		if member == nil || member.User == nil {
+			continue
+		}
+		items = append(items, overwriteTargetItem{ID: member.User.ID, Name: member.User.Username, Type: "member", HasOverwrite: existing[member.User.ID]})
+	}
+	return items
+}
+
+// findChannelOverwrite returns the existing overwrite for a target on the
+// channel currently being edited, if any.
+func (a *App) findChannelOverwrite(targetID uuid.UUID) (models.PermissionOverwrite, bool) {
+	s := a.serverManagementState
+	if s.OverwriteChannel == nil {
+		return models.PermissionOverwrite{}, false
+	}
+	for _, ow := range s.OverwriteChannel.PermissionOverwrites {
+		if ow.ID == targetID {
+			return ow, true
+		}
+	}
+	return models.PermissionOverwrite{}, false
 }
 
 func (a *App) handleReorderUp() {
@@ -1935,6 +2036,135 @@ func (a *App) handlePermissionsEditorKey(msg tea.KeyMsg) tea.Cmd {
 	case "n", "N":
 		// Disable all permissions
 		s.PermModifiedBits = 0
+		return nil
+	}
+
+	return nil
+}
+
+// handleOverwriteTargetPickerKey processes the role/member picker opened by
+// handleChannelOverwritesAction — step 1 of editing a channel's permission
+// overwrites.
+func (a *App) handleOverwriteTargetPickerKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	targets := a.overwriteTargets()
+
+	switch msg.String() {
+	case "esc":
+		s.OverwriteTargetPicker = false
+		s.OverwriteChannel = nil
+		s.OverwriteTargetIndex = 0
+		return nil
+
+	case "up", "k":
+		if s.OverwriteTargetIndex > 0 {
+			s.OverwriteTargetIndex--
+		}
+		return nil
+
+	case "down", "j":
+		if s.OverwriteTargetIndex < len(targets)-1 {
+			s.OverwriteTargetIndex++
+		}
+		return nil
+
+	case "enter":
+		if s.OverwriteTargetIndex < 0 || s.OverwriteTargetIndex >= len(targets) {
+			return nil
+		}
+		target := targets[s.OverwriteTargetIndex]
+		s.OverwriteTargetID = target.ID
+		s.OverwriteTargetType = target.Type
+		s.OverwriteTargetName = target.Name
+		s.OverwriteAllowBits = 0
+		s.OverwriteDenyBits = 0
+		if existing, ok := a.findChannelOverwrite(target.ID); ok {
+			s.OverwriteAllowBits = uint64(existing.Allow)
+			s.OverwriteDenyBits = uint64(existing.Deny)
+		}
+		s.OverwriteSelectedIndex = 0
+		s.OverwriteTargetPicker = false
+		s.OverwriteEditorOpen = true
+		return nil
+	}
+
+	return nil
+}
+
+// cycleOverwriteState advances one permission bit through
+// Inherit -> Allow -> Deny -> Inherit across a pair of Allow/Deny bitfields —
+// mirrors models.PermissionOverwrite's shape, where a bit lives in neither,
+// Allow, or Deny, never both.
+func cycleOverwriteState(allowBits, denyBits *uint64, bit uint64) {
+	switch {
+	case *allowBits&bit != 0:
+		*allowBits &^= bit
+		*denyBits |= bit
+	case *denyBits&bit != 0:
+		*denyBits &^= bit
+	default:
+		*allowBits |= bit
+	}
+}
+
+// handleOverwriteEditorKey processes the Inherit/Allow/Deny editor opened
+// after picking a target — step 2. Enter and Esc both return to the target
+// picker (not a full close) so managing several targets on the same channel
+// doesn't mean re-entering through the Channels list each time; Esc on the
+// picker itself is what fully closes the flow.
+func (a *App) handleOverwriteEditorKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.serverManagementState
+	permList := getOverwriteablePermissionList()
+
+	switch msg.String() {
+	case "esc":
+		s.OverwriteEditorOpen = false
+		s.OverwriteTargetPicker = true
+		return nil
+
+	case "enter":
+		if s.OverwriteChannel == nil {
+			return nil
+		}
+		req := &protocol.UpdateChannelOverwriteRequest{
+			ServerID:   a.getActiveServerID(),
+			ChannelID:  s.OverwriteChannel.ID,
+			TargetID:   s.OverwriteTargetID,
+			TargetType: s.OverwriteTargetType,
+			Allow:      int64(s.OverwriteAllowBits),
+			Deny:       int64(s.OverwriteDenyBits),
+			// Every bit back to Inherit means there's nothing left to store —
+			// delete the row instead of upserting an all-zero no-op.
+			Delete: s.OverwriteAllowBits == 0 && s.OverwriteDenyBits == 0,
+		}
+		if wireMsg, err := protocol.NewMessage(protocol.OpUpdateChannelOverwrite, req); err == nil {
+			if a.activeConn != nil {
+				_ = a.activeConn.Connection.Send(wireMsg)
+			}
+		}
+		a.statusMessage = fmt.Sprintf("Updated permissions for %s", s.OverwriteTargetName)
+
+		s.OverwriteEditorOpen = false
+		s.OverwriteTargetPicker = true
+		return nil
+
+	case "up", "k":
+		if s.OverwriteSelectedIndex > 0 {
+			s.OverwriteSelectedIndex--
+		}
+		return nil
+
+	case "down", "j":
+		if s.OverwriteSelectedIndex < len(permList)-1 {
+			s.OverwriteSelectedIndex++
+		}
+		return nil
+
+	case " ", "space":
+		if s.OverwriteSelectedIndex >= 0 && s.OverwriteSelectedIndex < len(permList) {
+			bit := uint64(permList[s.OverwriteSelectedIndex].Bit)
+			cycleOverwriteState(&s.OverwriteAllowBits, &s.OverwriteDenyBits, bit)
+		}
 		return nil
 	}
 
@@ -3120,6 +3350,12 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 	if s.MoveDialogOpen && s.MoveDialogState != nil {
 		return a.renderMoveChannelPage(width, height, s)
 	}
+	if s.OverwriteEditorOpen {
+		return a.renderOverwriteEditorPage(width, height, s)
+	}
+	if s.OverwriteTargetPicker {
+		return a.renderOverwriteTargetPickerPage(width, height, s)
+	}
 
 	layout := calculateSettingsLayout(width, height, 3, 1) // 3 = stats + 2 padding lines, 1 = extra help line
 
@@ -3326,7 +3562,7 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
-	bottom.writeLine(helpStyle.Render("Actions: C create · E edit · M move · D delete"))
+	bottom.writeLine(helpStyle.Render("Actions: C create · E edit · M move · P permissions · D delete"))
 
 	// Fill remaining bottom section space
 	bottom.pad()
@@ -3338,6 +3574,191 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 		bottom.String(),
 	)
 
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderOverwriteTargetPickerPage renders step 1 of the channel
+// permission-overwrite flow: pick a role or member to edit.
+func (a *App) renderOverwriteTargetPickerPage(width, height int, s *ServerManagementState) string {
+	if s.OverwriteChannel == nil {
+		return "No channel selected"
+	}
+
+	layout := calculateSettingsLayout(width, height, 3, 1)
+
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	top.writeLine(headerStyle.Render(fmt.Sprintf("Permissions: #%s", s.OverwriteChannel.Name)))
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(subtitleStyle.Render("Pick a role or member to set an overwrite for"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	targets := a.overwriteTargets()
+
+	maxVisible := layout.middleLines - 2
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+	visibleStart, visibleEnd := 0, len(targets)
+	if len(targets) > maxVisible {
+		half := maxVisible / 2
+		visibleStart = s.OverwriteTargetIndex - half
+		visibleEnd = s.OverwriteTargetIndex + half
+		if visibleStart < 0 {
+			visibleStart, visibleEnd = 0, maxVisible
+		}
+		if visibleEnd > len(targets) {
+			visibleEnd = len(targets)
+			visibleStart = visibleEnd - maxVisible
+			if visibleStart < 0 {
+				visibleStart = 0
+			}
+		}
+	}
+
+	if visibleStart > 0 {
+		moreStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↑ %d more", visibleStart)))
+	}
+
+	currentType := ""
+	for i := visibleStart; i < visibleEnd; i++ {
+		target := targets[i]
+		if target.Type != currentType {
+			currentType = target.Type
+			label := "── Roles ──"
+			if currentType == "member" {
+				label = "── Members ──"
+			}
+			categoryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+			middle.writeLine(categoryStyle.Render(label))
+		}
+
+		marker := ""
+		if target.HasOverwrite {
+			marker = " (overwrite set)"
+		}
+		prefix := "  "
+		if i == s.OverwriteTargetIndex {
+			prefix = "▶ "
+		}
+		line := fmt.Sprintf("%s%s%s", prefix, target.Name, marker)
+
+		if i == s.OverwriteTargetIndex {
+			selectedStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
+				Bold(true).
+				Width(layout.interiorWidth)
+			middle.writeLine(selectedStyle.Render(line))
+		} else {
+			normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+			middle.writeLine(normalStyle.Render(line))
+		}
+	}
+
+	if visibleEnd < len(targets) {
+		moreStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(moreStyle.Render(fmt.Sprintf("  ↓ %d more", len(targets)-visibleEnd)))
+	}
+	if len(targets) == 0 {
+		emptyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		middle.writeLine(emptyStyle.Render("No roles or members found"))
+	}
+	middle.pad()
+
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Enter edit · Esc close"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderOverwriteEditorPage renders step 2: the Inherit/Allow/Deny toggle
+// list for the target picked in step 1.
+func (a *App) renderOverwriteEditorPage(width, height int, s *ServerManagementState) string {
+	if s.OverwriteChannel == nil {
+		return "No channel selected"
+	}
+
+	layout := calculateSettingsLayout(width, height, 3, 1)
+
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Bold(true)
+	top.writeLine(headerStyle.Render(fmt.Sprintf("#%s — %s", s.OverwriteChannel.Name, s.OverwriteTargetName)))
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	top.writeLine(subtitleStyle.Render("Space cycles Inherit → Allow → Deny for the selected permission"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	permList := getOverwriteablePermissionList()
+
+	for i, perm := range permList {
+		bit := uint64(perm.Bit)
+		state, stateStyle := "Inherit", lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+		switch {
+		case s.OverwriteAllowBits&bit != 0:
+			state = "Allow"
+			stateStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true)
+		case s.OverwriteDenyBits&bit != 0:
+			state = "Deny"
+			stateStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Bold(true)
+		}
+
+		prefix := "  "
+		if i == s.OverwriteSelectedIndex {
+			prefix = "▶ "
+		}
+		line := fmt.Sprintf("%s%-24s [%s]", prefix, perm.Name, stateStyle.Render(state))
+
+		if i == s.OverwriteSelectedIndex {
+			selectedStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
+				Bold(true).
+				Width(layout.interiorWidth)
+			middle.writeLine(selectedStyle.Render(line))
+		} else {
+			normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+			middle.writeLine(normalStyle.Render(line))
+		}
+	}
+	middle.pad()
+
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeBlank()
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Space cycle state"))
+	bottom.writeLine(helpStyle.Render("Actions: Enter save · Esc back to target list"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).

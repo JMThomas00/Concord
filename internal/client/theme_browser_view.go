@@ -127,6 +127,22 @@ type ServerManagementState struct {
 	PermScrollOffset      int          // Scroll offset for long list
 	PermModifiedBits      uint64       // Modified permission bitfield (for previewing changes)
 
+	// Channel permission-overwrite editor state (two full-page modals, opened
+	// from the Channels category: pick a role/member target, then edit its
+	// Inherit/Allow/Deny overwrite for that one channel). Distinct from the
+	// role permissions editor above — this edits per-channel Allow/Deny bits
+	// (models.PermissionOverwrite), not a role's own base Permissions bitfield.
+	OverwriteChannel       *models.Channel // Which channel's overwrites are being edited
+	OverwriteTargetPicker  bool            // Step 1: picking a role or member
+	OverwriteTargetIndex   int             // Cursor in the combined role+member picker list
+	OverwriteEditorOpen    bool            // Step 2: editing the picked target's overwrite
+	OverwriteTargetID      uuid.UUID       // Role or member ID being edited
+	OverwriteTargetType    string          // "role" or "member"
+	OverwriteTargetName    string          // Display name for the editor header
+	OverwriteAllowBits     uint64          // Modified Allow bitfield (preview, saved on Enter)
+	OverwriteDenyBits      uint64          // Modified Deny bitfield (preview, saved on Enter)
+	OverwriteSelectedIndex int             // Cursor position in the enforced-permission list
+
 	// Members category state
 	MemberList       []*MemberDisplay
 	SelectedMember   int
