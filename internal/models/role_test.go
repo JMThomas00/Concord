@@ -67,7 +67,7 @@ func TestNewEveryoneRole(t *testing.T) {
 	if role.IsMentionable {
 		t.Error("expected IsMentionable to be false for @everyone")
 	}
-	expectedPerms := PermissionViewChannels | PermissionSendMessages | PermissionReadMessageHistory | PermissionAddReactions | PermissionManageChannels
+	expectedPerms := PermissionViewChannels | PermissionSendMessages | PermissionReadMessageHistory | PermissionAddReactions | PermissionManageChannels | PermissionChangeNickname
 	if role.Permissions != expectedPerms {
 		t.Errorf("expected everyone permissions %v, got %v", expectedPerms, role.Permissions)
 	}

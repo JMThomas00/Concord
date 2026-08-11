@@ -103,6 +103,8 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleStatus(cmd.Args)
 	case "title":
 		return ch.handleTitle(cmd.Args)
+	case "nick":
+		return ch.handleNickname(cmd.Args)
 	case "lock":
 		return ch.handleLockChannel(true)
 	case "unlock":
@@ -408,6 +410,7 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 		"/links [N]                 - Show links from recent N messages (default: 20)",
 		"/theme [name]              - Open theme browser, or apply theme directly",
 		"/status <message>          - Set your status (use /status clear to remove)",
+		"/nick <nickname>           - Set your own nickname on this server (use clear to remove)",
 		"/mute                      - Mute current channel (suppress unread badges)",
 		"/unmute                    - Unmute current channel",
 		"/join-voice [#channel]     - Join a voice channel",
@@ -1070,6 +1073,53 @@ func (ch *CommandHandler) setStatus(statusText string) (string, error) {
 		return "Status cleared", nil
 	}
 	return fmt.Sprintf("Status set to: %s", statusText), nil
+}
+
+// handleNickname handles /nick <nickname> or /nick clear — always sets the
+// caller's own nickname (renaming someone else has no client command; the
+// server would reject it anyway since OpSetNickname requires
+// PermissionManageNicknames for any UserID other than the caller's own).
+func (ch *CommandHandler) handleNickname(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("usage: /nick <nickname> or /nick clear")
+	}
+
+	a := ch.app
+	if a.activeConn == nil {
+		return "", fmt.Errorf("not connected to server")
+	}
+
+	serverID := a.getActiveServerID()
+	if serverID == uuid.Nil {
+		return "", fmt.Errorf("not connected to a server")
+	}
+
+	nickname := strings.Join(args, " ")
+	if strings.ToLower(nickname) == "clear" {
+		nickname = ""
+	}
+	if len(nickname) > 32 {
+		return "", fmt.Errorf("nickname too long (max 32 characters)")
+	}
+
+	req := &protocol.SetNicknameRequest{
+		ServerID: serverID,
+		Nickname: nickname,
+	}
+
+	msg, err := protocol.NewMessage(protocol.OpSetNickname, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create message: %w", err)
+	}
+
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+
+	if nickname == "" {
+		return "Cleared your nickname", nil
+	}
+	return fmt.Sprintf("Set your nickname: %s", nickname), nil
 }
 
 // handleTitle handles /title @username <title> or /title @username clear

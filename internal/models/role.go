@@ -117,7 +117,8 @@ func NewEveryoneRole(serverID uuid.UUID) *Role {
 			PermissionSendMessages |
 			PermissionReadMessageHistory |
 			PermissionAddReactions |
-			PermissionManageChannels,
+			PermissionManageChannels |
+			PermissionChangeNickname,
 		Position:    0,
 		IsHoisted:   false,
 		IsMentionable: false,

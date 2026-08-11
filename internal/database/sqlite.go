@@ -2656,6 +2656,19 @@ func (db *DB) UpdateServerMemberTitle(serverID, userID uuid.UUID, title string) 
 	return err
 }
 
+// UpdateServerMemberNickname updates a member's nickname. Distinct from
+// UpdateServerMemberTitle above — ServerMember.Nickname and .CustomTitle are
+// separate fields; a nickname has no setter path anywhere else in this
+// codebase (HandleAssignTitle only ever touches CustomTitle).
+func (db *DB) UpdateServerMemberNickname(serverID, userID uuid.UUID, nickname string) error {
+	_, err := db.Exec(`
+		UPDATE server_members
+		SET nickname = ?
+		WHERE server_id = ? AND user_id = ?
+	`, nickname, serverID.String(), userID.String())
+	return err
+}
+
 // AddTimeout adds a temporary ban (timeout) for a user
 func (db *DB) AddTimeout(serverID, userID, channelID, issuedBy uuid.UUID, duration int, reason string) error {
 	id := uuid.New()

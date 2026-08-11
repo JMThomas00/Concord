@@ -64,6 +64,7 @@ const (
 	OpPluginConfigSet  OpCode = 56 // C→S: update a plugin's enabled flag and/or server config fields
 
 	OpUpdateChannelOverwrite OpCode = 57 // C→S: set or clear one role/member permission overwrite on a channel
+	OpSetNickname            OpCode = 58 // C→S: set your own, or (with ManageNicknames) another member's, nickname
 
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
@@ -122,6 +123,7 @@ const (
 	EventRoleUpdate       EventType = "ROLE_UPDATE"
 	EventRoleDelete       EventType = "ROLE_DELETE"
 	EventTitleUpdate      EventType = "TITLE_UPDATE"
+	EventNicknameUpdate   EventType = "NICKNAME_UPDATE"
 
 	// Moderation events
 	EventMemberKicked     EventType = "MEMBER_KICKED"
@@ -794,6 +796,25 @@ type AssignTitlePayload struct {
 	ServerID uuid.UUID `json:"server_id"`
 	UserID   uuid.UUID `json:"user_id"`
 	Title    string    `json:"title"`
+}
+
+// SetNicknameRequest sets a member's nickname — UserID is the target;
+// setting it to your own ID (or leaving it uuid.Nil, treated the same way)
+// is a self-rename, gated on PermissionChangeNickname; any other UserID
+// requires PermissionManageNicknames, same as AssignTitleRequest above.
+// Distinct request from AssignTitleRequest since Nickname and CustomTitle
+// are separate ServerMember fields with separate permissions.
+type SetNicknameRequest struct {
+	ServerID uuid.UUID `json:"server_id"`
+	UserID   uuid.UUID `json:"user_id,omitempty"` // empty/uuid.Nil = self
+	Nickname string    `json:"nickname"`          // empty string = clear
+}
+
+// NicknamePayload is dispatched when a member's nickname is updated.
+type NicknamePayload struct {
+	ServerID uuid.UUID `json:"server_id"`
+	UserID   uuid.UUID `json:"user_id"`
+	Nickname string    `json:"nickname"`
 }
 
 // CloseCode represents WebSocket close codes

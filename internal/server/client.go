@@ -384,6 +384,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleUpdateChannelOverwrite(c, msg)
 		})
 
+	case protocol.OpSetNickname:
+		c.requireAuth(func() {
+			c.handlers.HandleSetNickname(c, msg)
+		})
+
 	default:
 		ClientLog.Warn("Unknown opcode", "user_id", c.UserID, "opcode", msg.Op)
 		c.sendError(protocol.ErrorCodeUnknown, "Unknown operation")

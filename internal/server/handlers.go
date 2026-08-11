@@ -2138,6 +2138,54 @@ func (h *Handlers) HandleAssignTitle(c *Client, msg *protocol.Message) {
 	Logger.Info("Title updated", "user_id", req.UserID, "server_id", req.ServerID, "title", req.Title)
 }
 
+// HandleSetNickname sets a member's nickname (models.ServerMember.Nickname —
+// distinct from CustomTitle, which HandleAssignTitle above manages).
+// Renaming yourself requires only PermissionChangeNickname (granted to
+// @everyone by default, see models.NewEveryoneRole, but revocable per-role
+// like any other permission); renaming someone else requires the stronger
+// PermissionManageNicknames, same gate HandleAssignTitle uses.
+func (h *Handlers) HandleSetNickname(c *Client, msg *protocol.Message) {
+	var req protocol.SetNicknameRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+
+	targetID := req.UserID
+	if targetID == uuid.Nil {
+		targetID = c.UserID
+	}
+
+	requiredPerm := models.PermissionChangeNickname
+	permErrMsg := "You don't have permission to change your nickname"
+	if targetID != c.UserID {
+		requiredPerm = models.PermissionManageNicknames
+		permErrMsg = "You don't have permission to manage nicknames"
+	}
+	if err := h.checkPermission(c.UserID, req.ServerID, requiredPerm); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, permErrMsg)
+		return
+	}
+
+	if len(req.Nickname) > 32 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Nickname too long (max 32 characters)")
+		return
+	}
+
+	if err := h.db.UpdateServerMemberNickname(req.ServerID, targetID, req.Nickname); err != nil {
+		DBLog.Error("Failed to update member nickname", "server_id", req.ServerID, "user_id", targetID, "error", err)
+		c.sendError(protocol.ErrorCodeServerError, "Failed to update nickname")
+		return
+	}
+
+	payload := &protocol.NicknamePayload{ServerID: req.ServerID, UserID: targetID, Nickname: req.Nickname}
+	if err := h.hub.BroadcastToServer(req.ServerID, protocol.EventNicknameUpdate, payload, nil); err != nil {
+		HubLog.Error("Failed to broadcast nickname update", "server_id", req.ServerID, "user_id", targetID, "error", err)
+	}
+
+	Logger.Info("Nickname updated", "user_id", targetID, "server_id", req.ServerID, "nickname", req.Nickname)
+}
+
 // ── Voice Handlers ─────────────────────────────────────────────────────────────
 
 // HandleVoiceStateUpdate handles a client joining, leaving, or updating voice state.
