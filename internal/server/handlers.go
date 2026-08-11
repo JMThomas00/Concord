@@ -165,6 +165,59 @@ func (h *Handlers) checkPermission(userID, serverID uuid.UUID, perm models.Permi
 	return errors.New("insufficient permissions")
 }
 
+// hasChannelPermission computes whether userID currently has perm in a
+// specific channel — server-owner bypass, then base role permissions, then
+// the channel's own permission overwrites applied in member > role >
+// everyone priority (models.PermissionCalculator.ComputeOverwrites). Unlike
+// checkPermission (server-wide roles only), this is what channel-scoped
+// checks like Send Messages need, since a channel overwrite can grant or
+// revoke a permission a member's roles alone wouldn't decide.
+func (h *Handlers) hasChannelPermission(userID uuid.UUID, channel *models.Channel, perm models.Permission) error {
+	server, err := h.db.GetServerByID(channel.ServerID)
+	if err != nil {
+		return errors.New("server not found")
+	}
+	if server.OwnerID == userID {
+		return nil
+	}
+
+	member, err := h.db.GetServerMember(channel.ServerID, userID)
+	if err != nil {
+		return errors.New("not a member of this server")
+	}
+
+	allRoles, err := h.db.GetServerRoles(channel.ServerID)
+	if err != nil {
+		return errors.New("failed to load server roles")
+	}
+
+	var everyoneRole *models.Role
+	memberRoles := make([]*models.Role, 0, len(member.RoleIDs))
+	for _, role := range allRoles {
+		if role.IsDefault {
+			everyoneRole = role
+		}
+		for _, rid := range member.RoleIDs {
+			if role.ID == rid {
+				memberRoles = append(memberRoles, role)
+				break
+			}
+		}
+	}
+	if everyoneRole == nil {
+		return errors.New("server has no @everyone role")
+	}
+
+	calc := models.NewPermissionCalculator(server.OwnerID, everyoneRole)
+	base := calc.ComputeBasePermissions(member, memberRoles)
+	effective := calc.ComputeOverwrites(base, member, channel)
+
+	if effective&perm == 0 {
+		return errors.New("insufficient permissions")
+	}
+	return nil
+}
+
 // HandleSendMessage processes a message send request
 func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 	var payload protocol.SendMessagePayload
@@ -188,12 +241,28 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		}
 	}
 
-	// Check if channel is locked (requires ManageMessages permission to post)
+	// Fetch the channel once and reuse it for every check below (lock,
+	// permission-overwrite, @everyone) — this used to be fetched twice.
 	channel, err := h.db.GetChannelByID(payload.ChannelID)
+
+	// Check if channel is locked (requires ManageMessages permission to post)
 	if err == nil && channel.IsLocked && channel.ServerID != uuid.Nil {
 		// Check if user has ManageMessages permission to bypass lock
 		if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionManageMessages); err != nil {
 			c.sendError(protocol.ErrorCodeForbidden, "This channel is locked. Only users with Manage Messages permission can post.")
+			return
+		}
+	}
+
+	// Channel permission-overwrite check (member > role > everyone priority,
+	// see PermissionCalculator.ComputeOverwrites). Skipped for plugin
+	// service-account senders: they're never added via db.AddServerMember
+	// (see internal/plugins/manager.go), so hasChannelPermission's
+	// GetServerMember lookup would always fail for them — a check meant to
+	// gate human members must not block a plugin posting its own replies.
+	if !c.IsPlugin && err == nil && channel.ServerID != uuid.Nil {
+		if permErr := h.hasChannelPermission(c.UserID, channel, models.PermissionSendMessages); permErr != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to send messages in this channel")
 			return
 		}
 	}
@@ -210,15 +279,11 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 	}
 
 	// Check @everyone permission
-	if newMsg.MentionEveryone {
-		// Get channel to determine server ID
-		channel, err := h.db.GetChannelByID(payload.ChannelID)
-		if err == nil && channel.ServerID != uuid.Nil {
-			// Check if user has permission to mention everyone
-			if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionMentionEveryone); err != nil {
-				c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to mention @everyone")
-				return
-			}
+	if newMsg.MentionEveryone && err == nil && channel.ServerID != uuid.Nil {
+		// Check if user has permission to mention everyone
+		if err := h.checkPermission(c.UserID, channel.ServerID, models.PermissionMentionEveryone); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to mention @everyone")
+			return
 		}
 	}
 
@@ -555,6 +620,63 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 	}
 
 	// Broadcast to all server members
+	payload := protocol.ChannelUpdatePayload{Channel: channel}
+	h.hub.BroadcastToServer(req.ServerID, protocol.EventChannelUpdate, payload, nil)
+}
+
+// HandleUpdateChannelOverwrite sets or clears one role/member permission
+// overwrite on a channel. Gated on PermissionManageChannels, same as
+// HandleUpdateChannel — editing a channel's per-role/per-member permissions
+// is a channel-management action, not a server-wide role-management one.
+func (h *Handlers) HandleUpdateChannelOverwrite(c *Client, msg *protocol.Message) {
+	var req protocol.UpdateChannelOverwriteRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageChannels); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	if req.TargetType != "role" && req.TargetType != "member" {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "target_type must be \"role\" or \"member\"")
+		return
+	}
+
+	channel, err := h.db.GetChannelByID(req.ChannelID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Channel not found")
+		return
+	}
+	if channel.ServerID != req.ServerID {
+		c.sendError(protocol.ErrorCodeForbidden, "Channel belongs to different server")
+		return
+	}
+
+	if req.Delete {
+		if err := h.db.DeleteChannelPermissionOverwrite(req.ChannelID, req.TargetID); err != nil {
+			c.sendError(protocol.ErrorCodeServerError, "Failed to delete overwrite")
+			return
+		}
+	} else {
+		ow := models.PermissionOverwrite{ID: req.TargetID, Type: req.TargetType, Allow: req.Allow, Deny: req.Deny}
+		if err := h.db.SetChannelPermissionOverwrite(req.ChannelID, ow); err != nil {
+			c.sendError(protocol.ErrorCodeServerError, "Failed to save overwrite")
+			return
+		}
+	}
+
+	// Re-fetch so the broadcast carries the channel's full, current overwrite
+	// list (GetChannelByID populates PermissionOverwrites) rather than a
+	// stale copy from before this edit.
+	channel, err = h.db.GetChannelByID(req.ChannelID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Failed to reload channel")
+		return
+	}
+
 	payload := protocol.ChannelUpdatePayload{Channel: channel}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventChannelUpdate, payload, nil)
 }

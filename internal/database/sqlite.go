@@ -1133,8 +1133,23 @@ func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 
 		channels = append(channels, ch)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	return channels, rows.Err()
+	// Populate overwrites in a second pass, after the channels rows.Next()
+	// loop has fully drained — SetMaxOpenConns(1) means a nested db.Query
+	// call from inside that loop would deadlock waiting for the single
+	// connection the still-open cursor above is holding.
+	for _, ch := range channels {
+		overwrites, err := db.GetChannelPermissionOverwrites(ch.ID)
+		if err != nil {
+			return nil, err
+		}
+		ch.PermissionOverwrites = overwrites
+	}
+
+	return channels, nil
 }
 
 // GetChannelByID retrieves a channel by its ID
@@ -1174,7 +1189,60 @@ func (db *DB) GetChannelByID(channelID uuid.UUID) (*models.Channel, error) {
 		ch.PluginChannelKind = pluginChannelKind.String
 	}
 
+	overwrites, err := db.GetChannelPermissionOverwrites(ch.ID)
+	if err != nil {
+		return nil, err
+	}
+	ch.PermissionOverwrites = overwrites
+
 	return &ch, nil
+}
+
+// GetChannelPermissionOverwrites returns the role/member permission
+// overwrites configured for a channel, in no particular order —
+// PermissionCalculator.ComputeOverwrites applies @everyone, then role, then
+// member overwrites itself regardless of slice order.
+func (db *DB) GetChannelPermissionOverwrites(channelID uuid.UUID) ([]models.PermissionOverwrite, error) {
+	rows, err := db.Query(`
+		SELECT target_id, target_type, allow, deny
+		FROM permission_overwrites WHERE channel_id = ?`, channelID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var overwrites []models.PermissionOverwrite
+	for rows.Next() {
+		var ow models.PermissionOverwrite
+		var targetIDStr string
+		if err := rows.Scan(&targetIDStr, &ow.Type, &ow.Allow, &ow.Deny); err != nil {
+			return nil, err
+		}
+		ow.ID, _ = uuid.Parse(targetIDStr)
+		overwrites = append(overwrites, ow)
+	}
+	return overwrites, rows.Err()
+}
+
+// SetChannelPermissionOverwrite upserts one role/member overwrite for a
+// channel.
+func (db *DB) SetChannelPermissionOverwrite(channelID uuid.UUID, ow models.PermissionOverwrite) error {
+	_, err := db.Exec(`
+		INSERT INTO permission_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(channel_id, target_id) DO UPDATE SET target_type = excluded.target_type,
+			allow = excluded.allow, deny = excluded.deny`,
+		channelID.String(), ow.ID.String(), ow.Type, ow.Allow, ow.Deny)
+	return err
+}
+
+// DeleteChannelPermissionOverwrite removes one role/member overwrite from a
+// channel (e.g. resetting a role back to inheriting server-wide permissions).
+func (db *DB) DeleteChannelPermissionOverwrite(channelID, targetID uuid.UUID) error {
+	_, err := db.Exec(`
+		DELETE FROM permission_overwrites WHERE channel_id = ? AND target_id = ?`,
+		channelID.String(), targetID.String())
+	return err
 }
 
 // UpdateChannel updates an existing channel

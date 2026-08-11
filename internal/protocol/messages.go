@@ -63,6 +63,8 @@ const (
 	OpPluginConfigGet  OpCode = 55 // C→S: request installed plugin list + config (Settings > Plugins)
 	OpPluginConfigSet  OpCode = 56 // C→S: update a plugin's enabled flag and/or server config fields
 
+	OpUpdateChannelOverwrite OpCode = 57 // C→S: set or clear one role/member permission overwrite on a channel
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -567,6 +569,20 @@ type ChannelCreatePayload struct {
 // ChannelUpdatePayload is dispatched when a channel is updated
 type ChannelUpdatePayload struct {
 	*models.Channel
+}
+
+// UpdateChannelOverwriteRequest sets, or (when Delete is true) clears, one
+// role/member permission overwrite on a channel. Enforcement lives in
+// PermissionCalculator.ComputeOverwrites (internal/models/role.go) — this is
+// just the wire shape to edit what that function reads.
+type UpdateChannelOverwriteRequest struct {
+	ServerID   uuid.UUID `json:"server_id"`
+	ChannelID  uuid.UUID `json:"channel_id"`
+	TargetID   uuid.UUID `json:"target_id"`   // Role ID or User ID, matches models.PermissionOverwrite.ID
+	TargetType string    `json:"target_type"` // "role" or "member", matches models.PermissionOverwrite.Type
+	Allow      int64     `json:"allow"`
+	Deny       int64     `json:"deny"`
+	Delete     bool      `json:"delete,omitempty"` // true removes the overwrite entirely, ignoring Allow/Deny
 }
 
 // ChannelDeletePayload is dispatched when a channel is deleted
