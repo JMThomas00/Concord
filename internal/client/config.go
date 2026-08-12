@@ -132,11 +132,27 @@ type ServerSoundOverride struct {
 	MessageSound string `json:"message_sound"` // "" means use global default
 }
 
+// SharedFilesConfig represents ~/.concord/shared_files.json -- a local record
+// of files this client has sent as peer-to-peer attachments, so it can keep
+// serving them to downloaders after a restart (the server never stores the
+// bytes, only this client remembers where the original file lives on disk).
+type SharedFilesConfig struct {
+	Version int                          `json:"version"`
+	Files   map[string]SharedFileEntry   `json:"files"` // key: attachment ID
+}
+
+// SharedFileEntry records where a shared attachment's source file lives locally.
+type SharedFileEntry struct {
+	LocalPath string `json:"local_path"`
+	Filename  string `json:"filename"`
+}
+
 // ConfigManager handles loading and saving configuration files
 type ConfigManager struct {
-	serversFilePath string
-	configFilePath  string
-	mu              sync.RWMutex
+	serversFilePath     string
+	configFilePath      string
+	sharedFilesFilePath string
+	mu                  sync.RWMutex
 }
 
 // NewConfigManager creates a new configuration manager
@@ -154,8 +170,9 @@ func NewConfigManager() (*ConfigManager, error) {
 	}
 
 	return &ConfigManager{
-		serversFilePath: filepath.Join(concordDir, "servers.json"),
-		configFilePath:  filepath.Join(concordDir, "config.json"),
+		serversFilePath:     filepath.Join(concordDir, "servers.json"),
+		configFilePath:      filepath.Join(concordDir, "config.json"),
+		sharedFilesFilePath: filepath.Join(concordDir, "shared_files.json"),
 	}, nil
 }
 
@@ -225,6 +242,65 @@ func (cm *ConfigManager) SaveServers(config *ServersConfig) error {
 	}
 
 	return nil
+}
+
+// LoadSharedFiles loads the sent-attachment registry from ~/.concord/shared_files.json.
+func (cm *ConfigManager) LoadSharedFiles() (*SharedFilesConfig, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if _, err := os.Stat(cm.sharedFilesFilePath); os.IsNotExist(err) {
+		return &SharedFilesConfig{Version: 1, Files: map[string]SharedFileEntry{}}, nil
+	}
+
+	data, err := os.ReadFile(cm.sharedFilesFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read shared files config: %w", err)
+	}
+
+	var config SharedFilesConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse shared files config: %w", err)
+	}
+	if config.Files == nil {
+		config.Files = map[string]SharedFileEntry{}
+	}
+
+	return &config, nil
+}
+
+// SaveSharedFiles saves the sent-attachment registry to ~/.concord/shared_files.json.
+func (cm *ConfigManager) SaveSharedFiles(config *SharedFilesConfig) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal shared files config: %w", err)
+	}
+
+	tempFile := cm.sharedFilesFilePath + ".tmp"
+	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+		return fmt.Errorf("failed to write shared files config: %w", err)
+	}
+
+	if err := os.Rename(tempFile, cm.sharedFilesFilePath); err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("failed to save shared files config: %w", err)
+	}
+
+	return nil
+}
+
+// RecordSharedFile registers a newly-shared attachment's local source path so
+// this client can keep serving it to downloaders after a restart.
+func (cm *ConfigManager) RecordSharedFile(attachmentID uuid.UUID, localPath, filename string) error {
+	config, err := cm.LoadSharedFiles()
+	if err != nil {
+		return fmt.Errorf("failed to load shared files: %w", err)
+	}
+	config.Files[attachmentID.String()] = SharedFileEntry{LocalPath: localPath, Filename: filename}
+	return cm.SaveSharedFiles(config)
 }
 
 // AddServer adds a new server to the configuration

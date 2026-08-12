@@ -66,6 +66,12 @@ const (
 	OpUpdateChannelOverwrite OpCode = 57 // C→S: set or clear one role/member permission overwrite on a channel
 	OpSetNickname            OpCode = 58 // C→S: set your own, or (with ManageNicknames) another member's, nickname
 
+	// OpFileTransferSignal (59): C→S→C. Mirrors OpVoiceSignal's relay shape for
+	// peer-to-peer file attachments. The server never sees file bytes — only
+	// small signaling payloads (a download request, then WebRTC SDP/ICE) get
+	// relayed between the two clients involved.
+	OpFileTransferSignal OpCode = 59
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -142,6 +148,9 @@ const (
 	EventVoiceSpeaking     EventType = "VOICE_SPEAKING"
 	EventVoiceSignal       EventType = "VOICE_SIGNAL" // S→C relay of a WebRTC SDP/ICE signal
 
+	// File transfer events (peer-to-peer attachments)
+	EventFileTransferSignal EventType = "FILE_TRANSFER_SIGNAL" // S→C relay of a download request or WebRTC SDP/ICE signal
+
 	// Plugin platform events
 	EventPluginPaneFrame  EventType = "PLUGIN_PANE_FRAME"  // S→C: relay plugin's rendered frame to the viewer
 	EventPluginPaneInput  EventType = "PLUGIN_PANE_INPUT"  // S→plugin: relay a viewer's input
@@ -213,10 +222,11 @@ type HeartbeatPayload struct {
 
 // SendMessagePayload is sent when a user sends a message
 type SendMessagePayload struct {
-	ChannelID uuid.UUID  `json:"channel_id"`
-	Content   string     `json:"content"`
-	ReplyToID *uuid.UUID `json:"reply_to_id,omitempty"`
-	Nonce     string     `json:"nonce,omitempty"` // Client-generated ID for deduplication
+	ChannelID   uuid.UUID            `json:"channel_id"`
+	Content     string               `json:"content"`
+	ReplyToID   *uuid.UUID           `json:"reply_to_id,omitempty"`
+	Nonce       string               `json:"nonce,omitempty"` // Client-generated ID for deduplication
+	Attachments []models.Attachment  `json:"attachments,omitempty"`
 }
 
 // EditMessagePayload is sent to edit a message
@@ -891,6 +901,31 @@ type VoiceSignalRelayPayload struct {
 	Type         string          `json:"type"`                // "offer", "answer", "candidate"
 	SDP          string          `json:"sdp,omitempty"`
 	Candidate    json.RawMessage `json:"candidate,omitempty"` // RTCIceCandidateInit JSON
+}
+
+// FileTransferSignalPayload is sent C→S to either request a peer-to-peer file
+// download from another client, or to carry the WebRTC SDP/ICE exchange for
+// that transfer once the sender has accepted. The server relays this without
+// inspecting or storing file content — Type discriminates the phase:
+// "request" (receiver→sender, asking to start a transfer), "accept"/"reject"
+// (sender→receiver), then "offer"/"answer"/"candidate" (standard WebRTC
+// signaling, both directions).
+type FileTransferSignalPayload struct {
+	TargetUserID uuid.UUID       `json:"target_user_id"`
+	AttachmentID uuid.UUID       `json:"attachment_id"`
+	Type         string          `json:"type"` // "request", "accept", "reject", "offer", "answer", "candidate"
+	SDP          string          `json:"sdp,omitempty"`
+	Candidate    json.RawMessage `json:"candidate,omitempty"` // RTCIceCandidateInit JSON
+}
+
+// FileTransferSignalRelayPayload is dispatched S→C when the server relays a
+// file transfer signal. SourceUserID identifies who sent the original signal.
+type FileTransferSignalRelayPayload struct {
+	SourceUserID uuid.UUID       `json:"source_user_id"`
+	AttachmentID uuid.UUID       `json:"attachment_id"`
+	Type         string          `json:"type"`
+	SDP          string          `json:"sdp,omitempty"`
+	Candidate    json.RawMessage `json:"candidate,omitempty"`
 }
 
 // VoiceSpeakingPayload is sent C→S when the client's speaking state changes.

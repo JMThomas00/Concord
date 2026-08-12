@@ -39,13 +39,18 @@ type Message struct {
 	ReplyToID       *uuid.UUID   `json:"reply_to_id,omitempty"`     // Message being replied to
 }
 
-// Attachment represents a file attached to a message
+// Attachment represents a file shared peer-to-peer alongside a message. The
+// server never stores or sees the file's bytes — only this small manifest
+// (name, size, integrity hash, and who to request the file from). Actual
+// transfer happens directly between clients over a WebRTC data channel,
+// negotiated via OpFileTransferSignal.
 type Attachment struct {
 	ID          uuid.UUID `json:"id"`
 	Filename    string    `json:"filename"`
 	Size        int64     `json:"size"`
-	URL         string    `json:"url"`
+	ContentHash string    `json:"content_hash"` // SHA-256 hex digest, verified by the receiver after transfer
 	ContentType string    `json:"content_type,omitempty"`
+	SenderID    uuid.UUID `json:"sender_id"` // who to request the file from via OpFileTransferSignal
 }
 
 // Embed represents rich embedded content (like link previews)

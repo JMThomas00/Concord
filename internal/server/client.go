@@ -324,6 +324,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleVoiceSignal(c, msg)
 		})
 
+	case protocol.OpFileTransferSignal:
+		c.requireAuth(func() {
+			c.handlers.HandleFileTransferSignal(c, msg)
+		})
+
 	case protocol.OpVoiceSpeaking:
 		c.requireAuth(func() {
 			c.handlers.HandleVoiceSpeaking(c, msg)

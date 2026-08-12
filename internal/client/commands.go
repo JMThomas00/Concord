@@ -1,9 +1,14 @@
 package client
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -121,6 +126,10 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleVoiceServerMute(cmd.Args, false, false)
 	case "move-voice":
 		return ch.handleMoveVoice(cmd.Args)
+	case "attach":
+		return ch.handleAttach(cmd.Args)
+	case "download":
+		return ch.handleDownload(cmd.Args)
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}
@@ -411,6 +420,8 @@ func (ch *CommandHandler) handleHelp(args []string) (string, error) {
 		"/theme [name]              - Open theme browser, or apply theme directly",
 		"/status <message>          - Set your status (use /status clear to remove)",
 		"/nick <nickname>           - Set your own nickname on this server (use clear to remove)",
+		"/attach <path> [caption]   - Share a local file peer-to-peer (you must stay online for others to download it)",
+		"/download <attachment-id>  - Download a file someone else attached",
 		"/mute                      - Mute current channel (suppress unread badges)",
 		"/unmute                    - Unmute current channel",
 		"/join-voice [#channel]     - Join a voice channel",
@@ -1079,6 +1090,131 @@ func (ch *CommandHandler) setStatus(statusText string) (string, error) {
 // caller's own nickname (renaming someone else has no client command; the
 // server would reject it anyway since OpSetNickname requires
 // PermissionManageNicknames for any UserID other than the caller's own).
+// handleAttach shares a local file peer-to-peer: /attach <path> [caption].
+// The server only ever stores a small manifest (name, size, hash) -- the
+// bytes themselves transfer directly to whoever downloads it, later, over
+// WebRTC. This client must stay online for the file to remain downloadable.
+func (ch *CommandHandler) handleAttach(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("usage: /attach <local-path> [caption]")
+	}
+
+	a := ch.app
+	if a.activeConn == nil || a.activeConn.User == nil {
+		return "", errors.New("not connected to a server")
+	}
+	if a.currentChannel == nil {
+		return "", errors.New("no channel selected")
+	}
+
+	path := args[0]
+	caption := strings.Join(args[1:], " ")
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+	f, err := os.Open(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory, not a file", path)
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", fmt.Errorf("failed to hash file: %w", err)
+	}
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
+
+	attachmentID := uuid.New()
+	attachment := models.Attachment{
+		ID:          attachmentID,
+		Filename:    filepath.Base(absPath),
+		Size:        info.Size(),
+		ContentHash: contentHash,
+		SenderID:    a.activeConn.User.ID,
+	}
+
+	payload := &protocol.SendMessagePayload{
+		ChannelID:   a.currentChannel.ID,
+		Content:     caption,
+		Nonce:       uuid.New().String(),
+		Attachments: []models.Attachment{attachment},
+	}
+	msg, err := protocol.NewMessage(protocol.OpSendMessage, payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to create message: %w", err)
+	}
+	if err := a.activeConn.Connection.Send(msg); err != nil {
+		return "", fmt.Errorf("failed to send message: %w", err)
+	}
+
+	// Remember where the source file lives so this client can keep serving
+	// it to downloaders, including across a restart.
+	if a.configMgr != nil {
+		if err := a.configMgr.RecordSharedFile(attachmentID, absPath, attachment.Filename); err != nil {
+			log.Printf("filetransfer: failed to record shared file: %v", err)
+		}
+	}
+	if engine, _ := a.ensureFileTransferEngine(); engine != nil {
+		engine.RegisterSharedFile(attachmentID, absPath)
+	}
+
+	return fmt.Sprintf("Shared %s (%d bytes)", attachment.Filename, attachment.Size), nil
+}
+
+// handleDownload starts a peer-to-peer download of an attachment already
+// visible in the current channel: /download <attachment-id>.
+func (ch *CommandHandler) handleDownload(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("usage: /download <attachment-id>")
+	}
+
+	a := ch.app
+	if a.activeConn == nil {
+		return "", errors.New("not connected to a server")
+	}
+	if a.currentChannel == nil {
+		return "", errors.New("no channel selected")
+	}
+
+	attachmentID, err := uuid.Parse(args[0])
+	if err != nil {
+		return "", fmt.Errorf("invalid attachment ID: %w", err)
+	}
+
+	var found *models.Attachment
+	a.activeConn.mu.RLock()
+	for _, md := range a.activeConn.Messages[a.currentChannel.ID] {
+		for i := range md.Attachments {
+			if md.Attachments[i].ID == attachmentID {
+				att := md.Attachments[i]
+				found = &att
+			}
+		}
+	}
+	a.activeConn.mu.RUnlock()
+	if found == nil {
+		return "", fmt.Errorf("no attachment with that ID in this channel")
+	}
+
+	engine, _ := a.ensureFileTransferEngine()
+	if engine == nil {
+		return "", errors.New("not connected to a server")
+	}
+	engine.RequestDownload(found.ID, found.SenderID, found.Filename, found.Size, found.ContentHash)
+
+	return fmt.Sprintf("Requesting %s from the sender...", found.Filename), nil
+}
+
 func (ch *CommandHandler) handleNickname(args []string) (string, error) {
 	if len(args) < 1 {
 		return "", fmt.Errorf("usage: /nick <nickname> or /nick clear")

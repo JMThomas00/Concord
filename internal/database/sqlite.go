@@ -259,6 +259,19 @@ func (db *DB) initSchema() error {
 		PRIMARY KEY (message_id, user_id)
 	);
 
+	-- Peer-to-peer file attachment manifests. The server stores only this
+	-- small metadata row per attachment -- never the file's bytes, which
+	-- transfer directly between clients over WebRTC (see OpFileTransferSignal).
+	CREATE TABLE IF NOT EXISTS attachments (
+		id TEXT PRIMARY KEY,
+		message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+		filename TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		content_hash TEXT NOT NULL,
+		content_type TEXT,
+		sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+	);
+
 	-- Message reactions
 	CREATE TABLE IF NOT EXISTS message_reactions (
 		message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -1430,7 +1443,66 @@ func (db *DB) CreateMessage(msg *models.Message) error {
 		}
 	}
 
+	// Insert attachment manifests (file bytes never touch the server -- see
+	// the attachments table comment).
+	for _, att := range msg.Attachments {
+		_, err = db.Exec(`
+			INSERT INTO attachments (id, message_id, filename, size, content_hash, content_type, sender_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			att.ID.String(), msg.ID.String(), att.Filename, att.Size, att.ContentHash, att.ContentType, att.SenderID.String())
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// getMessageAttachments loads attachment manifests for a set of messages in
+// one query, keyed by message ID. Callers must invoke this after any
+// rows.Next() loop over the messages table has fully drained -- the DB
+// connection pool is capped at 1 (modernc.org/sqlite), so a nested query
+// against an open row iterator will deadlock.
+func (db *DB) getMessageAttachments(messageIDs []uuid.UUID) (map[uuid.UUID][]models.Attachment, error) {
+	result := make(map[uuid.UUID][]models.Attachment)
+	if len(messageIDs) == 0 {
+		return result, nil
+	}
+
+	placeholders := make([]string, len(messageIDs))
+	args := make([]interface{}, len(messageIDs))
+	for i, id := range messageIDs {
+		placeholders[i] = "?"
+		args[i] = id.String()
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, message_id, filename, size, content_hash, content_type, sender_id
+		FROM attachments WHERE message_id IN (%s)`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var att models.Attachment
+		var idStr, messageIDStr, senderIDStr string
+		var contentType sql.NullString
+		if err := rows.Scan(&idStr, &messageIDStr, &att.Filename, &att.Size, &att.ContentHash, &contentType, &senderIDStr); err != nil {
+			return nil, err
+		}
+		att.ID = uuid.MustParse(idStr)
+		att.SenderID = uuid.MustParse(senderIDStr)
+		if contentType.Valid {
+			att.ContentType = contentType.String
+		}
+		messageID := uuid.MustParse(messageIDStr)
+		result[messageID] = append(result[messageID], att)
+	}
+
+	return result, nil
 }
 
 // GetChannelMessages retrieves messages for a channel with pagination
@@ -1463,6 +1535,12 @@ func (db *DB) GetMessage(messageID uuid.UUID) (*models.Message, error) {
 		replyID := uuid.MustParse(replyToID.String)
 		msg.ReplyToID = &replyID
 	}
+
+	attachmentsByMessage, err := db.getMessageAttachments([]uuid.UUID{msg.ID})
+	if err != nil {
+		return nil, err
+	}
+	msg.Attachments = attachmentsByMessage[msg.ID]
 
 	return msg, nil
 }
@@ -1602,6 +1680,23 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// Load attachment manifests in a second pass, now that the row iterator
+	// above has fully drained -- SetMaxOpenConns(1) means a nested query
+	// against an open rows.Next() loop deadlocks.
+	if len(messages) > 0 {
+		messageIDs := make([]uuid.UUID, len(messages))
+		for i, msg := range messages {
+			messageIDs[i] = msg.ID
+		}
+		attachmentsByMessage, err := db.getMessageAttachments(messageIDs)
+		if err != nil {
+			return nil, err
+		}
+		for _, msg := range messages {
+			msg.Attachments = attachmentsByMessage[msg.ID]
+		}
 	}
 
 	// The query fetches the most-recent N rows with DESC order (needed for

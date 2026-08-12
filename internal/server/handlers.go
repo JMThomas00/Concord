@@ -273,11 +273,39 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	// Peer-to-peer attachments: v1 supports at most one per message. The
+	// server only ever stores this small manifest -- file bytes transfer
+	// directly between clients later, over OpFileTransferSignal.
+	if len(payload.Attachments) > 1 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Only one attachment per message is supported")
+		return
+	}
+	var attachments []models.Attachment
+	if len(payload.Attachments) == 1 {
+		att := payload.Attachments[0]
+		if att.Filename == "" || att.Size <= 0 || att.ContentHash == "" {
+			c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid attachment manifest")
+			return
+		}
+		if !c.IsPlugin && err == nil && channel.ServerID != uuid.Nil {
+			if permErr := h.hasChannelPermission(c.UserID, channel, models.PermissionAttachFiles); permErr != nil {
+				c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to attach files in this channel")
+				return
+			}
+		}
+		if att.ID == uuid.Nil {
+			att.ID = uuid.New()
+		}
+		att.SenderID = c.UserID // never trust the client to claim another sender
+		attachments = []models.Attachment{att}
+	}
+
 	// Create the message
 	newMsg := models.NewMessage(payload.ChannelID, c.UserID, payload.Content)
 	if payload.ReplyToID != nil {
 		newMsg.ReplyToID = payload.ReplyToID
 	}
+	newMsg.Attachments = attachments
 
 	// Check @everyone permission
 	if newMsg.MentionEveryone && err == nil && channel.ServerID != uuid.Nil {
@@ -2289,6 +2317,42 @@ func (h *Handlers) HandleVoiceSignal(c *Client, msg *protocol.Message) {
 		Candidate:    req.Candidate,
 	}
 	h.hub.SendToUser(req.TargetUserID, protocol.EventVoiceSignal, relay)
+}
+
+// HandleFileTransferSignal relays a peer-to-peer file transfer signal
+// (download request, then WebRTC SDP/ICE) between two clients. Mirrors
+// HandleVoiceSignal's dumb-relay shape exactly -- the server never inspects
+// or stores file content, only these small signaling payloads.
+// OpFileTransferSignal (59): C→S→C
+func (h *Handlers) HandleFileTransferSignal(c *Client, msg *protocol.Message) {
+	var req protocol.FileTransferSignalPayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid file transfer signal payload")
+		return
+	}
+
+	// A "request" starts a new transfer and needs the target (the file's
+	// original sender) to actually be connected -- unlike voice, where both
+	// peers already share a channel-join lifecycle, a download can be
+	// attempted long after the sharer sent the message and went offline.
+	if req.Type == "request" && !h.hub.IsUserOnline(req.TargetUserID) {
+		relay := &protocol.FileTransferSignalRelayPayload{
+			SourceUserID: req.TargetUserID,
+			AttachmentID: req.AttachmentID,
+			Type:         "offline",
+		}
+		h.hub.SendToUser(c.UserID, protocol.EventFileTransferSignal, relay)
+		return
+	}
+
+	relay := &protocol.FileTransferSignalRelayPayload{
+		SourceUserID: c.UserID,
+		AttachmentID: req.AttachmentID,
+		Type:         req.Type,
+		SDP:          req.SDP,
+		Candidate:    req.Candidate,
+	}
+	h.hub.SendToUser(req.TargetUserID, protocol.EventFileTransferSignal, relay)
 }
 
 // HandleVoiceSpeaking handles speaking state notification and broadcasts it to

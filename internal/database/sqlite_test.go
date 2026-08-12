@@ -702,6 +702,61 @@ func TestGetChannelMessagesWithPagination(t *testing.T) {
 	testutil.AssertTrue(t, len(nextMessages) > 0, "should have more messages")
 }
 
+func TestCreateMessageWithAttachment(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	fixtures, err := seedTestData(db)
+	testutil.AssertNoError(t, err)
+
+	message := testutil.NewTestMessage(fixtures.TextChannel.ID, fixtures.AdminUser.ID, "here's a file")
+	message.Attachments = []models.Attachment{{
+		ID:          uuid.New(),
+		Filename:    "photo.png",
+		Size:        12345,
+		ContentHash: "deadbeef",
+		ContentType: "image/png",
+		SenderID:    fixtures.AdminUser.ID,
+	}}
+	testutil.AssertNoError(t, db.CreateMessage(message))
+
+	// GetMessage should load the attachment back.
+	retrieved, err := db.GetMessage(message.ID)
+	testutil.AssertNoError(t, err)
+	if len(retrieved.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(retrieved.Attachments))
+	}
+	att := retrieved.Attachments[0]
+	testutil.AssertEqual(t, "photo.png", att.Filename)
+	testutil.AssertEqual(t, int64(12345), att.Size)
+	testutil.AssertEqual(t, "deadbeef", att.ContentHash)
+	testutil.AssertEqual(t, "image/png", att.ContentType)
+	testutil.AssertEqualUUID(t, fixtures.AdminUser.ID, att.SenderID)
+
+	// GetChannelMessages should load it back too (the second-pass batch load).
+	channelMsgs, err := db.GetChannelMessages(fixtures.TextChannel.ID, 10, nil, fixtures.AdminUser.ID)
+	testutil.AssertNoError(t, err)
+	var found *models.Message
+	for _, m := range channelMsgs {
+		if m.ID == message.ID {
+			found = m
+		}
+	}
+	if found == nil {
+		t.Fatal("message not found in channel messages")
+	}
+	if len(found.Attachments) != 1 || found.Attachments[0].Filename != "photo.png" {
+		t.Fatalf("expected attachment to survive GetChannelMessages, got %+v", found.Attachments)
+	}
+
+	// A message with no attachments shouldn't gain a phantom one.
+	plain := testutil.NewTestMessage(fixtures.TextChannel.ID, fixtures.AdminUser.ID, "no file here")
+	testutil.AssertNoError(t, db.CreateMessage(plain))
+	plainRetrieved, err := db.GetMessage(plain.ID)
+	testutil.AssertNoError(t, err)
+	testutil.AssertEqual(t, 0, len(plainRetrieved.Attachments))
+}
+
 func TestUpdateMessage(t *testing.T) {
 	db, cleanup := createTestDB(t)
 	defer cleanup()

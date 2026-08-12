@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -186,6 +188,19 @@ type App struct {
 	voiceQuit     chan struct{}       // closed by stopVoiceEngine to unblock waiting cmds
 	voiceQuality  map[uuid.UUID]int     // userID → latest ICE RTT ms (-1 = unknown)
 	voiceLevels   map[uuid.UUID]float32 // userID → latest RMS output level (0.0–1.0)
+
+	// File transfer engine state — lazily created on first use and kept alive
+	// for the app's lifetime (unlike voice, transfers aren't tied to joining
+	// a channel). Only ever sends/receives over a.activeConn, mirroring
+	// voice's existing single-active-connection simplification.
+	fileTransferEngine   *FileTransferEngine
+	fileTransferSigOut   chan FileTransferSignalOut
+	fileTransferEventOut chan interface{}
+	// pendingFileTransferCmd holds the wait-pump Cmd from the most recent
+	// ensureFileTransferEngine() call that created a new engine. Slash
+	// command handlers (commands.go) can't return a tea.Cmd directly, so
+	// handleSlashCommand collects this after Execute() runs.
+	pendingFileTransferCmd tea.Cmd
 
 	// Server list panel animation
 	serverListAnimWidth int  // current animated width (22 expanded, 8 collapsed)
@@ -1348,6 +1363,73 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if a.voiceEngine != nil {
 			cmds = append(cmds, a.waitForVoiceSignal())
+		}
+
+	case FileTransferSignalOut:
+		// Forward a file transfer signal (request/offer/answer/candidate) to
+		// the target peer via server relay. Mirrors VoiceSignalOut above.
+		if a.activeConn != nil && a.activeConn.Connection != nil {
+			payload := &protocol.FileTransferSignalPayload{
+				TargetUserID: msg.TargetUserID,
+				AttachmentID: msg.AttachmentID,
+				Type:         msg.Type,
+				SDP:          msg.SDP,
+				Candidate:    msg.Candidate,
+			}
+			if wsMsg, err := protocol.NewMessage(protocol.OpFileTransferSignal, payload); err == nil {
+				_ = a.activeConn.Connection.Send(wsMsg)
+			}
+		}
+		if a.fileTransferEngine != nil {
+			cmds = append(cmds, a.waitForFileTransferSignal())
+		}
+
+	case FileTransferProgressMsg:
+		pct := 0
+		if msg.TotalBytes > 0 {
+			pct = int(msg.BytesDone * 100 / msg.TotalBytes)
+		}
+		verb := "Sending"
+		if msg.Direction == TransferReceiving {
+			verb = "Downloading"
+		}
+		a.statusMessage = fmt.Sprintf("%s file: %d%%", verb, pct)
+		a.statusError = false
+		if a.fileTransferEngine != nil {
+			cmds = append(cmds, a.waitForFileTransferEvent())
+		}
+
+	case FileTransferDoneMsg:
+		if msg.Err != nil {
+			verb := "send"
+			if msg.Direction == TransferReceiving {
+				verb = "download"
+			}
+			a.statusMessage = fmt.Sprintf("File %s failed (%s): %v", verb, msg.Filename, msg.Err)
+			a.statusError = true
+		} else if msg.Direction == TransferReceiving {
+			a.statusMessage = fmt.Sprintf("Downloaded %s to %s", msg.Filename, msg.DestPath)
+			a.statusError = false
+		} else {
+			a.statusMessage = fmt.Sprintf("Finished sending %s", msg.Filename)
+			a.statusError = false
+		}
+		if a.fileTransferEngine != nil {
+			cmds = append(cmds, a.waitForFileTransferEvent())
+		}
+
+	case FileTransferOfflineMsg:
+		a.statusMessage = "Can't download: the sender is offline"
+		a.statusError = true
+		if a.fileTransferEngine != nil {
+			cmds = append(cmds, a.waitForFileTransferEvent())
+		}
+
+	case FileTransferRejectedMsg:
+		a.statusMessage = "Download request was declined (file may no longer be available)"
+		a.statusError = true
+		if a.fileTransferEngine != nil {
+			cmds = append(cmds, a.waitForFileTransferEvent())
 		}
 
 	case ErrorMsg:
@@ -4227,6 +4309,15 @@ func (a *App) updateChatContent() {
 			}
 		}
 		content.WriteString(contentLine)
+
+		// Peer-to-peer attachment manifest (if any). The server never has the
+		// file's bytes -- this just tells the reader who to request it from.
+		for _, att := range msg.Attachments {
+			attLine := formatAttachmentLine(att, viewportWidth, msg.IsOwn, a.theme)
+			content.WriteString(attLine)
+			content.WriteString("\n")
+		}
+
 		// Spacing between messages based on density setting
 		density := ""
 		if a.uiConfig != nil {
@@ -4252,6 +4343,37 @@ func (a *App) updateChatContent() {
 // renderMessageContent renders message text, highlighting @mentions of the current user.
 // urlRegex matches http and https URLs.
 var urlRegex = regexp.MustCompile(`https?://[^\s<>"{}|\\^` + "`" + `\[\]]+`)
+
+// formatAttachmentLine renders a peer-to-peer attachment manifest line under a
+// message: filename, size, and the command to fetch it. No inline preview or
+// automatic download -- the receiver decides whether/when to pull the bytes.
+func formatAttachmentLine(att models.Attachment, width int, rightAlign bool, theme *themes.Theme) string {
+	label := fmt.Sprintf("[file] %s (%s) — /download %s", att.Filename, humanFileSize(att.Size), att.ID.String())
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Colors.Comment)).
+		Italic(true).
+		Width(width)
+	if rightAlign {
+		style = style.Align(lipgloss.Right).PaddingRight(2)
+	} else {
+		style = style.PaddingLeft(2)
+	}
+	return style.Render(label)
+}
+
+// humanFileSize formats a byte count as a short human-readable string (KB/MB/GB).
+func humanFileSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
 
 // osc8Link wraps text in an OSC 8 terminal hyperlink.
 // Uses ESC\ (ST, String Terminator, 0x1B 0x5C) which Windows Terminal requires
@@ -4677,11 +4799,14 @@ func (a *App) handleSlashCommand(input string) tea.Cmd {
 		return nil
 	}
 
+	a.pendingFileTransferCmd = nil
 	result, err := a.commandHandler.Execute(cmd)
+	pumpCmd := a.pendingFileTransferCmd
+	a.pendingFileTransferCmd = nil
 	if err != nil {
 		a.statusMessage = fmt.Sprintf("Command failed: %v", err)
 		a.statusError = true
-		return nil
+		return pumpCmd
 	}
 
 	// Special handling for help command - display in modal overlay
@@ -4691,7 +4816,7 @@ func (a *App) handleSlashCommand(input string) tea.Cmd {
 		a.statusMessage = result
 		a.statusError = false
 	}
-	return nil
+	return pumpCmd
 }
 
 // displayLocalSystemMessage displays a system message in the chat viewport (local only, not broadcast)
@@ -4806,6 +4931,7 @@ func (a *App) handleTabCompletion() {
 
 	// Available commands
 	commands := []string{
+		"attach",
 		"ban",
 		"create-channel",
 		"create-category",
@@ -4814,6 +4940,7 @@ func (a *App) handleTabCompletion() {
 		"delete-channel",
 		"delete-category",
 		"delete-group",
+		"download",
 		"help",
 		"kick",
 		"links",
@@ -6287,6 +6414,17 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if a.voiceEngine != nil {
 			a.voiceEngine.HandleSignal(sigPayload.SourceUserID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
 		}
+
+	case protocol.EventFileTransferSignal:
+		var sigPayload protocol.FileTransferSignalRelayPayload
+		if err := json.Unmarshal(msg.Data, &sigPayload); err != nil {
+			log.Printf("filetransfer: FILE_TRANSFER_SIGNAL parse error: %v", err)
+			return nil
+		}
+		if engine, cmd := a.ensureFileTransferEngine(); engine != nil {
+			engine.HandleSignal(sigPayload.SourceUserID, sigPayload.AttachmentID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
+			return cmd
+		}
 	}
 
 	return nil
@@ -6414,5 +6552,82 @@ func (a *App) waitForVoiceSignal() tea.Cmd {
 		case <-quit:
 			return nil
 		}
+	}
+}
+
+// ── File transfer engine lifecycle ───────────────────────────────────────────
+
+// ensureFileTransferEngine lazily creates the (single, app-lifetime) file
+// transfer engine on first use, loading any previously-shared attachments
+// from ~/.concord/shared_files.json so this client keeps serving files it
+// shared before a restart. Returns nil if there's no authenticated user yet.
+func (a *App) ensureFileTransferEngine() (*FileTransferEngine, tea.Cmd) {
+	if a.fileTransferEngine != nil {
+		return a.fileTransferEngine, nil
+	}
+	if a.activeConn == nil || a.activeConn.User == nil {
+		return nil, nil
+	}
+
+	sharedFiles := make(map[uuid.UUID]string)
+	if a.configMgr != nil {
+		if cfg, err := a.configMgr.LoadSharedFiles(); err == nil {
+			for idStr, entry := range cfg.Files {
+				if id, err := uuid.Parse(idStr); err == nil {
+					sharedFiles[id] = entry.LocalPath
+				}
+			}
+		}
+	}
+
+	downloadDir := filepath.Join(homeDirOrTemp(), "Downloads")
+
+	a.fileTransferSigOut = make(chan FileTransferSignalOut, 32)
+	a.fileTransferEventOut = make(chan interface{}, 32)
+
+	engine := NewFileTransferEngine(a.activeConn.User.ID, downloadDir, sharedFiles, a.fileTransferSigOut, a.fileTransferEventOut)
+	a.fileTransferEngine = engine
+
+	cmd := tea.Batch(a.waitForFileTransferEvent(), a.waitForFileTransferSignal())
+	a.pendingFileTransferCmd = cmd
+	return engine, cmd
+}
+
+func homeDirOrTemp() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return os.TempDir()
+}
+
+// waitForFileTransferEvent blocks until the engine emits a progress/done/
+// offline/rejected event.
+func (a *App) waitForFileTransferEvent() tea.Cmd {
+	ch := a.fileTransferEventOut
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		evt, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return evt
+	}
+}
+
+// waitForFileTransferSignal blocks until the engine queues an outbound
+// signaling message to forward to the server.
+func (a *App) waitForFileTransferSignal() tea.Cmd {
+	ch := a.fileTransferSigOut
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		sig, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return sig
 	}
 }
