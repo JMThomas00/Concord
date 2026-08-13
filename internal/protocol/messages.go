@@ -279,6 +279,11 @@ type ChannelUpdateRequest struct {
 	SortOrder  *int              `json:"sort_order,omitempty"` // NEW: Use for all ordering operations
 	IsLocked   *bool             `json:"is_locked,omitempty"`
 	MaxUsers   *int              `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
+
+	// PluginConfig carries updated create_fields values for a plugin channel
+	// (Type == models.ChannelTypePlugin). Absent/empty means "leave as-is" —
+	// only sent when the edit form actually has plugin fields to submit.
+	PluginConfig map[string]string `json:"plugin_config,omitempty"`
 }
 
 // ChannelDeleteRequest is sent by clients to delete a channel
@@ -698,6 +703,11 @@ type PluginPaneClosePayload struct {
 type PluginInfo struct {
 	ID           string        `json:"id"`
 	Name         string        `json:"name"`
+	// Product names the underlying plugin family this install belongs to
+	// (e.g. "Mynah" for a persona install named "Burt") — set only when the
+	// manifest declares [plugin].product; empty for plugins where Name
+	// already is the whole identity (e.g. Tukan).
+	Product      string        `json:"product,omitempty"`
 	Version      string        `json:"version"`
 	Enabled      bool          `json:"enabled"`
 	Status       string        `json:"status"`

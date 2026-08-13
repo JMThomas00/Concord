@@ -946,8 +946,18 @@ func (a *App) handleEditAction() {
 			}
 
 			pluginLabel := ""
+			var pluginID, pluginKind string
+			var pluginFields []protocol.PluginField
+			var pluginTextInputs []textinput.Model
+			var pluginValues []string
 			if selectedCh.Type == models.ChannelTypePlugin {
 				pluginLabel = a.channelTypeLabel(selectedCh)
+				if info, ok := a.pluginChannelKind(selectedCh); ok {
+					pluginID = info.PluginID
+					pluginKind = info.Kind
+					pluginFields = info.CreateFields
+					pluginTextInputs, pluginValues = buildFieldEditors(info.CreateFields, selectedCh.PluginConfig)
+				}
 			}
 
 			// MaxUsers input
@@ -977,6 +987,11 @@ func (a *App) handleEditAction() {
 				FocusField:         0,
 				OriginalType:       selectedCh.Type,
 				PluginDisplayLabel: pluginLabel,
+				PluginID:           pluginID,
+				PluginKind:         pluginKind,
+				PluginFields:       pluginFields,
+				PluginTextInputs:   pluginTextInputs,
+				PluginValues:       pluginValues,
 			}
 		}
 	case 1: // Edit Role
@@ -1750,8 +1765,9 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 	}
 
 	// Client-side required-field check for plugin channels, mirroring the
-	// server's own validation so the error surfaces immediately.
-	if channelType == models.ChannelTypePlugin && !pluginTypeLocked {
+	// server's own validation so the error surfaces immediately. Applies to
+	// edit mode too now that a plugin channel's create_fields are editable.
+	if channelType == models.ChannelTypePlugin {
 		for _, f := range state.PluginFields {
 			if f.Required && pluginConfigValues(state)[f.Key] == "" {
 				state.ErrorMsg = fmt.Sprintf("%s is required", f.Label)
@@ -1808,6 +1824,8 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 		// (meaning "unchanged") rather than risk silently converting it.
 		if !pluginTypeLocked {
 			updateReq.Type = &channelType
+		} else {
+			updateReq.PluginConfig = pluginConfigValues(state)
 		}
 		req = updateReq
 		opCode = protocol.OpChannelUpdate
@@ -2143,6 +2161,26 @@ func (a *App) handleOverwriteEditorKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		a.statusMessage = fmt.Sprintf("Updated permissions for %s", s.OverwriteTargetName)
+
+		// Apply the same edit locally so the target picker's "(overwrite set)"
+		// marker is correct immediately, instead of waiting on the server's
+		// response to refresh s.OverwriteChannel.
+		overwrites := s.OverwriteChannel.PermissionOverwrites
+		for i, ow := range overwrites {
+			if ow.ID == s.OverwriteTargetID {
+				overwrites = append(overwrites[:i], overwrites[i+1:]...)
+				break
+			}
+		}
+		if !req.Delete {
+			overwrites = append(overwrites, models.PermissionOverwrite{
+				ID:    s.OverwriteTargetID,
+				Type:  s.OverwriteTargetType,
+				Allow: int64(s.OverwriteAllowBits),
+				Deny:  int64(s.OverwriteDenyBits),
+			})
+		}
+		s.OverwriteChannel.PermissionOverwrites = overwrites
 
 		s.OverwriteEditorOpen = false
 		s.OverwriteTargetPicker = true
@@ -3599,7 +3637,7 @@ func (a *App) renderOverwriteTargetPickerPage(width, height int, s *ServerManage
 	top.writeLine(headerStyle.Render(fmt.Sprintf("Permissions: #%s", s.OverwriteChannel.Name)))
 	subtitleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(subtitleStyle.Render("Pick a role or member to set an overwrite for"))
+	top.writeLine(subtitleStyle.Render("Select a role or member to set their permissions"))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
@@ -3712,6 +3750,7 @@ func (a *App) renderOverwriteEditorPage(width, height int, s *ServerManagementSt
 	subtitleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	top.writeLine(subtitleStyle.Render("Space cycles Inherit → Allow → Deny for the selected permission"))
+	top.writeLine(subtitleStyle.Render("Inherit: no rule here · Allow: grants it here · Deny: blocks it here"))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
@@ -4007,7 +4046,7 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 				toggle = "[x]"
 			}
 
-			line := fmt.Sprintf("%s v%s", p.Name, p.Version)
+			line := fmt.Sprintf("%s v%s", pluginDisplayLabel(p.Name, p.Product), p.Version)
 			status := statusStyle.Render(p.Status)
 
 			var rendered string
@@ -4067,7 +4106,7 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 
 	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
-	top.writeLine(headerStyle.Render("Configure " + state.PluginID))
+	top.writeLine(headerStyle.Render("Configure " + pluginDisplayLabel(state.PluginID, state.Product)))
 
 	subtitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	top.writeLine(subtitleStyle.Render("Server-wide settings for this plugin"))

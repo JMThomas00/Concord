@@ -114,7 +114,10 @@ func (m *Manager) ensureInstalledPlugin(manifest *Manifest) (*provisionedPlugin,
 	}
 
 	// First discovery: create the service-account user + issue a token.
-	user := models.NewUser(manifest.Plugin.Name, "")
+	// email is a synthetic, unique-per-plugin placeholder — the users.email
+	// column is UNIQUE, and SQLite only exempts NULL from that (not ""), so
+	// a shared blank email collides as soon as a second plugin is installed.
+	user := models.NewUser(manifest.Plugin.Name, "plugin+"+pluginID+"@service.concord.internal")
 	user.IsServiceAccount = true
 	user.Status = models.StatusOnline
 

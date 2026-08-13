@@ -603,6 +603,25 @@ func (c *Client) identifyAsPlugin(token string) {
 		}
 	}
 
+	// Same reasoning as the server_config_field push above, but for the
+	// plugin's own dedicated channels: a plugin only ever learns about one
+	// via a live CHANNEL_CREATE/CHANNEL_UPDATE event pushed while it was
+	// online, so a pre-existing channel goes completely unknown to it after
+	// every restart otherwise — its messages would silently fall through to
+	// mention-mode handling (or be dropped, if mention mode is off) instead
+	// of the dedicated-channel relay the channel was actually created for.
+	if channels, err := c.handlers.db.GetChannelsByPlugin(pluginID); err == nil {
+		for _, ch := range channels {
+			payload := protocol.ChannelUpdatePayload{Channel: ch}
+			if chMsg, err := protocol.NewMessage(protocol.OpDispatch, payload); err == nil {
+				chMsg.Type = protocol.EventChannelUpdate
+				c.send <- chMsg
+			}
+		}
+	} else {
+		PluginLog.Warn("failed to load plugin's channels for identify-time sync", "plugin_id", pluginID, "error", err)
+	}
+
 	AuthLog.Info("Plugin authenticated successfully", "plugin_id", pluginID, "service_user_id", user.ID)
 }
 

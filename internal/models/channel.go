@@ -42,8 +42,9 @@ type Channel struct {
 	RecipientIDs []uuid.UUID `json:"recipient_ids,omitempty"`
 
 	// For plugin-provided channels (Type == ChannelTypePlugin)
-	PluginID          string `json:"plugin_id,omitempty"`
-	PluginChannelKind string `json:"plugin_channel_kind,omitempty"`
+	PluginID          string            `json:"plugin_id,omitempty"`
+	PluginChannelKind string            `json:"plugin_channel_kind,omitempty"`
+	PluginConfig      map[string]string `json:"plugin_config,omitempty"` // Values for the kind's declared create_fields
 }
 
 // PermissionOverwrite allows/denies specific permissions for a role or user

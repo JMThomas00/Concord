@@ -1,8 +1,11 @@
 package client
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
 )
 
@@ -20,7 +23,12 @@ type channelFormFieldLayout struct {
 }
 
 func computeChannelFormLayout(state *ChannelFormState) channelFormFieldLayout {
-	l := channelFormFieldLayout{isVoice: state.TypeIndex == 1, isPlugin: state.TypeIndex >= 3}
+	// Edit mode locks a plugin channel's TypeIndex at 0 (see OriginalType's
+	// doc comment) — so isPlugin can't rely on TypeIndex alone there, or an
+	// existing plugin channel's create_fields would never get laid out for
+	// editing.
+	isPlugin := state.TypeIndex >= 3 || (state.Mode == "edit" && state.OriginalType == models.ChannelTypePlugin)
+	l := channelFormFieldLayout{isVoice: state.TypeIndex == 1, isPlugin: isPlugin}
 	next := 2 // 0=name, 1=type
 	if l.isPlugin {
 		l.pluginStart = next
@@ -134,12 +142,27 @@ func pluginConfigValues(state *ChannelFormState) map[string]string {
 	return collectFieldValues(state.PluginFields, state.PluginTextInputs, state.PluginValues)
 }
 
+// pluginDisplayLabel formats a plugin's list-row/header label as
+// "Product (Name)" when the manifest declares [plugin].product as a family
+// distinct from this install's own name — e.g. multiple Mynah personas
+// ("Burt", "Alice") installed side by side would otherwise show up as
+// unrelated plugins named after the persona, with no indication they're the
+// same underlying product. Falls back to plain name for a plugin like Tukan
+// that doesn't declare one.
+func pluginDisplayLabel(name, product string) string {
+	if product == "" || product == name {
+		return name
+	}
+	return fmt.Sprintf("%s (%s)", product, name)
+}
+
 // newPluginConfigFormState builds the Settings > Plugins config sub-page
 // state for one plugin, seeded from its currently-saved server config values.
 func newPluginConfigFormState(info protocol.PluginInfo) *PluginConfigFormState {
 	textInputs, values := buildFieldEditors(info.ConfigFields, info.ConfigValues)
 	return &PluginConfigFormState{
 		PluginID:   info.ID,
+		Product:    info.Product,
 		Fields:     info.ConfigFields,
 		TextInputs: textInputs,
 		Values:     values,

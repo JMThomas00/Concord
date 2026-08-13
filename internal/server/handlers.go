@@ -716,6 +716,22 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 		channel.MaxUsers = *req.MaxUsers
 	}
 
+	if channel.Type == models.ChannelTypePlugin && len(req.PluginConfig) > 0 {
+		if kindDef, ok := h.plugins.Registry().Lookup(channel.PluginID, channel.PluginChannelKind); ok {
+			for _, f := range kindDef.CreateFields {
+				if f.Required && req.PluginConfig[f.Key] == "" {
+					c.sendError(protocol.ErrorCodeInvalidPayload, fmt.Sprintf("Missing required field %q", f.Label))
+					return
+				}
+			}
+		}
+		if err := h.db.SetPluginChannelConfig(channel.ID, req.PluginConfig); err != nil {
+			c.sendError(protocol.ErrorCodeServerError, "Failed to save plugin channel config")
+			return
+		}
+		channel.PluginConfig = req.PluginConfig
+	}
+
 	if err := h.db.UpdateChannel(channel); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to update channel")
 		return
@@ -724,6 +740,20 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 	// Broadcast to all server members
 	payload := protocol.ChannelUpdatePayload{Channel: channel}
 	h.hub.BroadcastToServer(req.ServerID, protocol.EventChannelUpdate, payload, nil)
+
+	// Plugin connections aren't recipients of the per-server broadcast above
+	// (see the identical note in HandleCreateChannel) — if this update
+	// touched the plugin's own config, notify its service-account connection
+	// directly so a running plugin picks up the new values live instead of
+	// only on its next restart.
+	if channel.Type == models.ChannelTypePlugin && len(req.PluginConfig) > 0 {
+		serviceUserID, err := h.plugins.ServiceUserIDFor(channel.PluginID)
+		if err != nil {
+			MsgLog.Warn("Plugin not running, could not notify of channel config update", "plugin_id", channel.PluginID, "channel_id", channel.ID, "error", err)
+		} else if err := h.hub.SendToUser(serviceUserID, protocol.EventChannelUpdate, payload); err != nil {
+			MsgLog.Error("Failed to notify plugin of channel config update", "plugin_id", channel.PluginID, "channel_id", channel.ID, "error", err)
+		}
+	}
 }
 
 // HandleUpdateChannelOverwrite sets or clears one role/member permission
@@ -2706,6 +2736,7 @@ func (h *Handlers) buildPluginInfo(installed *models.InstalledPlugin) protocol.P
 		LastError: installed.LastError,
 	}
 	if manifest != nil {
+		info.Product = manifest.Plugin.Product
 		for _, f := range manifest.ServerConfigFields {
 			info.ConfigFields = append(info.ConfigFields, protocol.PluginField{
 				Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,

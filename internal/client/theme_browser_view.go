@@ -226,6 +226,7 @@ type ServerManagementState struct {
 // about that specific plugin.
 type PluginConfigFormState struct {
 	PluginID     string
+	Product      string // manifest [plugin].product, if declared — see pluginDisplayLabel
 	Fields       []protocol.PluginField
 	TextInputs   []textinput.Model // parallel to Fields, used for text/number
 	Values       []string          // parallel to Fields, used for boolean/select/channel_select

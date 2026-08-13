@@ -5957,6 +5957,14 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("Failed to parse CHANNEL_CREATE payload: %v", err)
 			return nil
 		}
+		// ChannelCreatePayload.PluginConfig is its own top-level JSON field
+		// (not read off the embedded Channel), so payload.Channel.PluginConfig
+		// is still nil after unmarshal here — copy it over so the cached
+		// channel this client holds is immediately edit-ready without a
+		// reconnect round trip.
+		if payload.Channel != nil && len(payload.PluginConfig) > 0 {
+			payload.Channel.PluginConfig = payload.PluginConfig
+		}
 
 		// Add to server connection's channels
 		sc.mu.Lock()

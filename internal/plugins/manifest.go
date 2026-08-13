@@ -63,6 +63,13 @@ type ChannelKindDef struct {
 type PluginDef struct {
 	ID                string `toml:"id"`
 	Name              string `toml:"name"`
+	// Product names the underlying plugin family this install belongs to,
+	// when Name is a per-install persona rather than the whole identity —
+	// e.g. a Mynah persona install sets id/name to "Burt" but product to
+	// "Mynah", so Settings > Plugins can show "Mynah (Burt)" instead of an
+	// unqualified "Burt" indistinguishable from an unrelated plugin. Optional;
+	// most plugins (e.g. Tukan) leave it unset and are shown by Name alone.
+	Product           string `toml:"product"`
 	Version           string `toml:"version"`
 	Author            string `toml:"author"`
 	Description       string `toml:"description"`

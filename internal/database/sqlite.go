@@ -1150,16 +1150,83 @@ func (db *DB) GetServerChannels(serverID uuid.UUID) ([]*models.Channel, error) {
 		return nil, err
 	}
 
-	// Populate overwrites in a second pass, after the channels rows.Next()
-	// loop has fully drained — SetMaxOpenConns(1) means a nested db.Query
-	// call from inside that loop would deadlock waiting for the single
-	// connection the still-open cursor above is holding.
+	// Populate overwrites (and, for plugin channels, their saved create_field
+	// values) in a second pass, after the channels rows.Next() loop has fully
+	// drained — SetMaxOpenConns(1) means a nested db.Query call from inside
+	// that loop would deadlock waiting for the single connection the still-
+	// open cursor above is holding.
 	for _, ch := range channels {
 		overwrites, err := db.GetChannelPermissionOverwrites(ch.ID)
 		if err != nil {
 			return nil, err
 		}
 		ch.PermissionOverwrites = overwrites
+
+		if ch.Type == models.ChannelTypePlugin {
+			config, err := db.GetPluginChannelConfig(ch.ID)
+			if err != nil {
+				return nil, err
+			}
+			ch.PluginConfig = config
+		}
+	}
+
+	return channels, nil
+}
+
+// GetChannelsByPlugin retrieves every channel a plugin owns, across every
+// server it's installed on, with each one's saved create_field config —
+// used to catch a plugin process back up on its dedicated channels when it
+// (re)connects, since it otherwise only ever learns about them from a live
+// CHANNEL_CREATE/CHANNEL_UPDATE event pushed while it happened to be online.
+func (db *DB) GetChannelsByPlugin(pluginID string) ([]*models.Channel, error) {
+	rows, err := db.Query(`
+		SELECT id, server_id, name, topic, type, position, sort_order, category_id,
+			is_nsfw, is_locked, rate_limit_per_user, created_at, updated_at, plugin_id, plugin_channel_kind
+		FROM channels WHERE plugin_id = ?
+		ORDER BY sort_order`, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channels []*models.Channel
+	for rows.Next() {
+		ch := &models.Channel{}
+		var idStr, serverIDStr string
+		var categoryID, scannedPluginID, pluginChannelKind sql.NullString
+
+		err := rows.Scan(&idStr, &serverIDStr, &ch.Name, &ch.Topic, &ch.Type,
+			&ch.Position, &ch.SortOrder, &categoryID, &ch.IsNSFW, &ch.IsLocked, &ch.RateLimitPerUser,
+			&ch.CreatedAt, &ch.UpdatedAt, &scannedPluginID, &pluginChannelKind)
+		if err != nil {
+			return nil, err
+		}
+
+		ch.ID, _ = uuid.Parse(idStr)
+		ch.ServerID, _ = uuid.Parse(serverIDStr)
+		if categoryID.Valid {
+			ch.CategoryID, _ = uuid.Parse(categoryID.String)
+		}
+		if scannedPluginID.Valid {
+			ch.PluginID = scannedPluginID.String
+		}
+		if pluginChannelKind.Valid {
+			ch.PluginChannelKind = pluginChannelKind.String
+		}
+
+		channels = append(channels, ch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, ch := range channels {
+		config, err := db.GetPluginChannelConfig(ch.ID)
+		if err != nil {
+			return nil, err
+		}
+		ch.PluginConfig = config
 	}
 
 	return channels, nil
