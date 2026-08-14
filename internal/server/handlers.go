@@ -431,7 +431,7 @@ func (h *Handlers) HandleTypingStart(c *Client, msg *protocol.Message) {
 
 	// TODO: Look up channel to get server ID
 	// For now, use a nil UUID
-	h.typingManager.StartTyping(c.UserID, payload.ChannelID, uuid.Nil)
+	h.typingManager.StartTyping(c.UserID, payload.ChannelID, uuid.Nil, c.User.Username)
 }
 
 // HandlePresenceUpdate processes a presence update

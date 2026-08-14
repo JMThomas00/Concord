@@ -519,8 +519,11 @@ func NewTypingManager(hub *Hub) *TypingManager {
 	return tm
 }
 
-// StartTyping marks a user as typing in a channel
-func (tm *TypingManager) StartTyping(userID, channelID, serverID uuid.UUID) {
+// StartTyping marks a user as typing in a channel. username is carried
+// straight through to the broadcast payload rather than requiring clients
+// to resolve it themselves — a plugin's service-account user is never a
+// ServerMember, so a client-side member-list lookup can't ever find it.
+func (tm *TypingManager) StartTyping(userID, channelID, serverID uuid.UUID, username string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -539,6 +542,7 @@ func (tm *TypingManager) StartTyping(userID, channelID, serverID uuid.UUID) {
 		ChannelID: channelID,
 		ServerID:  serverID,
 		UserID:    userID,
+		Username:  username,
 		Timestamp: time.Now(),
 	}
 

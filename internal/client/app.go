@@ -152,6 +152,7 @@ type App struct {
 	// Typing indicator
 	typingUsers     []string
 	typingExpiry    map[uuid.UUID]time.Time // userID → when the typing indicator expires
+	typingUsernames map[uuid.UUID]string    // userID → username carried on the event itself, for typists (e.g. plugin service accounts) with no ServerMember row to resolve from
 	typingFrame     int                     // current animation frame index
 	lastTypingSent  time.Time               // when we last sent OpTypingStart
 
@@ -977,6 +978,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for uid, exp := range a.typingExpiry {
 				if now.After(exp) {
 					delete(a.typingExpiry, uid)
+					delete(a.typingUsernames, uid)
 					changed = true
 				}
 			}
@@ -4575,6 +4577,8 @@ func (a *App) rebuildTypingUsers() {
 	for uid := range a.typingExpiry {
 		if name, ok := nameMap[uid]; ok {
 			users = append(users, name)
+		} else if name, ok := a.typingUsernames[uid]; ok && name != "" {
+			users = append(users, name)
 		} else {
 			users = append(users, uid.String()[:8])
 		}
@@ -4587,6 +4591,7 @@ func (a *App) rebuildTypingUsers() {
 // Called on channel switch so stale indicators don't bleed across channels.
 func (a *App) clearTypingState() {
 	a.typingExpiry = nil
+	a.typingUsernames = nil
 	a.typingUsers = nil
 }
 
@@ -5938,6 +5943,10 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			a.typingExpiry = make(map[uuid.UUID]time.Time)
 		}
 		a.typingExpiry[typingPayload.UserID] = time.Now().Add(5 * time.Second)
+		if a.typingUsernames == nil {
+			a.typingUsernames = make(map[uuid.UUID]string)
+		}
+		a.typingUsernames[typingPayload.UserID] = typingPayload.Username
 		a.rebuildTypingUsers()
 
 	case protocol.EventTypingStop:
@@ -5947,6 +5956,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		if a.typingExpiry != nil {
 			delete(a.typingExpiry, stopPayload.UserID)
+			delete(a.typingUsernames, stopPayload.UserID)
 			a.rebuildTypingUsers()
 		}
 

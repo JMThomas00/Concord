@@ -534,6 +534,12 @@ type TypingStartEventPayload struct {
 	ChannelID uuid.UUID    `json:"channel_id"`
 	ServerID  uuid.UUID    `json:"server_id,omitempty"`
 	UserID    uuid.UUID    `json:"user_id"`
+	// Username is carried directly here (not just resolved client-side from
+	// the server's member list) because a plugin's own service-account user
+	// is deliberately never added as a ServerMember — without this, a bot's
+	// typing indicator has no name to resolve to and falls back to a raw
+	// truncated UUID.
+	Username  string       `json:"username"`
 	Timestamp time.Time    `json:"timestamp"`
 	Member    *models.ServerMember `json:"member,omitempty"`
 }
