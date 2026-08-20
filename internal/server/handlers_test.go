@@ -1,10 +1,15 @@
 package server
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/google/uuid"
+
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/protocol"
 )
 
 func init() {
@@ -167,5 +172,38 @@ func TestTypingManager(t *testing.T) {
 	tm := NewTypingManager(hub)
 	if tm == nil {
 		t.Error("NewTypingManager returned nil")
+	}
+}
+
+// TestStartTypingSetsIsBot confirms a plugin's typing indicator is flagged
+// IsBot in the broadcast payload (so the client renders "is thinking"
+// instead of "is typing"), and that a real human's is not.
+func TestStartTypingSetsIsBot(t *testing.T) {
+	hub := NewHub()
+	tm := NewTypingManager(hub)
+	channelID := uuid.New()
+
+	tm.StartTyping(uuid.New(), channelID, uuid.Nil, "Alice", true)
+	tm.StartTyping(uuid.New(), channelID, uuid.Nil, "gh0st", false)
+
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case bm := <-hub.broadcast:
+			var payload protocol.TypingStartEventPayload
+			if err := json.Unmarshal(bm.Message.Data, &payload); err != nil {
+				t.Fatalf("unmarshal broadcast payload: %v", err)
+			}
+			got[payload.Username] = payload.IsBot
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for broadcast message")
+		}
+	}
+
+	if !got["Alice"] {
+		t.Error("Alice's typing event should have IsBot = true")
+	}
+	if got["gh0st"] {
+		t.Error("gh0st's typing event should have IsBot = false")
 	}
 }

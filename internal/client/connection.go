@@ -133,16 +133,15 @@ func (c *Connection) Disconnect() {
 		c.heartbeatTicker.Stop()
 	}
 	
-	// Signal done
+	// Signal done — writePump (the sole owner of c.conn's writes, and the
+	// only thing that ever closes it) sees this on its <-c.done case,
+	// writes the close frame, and closes the connection itself. Writing or
+	// closing c.conn directly from here raced with writePump's own writes
+	// on the same *websocket.Conn (gorilla/websocket allows at most one
+	// concurrent writer) — caught by -race 2026-08-19, the first time this
+	// suite had ever been run with it.
 	close(c.done)
-	
-	// Close WebSocket
-	if c.conn != nil {
-		c.conn.WriteMessage(websocket.CloseMessage, 
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		c.conn.Close()
-	}
-	
+
 	if c.onDisconnect != nil {
 		c.onDisconnect()
 	}
@@ -329,6 +328,14 @@ func (c *Connection) writePump() {
 			}
 			
 		case <-c.done:
+			// Mirrors the !ok branch above — send the graceful close frame
+			// before returning, since this is the only path that reaches
+			// this point without c.send having been closed first (e.g.
+			// Disconnect() being called directly). The deferred
+			// c.conn.Close() above still runs either way.
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			c.conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			return
 		}
 	}

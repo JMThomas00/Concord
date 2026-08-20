@@ -1084,6 +1084,15 @@ func (a *App) renderSidebar(width, height int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, serverList, channelList)
 }
 
+// typingVerbPhrase renders one typist's status clause — "X is thinking" for
+// a plugin's own service account, "X is typing" for a real person.
+func typingVerbPhrase(u typingDisplayUser) string {
+	if u.IsBot {
+		return u.Name + " is thinking"
+	}
+	return u.Name + " is typing"
+}
+
 // renderChatPanel renders the main chat area
 func (a *App) renderChatPanel(width, height int) string {
 	// Interior width (account for borders)
@@ -1240,9 +1249,18 @@ func (a *App) renderChatPanel(width, height int) string {
 		var who string
 		switch len(a.typingUsers) {
 		case 1:
-			who = a.typingUsers[0] + " is typing"
+			who = typingVerbPhrase(a.typingUsers[0])
 		case 2:
-			who = a.typingUsers[0] + " and " + a.typingUsers[1] + " are typing"
+			u0, u1 := a.typingUsers[0], a.typingUsers[1]
+			if u0.IsBot == u1.IsBot {
+				verb := "are typing"
+				if u0.IsBot {
+					verb = "are thinking"
+				}
+				who = u0.Name + " and " + u1.Name + " " + verb
+			} else {
+				who = typingVerbPhrase(u0) + " and " + typingVerbPhrase(u1)
+			}
 		default:
 			who = fmt.Sprintf("%d people are typing", len(a.typingUsers))
 		}

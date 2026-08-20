@@ -540,6 +540,11 @@ type TypingStartEventPayload struct {
 	// typing indicator has no name to resolve to and falls back to a raw
 	// truncated UUID.
 	Username  string       `json:"username"`
+	// IsBot marks this typist as a plugin's own service-account connection
+	// (c.IsPlugin server-side) rather than a real human — lets the client
+	// render "Alice is thinking" instead of "Alice is typing" for any Mynah
+	// persona, without hardcoding any particular plugin's name.
+	IsBot     bool         `json:"is_bot"`
 	Timestamp time.Time    `json:"timestamp"`
 	Member    *models.ServerMember `json:"member,omitempty"`
 }

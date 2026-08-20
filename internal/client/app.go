@@ -150,9 +150,10 @@ type App struct {
 	commandHandler *CommandHandler
 
 	// Typing indicator
-	typingUsers     []string
+	typingUsers     []typingDisplayUser
 	typingExpiry    map[uuid.UUID]time.Time // userID → when the typing indicator expires
 	typingUsernames map[uuid.UUID]string    // userID → username carried on the event itself, for typists (e.g. plugin service accounts) with no ServerMember row to resolve from
+	typingIsBot     map[uuid.UUID]bool      // userID → whether the typist is a plugin's own service account ("is thinking" vs. "is typing")
 	typingFrame     int                     // current animation frame index
 	lastTypingSent  time.Time               // when we last sent OpTypingStart
 
@@ -227,6 +228,7 @@ type App struct {
 	// Message navigation state (two-level system)
 	messageNavMode        bool      // Level 1: browsing messages
 	messageNavIndex       int       // Which message is selected (0-based)
+	messageLineOffsets    []int     // message index -> its starting line in the last content updateChatContent() rendered; the only source of truth calculateMessageLinePosition uses, so it can never drift from the actual (word-wrapped) render again
 	inMessageEditMode     bool      // Level 2: navigating within a message
 	messageCursorLine     int       // Cursor line within message (Level 2)
 	messageCursorCol      int       // Cursor column within message (Level 2)
@@ -319,6 +321,7 @@ type MessageDisplay struct {
 	IsWhisper     bool // Ephemeral DM from /whisper
 	IsSystem      bool // Server-wide moderation/system announcement
 	IsDeleted     bool // Soft-deleted; rendered as [message deleted] placeholder
+	IsBotAuthor   bool // Author is a plugin's own service account (models.User.IsServiceAccount) — never grouped under a shared header with an adjacent message, even the same author's own within the grouping window, since e.g. two of Mynah's replies landing close together answer two different questions and reading as one merged reply is actively misleading
 }
 
 // MemberDisplay wraps a member with display information
@@ -979,6 +982,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if now.After(exp) {
 					delete(a.typingExpiry, uid)
 					delete(a.typingUsernames, uid)
+					delete(a.typingIsBot, uid)
 					changed = true
 				}
 			}
@@ -4015,6 +4019,7 @@ func (a *App) addMessage(msg *models.Message, author *models.User) {
 		AuthorColor: a.theme.Colors.Cyan, // TODO: Use role color
 		IsOwn:       isOwn,
 		ShowHeader:  showHeader,
+		IsBotAuthor: author != nil && author.IsServiceAccount,
 	}
 
 	// Add message to active connection's channel
@@ -4040,7 +4045,19 @@ func (a *App) updateChatContent() {
 	// Track last rendered date for date separators
 	var lastRenderedDate time.Time
 
+	// lineOffsets/runningLines record each message's real starting line as
+	// it's actually rendered (word-wrapping included, via the .Width() calls
+	// below) — calculateMessageLinePosition reads this back instead of
+	// re-deriving line counts itself, which is what let it silently drift
+	// out of sync with word-wrapped content (found 2026-08-19: message
+	// navigation's scroll-into-view undershot by however many extra visual
+	// lines long messages like Alice's recipe replies actually wrapped to).
+	lineOffsets := make([]int, len(messages))
+	runningLines := 0
+
 	for i, msg := range messages {
+		msgStartLen := content.Len()
+
 		// Check if this message is selected in navigation mode
 		// Level 1: Highlight entire message with selection background
 		// Level 2: Highlight with cursor indicator (editing mode)
@@ -4061,7 +4078,7 @@ func (a *App) updateChatContent() {
 
 		// Compute showHeader dynamically so GroupingGapMins changes take effect immediately
 		showHeader := true
-		if i > 0 && !isSystemMsg {
+		if i > 0 && !isSystemMsg && !msg.IsBotAuthor {
 			prev := messages[i-1]
 			prevIsSystem := prev.IsSystem || prev.AuthorName == "System"
 			if !prevIsSystem && prev.AuthorID == msg.AuthorID {
@@ -4337,8 +4354,12 @@ func (a *App) updateChatContent() {
 		default: // "normal" or unset
 			content.WriteString("\n\n")
 		}
+
+		lineOffsets[i] = runningLines
+		runningLines += strings.Count(content.String()[msgStartLen:], "\n")
 	}
 
+	a.messageLineOffsets = lineOffsets
 	a.chatViewport.SetContent(content.String())
 }
 
@@ -4550,9 +4571,13 @@ func (a *App) currentUserRoleLevel() roleLevel {
 	return roleLevelMember
 }
 
-// updateTypingIndicator updates the typing users list
-func (a *App) updateTypingIndicator(users []string) {
-	a.typingUsers = users
+// typingDisplayUser is one resolved entry in a.typingUsers — a display name
+// plus whether it's a plugin's own service account, so the status line can
+// render "X is thinking" for any Mynah-style persona instead of "X is
+// typing", without hardcoding any particular plugin's identity.
+type typingDisplayUser struct {
+	Name  string
+	IsBot bool
 }
 
 // rebuildTypingUsers refreshes a.typingUsers from the current typingExpiry map,
@@ -4573,17 +4598,19 @@ func (a *App) rebuildTypingUsers() {
 		}
 		a.activeConn.mu.RUnlock()
 	}
-	users := make([]string, 0, len(a.typingExpiry))
+	users := make([]typingDisplayUser, 0, len(a.typingExpiry))
 	for uid := range a.typingExpiry {
-		if name, ok := nameMap[uid]; ok {
-			users = append(users, name)
-		} else if name, ok := a.typingUsernames[uid]; ok && name != "" {
-			users = append(users, name)
+		var name string
+		if n, ok := nameMap[uid]; ok {
+			name = n
+		} else if n, ok := a.typingUsernames[uid]; ok && n != "" {
+			name = n
 		} else {
-			users = append(users, uid.String()[:8])
+			name = uid.String()[:8]
 		}
+		users = append(users, typingDisplayUser{Name: name, IsBot: a.typingIsBot[uid]})
 	}
-	sort.Strings(users)
+	sort.Slice(users, func(i, j int) bool { return users[i].Name < users[j].Name })
 	a.typingUsers = users
 }
 
@@ -4592,6 +4619,7 @@ func (a *App) rebuildTypingUsers() {
 func (a *App) clearTypingState() {
 	a.typingExpiry = nil
 	a.typingUsernames = nil
+	a.typingIsBot = nil
 	a.typingUsers = nil
 }
 
@@ -4676,44 +4704,22 @@ func (a *App) isCursorOverChatViewport(x, y int) bool {
 	return x >= chatLeftX && x < chatRightX && y >= chatTopY && y < chatBottomY
 }
 
-// calculateMessageLinePosition returns the starting line number (0-based) of a message
-// in the rendered chat viewport content
+// calculateMessageLinePosition returns the starting line number (0-based) of
+// a message in the last content updateChatContent() rendered. Reads
+// a.messageLineOffsets — recorded as a side effect of that actual render —
+// rather than re-deriving line counts here: a from-scratch reimplementation
+// previously assumed no word-wrapping ("matches renderMessageContent()"),
+// but updateChatContent() wraps content to viewportWidth via lipgloss's
+// Width() before writing it, so that assumption undercounted every message
+// with any wrapped line. Found 2026-08-19 via message navigation's
+// scroll-into-view landing short for exactly that reason — long messages
+// (e.g. Alice's recipe replies) wrap to several visual lines each, and the
+// error compounded with every one of them before the target message.
 func (a *App) calculateMessageLinePosition(messageIndex int) int {
-	if a.activeConn == nil || a.currentChannel == nil {
+	if messageIndex < 0 || messageIndex >= len(a.messageLineOffsets) {
 		return -1
 	}
-
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
-	if messageIndex < 0 || messageIndex >= len(messages) {
-		return -1
-	}
-
-	linePos := 0
-
-	// Count lines for all messages before the target
-	// Must match exactly how updateChatContent() renders messages
-	for i := 0; i < messageIndex; i++ {
-		msg := messages[i]
-
-		// Header line (if shown)
-		if msg.ShowHeader && !(msg.IsSystem || msg.AuthorName == "System") {
-			linePos += 1
-		}
-
-		// Content lines - count actual newlines in content (no word wrapping)
-		// This matches how renderMessageContent() works (splits by \n only)
-		if msg.Content == "" {
-			linePos += 1 // Empty message still takes one line
-		} else {
-			contentLines := strings.Split(msg.Content, "\n")
-			linePos += len(contentLines)
-		}
-
-		// Blank separator: "\n\n" ends the last content line + adds 1 blank line
-		linePos += 1
-	}
-
-	return linePos
+	return a.messageLineOffsets[messageIndex]
 }
 
 // handleSendMessage sends the current input as a message
@@ -5429,6 +5435,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			AuthorColor: a.theme.Colors.Purple, // TODO: Use user color from role
 			IsOwn:       payload.Author.ID == sc.User.ID,
 			ShowHeader:  true, // TODO: Implement message grouping
+			IsBotAuthor: payload.Author != nil && payload.Author.IsServiceAccount,
 		}
 
 		// Add message to connection's message history
@@ -5549,6 +5556,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				ShowHeader:    !isSystem,
 				IsWhisper:     isWhisper,
 				IsSystem:      isSystem,
+				IsBotAuthor:   msgDisplay.Author != nil && msgDisplay.Author.IsServiceAccount,
 			}
 			sc.Messages[payload.ChannelID] = append(
 				sc.Messages[payload.ChannelID],
@@ -5794,6 +5802,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			IsOwn:         isOwn,
 			ShowHeader:    true,
 			IsWhisper:     true,
+			IsBotAuthor:   whisperPayload.FromUser != nil && whisperPayload.FromUser.IsServiceAccount,
 		}
 		if a.activeConn != nil {
 			a.activeConn.AddMessage(whisperPayload.ChannelID, display)
@@ -5947,6 +5956,10 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			a.typingUsernames = make(map[uuid.UUID]string)
 		}
 		a.typingUsernames[typingPayload.UserID] = typingPayload.Username
+		if a.typingIsBot == nil {
+			a.typingIsBot = make(map[uuid.UUID]bool)
+		}
+		a.typingIsBot[typingPayload.UserID] = typingPayload.IsBot
 		a.rebuildTypingUsers()
 
 	case protocol.EventTypingStop:
@@ -5957,6 +5970,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if a.typingExpiry != nil {
 			delete(a.typingExpiry, stopPayload.UserID)
 			delete(a.typingUsernames, stopPayload.UserID)
+			delete(a.typingIsBot, stopPayload.UserID)
 			a.rebuildTypingUsers()
 		}
 

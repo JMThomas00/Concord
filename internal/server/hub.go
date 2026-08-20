@@ -523,7 +523,9 @@ func NewTypingManager(hub *Hub) *TypingManager {
 // straight through to the broadcast payload rather than requiring clients
 // to resolve it themselves — a plugin's service-account user is never a
 // ServerMember, so a client-side member-list lookup can't ever find it.
-func (tm *TypingManager) StartTyping(userID, channelID, serverID uuid.UUID, username string) {
+// isBot flags a plugin's own service-account connection so the client can
+// render "X is thinking" instead of "X is typing".
+func (tm *TypingManager) StartTyping(userID, channelID, serverID uuid.UUID, username string, isBot bool) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -543,6 +545,7 @@ func (tm *TypingManager) StartTyping(userID, channelID, serverID uuid.UUID, user
 		ServerID:  serverID,
 		UserID:    userID,
 		Username:  username,
+		IsBot:     isBot,
 		Timestamp: time.Now(),
 	}
 
