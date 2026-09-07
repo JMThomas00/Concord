@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
 	runewidth "github.com/mattn/go-runewidth"
+	zone "github.com/lrstanley/bubblezone"
+
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/themes"
 )
@@ -528,7 +530,18 @@ func (a *App) renderServerIconsCollapsed(width, height int) string {
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Width(width - 2).Height(height).Padding(0, 0)
+		// lipgloss.Height(N) sets the content height; Border() then adds 2
+		// more lines (top+bottom), so the rendered block is N+2 lines total,
+		// not N -- subtract 2 here so the box the caller gets back is
+		// actually `height` lines tall, matching what renderMainView budgets
+		// for every panel. Found 2026-09-06: this exact mismatch was making
+		// the whole screen render 2 lines taller than the real terminal,
+		// which bubbletea then silently truncated from the TOP to fit --
+		// shifting every panel's visual position up by 2 rows relative to
+		// what mouse.go's zone-based hit-testing computes, so clicking a
+		// channel always resolved to the row 2 above the one actually
+		// clicked. See "Concord - Mouse Support Plan" in the Obsidian vault.
+		Width(width - 2).Height(height - 2).Padding(0, 0)
 	if a.focus == FocusServerIcons {
 		boxStyle = boxStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
 	}
@@ -631,7 +644,9 @@ func (a *App) renderServerIcons(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Width(width - 2).
-		Height(height).
+		// Border() adds 2 lines on top of Height(N) -- see the matching
+		// comment in renderServerIconsCollapsed for the full explanation.
+		Height(height - 2).
 		Padding(0, 0)
 
 	// Highlight border if focused
@@ -677,15 +692,17 @@ func (a *App) renderMainView() string {
 	// Height for panels (reserve 1 line for status bar, 1 line for top border visibility)
 	panelHeight := a.height - 2
 
-	// Render each panel with exact dimensions (borders included in width/height)
-	serverIcons := a.renderServerIcons(serverIconsWidth, panelHeight)
-	channels := a.renderChannelList(channelsWidth, panelHeight)
-	chat := a.renderChatPanel(chatWidth, panelHeight)
+	// Render each panel with exact dimensions (borders included in width/height).
+	// Each is wrapped in zone.Mark so a mouse click can be resolved to "which
+	// panel" without re-deriving these widths a second time -- see mouse.go.
+	serverIcons := zone.Mark("server-icons", a.renderServerIcons(serverIconsWidth, panelHeight))
+	channels := zone.Mark("channel-list", a.renderChannelList(channelsWidth, panelHeight))
+	chat := zone.Mark("chat-panel", a.renderChatPanel(chatWidth, panelHeight))
 
 	// Combine panels horizontally (3 or 4 columns depending on members visibility)
 	var mainContent string
 	if showMembers {
-		members := a.renderUserList(membersWidth, panelHeight)
+		members := zone.Mark("user-list", a.renderUserList(membersWidth, panelHeight))
 		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, serverIcons, channels, chat, members)
 	} else {
 		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, serverIcons, channels, chat)
@@ -1016,13 +1033,19 @@ func (a *App) renderChannelList(width, height int) string {
 	b.WriteString(headerStyle.Render("CHANNELS"))
 	b.WriteString("\n")
 
-	// Render hierarchical channel tree
+	// Render hierarchical channel tree. Each row is marked with a zone keyed
+	// by the channel/category's own ID so a click can call selectChannelByID
+	// directly -- see handleMainViewMouse in mouse.go. Both branches use the
+	// same zone ID scheme; clicking a category currently selects/highlights
+	// it exactly like arrow-navigating onto it (collapse/expand still needs
+	// left/right or 'h', unchanged).
 	if a.channelTree != nil && len(a.channelTree.FlatList) > 0 {
 		for _, node := range a.channelTree.FlatList {
+			zoneID := "channel-row:" + node.Channel.ID.String()
 			if node.IsCategory {
-				b.WriteString(a.renderCategoryRow(node, width))
+				b.WriteString(zone.Mark(zoneID, a.renderCategoryRow(node, width)))
 			} else {
-				b.WriteString(a.renderChannelRow(node, width))
+				b.WriteString(zone.Mark(zoneID, a.renderChannelRow(node, width)))
 			}
 			b.WriteString("\n")
 		}
@@ -1049,7 +1072,9 @@ func (a *App) renderChannelList(width, height int) string {
 	// Apply border
 	boxStyle := lipgloss.NewStyle().
 		Width(width - 2).
-		Height(height).
+		// Border() adds 2 lines on top of Height(N) -- see the matching
+		// comment in renderServerIconsCollapsed for the full explanation.
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection))
 
@@ -1181,11 +1206,15 @@ func (a *App) renderChatPanel(width, height int) string {
 		}
 	}
 
-	// Chat viewport - always show border for consistent sizing
-	// Subtract 2 for border to get interior content height
+	// Chat viewport - always show border for consistent sizing.
+	// Border() adds 2 lines on top of Height(N), so pass chatHeight-2 here
+	// to get a chatHeight-tall block overall -- see the matching comment in
+	// renderServerIconsCollapsed. viewportHeight below already correctly
+	// assumed a chatHeight-2 content area; only this box's own Height() call
+	// was still off by 2.
 	chatStyle := lipgloss.NewStyle().
 		Width(width - 2).
-		Height(chatHeight).
+		Height(chatHeight - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection))
 
@@ -1203,7 +1232,15 @@ func (a *App) renderChatPanel(width, height int) string {
 		a.chatViewport.Height = viewportHeight
 	}
 
-	chatContent := a.chatViewport.View()
+	// Marked precisely around just the viewport's own rendered content (not
+	// the whole panel, which also includes the header/pinned-messages block
+	// above it) so a click's position relative to this zone lines up exactly
+	// with a row in a.messageLineOffsets once YOffset is added -- see
+	// resolveMessageAtLine in mouse.go. Using the scanned zone bounds here
+	// avoids hand-deriving the header/pinned-message height offset, which
+	// varies with pin count and would otherwise be a fourth copy of the
+	// layout math this sprint's zone-registry approach is meant to retire.
+	chatContent := zone.Mark("chat-viewport-content", a.chatViewport.View())
 
 	// Check if there are messages in active connection
 	var hasMessages bool
@@ -1304,7 +1341,7 @@ func (a *App) renderChatPanel(width, height int) string {
 		replyLine := fmt.Sprintf("↩ Replying to %s: %s", a.replyTarget.AuthorName, a.replyQuote)
 		inputContent = replyStyle.Render(replyLine) + "\n" + inputContent
 	}
-	input := inputStyle.Render(inputContent)
+	input := zone.Mark("chat-input", inputStyle.Render(inputContent))
 
 	// Spacer between header and chat viewport (aligns viewport border with panel borders)
 	spacer := lipgloss.NewStyle().Width(width).Height(1).Render("")
@@ -1534,7 +1571,9 @@ func (a *App) renderUserListCollapsed(width, height int) string {
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Width(width - 2).Height(height).
+		// Border() adds 2 lines on top of Height(N) -- see the matching
+		// comment in renderServerIconsCollapsed for the full explanation.
+		Width(width - 2).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection))
 	if a.focus == FocusUserList {
@@ -1883,7 +1922,9 @@ func (a *App) renderUserList(width, height int) string {
 
 	userListStyle := lipgloss.NewStyle().
 		Width(width - 2).
-		Height(height).
+		// Border() adds 2 lines on top of Height(N) -- see the matching
+		// comment in renderServerIconsCollapsed for the full explanation.
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection))
 
@@ -2111,7 +2152,7 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 		lineStyle := lipgloss.NewStyle().
 			Background(lipgloss.Color(a.theme.Semantic.InputBg)).
 			Width(overlayWidth - 2)
-		linkLines = append(linkLines, lineStyle.Render(line))
+		linkLines = append(linkLines, zone.Mark(fmt.Sprintf("link-row:%d", i), lineStyle.Render(line)))
 	}
 
 	// Scroll indicators, same convention as the channel/member overwrite

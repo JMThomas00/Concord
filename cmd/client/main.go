@@ -7,6 +7,8 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	zone "github.com/lrstanley/bubblezone"
+
 	"github.com/concord-chat/concord/internal/client"
 	"github.com/concord-chat/concord/internal/themes"
 )
@@ -68,6 +70,13 @@ func main() {
 	// Create application
 	app := client.NewApp(serversConfig.Servers, serversConfig.DefaultPreferences, configMgr, identity)
 	app.SetTheme(theme)
+
+	// Zone manager for mouse hit-testing: components mark their rendered
+	// regions with zone.Mark() at View() time, and App.View() scans the
+	// final composed output once per frame to record where they actually
+	// landed on screen -- see internal/client/mouse.go for the consumer
+	// side. Must be initialized before the first render.
+	zone.NewGlobal()
 
 	// Create Bubble Tea program
 	p := tea.NewProgram(

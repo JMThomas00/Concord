@@ -20,6 +20,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
+	zone "github.com/lrstanley/bubblezone"
+
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/concord-chat/concord/internal/themes"
@@ -1209,9 +1211,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tea.ClearScreen)
 
 	case tea.MouseMsg:
-		// Handle mouse wheel scrolling over chat viewport (regardless of focus)
+		// Click/focus/selection dispatch lives in mouse.go, mirroring
+		// handleKeyPress's own overlay-first-then-view layering.
+		cmds = append(cmds, a.handleMouseMsg(msg))
+
+		// Handle mouse wheel scrolling over chat viewport (regardless of focus).
+		// Uses the "chat-panel" zone (scanned from the previous render, see
+		// renderMainView) instead of the old hand-derived isCursorOverChatViewport
+		// -- same behavior, no more duplicated layout math.
 		if a.view == ViewMain && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
-			if a.isCursorOverChatViewport(msg.X, msg.Y) {
+			if z := zone.Get("chat-panel"); z != nil && z.InBounds(msg) {
 				var cmd tea.Cmd
 				a.chatViewport, cmd = a.chatViewport.Update(msg)
 				cmds = append(cmds, cmd)
@@ -1583,7 +1592,7 @@ func isEmptyTextareaWordNavKey(msg tea.Msg, input textarea.Model) bool {
 func (a *App) View() string {
 	// Hub browser is a full-screen overlay; render it before the normal view switch.
 	if a.showHubBrowser {
-		return a.renderHubBrowserView()
+		return zone.Scan(a.renderHubBrowserView())
 	}
 
 	var baseView string
@@ -1626,20 +1635,20 @@ func (a *App) View() string {
 
 	// Render link browser overlay if active
 	if a.linkBrowserState != nil {
-		return a.renderLinkBrowserOverlay(baseView)
+		return zone.Scan(a.renderLinkBrowserOverlay(baseView))
 	}
 
 	// Render help modal overlay if active
 	if a.helpModalState != nil {
-		return a.renderHelpModalOverlay(baseView)
+		return zone.Scan(a.renderHelpModalOverlay(baseView))
 	}
 
 	// Render member context menu overlay if active
 	if a.memberContextMenu != nil {
-		return a.renderMemberContextMenuOverlay(baseView)
+		return zone.Scan(a.renderMemberContextMenuOverlay(baseView))
 	}
 
-	return baseView
+	return zone.Scan(baseView)
 }
 
 // handleKeyPress handles keyboard input
@@ -4566,7 +4575,7 @@ func (a *App) updateChatContent() {
 			contentLine = lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, line)
 		} else if msg.IsWhisper {
 			// Whisper: render with alignment based on ownership
-			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth, msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, viewportWidth, msg.IsOwn)
 			// Apply whisper styling (orange/italic) to the rendered content
 			whisperStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Orange)).
@@ -4575,7 +4584,7 @@ func (a *App) updateChatContent() {
 		} else {
 			// Regular messages — highlight @mentions of the current user
 			// Pass alignment based on message ownership
-			contentLine = a.renderMessageContent(messageContentWithCursor, viewportWidth, msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, viewportWidth, msg.IsOwn)
 		}
 
 		// Apply width and highlighting
@@ -4690,7 +4699,11 @@ func osc8Link(url, styledText string) string {
 	return "\033]8;;" + url + st + styledText + "\033]8;;" + st
 }
 
-func (a *App) renderMessageContent(text string, width int, rightAlign bool) string {
+// renderMessageContent renders a message's text, styling @mentions and URLs.
+// msgID (the message's UUID string) gives each link within it a stable zone
+// ID (see zone.Mark below) so a mouse click on rendered link text can be
+// resolved back to the exact URL -- see handleMainViewMouse in mouse.go.
+func (a *App) renderMessageContent(msgID, text string, width int, rightAlign bool) string {
 	// Determine current user's alias
 	var alias string
 	if a.activeConn != nil && a.activeConn.User != nil {
@@ -4705,6 +4718,10 @@ func (a *App) renderMessageContent(text string, width int, rightAlign bool) stri
 	linkStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Underline(true)
+
+	// linkIndex counts links across the whole message (not reset per line),
+	// so each gets a unique, stable zone ID for the message's lifetime.
+	linkIndex := 0
 
 	// renderLine processes a single line (no \n) applying URL and @mention styling.
 	renderLine := func(line string) string {
@@ -4784,7 +4801,9 @@ func (a *App) renderMessageContent(text string, width int, rightAlign bool) stri
 					out.WriteString(msgStyle.Render(seg[:urlLoc[0]]))
 				}
 				rawURL := seg[urlLoc[0]:urlLoc[1]]
-				out.WriteString(osc8Link(rawURL, linkStyle.Render(rawURL)))
+				zoneID := fmt.Sprintf("link:%s:%d", msgID, linkIndex)
+				linkIndex++
+				out.WriteString(zone.Mark(zoneID, osc8Link(rawURL, linkStyle.Render(rawURL))))
 				seg = seg[urlLoc[1]:]
 			default:
 				out.WriteString(msgStyle.Render(seg))
@@ -4952,40 +4971,6 @@ func (a *App) updateViewportSize() {
 	if chatHeight > 2 {
 		a.chatViewport.Height = chatHeight - 2
 	}
-}
-
-// isCursorOverChatViewport checks if mouse coordinates are within chat viewport bounds
-func (a *App) isCursorOverChatViewport(x, y int) bool {
-	// Match layout calculation from views.go renderMainView exactly
-	availableWidth := a.width - 1
-	serverIconsWidth := a.serverListAnimWidth
-	if serverIconsWidth < 10 {
-		serverIconsWidth = 10
-	}
-	channelsWidth := 26
-	showMembers := a.uiConfig == nil || a.uiConfig.ShowMembersList
-	membersWidth := 0
-	if showMembers {
-		membersWidth = a.membersAnimWidth
-		if membersWidth < 10 {
-			membersWidth = 10
-		}
-	}
-	chatWidth := availableWidth - serverIconsWidth - channelsWidth - membersWidth
-	if chatWidth < 60 && showMembers && membersWidth > 10 {
-		membersWidth = 10
-		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
-	}
-
-	// Chat panel X boundaries
-	chatLeftX := serverIconsWidth + channelsWidth // 48
-	chatRightX := chatLeftX + chatWidth
-
-	// Y boundaries (entire panel height minus status bar)
-	chatTopY := 0
-	chatBottomY := a.height - 2
-
-	return x >= chatLeftX && x < chatRightX && y >= chatTopY && y < chatBottomY
 }
 
 // calculateMessageLinePosition returns the starting line number (0-based) of

@@ -28,7 +28,7 @@ A terminal-based chat application inspired by Discord, built in Go with a beauti
 - **Theme browser** — 40+ built-in themes, real-time preview, hot-swap
 - **OS notifications** — desktop alerts for mentions and DMs (cross-platform)
 - **Auto-connect** — one-time identity setup, then the app just opens
-- **Keyboard-driven** — full TUI, no mouse required
+- **Keyboard-first, with mouse support** — click to focus a panel, select a channel, click a link, or pick a message; every mouse action has a keyboard equivalent too
 
 ## Installation
 
@@ -253,6 +253,19 @@ Managed automatically. Stores the list of known servers and cached auth tokens.
 | `Ctrl+T` | Open **Theme Browser** |
 | `Ctrl+G` | Open **Hub Browser** (from Login / Add Server only) |
 | `?` | Show help overlay |
+
+### Mouse
+
+| Action | Effect |
+| --- | --- |
+| Click a panel (server icons, channels, chat, members) | Focus that panel |
+| Click a channel or category | Select it |
+| Click a message | Enter message-highlight mode on it (same as `Alt+M`) |
+| Click a link in a message | Open it |
+| Click a link in the Link Browser | Open it |
+| Scroll wheel over chat / Help page | Scroll |
+
+Every mouse action above has a keyboard equivalent — the terminal's own click-drag text selection still works if your terminal reserves a modifier for it (commonly Shift+drag).
 
 ### Channel Navigation (channel panel focused)
 
