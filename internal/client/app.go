@@ -276,11 +276,29 @@ type Position struct {
 
 // LinkBrowserState holds the state for the link browser modal
 type LinkBrowserState struct {
-	Links         []string         // Extracted URLs
-	SelectedIndex int              // Cursor position
-	SourceMessage *MessageDisplay  // Message the links came from (optional)
-	PreviousMode  string           // "message_nav" or "main"
+	AllLinks      []string        // Full, unfiltered set of extracted URLs, in original discovery order
+	Links         []string        // Currently displayed subset: AllLinks after Query/SortOrder applied
+	SelectedIndex int             // Cursor position within Links
+	ScrollOffset  int             // Index of the first visible row within Links
+	SourceMessage *MessageDisplay // Message the links came from (optional)
+	PreviousMode  string          // "message_nav" or "main"
+	Query         string          // Current search filter text (empty = no filter)
+	Searching     bool            // True while actively typing into the search field
+	SortOrder     linkSortOrder   // Original / ascending / descending
 }
+
+// linkSortOrder controls how the link browser's Links list is ordered.
+type linkSortOrder int
+
+const (
+	linkSortOriginal linkSortOrder = iota
+	linkSortAscending
+	linkSortDescending
+)
+
+// linkBrowserVisibleRows caps how many links the browser shows at once;
+// beyond that it scrolls, following SelectedIndex.
+const linkBrowserVisibleRows = 10
 
 // HelpModalState holds the state for the help modal overlay
 type HelpModalState struct {
@@ -333,6 +351,29 @@ type MemberDisplay struct {
 	IsBanned    bool         // Is user banned from server
 	IsMuted     bool         // Is user server-muted
 	KickCount   int          // Number of times kicked
+}
+
+// GetDisplayName returns the member's server nickname if set, otherwise
+// falls back to the underlying user's own display name/username.
+func (m *MemberDisplay) GetDisplayName() string {
+	if m.Member != nil && m.Member.Nickname != "" {
+		return m.Member.Nickname
+	}
+	if m.User != nil {
+		return m.User.GetDisplayName()
+	}
+	return ""
+}
+
+// memberOrUserName resolves a message author's display name from the
+// ServerMember carried on the message payload (nil for system/plugin
+// authors, or a channel with no server), falling back to the plain
+// username shipped alongside it.
+func memberOrUserName(member *models.ServerMember, username string) string {
+	if member != nil && member.Nickname != "" {
+		return member.Nickname
+	}
+	return username
 }
 
 // avatarPalette is a set of colors used as fallback avatar colors when a member has no hoisted role
@@ -1151,6 +1192,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.resizePluginPane()
 
+	case tea.FocusMsg:
+		// Real report (2026-09-06, Omarchy/Hyprland): the input box's
+		// placeholder text sometimes renders twice, stacked, after switching
+		// window focus away and back. bubbletea's renderer already forces a
+		// full repaint on tea.WindowSizeMsg (some terminals/compositors emit
+		// a resize on refocus even when dimensions haven't changed) but does
+		// nothing on a bare focus event, which is the gap here — some
+		// terminal/multiplexer combinations apparently leave stale content
+		// in the diff-render cache across a focus round-trip with no
+		// accompanying resize. Forcing a full clear+repaint specifically on
+		// refocus is the standard, low-risk mitigation for this class of
+		// "ghost content after alt-tab" TUI bug, regardless of the exact
+		// underlying terminal quirk -- requires tea.WithReportFocus() in
+		// cmd/client/main.go to actually receive this message at all.
+		cmds = append(cmds, tea.ClearScreen)
+
 	case tea.MouseMsg:
 		// Handle mouse wheel scrolling over chat viewport (regardless of focus)
 		if a.view == ViewMain && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
@@ -1474,11 +1531,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// spurious cursor move.
 			a.forwardPluginPaneInput(keyMsg)
 		} else if a.focus == FocusInput && !a.messageNavMode {
-			// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode
-			var cmd tea.Cmd
-			a.input, cmd = a.input.Update(msg)
-			cmds = append(cmds, cmd)
-			a.updateMentionPopup()
+			// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode.
+			// Exception: skip forwarding alt+left/alt+b on a completely empty
+			// textarea -- see isEmptyTextareaWordNavKey for why.
+			if !isEmptyTextareaWordNavKey(msg, a.input) {
+				var cmd tea.Cmd
+				a.input, cmd = a.input.Update(msg)
+				cmds = append(cmds, cmd)
+				a.updateMentionPopup()
+			}
 		} else if a.focus == FocusChat {
 			var cmd tea.Cmd
 			a.chatViewport, cmd = a.chatViewport.Update(msg)
@@ -1487,6 +1548,35 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, tea.Batch(cmds...)
+}
+
+// isEmptyTextareaWordNavKey reports whether msg is alt+left or alt+b (bubbles/
+// textarea's default WordBackward binding) while input is completely empty.
+//
+// This is a workaround for a real, confirmed-still-present infinite loop in
+// charmbracelet/bubbles's textarea.wordLeft() (present in both the pinned
+// v0.20.0 and the latest v1.0.0 release as of 2026-09-06): on a fully empty
+// textarea, characterLeft(true) is a no-op at row 0/col 0 (nothing to move
+// to), so wordLeft's `for { characterLeft(...); if <found a non-space> {
+// break } }` loop can never make progress or break -- it spins the whole
+// program's main goroutine at 100% CPU forever, freezing the entire TUI.
+// (deleteWordLeft/deleteWordRight/wordRight all have an explicit empty-buffer
+// guard; only wordLeft is missing one -- confirmed by reading the library
+// source directly, not assumed.) Word-navigation in empty text has no
+// meaningful effect anyway, so the fix is simply to never forward these two
+// keys to the textarea when it's empty, rather than patching or forking the
+// dependency for one missing guard clause.
+func isEmptyTextareaWordNavKey(msg tea.Msg, input textarea.Model) bool {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok || input.Value() != "" {
+		return false
+	}
+	switch keyMsg.String() {
+	case "alt+left", "alt+b":
+		return true
+	default:
+		return false
+	}
 }
 
 // View implements tea.Model
@@ -1583,6 +1673,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Hub browser intercepts all keys when visible
 	if a.showHubBrowser {
 		return a.handleHubBrowserKey(msg)
+	}
+
+	// Link browser intercepts all keys when visible
+	if a.linkBrowserState != nil {
+		return a.handleLinkBrowserKey(msg)
 	}
 
 	// Route to view-specific handlers first
@@ -1784,15 +1879,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 
-		// In link browser: open selected link
-		if a.linkBrowserState != nil {
-			if a.linkBrowserState.SelectedIndex >= 0 && a.linkBrowserState.SelectedIndex < len(a.linkBrowserState.Links) {
-				link := a.linkBrowserState.Links[a.linkBrowserState.SelectedIndex]
-				a.closeLinkBrowser()
-				return a.openURL(link)
-			}
-			return nil
-		}
 		// In member context menu: execute selected action
 		if a.memberContextMenu != nil {
 			return a.executeMemberAction()
@@ -1895,11 +1981,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "esc":
-		// Close link browser if active
-		if a.linkBrowserState != nil {
-			a.closeLinkBrowser()
-			return nil
-		}
 		// Close help modal if active
 		if a.helpModalState != nil {
 			a.closeHelpModal()
@@ -2030,20 +2111,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "c":
-		// In link browser: copy selected link URL
-		if a.linkBrowserState != nil {
-			if a.linkBrowserState.SelectedIndex >= 0 && a.linkBrowserState.SelectedIndex < len(a.linkBrowserState.Links) {
-				link := a.linkBrowserState.Links[a.linkBrowserState.SelectedIndex]
-				if err := clipboard.WriteAll(link); err != nil {
-					a.statusMessage = fmt.Sprintf("Failed to copy: %v", err)
-					a.statusError = true
-				} else {
-					a.statusMessage = "Copied link URL"
-					a.statusError = false
-				}
-			}
-			return nil
-		}
 		// Copy selected message to clipboard (in message navigation mode)
 		if a.messageNavMode {
 			return a.copyMessageToClipboard()
@@ -2189,15 +2256,36 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.handleExpandCategory()
 		}
 
-	case "up":
-		// Link browser navigation takes highest priority
-		if a.linkBrowserState != nil {
-			a.linkBrowserState.SelectedIndex--
-			if a.linkBrowserState.SelectedIndex < 0 {
-				a.linkBrowserState.SelectedIndex = len(a.linkBrowserState.Links) - 1
+	case "a":
+		// In message navigation mode: copy the selected message's attachment ID
+		// to the clipboard. There's no mouse-select/copy support yet, so this is
+		// the only practical way to get the exact UUID out of the "[file] ... —
+		// /download <id>" line for pasting into /download.
+		if a.messageNavMode && a.activeConn != nil && a.currentChannel != nil {
+			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			if a.messageNavIndex >= 0 && a.messageNavIndex < len(messages) {
+				msg := messages[a.messageNavIndex]
+				if len(msg.Attachments) == 0 {
+					a.statusMessage = "No attachment in selected message"
+					a.statusError = false
+				} else {
+					att := msg.Attachments[0]
+					if err := clipboard.WriteAll(att.ID.String()); err != nil {
+						a.statusMessage = fmt.Sprintf("Failed to copy: %v", err)
+						a.statusError = true
+					} else if len(msg.Attachments) > 1 {
+						a.statusMessage = fmt.Sprintf("Copied attachment ID for %s (1 of %d attachments)", att.Filename, len(msg.Attachments))
+						a.statusError = false
+					} else {
+						a.statusMessage = fmt.Sprintf("Copied attachment ID for %s", att.Filename)
+						a.statusError = false
+					}
+				}
 			}
 			return nil
 		}
+
+	case "up":
 		// Member context menu navigation (blocked while volume slider is active)
 		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider == nil {
 			a.memberContextMenu.SelectedIndex--
@@ -2229,14 +2317,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "down":
-		// Link browser navigation takes highest priority
-		if a.linkBrowserState != nil {
-			a.linkBrowserState.SelectedIndex++
-			if a.linkBrowserState.SelectedIndex >= len(a.linkBrowserState.Links) {
-				a.linkBrowserState.SelectedIndex = 0
-			}
-			return nil
-		}
 		// Member context menu navigation (blocked while volume slider is active)
 		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider == nil {
 			a.memberContextMenu.SelectedIndex++
@@ -3415,10 +3495,76 @@ func (a *App) openLinkBrowser(links []string, sourceMsg *MessageDisplay, previou
 	}
 
 	a.linkBrowserState = &LinkBrowserState{
+		AllLinks:      links,
 		Links:         links,
 		SelectedIndex: 0,
 		SourceMessage: sourceMsg,
 		PreviousMode:  previousMode,
+	}
+}
+
+// refreshLinkBrowserList recomputes the link browser's displayed Links from
+// AllLinks after a search-query or sort-order change, then clamps
+// SelectedIndex/ScrollOffset so they stay valid against the new (possibly
+// shorter) list.
+func (a *App) refreshLinkBrowserList() {
+	s := a.linkBrowserState
+	if s == nil {
+		return
+	}
+
+	var filtered []string
+	if s.Query == "" {
+		filtered = append(filtered, s.AllLinks...)
+	} else {
+		q := strings.ToLower(s.Query)
+		for _, link := range s.AllLinks {
+			if strings.Contains(strings.ToLower(link), q) {
+				filtered = append(filtered, link)
+			}
+		}
+	}
+
+	switch s.SortOrder {
+	case linkSortAscending:
+		sort.Strings(filtered)
+	case linkSortDescending:
+		sort.Sort(sort.Reverse(sort.StringSlice(filtered)))
+	}
+
+	s.Links = filtered
+	if s.SelectedIndex >= len(s.Links) {
+		s.SelectedIndex = len(s.Links) - 1
+	}
+	if s.SelectedIndex < 0 {
+		s.SelectedIndex = 0
+	}
+	a.clampLinkBrowserScroll()
+}
+
+// clampLinkBrowserScroll keeps ScrollOffset within bounds and ensures
+// SelectedIndex stays inside the visible window (same follow-the-cursor
+// behavior as the channel/member overwrite target picker).
+func (a *App) clampLinkBrowserScroll() {
+	s := a.linkBrowserState
+	if s == nil {
+		return
+	}
+	if s.SelectedIndex < s.ScrollOffset {
+		s.ScrollOffset = s.SelectedIndex
+	}
+	if s.SelectedIndex >= s.ScrollOffset+linkBrowserVisibleRows {
+		s.ScrollOffset = s.SelectedIndex - linkBrowserVisibleRows + 1
+	}
+	maxOffset := len(s.Links) - linkBrowserVisibleRows
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if s.ScrollOffset > maxOffset {
+		s.ScrollOffset = maxOffset
+	}
+	if s.ScrollOffset < 0 {
+		s.ScrollOffset = 0
 	}
 }
 
@@ -3436,6 +3582,144 @@ func (a *App) closeLinkBrowser() {
 		a.messageNavMode = true
 		a.focus = FocusMessageNav
 	}
+}
+
+// handleLinkBrowserKey processes all input while the link browser overlay is
+// open. Two sub-modes: browsing (navigate/select/open/copy/sort) and
+// searching (typing a filter query, entered with "/" -- same convention as
+// the Hub Browser's own search).
+//
+// Real bug fixed here (2026-09-06): the displayed [N] numbers next to each
+// link were purely cosmetic -- no key ever read them, so pressing a number
+// did nothing and Enter always opened whatever SelectedIndex happened to
+// default to (0, the first link), regardless of which number the user
+// pressed. Number keys 1-9 now jump straight to (and open) that *visible
+// row* -- i.e. row-relative to the current scroll position, not an absolute
+// index into the full list, so they stay meaningful once a long list scrolls.
+func (a *App) handleLinkBrowserKey(msg tea.KeyMsg) tea.Cmd {
+	s := a.linkBrowserState
+	if s == nil {
+		return nil
+	}
+
+	if s.Searching {
+		switch msg.Type {
+		case tea.KeyEsc:
+			s.Searching = false
+			s.Query = ""
+			a.refreshLinkBrowserList()
+		case tea.KeyEnter:
+			s.Searching = false
+		case tea.KeyBackspace:
+			if len(s.Query) > 0 {
+				runes := []rune(s.Query)
+				s.Query = string(runes[:len(runes)-1])
+				a.refreshLinkBrowserList()
+			}
+		case tea.KeyRunes:
+			s.Query += string(msg.Runes)
+			a.refreshLinkBrowserList()
+		}
+		return nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		a.closeLinkBrowser()
+
+	case "up", "k":
+		if len(s.Links) > 0 {
+			s.SelectedIndex--
+			if s.SelectedIndex < 0 {
+				s.SelectedIndex = len(s.Links) - 1
+			}
+			a.clampLinkBrowserScroll()
+		}
+
+	case "down", "j":
+		if len(s.Links) > 0 {
+			s.SelectedIndex++
+			if s.SelectedIndex >= len(s.Links) {
+				s.SelectedIndex = 0
+			}
+			a.clampLinkBrowserScroll()
+		}
+
+	case "pgup":
+		s.SelectedIndex -= linkBrowserVisibleRows
+		if s.SelectedIndex < 0 {
+			s.SelectedIndex = 0
+		}
+		a.clampLinkBrowserScroll()
+
+	case "pgdown":
+		s.SelectedIndex += linkBrowserVisibleRows
+		if s.SelectedIndex >= len(s.Links) {
+			s.SelectedIndex = len(s.Links) - 1
+		}
+		a.clampLinkBrowserScroll()
+
+	case "enter":
+		if s.SelectedIndex >= 0 && s.SelectedIndex < len(s.Links) {
+			link := s.Links[s.SelectedIndex]
+			a.closeLinkBrowser()
+			return a.openURL(link)
+		}
+
+	case "c", "C":
+		if s.SelectedIndex >= 0 && s.SelectedIndex < len(s.Links) {
+			link := s.Links[s.SelectedIndex]
+			if err := clipboard.WriteAll(link); err != nil {
+				a.statusMessage = fmt.Sprintf("Failed to copy: %v", err)
+				a.statusError = true
+			} else {
+				a.statusMessage = "Copied link URL"
+				a.statusError = false
+			}
+		}
+
+	case "/":
+		s.Searching = true
+
+	case "a":
+		s.SortOrder = linkSortAscending
+		a.refreshLinkBrowserList()
+		a.statusMessage = "Sorted A → Z"
+		a.statusError = false
+
+	case "d":
+		s.SortOrder = linkSortDescending
+		a.refreshLinkBrowserList()
+		a.statusMessage = "Sorted Z → A"
+		a.statusError = false
+
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		if idx, ok := resolveLinkBrowserRowIndex(s.ScrollOffset, msg.String(), len(s.Links)); ok {
+			link := s.Links[idx]
+			a.closeLinkBrowser()
+			return a.openURL(link)
+		}
+	}
+
+	return nil
+}
+
+// resolveLinkBrowserRowIndex maps a pressed digit key ("1".."9") to an
+// absolute index into the link browser's currently-displayed list, treating
+// the digit as a *visible row* (1 = the first row on screen) rather than an
+// absolute position in the full list -- so it stays meaningful once the list
+// has scrolled. Returns ok=false if that row isn't actually occupied (e.g.
+// pressing "9" when only 3 links are visible).
+func resolveLinkBrowserRowIndex(scrollOffset int, digit string, totalLinks int) (idx int, ok bool) {
+	if len(digit) != 1 || digit[0] < '1' || digit[0] > '9' {
+		return 0, false
+	}
+	row := int(digit[0] - '1') // "1" -> row 0, "2" -> row 1, ...
+	idx = scrollOffset + row
+	if idx < 0 || idx >= totalLinks {
+		return 0, false
+	}
+	return idx, true
 }
 
 // openHelpModal opens the help modal with the provided content
@@ -5429,9 +5713,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 
 		// Create display message
+		authorName := ""
+		if payload.Author != nil {
+			authorName = memberOrUserName(payload.Member, payload.Author.Username)
+		}
 		display := &MessageDisplay{
 			Message:     payload.Message,
-			AuthorName:  payload.Author.Username,
+			AuthorName:  authorName,
 			AuthorColor: a.theme.Colors.Purple, // TODO: Use user color from role
 			IsOwn:       payload.Author.ID == sc.User.ID,
 			ShowHeader:  true, // TODO: Implement message grouping
@@ -5500,6 +5788,25 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				log.Printf("Updating chat content for message in current channel")
 				a.updateChatContent()
 				a.scrollToBottom()
+				// Real report (2026-09-06): a just-sent/just-received message's
+				// body occasionally doesn't paint at all -- only its author/
+				// timestamp header shows -- until a *later* message forces
+				// another redraw, even though the debug log confirms the
+				// state update itself lands correctly and immediately every
+				// time. Confirmed not a data/timing bug (state is right the
+				// instant the log line prints), not a render-cost issue (this
+				// channel's full history is a trivial ~137 messages), and not
+				// a state race (AddMessage and this call happen synchronously
+				// in the same goroutine, same as every other message). What's
+				// left points at bubbletea's line-diffing renderer
+				// occasionally failing to detect that the viewport's newly
+				// revealed bottom line changed -- the same class of symptom
+				// (correct state, stale paint, self-heals on the next change)
+				// as a separate Linux/Wayland ghosting report the same day.
+				// Forcing a full repaint specifically here is a targeted,
+				// low-risk mitigation for that exact path; unverified against
+				// a live repro, same as that other fix.
+				return tea.ClearScreen
 			} else if a.currentChannel != nil {
 				log.Printf("Message not for current channel: msg=%s, current=%s",
 					payload.Message.ChannelID, a.currentChannel.ID)
@@ -5540,7 +5847,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 			isOwn := false
 			if msgDisplay.Author != nil {
-				authorName = msgDisplay.Author.Username
+				authorName = memberOrUserName(msgDisplay.Member, msgDisplay.Author.Username)
 				isOwn = msgDisplay.Author.ID == currentUserID
 			}
 			if msgDisplay.Recipient != nil {
@@ -5776,6 +6083,33 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.mu.Unlock()
 
 		log.Printf("Title updated for user %s: %s", payload.UserID, payload.Title)
+
+	case protocol.EventNicknameUpdate:
+		var payload protocol.NicknamePayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse NICKNAME_UPDATE payload: %v", err)
+			return nil
+		}
+
+		// Update member nickname in local state
+		sc.mu.Lock()
+		for _, member := range sc.Members {
+			if member.User != nil && member.User.ID == payload.UserID {
+				if member.Member != nil {
+					member.Member.Nickname = payload.Nickname
+				}
+				break
+			}
+		}
+		sc.mu.Unlock()
+
+		log.Printf("Nickname updated for user %s: %s", payload.UserID, payload.Nickname)
+
+		// Refresh so the member list (and any already-rendered messages from
+		// this user, next time they post) pick up the new name immediately.
+		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			a.updateChatContent()
+		}
 
 	case protocol.EventWhisperCreate:
 		var whisperPayload protocol.WhisperCreatePayload

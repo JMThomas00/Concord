@@ -101,7 +101,7 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 
 Press **Alt+M** from the chat panel to enter message navigation:
 
-- **Level 1** — ↑/↓ move between messages; **Ctrl+C** copies the full message; **L** opens link browser for URLs in the selected message
+- **Level 1** — ↑/↓ move between messages; **Ctrl+C** copies the full message; **L** opens link browser for URLs in the selected message; **A** copies a message's attachment ID (for pasting into /download) to the clipboard
 - **Level 2** — press **Enter** on a message to enter edit mode; ←/→ move within the message; **Shift+←/→** select text; **Ctrl+C** copies selection
 - Press **Esc** to exit either level
 
@@ -183,7 +183,9 @@ Type ` + "`@`" + ` to open the autocomplete popup. Select a name with ↑/↓ an
 
 ### URL Hyperlinks
 
-URLs in messages are rendered as OSC 8 terminal hyperlinks. In a supported terminal (Windows Terminal, iTerm2, Kitty) you can Ctrl+Click to open them. Use **Alt+M → L** to list links from any message without leaving Concord.
+URLs in messages are rendered as OSC 8 terminal hyperlinks. In a supported terminal (Windows Terminal, iTerm2, Kitty) you can Ctrl+Click to open them. Use **Alt+M → L** (one message) or **/links** (whole channel) to browse links without leaving Concord.
+
+**In the link browser:** ↑/↓ to move the highlight, **1-9** to jump straight to and open the link shown at that row, Enter to open the highlighted one, **C** to copy it, **/** to search (filters live as you type), **A**/**D** to sort ascending/descending, and it scrolls automatically past 10 links.
 
 ---
 

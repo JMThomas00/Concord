@@ -1520,7 +1520,7 @@ func (a *App) renderUserListCollapsed(width, height int) string {
 		var line string
 		if isSelected {
 			initial := "?"
-			if r := []rune(m.User.GetDisplayName()); len(r) > 0 {
+			if r := []rune(m.GetDisplayName()); len(r) > 0 {
 				initial = strings.ToUpper(string(r[:1]))
 			}
 			avatar := lipgloss.NewStyle().
@@ -1528,7 +1528,7 @@ func (a *App) renderUserListCollapsed(width, height int) string {
 				Render("(" + initial + ")")
 			line = voicePrefix + "▶" + avatar + dotStr
 		} else {
-			line = voicePrefix + a.renderMemberAvatar(m.User.GetDisplayName(), m.AvatarColor) + dotStr
+			line = voicePrefix + a.renderMemberAvatar(m.GetDisplayName(), m.AvatarColor) + dotStr
 		}
 		b.WriteString(line + "\n")
 	}
@@ -1721,7 +1721,7 @@ func (a *App) renderUserList(width, height int) string {
 
 			dot, dotColor := presenceDot(m.User.Status, a.theme)
 			dotStr := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render(dot)
-			avatar := a.renderMemberAvatar(m.User.GetDisplayName(), m.AvatarColor)
+			avatar := a.renderMemberAvatar(m.GetDisplayName(), m.AvatarColor)
 
 			_, inVoice := voiceUserSet[m.User.ID]
 
@@ -1796,7 +1796,7 @@ func (a *App) renderUserList(width, height int) string {
 				nameMaxLen = 4
 			}
 
-			name := m.User.GetDisplayName()
+			name := m.GetDisplayName()
 			if len([]rune(name)) > nameMaxLen {
 				name = string([]rune(name)[:nameMaxLen-1]) + "…"
 			}
@@ -2021,18 +2021,61 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 		overlayWidth = a.width - 4
 	}
 
-	// Header
+	s := a.linkBrowserState
+	dimStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
+		Background(lipgloss.Color(a.theme.Semantic.InputBg))
+
+	// Header — includes a sort-order indicator once one's been applied, since
+	// there's no other visible cue that the list isn't in its original order.
+	sortLabel := ""
+	switch s.SortOrder {
+	case linkSortAscending:
+		sortLabel = "  (A→Z)"
+	case linkSortDescending:
+		sortLabel = "  (Z→A)"
+	}
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Background(lipgloss.Color(a.theme.Semantic.InputBg)).
 		Bold(true).
 		Align(lipgloss.Center).
 		Width(overlayWidth - 2)
-	header := headerStyle.Render("Links")
+	header := headerStyle.Render(fmt.Sprintf("Links (%d)%s", len(s.Links), sortLabel))
 
-	// Link list
+	// Search bar — always shown once a search has ever been started (active
+	// typing or an applied-but-since-unfocused filter), so it's clear why the
+	// list might be shorter than the total link count.
+	var searchLine string
+	if s.Searching || s.Query != "" {
+		searchStyle := lipgloss.NewStyle().
+			Background(lipgloss.Color(a.theme.Semantic.InputBg)).
+			Width(overlayWidth - 2)
+		prefix := "Search: "
+		if s.Searching {
+			searchLine = searchStyle.Render(prefix + s.Query + "█")
+		} else {
+			searchLine = searchStyle.Render(dimStyle.Render(prefix+s.Query) + dimStyle.Render("  (esc while searching to clear)"))
+		}
+	}
+
+	// Link list — only the current scroll window, numbered by visible
+	// position (row 1-9 within the window, not an absolute index into the
+	// full list) so number-key selection stays meaningful once it scrolls.
+	visibleStart := s.ScrollOffset
+	visibleEnd := visibleStart + linkBrowserVisibleRows
+	if visibleEnd > len(s.Links) {
+		visibleEnd = len(s.Links)
+	}
+
 	var linkLines []string
-	for i, link := range a.linkBrowserState.Links {
+	if len(s.Links) == 0 {
+		linkLines = append(linkLines, dimStyle.Width(overlayWidth-2).Render("No links match"))
+	}
+	for i := visibleStart; i < visibleEnd; i++ {
+		link := s.Links[i]
+		row := i - visibleStart // 0-based position within the visible window
+
 		numberStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 			Background(lipgloss.Color(a.theme.Semantic.InputBg)).
@@ -2041,30 +2084,43 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 			Background(lipgloss.Color(a.theme.Semantic.InputBg))
 
-		// Highlight selected link
-		if i == a.linkBrowserState.SelectedIndex {
-			numberStyle = numberStyle.
-				Background(lipgloss.Color(a.theme.Colors.Selection))
-			linkStyle = linkStyle.
-				Background(lipgloss.Color(a.theme.Colors.Selection))
+		// Highlight selected link — a leading cursor plus a background swap,
+		// so selection stays visible even on themes with subtle contrast
+		// between the two colors.
+		cursor := "  "
+		if i == s.SelectedIndex {
+			cursor = "▶ "
+			numberStyle = numberStyle.Background(lipgloss.Color(a.theme.Colors.Selection))
+			linkStyle = linkStyle.Background(lipgloss.Color(a.theme.Colors.Selection))
 		}
 
 		// Truncate link if too long
-		maxLinkLen := overlayWidth - 10
+		maxLinkLen := overlayWidth - 14
 		displayLink := link
 		if len(displayLink) > maxLinkLen {
 			displayLink = displayLink[:maxLinkLen-1] + "…"
 		}
 
-		line := fmt.Sprintf("%s%s",
-			numberStyle.Render(fmt.Sprintf("[%d]", i+1)),
-			linkStyle.Render(" " + displayLink))
+		numberLabel := "   "
+		if row < 9 {
+			numberLabel = fmt.Sprintf("[%d]", row+1)
+		}
+		line := cursor + numberStyle.Render(numberLabel) + linkStyle.Render(" "+displayLink)
 
 		// Wrap line in full-width style to ensure background fills
 		lineStyle := lipgloss.NewStyle().
 			Background(lipgloss.Color(a.theme.Semantic.InputBg)).
 			Width(overlayWidth - 2)
 		linkLines = append(linkLines, lineStyle.Render(line))
+	}
+
+	// Scroll indicators, same convention as the channel/member overwrite
+	// target picker.
+	if visibleStart > 0 {
+		linkLines = append([]string{dimStyle.Width(overlayWidth - 2).Render(fmt.Sprintf("↑ %d more", visibleStart))}, linkLines...)
+	}
+	if visibleEnd < len(s.Links) {
+		linkLines = append(linkLines, dimStyle.Width(overlayWidth-2).Render(fmt.Sprintf("↓ %d more", len(s.Links)-visibleEnd)))
 	}
 
 	// Footer with keybind hints
@@ -2074,11 +2130,20 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 		Italic(true).
 		Align(lipgloss.Center).
 		Width(overlayWidth - 2)
-	hints := hintStyle.Render("Enter: Open  •  C: Copy  •  Esc: Close")
+	var hints string
+	if s.Searching {
+		hints = hintStyle.Render("Enter: Apply  •  Esc: Cancel")
+	} else {
+		hints = hintStyle.Render("1-9/↑↓: Select  •  Enter: Open  •  C: Copy  •  /: Search  •  A/D: Sort  •  Esc: Close")
+	}
 
 	// Build modal content
 	var modalContent strings.Builder
-	modalContent.WriteString(header + "\n\n")
+	modalContent.WriteString(header + "\n")
+	if searchLine != "" {
+		modalContent.WriteString(searchLine + "\n")
+	}
+	modalContent.WriteString("\n")
 	for _, line := range linkLines {
 		modalContent.WriteString(line + "\n")
 	}
@@ -2086,6 +2151,9 @@ func (a *App) renderLinkBrowserOverlay(baseView string) string {
 
 	// Calculate modal height
 	modalHeight := len(linkLines) + 5 // header + links + footer + spacing
+	if searchLine != "" {
+		modalHeight++
+	}
 
 	// Wrap in box
 	boxStyle := lipgloss.NewStyle().

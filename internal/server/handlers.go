@@ -330,10 +330,20 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 	// For now, we'll broadcast to channel subscribers
 	// TODO: Look up channel and get server ID for proper broadcasting
 
+	// Include the sender's ServerMember so clients can render their nickname
+	// on the message author line — skipped for plugin senders (never added
+	// via db.AddServerMember, see the permission-check comment above) and
+	// for non-server channels.
+	var senderMember *models.ServerMember
+	if !c.IsPlugin && err == nil && channel.ServerID != uuid.Nil {
+		senderMember, _ = h.db.GetServerMember(channel.ServerID, c.UserID)
+	}
+
 	// Create the response payload
 	responsePayload := &protocol.MessageCreatePayload{
 		Message: newMsg,
 		Author:  c.User,
+		Member:  senderMember,
 		Nonce:   payload.Nonce,
 	}
 
@@ -898,10 +908,18 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 
 	MsgLog.Debug("Messages retrieved", "count", len(messages), "channel_id", req.ChannelID)
 
+	// Look up the channel's server once, for the nickname lookups below.
+	var serverID uuid.UUID
+	if channel, chErr := h.db.GetChannelByID(req.ChannelID); chErr == nil {
+		serverID = channel.ServerID
+	}
+	memberCache := make(map[uuid.UUID]*models.ServerMember)
+
 	// Build MessageDisplay array with author info
 	var displayMessages []*protocol.MessageDisplay
 	for _, dbMsg := range messages {
 		var author *models.User
+		var member *models.ServerMember
 		var recipient *models.User
 
 		// System messages don't have authors
@@ -914,6 +932,17 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 			if err != nil {
 				MsgLog.Error("Failed to get author for message", "message_id", dbMsg.ID, "author_id", dbMsg.AuthorID, "error", err)
 				continue
+			}
+
+			// Nickname lookup (nil for plugin service accounts, which are
+			// never added as ServerMembers, and for non-server channels).
+			if serverID != uuid.Nil {
+				if cached, ok := memberCache[author.ID]; ok {
+					member = cached
+				} else {
+					member, _ = h.db.GetServerMember(serverID, author.ID)
+					memberCache[author.ID] = member
+				}
 			}
 		}
 
@@ -930,6 +959,7 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 		displayMessages = append(displayMessages, &protocol.MessageDisplay{
 			Message:   dbMsg,
 			Author:    author,
+			Member:    member,
 			Recipient: recipient,
 		})
 	}
@@ -1462,9 +1492,14 @@ func (h *Handlers) HandleUpdateRole(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	// Prevent editing @everyone
-	if role.IsDefault {
-		c.sendError(protocol.ErrorCodeForbidden, "Cannot edit @everyone role")
+	// @everyone can't be renamed (its name is a protocol-level identity, not
+	// just a label) or deleted (handled separately in HandleDeleteRole), but
+	// its permissions/color/hoist/mentionable are legitimately editable --
+	// that's the entire point of the client's Roles > Permissions Editor
+	// supporting "everyone": granting default server-wide access (e.g. Attach
+	// Files) without needing a dedicated extra role. Only reject the rename.
+	if role.IsDefault && req.Name != role.Name {
+		c.sendError(protocol.ErrorCodeForbidden, "Cannot rename the @everyone role")
 		return
 	}
 

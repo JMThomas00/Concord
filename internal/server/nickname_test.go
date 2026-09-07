@@ -9,6 +9,108 @@ import (
 	"github.com/concord-chat/concord/internal/protocol"
 )
 
+// TestNicknameCarriedOnMessageCreateAndHistory proves the client-facing gap
+// found in manual testing is actually closed at the wire level: once a
+// member sets a nickname, both a live MESSAGE_CREATE broadcast and a
+// MESSAGES_HISTORY response for a message they post carry their
+// ServerMember (with the nickname) alongside Author, not just the plain
+// username. The client renders Member.Nickname when present — see
+// MemberDisplay.GetDisplayName / memberOrUserName in internal/client/app.go.
+func TestNicknameCarriedOnMessageCreateAndHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping wire-level integration test in short mode")
+	}
+
+	srv, wsURL := startPlainTestServer(t)
+
+	owner, ownerToken := createTestUserAndToken(t, srv, "nick-msg-owner")
+	member, memberToken := createTestUserAndToken(t, srv, "nick-msg-member")
+
+	testServer := models.NewServer("Nickname Message Test", owner.ID)
+	if err := srv.db.CreateServer(testServer); err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	everyone := models.NewEveryoneRole(testServer.ID)
+	if err := srv.db.CreateRole(everyone); err != nil {
+		t.Fatalf("failed to create @everyone role: %v", err)
+	}
+	for _, u := range []*models.User{owner, member} {
+		if err := srv.db.AddServerMember(models.NewServerMember(u.ID, testServer.ID)); err != nil {
+			t.Fatalf("failed to add member %s: %v", u.Username, err)
+		}
+		if err := srv.db.AddMemberRole(u.ID, testServer.ID, everyone.ID); err != nil {
+			t.Fatalf("failed to assign @everyone to %s: %v", u.Username, err)
+		}
+	}
+	channel := models.NewTextChannel(testServer.ID, "nick-msg-channel")
+	if err := srv.db.CreateChannel(channel); err != nil {
+		t.Fatalf("failed to create channel: %v", err)
+	}
+
+	memberClient := newTestWSClient(t, wsURL)
+	memberClient.identify(memberToken)
+
+	memberClient.send(protocol.OpSetNickname, protocol.SetNicknameRequest{
+		ServerID: testServer.ID,
+		Nickname: "Nicky Wire",
+	})
+	if got := memberClient.readUntil(5*time.Second, func(m *protocol.Message) bool {
+		return m.Op == protocol.OpDispatch && m.Type == protocol.EventNicknameUpdate
+	}); got == nil {
+		t.Fatal("expected a NICKNAME_UPDATE broadcast after setting the nickname")
+	}
+
+	memberClient.send(protocol.OpSendMessage, protocol.SendMessagePayload{
+		ChannelID: channel.ID,
+		Content:   "hello with a nickname set",
+	})
+	created := memberClient.readUntil(5*time.Second, func(m *protocol.Message) bool {
+		return m.Op == protocol.OpDispatch && m.Type == protocol.EventMessageCreate
+	})
+	if created == nil {
+		t.Fatal("expected a MESSAGE_CREATE broadcast")
+	}
+	var createdPayload protocol.MessageCreatePayload
+	if err := json.Unmarshal(created.Data, &createdPayload); err != nil {
+		t.Fatalf("failed to decode MESSAGE_CREATE payload: %v", err)
+	}
+	if createdPayload.Member == nil || createdPayload.Member.Nickname != "Nicky Wire" {
+		t.Errorf("expected MESSAGE_CREATE to carry Member.Nickname %q, got %+v", "Nicky Wire", createdPayload.Member)
+	}
+
+	ownerClient := newTestWSClient(t, wsURL)
+	ownerClient.identify(ownerToken)
+	ownerClient.send(protocol.OpRequestMessages, protocol.MessageHistoryRequest{
+		ChannelID: channel.ID,
+		Limit:     10,
+	})
+	history := ownerClient.readUntil(5*time.Second, func(m *protocol.Message) bool {
+		return m.Op == protocol.OpDispatch && m.Type == protocol.EventMessagesHistory
+	})
+	if history == nil {
+		t.Fatal("expected a MESSAGES_HISTORY response")
+	}
+	var historyPayload protocol.MessageHistoryPayload
+	if err := json.Unmarshal(history.Data, &historyPayload); err != nil {
+		t.Fatalf("failed to decode MESSAGES_HISTORY payload: %v", err)
+	}
+	if len(historyPayload.Messages) == 0 {
+		t.Fatal("expected at least one message in history")
+	}
+	found := false
+	for _, m := range historyPayload.Messages {
+		if m.Author != nil && m.Author.ID == member.ID {
+			found = true
+			if m.Member == nil || m.Member.Nickname != "Nicky Wire" {
+				t.Errorf("expected history message's Member.Nickname %q, got %+v", "Nicky Wire", m.Member)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected the member's message to appear in history")
+	}
+}
+
 // setupNicknameTestServer creates a server with an owner, an @everyone
 // role, and one regular member with only @everyone assigned — enough to
 // exercise HandleSetNickname's self vs. other branching.

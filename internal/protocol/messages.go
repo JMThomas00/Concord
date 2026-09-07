@@ -510,8 +510,9 @@ type MessageHistoryPayload struct {
 // MessageDisplay is the client-side message representation
 type MessageDisplay struct {
 	*models.Message
-	Author    *models.User `json:"author"`
-	Recipient *models.User `json:"recipient,omitempty"` // For whispers only
+	Author    *models.User         `json:"author"`
+	Member    *models.ServerMember `json:"member,omitempty"` // Author's server membership (nickname), nil for system/plugin authors
+	Recipient *models.User         `json:"recipient,omitempty"` // For whispers only
 }
 
 // MessageUpdatePayload is dispatched when a message is edited

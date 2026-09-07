@@ -17,6 +17,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/pelletier/go-toml/v2 v2.2.3
 	github.com/pion/webrtc/v3 v3.3.6
+	github.com/sqweek/dialog v0.0.0-20260123140253-64c163d53aac
 	golang.org/x/crypto v0.47.0
 	golang.org/x/net v0.49.0
 	golang.org/x/sys v0.40.0
@@ -25,6 +26,7 @@ require (
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast v1.1.2 // indirect
+	github.com/TheTitanrain/w32 v0.0.0-20180517000239-4f5cfb03fabf // indirect
 	github.com/alecthomas/chroma/v2 v2.14.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect

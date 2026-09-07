@@ -289,7 +289,7 @@ func TestFileTransferPeerToPeerEndToEnd(t *testing.T) {
 	sender.engine.RegisterSharedFile(attachmentID, srcPath)
 
 	// Bob requests the real peer-to-peer download.
-	receiver.engine.RequestDownload(attachmentID, sender.userID, "hello.txt", int64(len(content)), contentHash)
+	receiver.engine.RequestDownload(attachmentID, sender.userID, "hello.txt", int64(len(content)), contentHash, "")
 
 	receiverDone := receiver.waitForTransferDone(20*time.Second, attachmentID)
 	if receiverDone.Err != nil {

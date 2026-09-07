@@ -74,6 +74,11 @@ func main() {
 		app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		// Lets the terminal tell us when the window regains focus, so Concord
+		// can force a full repaint on refocus -- see the tea.FocusMsg case in
+		// App.Update for why (a real rendering-glitch report on Linux/Wayland
+		// terminals, 2026-09-06).
+		tea.WithReportFocus(),
 	)
 
 	// Run

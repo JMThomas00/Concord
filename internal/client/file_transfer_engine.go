@@ -129,6 +129,7 @@ func (p *filePeer) flushCandidates() {
 // renamed into place only once its SHA-256 has been verified.
 type activeReceive struct {
 	filename   string
+	destPath   string // exact path the user chose via the save dialog; empty = derive from downloadDir
 	tempPath   string
 	finalPath  string
 	destFile   *os.File
@@ -231,12 +232,16 @@ func (e *FileTransferEngine) iceServers() []webrtc.ICEServer {
 // ── Requesting a download (receiver side) ────────────────────────────────────
 
 // RequestDownload asks the file's sender to start a transfer. filename/size/
-// hash come from the Attachment manifest already received in chat.
-func (e *FileTransferEngine) RequestDownload(attachmentID, senderUserID uuid.UUID, filename string, size int64, contentHash string) {
+// hash come from the Attachment manifest already received in chat. destPath,
+// if non-empty, is the exact path to save to (chosen by the user via a save
+// dialog); if empty, the file is saved into downloadDir under its original
+// name, disambiguated by uniqueDownloadPath if that name is already taken.
+func (e *FileTransferEngine) RequestDownload(attachmentID, senderUserID uuid.UUID, filename string, size int64, contentHash string, destPath string) {
 	key := transferKey(attachmentID, senderUserID)
 	e.receivesMu.Lock()
 	e.receives[key] = &activeReceive{
 		filename:   filename,
+		destPath:   destPath,
 		expectSize: size,
 		expectHash: contentHash,
 	}
@@ -509,11 +514,12 @@ func (e *FileTransferEngine) handleIncomingDataChannel(attachmentID, peerUserID 
 		return
 	}
 
-	if err := os.MkdirAll(e.downloadDir, 0755); err != nil {
+	finalPath, err := resolveDownloadPath(recv.destPath, e.downloadDir, recv.filename)
+	if err != nil {
 		e.failReceive(attachmentID, peerUserID, key, recv, err)
 		return
 	}
-	recv.finalPath = uniqueDownloadPath(e.downloadDir, recv.filename)
+	recv.finalPath = finalPath
 	recv.tempPath = recv.finalPath + ".part"
 	f, err := os.Create(recv.tempPath)
 	if err != nil {
@@ -583,11 +589,37 @@ func (e *FileTransferEngine) failReceive(attachmentID, peerUserID uuid.UUID, key
 	e.emitDone(FileTransferDoneMsg{AttachmentID: attachmentID, PeerUserID: peerUserID, Direction: TransferReceiving, Filename: recv.filename, Err: err})
 }
 
+// emitDone delivers a transfer's terminal event. Unlike progress ticks (fine
+// to drop — another one follows almost immediately), a done event fires
+// exactly once per transfer and must never be silently lost, or the UI's
+// status bar is stuck at whatever percentage last made it through. So this
+// blocks until eventOut has room, rather than the drop-if-full pattern
+// progress updates use.
 func (e *FileTransferEngine) emitDone(msg FileTransferDoneMsg) {
 	select {
 	case e.eventOut <- msg:
-	default:
+	case <-e.quit:
 	}
+}
+
+// resolveDownloadPath decides where a completed download will be saved and
+// ensures its parent directory exists. destPath, if non-empty, is the exact
+// path the user chose via the save dialog and is used as-is -- the dialog
+// already handled any overwrite confirmation, so no collision renaming or
+// downloadDir fallback applies. If destPath is empty, the file is saved into
+// downloadDir under filename, disambiguated by uniqueDownloadPath if that
+// name is already taken there.
+func resolveDownloadPath(destPath, downloadDir, filename string) (string, error) {
+	if destPath != "" {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return "", err
+		}
+		return destPath, nil
+	}
+	if err := os.MkdirAll(downloadDir, 0755); err != nil {
+		return "", err
+	}
+	return uniqueDownloadPath(downloadDir, filename), nil
 }
 
 // uniqueDownloadPath returns dir/filename, or dir/filename (2), dir/filename (3)...

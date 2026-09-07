@@ -283,8 +283,22 @@ Managed automatically. Stores the list of known servers and cached auth tokens.
 | `E` | Edit own highlighted message |
 | `D` | Delete own highlighted message |
 | `L` | Open links in highlighted message |
+| `A` | Copy highlighted message's attachment ID (for `/download`) |
 | `P` | Pin / unpin highlighted message (mod+) |
 | `Esc` | Exit highlight mode |
+
+### Link Browser (`/links`, or `L` in Message Highlight Mode)
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Move selection |
+| `1`-`9` | Jump to and open the link at that row on screen |
+| `Enter` | Open selected link |
+| `C` | Copy selected link |
+| `PgUp` / `PgDn` | Scroll a full page (list scrolls automatically past 10 links) |
+| `/` | Search — filters the list live as you type; `Enter` applies, `Esc` clears |
+| `A` / `D` | Sort ascending / descending |
+| `Esc` | Close (or cancel search, if searching) |
 
 ### Manage Servers (`Ctrl+B`)
 

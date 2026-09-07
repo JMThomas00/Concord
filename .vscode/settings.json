@@ -1,0 +1,7 @@
+{
+    "gopls": {
+        "env": {
+            "CGO_ENABLED": "1"
+        }
+    }
+}

@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/concord-chat/concord/internal/themes"
 	"github.com/google/uuid"
+	"github.com/sqweek/dialog"
 )
 
 // Command represents a parsed slash command
@@ -31,7 +33,7 @@ func ParseCommand(input string) (*Command, error) {
 	}
 
 	// Remove leading slash and split into parts
-	parts := strings.Fields(input[1:])
+	parts := splitArgs(input[1:])
 	if len(parts) == 0 {
 		return nil, errors.New("empty command")
 	}
@@ -40,6 +42,39 @@ func ParseCommand(input string) (*Command, error) {
 		Name: strings.ToLower(parts[0]),
 		Args: parts[1:],
 	}, nil
+}
+
+// splitArgs tokenizes a command's argument string the way a shell would:
+// whitespace-separated, except a double-quoted span is kept as one token
+// with the quotes stripped. Without this, a path a user defensively quotes
+// (very natural, especially pasted via Windows Explorer's "Copy as path")
+// or one that genuinely contains spaces comes through as a literal
+// quote-wrapped string and fails to resolve as a real filesystem path.
+func splitArgs(s string) []string {
+	var args []string
+	var cur strings.Builder
+	inQuotes := false
+	hasToken := false
+	for _, r := range s {
+		switch {
+		case r == '"':
+			inQuotes = !inQuotes
+			hasToken = true
+		case unicode.IsSpace(r) && !inQuotes:
+			if hasToken {
+				args = append(args, cur.String())
+				cur.Reset()
+				hasToken = false
+			}
+		default:
+			cur.WriteRune(r)
+			hasToken = true
+		}
+	}
+	if hasToken {
+		args = append(args, cur.String())
+	}
+	return args
 }
 
 // CommandHandler handles slash command execution
@@ -1210,7 +1245,25 @@ func (ch *CommandHandler) handleDownload(args []string) (string, error) {
 	if engine == nil {
 		return "", errors.New("not connected to a server")
 	}
-	engine.RequestDownload(found.ID, found.SenderID, found.Filename, found.Size, found.ContentHash)
+
+	// Ask where to save via the OS's native Save As dialog rather than
+	// silently dropping it into ~/Downloads -- this blocks the TUI while
+	// open, same as any other modal file picker.
+	destPath, dlgErr := dialog.File().SetStartFile(found.Filename).Title("Save " + found.Filename + " as").Save()
+	switch {
+	case dlgErr == nil:
+		// proceed with the chosen path
+	case errors.Is(dlgErr, dialog.ErrCancelled):
+		return "Download cancelled", nil
+	default:
+		// Save dialog unavailable in this environment (e.g. no display) --
+		// fall back to the default Downloads-folder behavior rather than
+		// failing the command outright.
+		log.Printf("filetransfer: save dialog unavailable, defaulting to downloads folder: %v", dlgErr)
+		destPath = ""
+	}
+
+	engine.RequestDownload(found.ID, found.SenderID, found.Filename, found.Size, found.ContentHash, destPath)
 
 	return fmt.Sprintf("Requesting %s from the sender...", found.Filename), nil
 }

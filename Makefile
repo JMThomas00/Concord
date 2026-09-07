@@ -51,11 +51,15 @@ build-server:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY) ./cmd/server
 
-# Build client (voice enabled by default — requires a C toolchain)
+# Build client (voice enabled by default — requires a C toolchain).
+# CC=clang: MSYS2's mingw-w64-gcc 16.2.0 has a real, reproducible internal-compiler-error/
+# segfault bug on miniaudio.c (~40-70% failure rate, confirmed via repeated-compile testing
+# 2026-09-06 — not hardware, not fixed by retrying gcc). clang builds this reliably; keep
+# this override until the GCC bug is fixed upstream or a newer package resolves it.
 build-client:
 	@echo "Building client (with voice)..."
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
+	CC=clang CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
 
 # Build hub (pure Go, no CGO)
 build-hub:
@@ -127,18 +131,28 @@ dist:
 		echo "Built for $${platform}"; \
 	done
 
-# Build all three Windows binaries — THE canonical Windows build (requires MinGW
-# GCC via MSYS2 for the client's voice engine: install from https://www.msys2.org/
-# then `pacman -S mingw-w64-x86_64-gcc`). Voice is compiled into concord-client.exe
+# Build all three Windows binaries — THE canonical Windows build (requires MSYS2's
+# clang via `pacman -S mingw-w64-x86_64-clang` for the client's voice engine — see
+# note below on why clang, not gcc). Voice is compiled into concord-client.exe
 # unconditionally; there is no separate "with voice" target because there is no
 # without-voice product.
 # Output: build/concord-server.exe, build/concord-client.exe, build/concord-hub.exe
+#
+# Why clang and not gcc: MSYS2's mingw-w64-gcc 16.2.0 has a real, reproducible
+# internal-compiler-error/segfault bug compiling miniaudio.c (the malgo/voice
+# dependency) — ~40-70% failure rate measured via repeated back-to-back compiles
+# of the identical file, different crash site every time. Confirmed via a fully
+# serialized build crashing in 22s on a trivial standard file (rules out
+# load/thermal causes) and via clang building the same file with a near-zero
+# failure rate. Not yet filed upstream. Full investigation: vault note
+# "Concord - Voice Client Build Toolchain Bug". Revisit CC=clang once a GCC
+# point release fixes this.
 build-windows:
 	@echo "Building for Windows (server, client with voice, hub)..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(HUB_BINARY).exe ./cmd/hub
-	PATH="C:/msys64/mingw64/bin:$(PATH)" CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
+	PATH="/c/msys64/mingw64/bin:$(PATH)" CC=clang CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
 	@echo "Build complete: $(BUILD_DIR)/$(SERVER_BINARY).exe $(BUILD_DIR)/$(CLIENT_BINARY).exe $(BUILD_DIR)/$(HUB_BINARY).exe"
 
 # Fallback only — no MSYS2/GCC available (e.g. CI, or a dev machine without the
@@ -192,7 +206,7 @@ help:
 	@echo "  build         Build both server and client"
 	@echo "  build-server  Build only the server"
 	@echo "  build-client  Build only the client"
-	@echo "  build-windows         Build all 3 Windows binaries — server, client (voice included), hub"
+	@echo "  build-windows         Build all 3 Windows binaries — server, client (voice included, built with clang), hub"
 	@echo "  build-windows-novoice Fallback only: no MSYS2/GCC on this machine, voice-stripped client"
 	@echo "  clean         Remove build artifacts"
 	@echo "  test          Run tests"
