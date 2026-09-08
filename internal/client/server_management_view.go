@@ -12,6 +12,7 @@ import (
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/google/uuid"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3099,10 +3100,11 @@ func (a *App) renderRemoveExemptPage(width, height int, s *ServerManagementState
 			if override.ChannelID != nil {
 				chName = a.resolveChannelName(*override.ChannelID)
 			}
+			id := fmt.Sprintf("srvmgmt-remove-exempt-row:%d", i)
 			if i == s.RemoveExemptSelected {
-				middle.writeLine(selectedStyle.Render(fmt.Sprintf("  # %s (exempt)", chName)))
+				middle.writeLine(zone.Mark(id, selectedStyle.Render(fmt.Sprintf("  # %s (exempt)", chName))))
 			} else {
-				middle.writeLine(normalStyle.Render(fmt.Sprintf("  # %s", chName)) + exemptBadge)
+				middle.writeLine(zone.Mark(id, normalStyle.Render(fmt.Sprintf("  # %s", chName))+exemptBadge))
 			}
 		}
 	}
@@ -3117,7 +3119,7 @@ func (a *App) renderRemoveExemptPage(width, height int, s *ServerManagementState
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -3255,41 +3257,48 @@ func (a *App) renderServerManagementView() string {
 	catWidth := 24
 	contentWidth := totalWidth - catWidth - 1
 
+	// -1 (not -2, as this and every content-category call below used to be)
+	// for the "Server Settings" title bar row -- see the matching fix and
+	// full explanation on settingsSectionBuilder.String() in settings_view.go.
+	// Both the sidebar and every content page must agree on this same
+	// 1-row budget or they drift apart by a line, which is exactly the
+	// live-tested bug this fixes (sidebar border stopping short of the
+	// content panel's on every Server Settings page).
 	// ── Left: Category list ────────────────────────────────────────
-	catPanel := a.renderCategorySidebar(catWidth, totalHeight-2, s)
+	catPanel := a.renderCategorySidebar(catWidth, totalHeight-1, s)
 
 	// ── Right: Content panel ───────────────────────────────────────
 	var contentPanel string
 	switch s.SelectedCategory {
 	case 0: // Channels
-		contentPanel = a.renderChannelsCategory(contentWidth, totalHeight-2, s)
+		contentPanel = a.renderChannelsCategory(contentWidth, totalHeight-1, s)
 	case 1: // Roles
-		contentPanel = a.renderRolesCategory(contentWidth, totalHeight-2, s)
+		contentPanel = a.renderRolesCategory(contentWidth, totalHeight-1, s)
 	case 2: // Members
 		if s.RoleAssignOpen {
-			contentPanel = a.renderMembersRoleAssignPage(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderMembersRoleAssignPage(contentWidth, totalHeight-1, s)
 		} else if s.FilterPanelOpen {
-			contentPanel = a.renderMembersFilterPage(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderMembersFilterPage(contentWidth, totalHeight-1, s)
 		} else {
-			contentPanel = a.renderMembersCategory(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderMembersCategory(contentWidth, totalHeight-1, s)
 		}
 	case 3: // Messages
 		if s.RemoveExemptPickerOpen {
-			contentPanel = a.renderRemoveExemptPage(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderRemoveExemptPage(contentWidth, totalHeight-1, s)
 		} else if s.OverrideChannelPickerOpen {
-			contentPanel = a.renderChannelPickerPage(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderChannelPickerPage(contentWidth, totalHeight-1, s)
 		} else if s.RetentionFormState != nil {
-			contentPanel = a.renderRetentionFormPage(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderRetentionFormPage(contentWidth, totalHeight-1, s)
 		} else if s.PruneConfirmOpen {
-			contentPanel = a.renderPruneConfirmPage(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderPruneConfirmPage(contentWidth, totalHeight-1, s)
 		} else {
-			contentPanel = a.renderMessagesCategory(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderMessagesCategory(contentWidth, totalHeight-1, s)
 		}
 	case 4: // Plugins
 		if s.PluginConfigState != nil {
-			contentPanel = a.renderPluginConfigPage(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderPluginConfigPage(contentWidth, totalHeight-1, s)
 		} else {
-			contentPanel = a.renderPluginsCategory(contentWidth, totalHeight-2, s)
+			contentPanel = a.renderPluginsCategory(contentWidth, totalHeight-1, s)
 		}
 	}
 
@@ -3367,13 +3376,13 @@ func (a *App) renderCategorySidebar(width, height int, s *ServerManagementState)
 				Width(width - 2).
 				Render(prefix + category)
 		}
-		buf.WriteString(line)
+		buf.WriteString(zone.Mark(fmt.Sprintf("srvmgmt-cat-row:%d", i), line))
 		buf.WriteString("\n")
 	}
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Render(buf.String())
@@ -3579,7 +3588,7 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 				Render(channelName)
 		}
-		middle.writeLine(line)
+		middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-channel-row:%d", item.listIdx), line))
 	}
 
 	// Show "↓ X more" if not at bottom
@@ -3614,7 +3623,7 @@ func (a *App) renderChannelsCategory(width, height int, s *ServerManagementState
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -3699,10 +3708,10 @@ func (a *App) renderOverwriteTargetPickerPage(width, height int, s *ServerManage
 				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth)
-			middle.writeLine(selectedStyle.Render(line))
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-overwrite-target-row:%d", i), selectedStyle.Render(line)))
 		} else {
 			normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-			middle.writeLine(normalStyle.Render(line))
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-overwrite-target-row:%d", i), normalStyle.Render(line)))
 		}
 	}
 
@@ -3726,7 +3735,7 @@ func (a *App) renderOverwriteTargetPickerPage(width, height int, s *ServerManage
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -3781,10 +3790,10 @@ func (a *App) renderOverwriteEditorPage(width, height int, s *ServerManagementSt
 				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth)
-			middle.writeLine(selectedStyle.Render(line))
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-overwrite-editor-row:%d", i), selectedStyle.Render(line)))
 		} else {
 			normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-			middle.writeLine(normalStyle.Render(line))
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-overwrite-editor-row:%d", i), normalStyle.Render(line)))
 		}
 	}
 	middle.pad()
@@ -3800,7 +3809,7 @@ func (a *App) renderOverwriteEditorPage(width, height int, s *ServerManagementSt
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -3945,7 +3954,7 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 				Render(roleLine)
 		}
-		middle.writeLine(line)
+		middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-role-row:%d", i), line))
 	}
 
 	// Show "↓ X more" if not at bottom
@@ -3980,7 +3989,7 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -4060,7 +4069,7 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 			} else {
 				rendered = fmt.Sprintf("%s%s %s — %s", prefix, toggle, line, status)
 			}
-			middle.writeLine(rendered)
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-plugin-row:%d", i), rendered))
 
 			if p.LastError != "" && (selected || p.Status == "crashed") {
 				errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Italic(true)
@@ -4083,7 +4092,7 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -4190,7 +4199,7 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -4385,7 +4394,7 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 				Render(prefix + memberLine)
 		}
-		middle.writeLine(line)
+		middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-member-row:%d", i), line))
 	}
 
 	// Show "↓ X more" if not at bottom
@@ -4420,7 +4429,7 @@ func (a *App) renderMembersCategory(width, height int, s *ServerManagementState)
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -4488,9 +4497,9 @@ func (a *App) renderMembersFilterPage(width, height int, s *ServerManagementStat
 		allText = "  (●) All"
 	}
 	if allFocused {
-		middle.writeLine(selectedStyle.Render(allText))
+		middle.writeLine(zone.Mark("srvmgmt-filter-opt:0", selectedStyle.Render(allText)))
 	} else {
-		middle.writeLine(normalStyle.Render(allText))
+		middle.writeLine(zone.Mark("srvmgmt-filter-opt:0", normalStyle.Render(allText)))
 	}
 
 	// Individual role options
@@ -4504,10 +4513,11 @@ func (a *App) renderMembersFilterPage(width, height int, s *ServerManagementStat
 		if s.FilterRole == role.Name {
 			roleText = fmt.Sprintf("  (●) %s", role.Name)
 		}
+		id := fmt.Sprintf("srvmgmt-filter-opt:%d", roleIdx)
 		if roleFocused {
-			middle.writeLine(selectedStyle.Render(roleText))
+			middle.writeLine(zone.Mark(id, selectedStyle.Render(roleText)))
 		} else {
-			middle.writeLine(normalStyle.Render(roleText))
+			middle.writeLine(zone.Mark(id, normalStyle.Render(roleText)))
 		}
 		roleIdx++
 	}
@@ -4534,10 +4544,11 @@ func (a *App) renderMembersFilterPage(width, height int, s *ServerManagementStat
 		if s.FilterOnline == status.value {
 			statusText = fmt.Sprintf("  (●) %s", status.label)
 		}
+		id := fmt.Sprintf("srvmgmt-filter-opt:%d", statusBaseIdx+i)
 		if statusSelected {
-			middle.writeLine(selectedStyle.Render(statusText))
+			middle.writeLine(zone.Mark(id, selectedStyle.Render(statusText)))
 		} else {
-			middle.writeLine(normalStyle.Render(statusText))
+			middle.writeLine(zone.Mark(id, normalStyle.Render(statusText)))
 		}
 	}
 
@@ -4564,10 +4575,11 @@ func (a *App) renderMembersFilterPage(width, height int, s *ServerManagementStat
 		if s.SortBy == sortOpt.value {
 			sortText = fmt.Sprintf("  (●) %s", sortOpt.label)
 		}
+		id := fmt.Sprintf("srvmgmt-filter-opt:%d", sortBaseIdx+i)
 		if sortSelected {
-			middle.writeLine(selectedStyle.Render(sortText))
+			middle.writeLine(zone.Mark(id, selectedStyle.Render(sortText)))
 		} else {
-			middle.writeLine(normalStyle.Render(sortText))
+			middle.writeLine(zone.Mark(id, normalStyle.Render(sortText)))
 		}
 	}
 
@@ -4592,7 +4604,7 @@ func (a *App) renderMembersFilterPage(width, height int, s *ServerManagementStat
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Padding(0, 1).
@@ -4684,9 +4696,9 @@ func (a *App) renderMembersRoleAssignPage(width, height int, s *ServerManagement
 
 		if isFocused {
 			line := selectedStyle.Render(roleText) + " " + roleName
-			middle.writeLine(line)
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-roleassign-row:%d", i), line))
 		} else {
-			middle.writeLine(normalStyle.Render(roleText) + " " + roleName)
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-roleassign-row:%d", i), normalStyle.Render(roleText)+" "+roleName))
 		}
 	}
 
@@ -4711,7 +4723,7 @@ func (a *App) renderMembersRoleAssignPage(width, height int, s *ServerManagement
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Padding(0, 1).
@@ -4798,9 +4810,9 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 					Bold(true).
 					Width(layout.interiorWidth).
 					Render("▶ # " + chName)
-				middle.writeLine(line)
+				middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-override-row:%d", i), line))
 			} else {
-				middle.writeLine(dimStyle.Render(label))
+				middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-override-row:%d", i), dimStyle.Render(label)))
 			}
 		}
 	}
@@ -4826,7 +4838,7 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -4864,10 +4876,11 @@ func (a *App) renderRetentionFormPage(width, height int, s *ServerManagementStat
 	renderField := func(label, value string, fieldIdx int) {
 		middle.writeLine(labelStyle.Render(label))
 		display := fmt.Sprintf("  [%s]", value)
+		id := fmt.Sprintf("srvmgmt-retention-field:%d", fieldIdx)
 		if form.FocusField == fieldIdx {
-			middle.writeLine(selectedStyle.Render(display))
+			middle.writeLine(zone.Mark(id, selectedStyle.Render(display)))
 		} else {
-			middle.writeLine(normalStyle.Render(display))
+			middle.writeLine(zone.Mark(id, normalStyle.Render(display)))
 		}
 		middle.writeBlank()
 	}
@@ -4876,8 +4889,8 @@ func (a *App) renderRetentionFormPage(width, height int, s *ServerManagementStat
 	renderField("System Message Retention (days):", form.SystemTimeRetentionDays, 1)
 	renderField("Max Messages Per Channel:", form.MaxMessageCount, 2)
 
-	saveBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).Render("[S] Save")
-	cancelBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel")
+	saveBtn := zone.Mark("srvmgmt-retention-save", lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).Render("[S] Save"))
+	cancelBtn := zone.Mark("srvmgmt-retention-cancel", lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel"))
 	middle.writeLine(fmt.Sprintf("%s  %s", saveBtn, cancelBtn))
 	middle.pad()
 
@@ -4892,7 +4905,7 @@ func (a *App) renderRetentionFormPage(width, height int, s *ServerManagementStat
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -4924,8 +4937,8 @@ func (a *App) renderPruneConfirmPage(width, height int, s *ServerManagementState
 	middle.writeBlank()
 	middle.writeLine(bodyStyle.Render("Are you sure you want to continue?"))
 	middle.writeBlank()
-	confirmBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).Render("[Enter] Yes, prune now")
-	cancelBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel")
+	confirmBtn := zone.Mark("srvmgmt-prune-confirm-yes", lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).Render("[Enter] Yes, prune now"))
+	cancelBtn := zone.Mark("srvmgmt-prune-confirm-cancel", lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel"))
 	middle.writeLine(fmt.Sprintf("%s  %s", confirmBtn, cancelBtn))
 	middle.pad()
 
@@ -4938,7 +4951,7 @@ func (a *App) renderPruneConfirmPage(width, height int, s *ServerManagementState
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -4972,10 +4985,11 @@ func (a *App) renderChannelPickerPage(width, height int, s *ServerManagementStat
 	} else {
 		for i, ch := range s.OverrideChannelList {
 			line := fmt.Sprintf("  # %s", ch.Name)
+			id := fmt.Sprintf("srvmgmt-exempt-channel-row:%d", i)
 			if i == s.OverrideChannelSelected {
-				middle.writeLine(selectedStyle.Render(line))
+				middle.writeLine(zone.Mark(id, selectedStyle.Render(line)))
 			} else {
-				middle.writeLine(normalStyle.Render(line))
+				middle.writeLine(zone.Mark(id, normalStyle.Render(line)))
 			}
 		}
 	}
@@ -4990,7 +5004,7 @@ func (a *App) renderChannelPickerPage(width, height int, s *ServerManagementStat
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -5073,9 +5087,9 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	if state.FocusField == 0 {
 		inputStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Cyan))
-		middle.writeLine(inputStyle.Render("  " + inputView))
+		middle.writeLine(zone.Mark("srvmgmt-channelform-name", inputStyle.Render("  "+inputView)))
 	} else {
-		middle.writeLine("  " + inputView)
+		middle.writeLine(zone.Mark("srvmgmt-channelform-name", "  "+inputView))
 	}
 	middle.writeBlank()
 
@@ -5108,8 +5122,8 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 			hint := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 				Render("  " + opt.hint)
-			middle.writeLine(typeStyle.Render("  " + radio + opt.label))
-			middle.writeLine(hint)
+			writeZoneMarkedLines(middle, fmt.Sprintf("srvmgmt-channelform-type:%d", opt.idx),
+				typeStyle.Render("  "+radio+opt.label), hint)
 		}
 		// Plugin-provided kinds, advertised at READY — a folder dropped into
 		// Plugins/ shows up here with zero changes to this rendering code.
@@ -5126,8 +5140,8 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 			hint := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 				Render(fmt.Sprintf("  %s Plugin channel", icon))
-			middle.writeLine(typeStyle.Render("  " + radio + kind.DisplayName))
-			middle.writeLine(hint)
+			writeZoneMarkedLines(middle, fmt.Sprintf("srvmgmt-channelform-type:%d", idx),
+				typeStyle.Render("  "+radio+kind.DisplayName), hint)
 		}
 	}
 	middle.writeBlank()
@@ -5137,11 +5151,11 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 		middle.writeLine(labelStyle.Render("▸ Max Users (0 = unlimited):"))
 		maxUsersView := state.MaxUsersInput.View()
 		if state.FocusField == formLayout.maxUsersField {
-			middle.writeLine(lipgloss.NewStyle().
+			middle.writeLine(zone.Mark("srvmgmt-channelform-maxusers", lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-				Render("  " + maxUsersView))
+				Render("  "+maxUsersView)))
 		} else {
-			middle.writeLine("  " + maxUsersView)
+			middle.writeLine(zone.Mark("srvmgmt-channelform-maxusers", "  "+maxUsersView))
 		}
 		middle.writeBlank()
 	}
@@ -5233,6 +5247,8 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 			Foreground(lipgloss.Color(a.theme.Colors.Red)).
 			Render("[Cancel]")
 	}
+	createButton = zone.Mark("srvmgmt-channelform-submit", createButton)
+	cancelButton = zone.Mark("srvmgmt-channelform-cancel", cancelButton)
 
 	middle.writeLine("  " + createButton + "  " + cancelButton)
 
@@ -5262,7 +5278,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -5310,34 +5326,35 @@ func (a *App) renderMoveChannelPage(width, height int, s *ServerManagementState)
 	// Top Level option (index 0)
 	topLevelText := "  Top Level (no group)"
 	if state.SelectedIndex == 0 {
-		middle.writeLine(lipgloss.NewStyle().
+		middle.writeLine(zone.Mark("srvmgmt-move-row:0", lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 			Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 			Bold(true).
 			Width(layout.interiorWidth).
-			Render("▶ Top Level (no group)"))
+			Render("▶ Top Level (no group)")))
 	} else {
-		middle.writeLine(lipgloss.NewStyle().
+		middle.writeLine(zone.Mark("srvmgmt-move-row:0", lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-			Render(topLevelText))
+			Render(topLevelText)))
 	}
 
 	// Category list
 	for i, category := range state.CategoryList {
 		categoryText := fmt.Sprintf("  ▼ %s", category.Name)
 		listIndex := i + 1 // +1 because 0 is "Top Level"
+		id := fmt.Sprintf("srvmgmt-move-row:%d", listIndex)
 
 		if state.SelectedIndex == listIndex {
-			middle.writeLine(lipgloss.NewStyle().
+			middle.writeLine(zone.Mark(id, lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth).
-				Render(fmt.Sprintf("▶ ▼ %s", category.Name)))
+				Render(fmt.Sprintf("▶ ▼ %s", category.Name))))
 		} else {
-			middle.writeLine(lipgloss.NewStyle().
+			middle.writeLine(zone.Mark(id, lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-				Render(categoryText))
+				Render(categoryText)))
 		}
 	}
 
@@ -5367,7 +5384,7 @@ func (a *App) renderMoveChannelPage(width, height int, s *ServerManagementState)
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -5638,11 +5655,15 @@ func (a *App) renderMoveDialog() string {
 		Render(dialog)
 }
 
-// renderDialogButton renders a button with consistent styling
-func (a *App) renderDialogButton(label string, focused bool, color lipgloss.Color, destructive bool) string {
+// renderDialogButton renders a button with consistent styling. id is used to
+// zone.Mark the rendered button so a click can resolve which button was
+// pressed -- shared by every confirm dialog built on this helper (Kick,
+// Ban/Unban, Unmute), so this one change covers all of them.
+func (a *App) renderDialogButton(id, label string, focused bool, color lipgloss.Color, destructive bool) string {
+	var rendered string
 	if focused {
 		// Focused button: filled background
-		return lipgloss.NewStyle().
+		rendered = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Background)).
 			Background(color).
 			Bold(true).
@@ -5650,17 +5671,18 @@ func (a *App) renderDialogButton(label string, focused bool, color lipgloss.Colo
 			Render(label)
 	} else if destructive {
 		// Unfocused destructive button: colored text, no border
-		return lipgloss.NewStyle().
+		rendered = lipgloss.NewStyle().
 			Foreground(color).
 			Padding(0, 2).
 			Render(label)
 	} else {
 		// Unfocused normal button: normal text, no border
-		return lipgloss.NewStyle().
+		rendered = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 			Padding(0, 2).
 			Render(label)
 	}
+	return zone.Mark(id, rendered)
 }
 
 // renderKickConfirmDialog renders the kick confirmation dialog
@@ -5695,8 +5717,8 @@ func (a *App) renderKickConfirmDialog() string {
 	content.WriteString("\n\n")
 
 	// Buttons
-	confirmBtn := a.renderDialogButton("Yes, Kick", s.KickConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Red), true)
-	cancelBtn := a.renderDialogButton("No, Cancel", s.KickConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
+	confirmBtn := a.renderDialogButton("kick-confirm-yes", "Yes, Kick", s.KickConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Red), true)
+	cancelBtn := a.renderDialogButton("kick-confirm-cancel", "No, Cancel", s.KickConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
 
 	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
 	buttonRowStyle := lipgloss.NewStyle().Width(dialogWidth - 4).Align(lipgloss.Center)
@@ -5771,11 +5793,11 @@ func (a *App) renderBanConfirmDialog() string {
 	// Buttons
 	var confirmBtn, cancelBtn string
 	if isBanned {
-		confirmBtn = a.renderDialogButton("Yes, Unban", s.BanConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Green), true)
+		confirmBtn = a.renderDialogButton("ban-confirm-yes", "Yes, Unban", s.BanConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Green), true)
 	} else {
-		confirmBtn = a.renderDialogButton("Yes, Ban", s.BanConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Red), true)
+		confirmBtn = a.renderDialogButton("ban-confirm-yes", "Yes, Ban", s.BanConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Red), true)
 	}
-	cancelBtn = a.renderDialogButton("No, Cancel", s.BanConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
+	cancelBtn = a.renderDialogButton("ban-confirm-cancel", "No, Cancel", s.BanConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
 
 	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
 	buttonRowStyle := lipgloss.NewStyle().Width(dialogWidth - 4).Align(lipgloss.Center)
@@ -5838,8 +5860,8 @@ func (a *App) renderUnmuteConfirmDialog() string {
 	content.WriteString("\n\n")
 
 	// Buttons
-	confirmBtn := a.renderDialogButton("Yes, Unmute", s.UnmuteConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Green), true)
-	cancelBtn := a.renderDialogButton("No, Cancel", s.UnmuteConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
+	confirmBtn := a.renderDialogButton("unmute-confirm-yes", "Yes, Unmute", s.UnmuteConfirmFocusedBtn == 0, lipgloss.Color(a.theme.Colors.Green), true)
+	cancelBtn := a.renderDialogButton("unmute-confirm-cancel", "No, Cancel", s.UnmuteConfirmFocusedBtn == 1, lipgloss.Color(a.theme.Colors.Comment), false)
 
 	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
 	buttonRowStyle := lipgloss.NewStyle().Width(dialogWidth - 4).Align(lipgloss.Center)
@@ -5908,10 +5930,11 @@ func (a *App) renderMuteDurationPage() string {
 	options := []string{"1 Hour", "24 Hours", "7 Days", "Permanent"}
 	for i, opt := range options {
 		line := fmt.Sprintf("  ( ) %s", opt)
+		id := fmt.Sprintf("srvmgmt-mute-duration-row:%d", i)
 		if i == s.MuteDurationFocus {
-			content.WriteString(selectedStyle.Render(line))
+			content.WriteString(zone.Mark(id, selectedStyle.Render(line)))
 		} else {
-			content.WriteString(normalStyle.Render(line))
+			content.WriteString(zone.Mark(id, normalStyle.Render(line)))
 		}
 		content.WriteString("\n")
 	}
@@ -5921,9 +5944,9 @@ func (a *App) renderMuteDurationPage() string {
 	content.WriteString("\n")
 	customLine := fmt.Sprintf("  [%s]  (e.g., 30m, 5h, 2d)", s.MuteDurationCustom)
 	if s.MuteDurationFocus == 4 {
-		content.WriteString(selectedStyle.Render(customLine))
+		content.WriteString(zone.Mark("srvmgmt-mute-duration-row:4", selectedStyle.Render(customLine)))
 	} else {
-		content.WriteString(normalStyle.Render(customLine))
+		content.WriteString(zone.Mark("srvmgmt-mute-duration-row:4", normalStyle.Render(customLine)))
 	}
 	content.WriteString("\n\n")
 
@@ -5931,9 +5954,9 @@ func (a *App) renderMuteDurationPage() string {
 	content.WriteString("\n")
 	reasonLine := fmt.Sprintf("  [%s]", s.MuteDurationReason)
 	if s.MuteDurationFocus == 5 {
-		content.WriteString(selectedStyle.Render(reasonLine))
+		content.WriteString(zone.Mark("srvmgmt-mute-duration-row:5", selectedStyle.Render(reasonLine)))
 	} else {
-		content.WriteString(normalStyle.Render(reasonLine))
+		content.WriteString(zone.Mark("srvmgmt-mute-duration-row:5", normalStyle.Render(reasonLine)))
 	}
 	content.WriteString("\n\n")
 
@@ -6015,6 +6038,7 @@ func (a *App) renderDeleteConfirmDialog() string {
 			Padding(0, 2).
 			Render("Yes, Delete")
 	}
+	confirmBtn = zone.Mark("srvmgmt-delete-confirm-yes", confirmBtn)
 
 	// Button 1: No, Cancel (focused = filled background, unfocused = normal text)
 	var cancelBtn string
@@ -6031,6 +6055,7 @@ func (a *App) renderDeleteConfirmDialog() string {
 			Padding(0, 2).
 			Render("No, Cancel")
 	}
+	cancelBtn = zone.Mark("srvmgmt-delete-confirm-cancel", cancelBtn)
 
 	buttons := lipgloss.JoinHorizontal(lipgloss.Center, confirmBtn, "  ", cancelBtn)
 	content.WriteString(buttonRowStyle.Render(buttons))
@@ -6119,11 +6144,11 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 		before := nameDisplay[:state.NameCursor]
 		after := nameDisplay[state.NameCursor:]
 		nameDisplay = before + "█" + after
-		middle.writeLine(lipgloss.NewStyle().
+		middle.writeLine(zone.Mark("srvmgmt-roleform-name", lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-			Render("  " + nameDisplay))
+			Render("  "+nameDisplay)))
 	} else {
-		middle.writeLine("  " + nameDisplay)
+		middle.writeLine(zone.Mark("srvmgmt-roleform-name", "  "+nameDisplay))
 	}
 	middle.writeBlank()
 
@@ -6141,12 +6166,13 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 			prefix = "  (●) "
 		}
 		line := prefix + preset
+		id := fmt.Sprintf("srvmgmt-roleform-preset:%d", i)
 		if state.FocusField == 1 {
-			middle.writeLine(lipgloss.NewStyle().
+			middle.writeLine(zone.Mark(id, lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-				Render(line))
+				Render(line)))
 		} else {
-			middle.writeLine(line)
+			middle.writeLine(zone.Mark(id, line))
 		}
 	}
 	middle.writeBlank()
@@ -6181,7 +6207,7 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 				Render(colorName)
 		}
 
-		colorLine += coloredCircle + colorName
+		colorLine += zone.Mark(fmt.Sprintf("srvmgmt-roleform-color:%d", i), coloredCircle+colorName)
 	}
 	middle.writeLine("  " + colorLine)
 	middle.writeBlank()
@@ -6193,11 +6219,11 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 	}
 	hoistedLine := hoistedPrefix + "Show separately in members list"
 	if state.FocusField == 3 {
-		middle.writeLine(lipgloss.NewStyle().
+		middle.writeLine(zone.Mark("srvmgmt-roleform-hoisted", lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-			Render(hoistedLine))
+			Render(hoistedLine)))
 	} else {
-		middle.writeLine(hoistedLine)
+		middle.writeLine(zone.Mark("srvmgmt-roleform-hoisted", hoistedLine))
 	}
 
 	// Field 4: IsMentionable
@@ -6207,11 +6233,11 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 	}
 	mentionableLine := mentionablePrefix + "Allow anyone to @mention this role"
 	if state.FocusField == 4 {
-		middle.writeLine(lipgloss.NewStyle().
+		middle.writeLine(zone.Mark("srvmgmt-roleform-mentionable", lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-			Render(mentionableLine))
+			Render(mentionableLine)))
 	} else {
-		middle.writeLine(mentionableLine)
+		middle.writeLine(zone.Mark("srvmgmt-roleform-mentionable", mentionableLine))
 	}
 	middle.writeBlank()
 
@@ -6230,11 +6256,11 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 		before := orderDisplay[:state.DisplayOrderCursor]
 		after := orderDisplay[state.DisplayOrderCursor:]
 		orderDisplay = before + "█" + after
-		middle.writeLine(lipgloss.NewStyle().
+		middle.writeLine(zone.Mark("srvmgmt-roleform-order", lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-			Render("  " + orderDisplay) + helpText)
+			Render("  "+orderDisplay)+helpText))
 	} else {
-		middle.writeLine("  " + orderDisplay + helpText)
+		middle.writeLine(zone.Mark("srvmgmt-roleform-order", "  "+orderDisplay+helpText))
 	}
 	middle.writeBlank()
 
@@ -6271,6 +6297,8 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 			Render("[Cancel]")
 	}
 
+	createButton = zone.Mark("srvmgmt-roleform-submit", createButton)
+	cancelButton = zone.Mark("srvmgmt-roleform-cancel", cancelButton)
 	buttonsLine := "  " + createButton + "  " + cancelButton
 	middle.writeLine(buttonsLine)
 
@@ -6296,7 +6324,7 @@ func (a *App) renderRoleFormPage(width, height int, s *ServerManagementState) st
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -6449,11 +6477,11 @@ func (a *App) renderPermissionsEditorPage(width, height int, s *ServerManagement
 				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 				Bold(true).
 				Width(layout.interiorWidth)
-			middle.writeLine(selectedStyle.Render(line))
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-perm-row:%d", i), selectedStyle.Render(line)))
 		} else {
 			normalStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-			middle.writeLine(normalStyle.Render(line))
+			middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-perm-row:%d", i), normalStyle.Render(line)))
 		}
 	}
 
@@ -6501,7 +6529,7 @@ func (a *App) renderPermissionsEditorPage(width, height int, s *ServerManagement
 	// ═══════════════════════════════════════════════════════════════
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).

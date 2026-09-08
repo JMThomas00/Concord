@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 // renderAudioContent renders the Audio settings panel.
@@ -51,8 +52,8 @@ func (a *App) renderAudioContent(width, height int) string {
 			vStyle = selectedStyle
 			marker = "▶ "
 		}
-		middle.writeLine(lStyle.Render(marker + label))
-		middle.writeLine(vStyle.Render("    " + value))
+		writeZoneMarkedLines(middle, fmt.Sprintf("audio-field:%d", fieldIdx),
+			lStyle.Render(marker+label), vStyle.Render("    "+value))
 		middle.writeBlank()
 	}
 
@@ -71,7 +72,7 @@ func (a *App) renderAudioContent(width, height int) string {
 		if isSelected {
 			stateStr = selectedStyle.Render(map[bool]string{true: "ON", false: "OFF"}[enabled])
 		}
-		middle.writeLine(lStyle.Render(marker+label) + "  " + stateStr)
+		middle.writeLine(zone.Mark(fmt.Sprintf("audio-field:%d", fieldIdx), lStyle.Render(marker+label)+"  "+stateStr))
 		middle.writeBlank()
 	}
 
@@ -194,8 +195,11 @@ func (a *App) renderAudioContent(width, height int) string {
 	bottom.pad()
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	// Border() adds 2 lines on top of Height(N) -- see the matching comment
+	// in renderServerIconsCollapsed (views.go). Found again here 2026-09-07
+	// wiring mouse support to the Audio category.
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -435,10 +439,10 @@ func (a *App) renderDevicePickerInline(sb *settingsSectionBuilder, s *SettingsSt
 		}
 		if i == s.AudioPickerCursor {
 			row := fmt.Sprintf("> %-*s", innerW-2, label)
-			sb.writeLine(borderStyle.Render("    │") + selectedStyle.Render(row) + borderStyle.Render("│"))
+			sb.writeLine(zone.Mark(fmt.Sprintf("audio-device-row:%d", i), borderStyle.Render("    │")+selectedStyle.Render(row)+borderStyle.Render("│")))
 		} else {
 			row := fmt.Sprintf("  %-*s", innerW-2, label)
-			sb.writeLine(borderStyle.Render("    │") + normalStyle.Render(row) + borderStyle.Render("│"))
+			sb.writeLine(zone.Mark(fmt.Sprintf("audio-device-row:%d", i), borderStyle.Render("    │")+normalStyle.Render(row)+borderStyle.Render("│")))
 		}
 	}
 	if end < len(devices) {

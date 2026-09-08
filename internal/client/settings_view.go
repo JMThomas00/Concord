@@ -6,8 +6,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/concord-chat/concord/internal/themes"
 	"github.com/google/uuid"
+	zone "github.com/lrstanley/bubblezone"
+
+	"github.com/concord-chat/concord/internal/themes"
 )
 
 // Settings page layout configuration
@@ -178,9 +180,62 @@ func (sb *settingsSectionBuilder) pad() {
 	}
 }
 
-// String returns the built content.
+// String returns the built content, sized to exactly targetLines (or
+// linesWritten if the caller wrote more than budgeted -- this never
+// truncates real content, only guards against under-filling).
+//
+// Two real bugs found and fixed here 2026-09-07 while tracking down why
+// Settings/Server Management content panels were rendering 1+ lines taller
+// than the category sidebar (reported live: the sidebar's border stopped
+// short of the content panel's on nearly every page). Root-caused via
+// direct measurement (calling each renderXContent function in isolation
+// and counting its raw output lines against the height it was given), not
+// guessed at:
+//
+//  1. Every writeLine/writeBlank/pad call appends its own trailing "\n",
+//     so a section that had written N lines left the buffer ending in
+//     "\n" -- splitting that on "\n" (as lipgloss.JoinVertical does
+//     internally) produced N+1 elements, the last an empty phantom line.
+//     With three sections (top/middle/bottom) joined per page, that added
+//     3 extra blank rows to every single category, universally.
+//  2. Separately, no call site anywhere in the codebase ever called
+//     top.pad() (only middle and sometimes bottom did) -- so a top section
+//     whose real writeLine calls under-shot its computed topLines budget
+//     (as most do; topLines bakes in a "status" line via
+//     settingsTopBaseLines that many pages don't actually render) rendered
+//     short by that same amount, silently relying on nothing downstream
+//     depending on the top section's exact height.
+//
+// These two errors partly canceled out in some categories (e.g. Notifications
+// came out only 1 line over: +3 from bug 1, -2 from bug 2) and compounded in
+// others, which is why the overflow appeared inconsistent page to page
+// instead of a clean, obviously-systemic N. Fixing both here, once, in the
+// shared primitive every category/page function builds on, rather than
+// hand-tuning pageTopExtra/pageBottomExtra at each of the ~28 call sites.
 func (sb *settingsSectionBuilder) String() string {
-	return sb.buf.String()
+	sb.pad()
+	return strings.TrimSuffix(sb.buf.String(), "\n")
+}
+
+// writeZoneMarkedLines writes 2+ lines to a section builder wrapped in a
+// single zone spanning all of them, so a click anywhere across the whole
+// block resolves to one target rather than each line being independently
+// (un)clickable. zone.Mark only wraps a single string with start/end
+// markers in one call, so a block that's written via multiple separate
+// sb.writeLine calls (required to keep the builder's own line-count
+// accounting correct -- see calculateSettingsLayout) can't just call
+// zone.Mark per line, or the emitted zone would only ever cover the last
+// line written. Instead: join the lines, mark the whole joined string once,
+// then split back on "\n" and feed the pieces to writeLine individually --
+// the reassembled output is byte-for-byte identical to what marking the
+// whole block at once would have produced, it just preserves each line as
+// its own writeLine call.
+func writeZoneMarkedLines(sb *settingsSectionBuilder, id string, lines ...string) {
+	marked := zone.Mark(id, strings.Join(lines, "\n"))
+	parts := strings.SplitN(marked, "\n", len(lines))
+	for _, p := range parts {
+		sb.writeLine(p)
+	}
 }
 
 // renderSeparator creates a horizontal separator line.
@@ -866,17 +921,17 @@ func (a *App) renderServerFormPage(width, height int) string {
 
 	// Server Name
 	middle.writeLine(labelStyle.Render("Server Name:"))
-	middle.writeLine("  " + a.addServerName.View())
+	middle.writeLine(zone.Mark("server-form-field:0", "  "+a.addServerName.View()))
 	middle.writeBlank()
 
 	// Address
 	middle.writeLine(labelStyle.Render("Address:"))
-	middle.writeLine("  " + a.addServerAddress.View())
+	middle.writeLine(zone.Mark("server-form-field:1", "  "+a.addServerAddress.View()))
 	middle.writeBlank()
 
 	// Port
 	middle.writeLine(labelStyle.Render("Port:"))
-	middle.writeLine("  " + a.addServerPort.View())
+	middle.writeLine(zone.Mark("server-form-field:2", "  "+a.addServerPort.View()))
 	middle.writeBlank()
 
 	// TLS toggle
@@ -886,9 +941,9 @@ func (a *App) renderServerFormPage(width, height int) string {
 		tlsValue = "[✓] Yes"
 	}
 	if a.addServerFocus == 3 {
-		middle.writeLine("  " + selectedStyle.Render(tlsValue))
+		middle.writeLine(zone.Mark("server-form-field:3", "  "+selectedStyle.Render(tlsValue)))
 	} else {
-		middle.writeLine("  " + normalStyle.Render(tlsValue))
+		middle.writeLine(zone.Mark("server-form-field:3", "  "+normalStyle.Render(tlsValue)))
 	}
 	middle.writeBlank()
 
@@ -896,9 +951,9 @@ func (a *App) renderServerFormPage(width, height int) string {
 	if a.editingServerID != nil {
 		saveLabel = "Save Changes"
 	}
-	saveBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).
-		Render("[Enter] " + saveLabel)
-	cancelBtn := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel")
+	saveBtn := zone.Mark("server-form-save", lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true).
+		Render("[Enter] "+saveLabel))
+	cancelBtn := zone.Mark("server-form-cancel", lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("[Esc] Cancel"))
 	middle.writeLine(fmt.Sprintf("%s  %s", saveBtn, cancelBtn))
 	middle.pad()
 
@@ -913,7 +968,7 @@ func (a *App) renderServerFormPage(width, height int) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -938,7 +993,15 @@ func (a *App) renderSettingsView() string {
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
-	contentHeight := totalHeight - 2
+	// -1 (not -2) for the title bar row below -- both this and catPanel's
+	// matching Height() call used to subtract 2 here, silently leaving the
+	// whole Settings view 1 row short of a.height. That underflow used to
+	// be masked/varied by the settingsSectionBuilder overhang bug (see the
+	// comment on its String() method) making the real height depend on
+	// which bugs happened to cancel out per category; now that that's
+	// fixed, both this and catPanel need to agree on the actual 1-row
+	// budget the title bar consumes.
+	contentHeight := totalHeight - 1
 
 	// ── Left: Category list ────────────────────────────────────────
 	var catBuf strings.Builder
@@ -987,13 +1050,24 @@ func (a *App) renderSettingsView() string {
 				Width(catWidth - 2).
 				Render("  " + category)
 		}
-		catBuf.WriteString(line)
+		catBuf.WriteString(zone.Mark(fmt.Sprintf("settings-cat-row:%d", i), line))
 		catBuf.WriteString("\n")
 	}
 
 	catPanel := lipgloss.NewStyle().
 		Width(catWidth).
-		Height(totalHeight - 2).
+		// Border() adds 2 lines on top of Height(N) -- see the matching
+		// comment in renderServerIconsCollapsed (views.go) for the full
+		// explanation. Found again here 2026-09-07 while wiring mouse
+		// support to the Settings category sidebar -- this exact pattern
+		// recurs across many Settings/Server Management pages; each is
+		// being checked and fixed as mouse support reaches it, not swept
+		// all at once (see "Concord - Mouse Support Plan" in the vault).
+		// -1 (not -2) matches contentHeight above -- both must agree on
+		// the same 1-row title-bar budget or the sidebar and content
+		// panels drift apart by a line, see the settingsSectionBuilder
+		// comment for the full story.
+		Height(totalHeight - 1 - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Render(catBuf.String())
@@ -1113,21 +1187,25 @@ func (a *App) renderDeleteServerConfirmationDialog() string {
 	content.WriteString(warningStyle.Render("This action cannot be undone."))
 	content.WriteString("\n\n")
 
-	// Buttons
+	// Buttons -- each half zone-marked independently so a click on either
+	// resolves to that specific action (see handleSettingsDeleteServerDialogMouse).
 	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Width(dialogWidth - 4).
-		Align(lipgloss.Center)
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
-	content.WriteString(helpStyle.Render("[Y] Yes, delete  •  [Esc] Cancel"))
+	buttons := zone.Mark("delete-server-confirm-yes", helpStyle.Render("[Y] Yes, delete")) +
+		helpStyle.Render("  •  ") +
+		zone.Mark("delete-server-confirm-cancel", helpStyle.Render("[Esc] Cancel"))
+	content.WriteString(lipgloss.NewStyle().Width(dialogWidth - 4).Align(lipgloss.Center).Render(buttons))
 
-	// Wrap in dialog box
+	// Wrap in dialog box. Border() adds 2 lines on top of Height(N) -- see
+	// the matching comment in renderServerIconsCollapsed (views.go). Found
+	// again here 2026-09-07 wiring mouse support to this dialog's buttons.
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Red)).
 		Padding(1, 2).
 		Width(dialogWidth).
-		Height(dialogHeight)
+		Height(dialogHeight - 2)
 
 	dialog := dialogStyle.Render(content.String())
 
@@ -1303,7 +1381,7 @@ func (a *App) renderThemeContent(s *SettingsState, width, height int) string {
 				Width(layout.interiorWidth).
 				Render(prefix + displayName)
 		}
-		middle.writeLine(line)
+		middle.writeLine(zone.Mark(fmt.Sprintf("theme-row:%d", i), line))
 	}
 
 	// Show "↓ X more" if not at bottom
@@ -1339,7 +1417,7 @@ func (a *App) renderThemeContent(s *SettingsState, width, height int) string {
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -1496,7 +1574,7 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 				addrStyle.Render(address),
 				pingStatus)
 		}
-		middle.writeLine(line)
+		middle.writeLine(zone.Mark(fmt.Sprintf("settings-server-row:%d", i), line))
 	}
 
 	// Show "↓ X more" if not at bottom
@@ -1533,7 +1611,7 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(height).
+		Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).
@@ -1573,7 +1651,10 @@ func (a *App) renderNotificationsContent(width, height int) string {
 
 	cfg := a.notifConfig
 
-	// helper to render a settings row (label + value line) with focus highlight
+	// helper to render a settings row (label + value line) with focus highlight.
+	// Both lines are wrapped in a single zone spanning both (see
+	// writeZoneMarkedLines) so a click anywhere on either line of a field
+	// resolves to that field, not just its label or its value individually.
 	writeField := func(fieldIdx int, label, value string) {
 		isSelected := focused && focusField == fieldIdx
 		lStyle := labelStyle
@@ -1584,8 +1665,8 @@ func (a *App) renderNotificationsContent(width, height int) string {
 			vStyle = selectedStyle
 			marker = "▶ "
 		}
-		middle.writeLine(lStyle.Render(marker + label))
-		middle.writeLine(vStyle.Render("    " + value))
+		writeZoneMarkedLines(middle, fmt.Sprintf("notif-field:%d", fieldIdx),
+			lStyle.Render(marker+label), vStyle.Render("    "+value))
 		middle.writeBlank()
 	}
 
@@ -1642,8 +1723,8 @@ func (a *App) renderNotificationsContent(width, height int) string {
 		marker5 = "▶ "
 		lStyle5 = selectedStyle
 	}
-	middle.writeLine(lStyle5.Render(marker5 + muteLabel))
-	middle.writeLine(dimStyle.Render("    " + muteHint))
+	writeZoneMarkedLines(middle, "notif-field:5",
+		lStyle5.Render(marker5+muteLabel), dimStyle.Render("    "+muteHint))
 
 	middle.pad()
 
@@ -1658,7 +1739,7 @@ func (a *App) renderNotificationsContent(width, height int) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -1707,14 +1788,14 @@ func (a *App) renderNotifSoundPickerPage(width, height int) string {
 		line := prefix + opt.Name
 
 		if isCursor {
-			middle.writeLine(lipgloss.NewStyle().
+			middle.writeLine(zone.Mark(fmt.Sprintf("notif-sound-row:%d", i), lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 				Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true).
-				Render("▶ " + line[2:]))
+				Render("▶ "+line[2:])))
 		} else {
-			middle.writeLine(lipgloss.NewStyle().
+			middle.writeLine(zone.Mark(fmt.Sprintf("notif-sound-row:%d", i), lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-				Render(line))
+				Render(line)))
 		}
 	}
 	middle.pad()
@@ -1728,7 +1809,7 @@ func (a *App) renderNotifSoundPickerPage(width, height int) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -1858,7 +1939,7 @@ func (a *App) renderNotifMutePickerPage(width, height int) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -1915,8 +1996,14 @@ func (a *App) renderDisplayContent(width, height int) string {
 			vStyle = selectedStyle
 			marker = "▶ "
 		}
-		addLine(lStyle.Render(marker + label))
-		addLine(vStyle.Render("    " + value))
+		// Both lines wrapped in one zone spanning both -- see
+		// writeZoneMarkedLines's doc comment for why this can't just be two
+		// separate zone.Mark calls with the same ID.
+		marked := zone.Mark(fmt.Sprintf("display-field:%d", fieldIdx),
+			lStyle.Render(marker+label)+"\n"+vStyle.Render("    "+value))
+		parts := strings.SplitN(marked, "\n", 2)
+		addLine(parts[0])
+		addLine(parts[1])
 		addBlank()
 	}
 
@@ -2097,7 +2184,7 @@ func (a *App) renderDisplayContent(width, height int) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
 	return lipgloss.NewStyle().
-		Width(width).Height(height).
+		Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
@@ -2422,7 +2509,7 @@ func (a *App) renderServerSoundPage(width, height int) string {
 		bottom.pad()
 
 		content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
-		return lipgloss.NewStyle().Width(width).Height(height).
+		return lipgloss.NewStyle().Width(width).Height(height - 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 			Padding(0, 1).Render(content)
@@ -2504,7 +2591,7 @@ func (a *App) renderServerSoundPage(width, height int) string {
 	bottom.pad()
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
-	return lipgloss.NewStyle().Width(width).Height(height).
+	return lipgloss.NewStyle().Width(width).Height(height - 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)

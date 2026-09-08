@@ -14,12 +14,37 @@ import (
 // interactive today is handled here -- see "Concord - Mouse Support Plan"
 // in the Obsidian vault for what's scoped to this pass vs. deferred.
 func (a *App) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
+	// Settings' and Server Management's slide-in/out animations
+	// (clipPanelLeft/clipPanelRight) do column-based ANSI-aware string
+	// truncation *after* zone marks are already embedded in the rendered
+	// string -- truncating mid-slide can cut a marker's start/end apart,
+	// corrupting that frame's registered click bounds. Ignore clicks until
+	// each settles. One check covers both views since each flag is only
+	// ever true while its own view is active.
+	if a.settingsAnimating || a.srvMgmtAnimating {
+		return nil
+	}
+
 	if a.linkBrowserState != nil {
 		return a.handleLinkBrowserMouse(msg)
 	}
 
+	// Same overlay-priority position View() itself uses (link browser, then
+	// help modal, then member context menu) -- without this branch, a click
+	// meant for the popup falls through to handleMainViewMouse and gets
+	// misread as a click on the member list underneath it.
+	if a.memberContextMenu != nil {
+		return a.handleMemberContextMenuMouse(msg)
+	}
+
 	if a.view == ViewMain {
 		return a.handleMainViewMouse(msg)
+	}
+	if a.view == ViewSettings {
+		return a.handleSettingsMouse(msg)
+	}
+	if a.view == ViewServerManagement {
+		return a.handleServerManagementMouse(msg)
 	}
 
 	return nil
@@ -58,10 +83,30 @@ func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 
-	if channelID, ok := a.resolveClickedChannelRow(msg); ok {
+	if node, ok := a.resolveClickedChannelRow(msg); ok {
 		a.setFocus(FocusChannelList)
-		a.selectChannelByID(channelID)
+		if node.IsCategory {
+			a.toggleCategoryCollapsed(node.Channel.ID)
+		} else {
+			a.selectChannelByID(node.Channel.ID)
+		}
 		return nil
+	}
+
+	if idx, ok := a.resolveClickedServerRow(msg); ok {
+		a.setFocus(FocusServerIcons)
+		a.switchToClientServer(idx)
+		return nil
+	}
+
+	if idx, ok := a.resolveClickedMemberRow(msg); ok {
+		a.setFocus(FocusUserList)
+		a.selectedMemberIndex = idx
+		return a.openMemberContextMenu()
+	}
+
+	if cmd, ok := a.resolveClickedStatusBarHint(msg); ok {
+		return cmd
 	}
 
 	switch {
@@ -76,6 +121,35 @@ func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
 	}
 
 	return nil
+}
+
+// resolveClickedStatusBarHint handles the four clickable status-bar
+// segments renderStatusBar zone-marks (Area 5 of "Concord - Mouse Support
+// Plan"). "Tab: Navigate" and the conditionally-shown "Enter: Join/Leave
+// voice" are deliberately left unmarked/unclickable, per that plan's scope.
+// The status bar only ever renders as part of ViewMain, so each segment's
+// action is called directly rather than routed through a synthesized key.
+func (a *App) resolveClickedStatusBarHint(msg tea.MouseMsg) (tea.Cmd, bool) {
+	if zoneInBounds("statusbar-settings", msg) {
+		return a.openSettings(ViewMain), true
+	}
+	if zoneInBounds("statusbar-server-settings", msg) {
+		if a.currentUserRoleLevel() >= roleLevelAdmin {
+			return a.openServerManagement(ViewMain, 0), true
+		}
+		return nil, true
+	}
+	if zoneInBounds("statusbar-help", msg) {
+		result, err := a.commandHandler.Execute(&Command{Name: "help"})
+		if err == nil {
+			a.openHelpModal(result)
+		}
+		return nil, true
+	}
+	if zoneInBounds("statusbar-quit", msg) {
+		return tea.Quit, true
+	}
+	return nil, false
 }
 
 // zoneInBounds is a small convenience wrapper -- zone.Get returns nil for
@@ -110,17 +184,113 @@ func (a *App) resolveClickedLink(msg tea.MouseMsg) (string, bool) {
 }
 
 // resolveClickedChannelRow checks every channel/category row's zone and
-// returns the channel ID whose zone contains the click.
-func (a *App) resolveClickedChannelRow(msg tea.MouseMsg) (channelID uuid.UUID, ok bool) {
+// returns the tree node whose zone contains the click -- the caller
+// branches on node.IsCategory to decide between selecting a channel and
+// toggling a category's collapsed state (see handleMainViewMouse).
+func (a *App) resolveClickedChannelRow(msg tea.MouseMsg) (node *ChannelTreeNode, ok bool) {
 	if a.channelTree == nil {
-		return channelID, false
+		return nil, false
 	}
-	for _, node := range a.channelTree.FlatList {
-		if zoneInBounds("channel-row:"+node.Channel.ID.String(), msg) {
-			return node.Channel.ID, true
+	for _, n := range a.channelTree.FlatList {
+		if zoneInBounds("channel-row:"+n.Channel.ID.String(), msg) {
+			return n, true
 		}
 	}
-	return channelID, false
+	return nil, false
+}
+
+// toggleCategoryCollapsed flips a category's collapsed state directly by
+// ID, rebuilding the flat list and persisting the change -- unlike the
+// keyboard path's handleCollapseCategory/handleExpandCategory (which infer
+// their target from a.currentChannel), a click already names the exact
+// category clicked, so there's no need to route through that indirection.
+func (a *App) toggleCategoryCollapsed(categoryID uuid.UUID) {
+	if a.channelTree == nil {
+		return
+	}
+	a.collapsedCategories[categoryID] = !a.collapsedCategories[categoryID]
+	a.channelTree.RebuildFlatList(a.collapsedCategories)
+	a.saveCollapsedState()
+}
+
+// resolveClickedServerRow checks every server row's zone (rendered by
+// renderServerIcons/renderServerIconsCollapsed, views.go) and returns the
+// index of the one whose zone contains the click. That index feeds directly
+// into switchToClientServer(index), the same function every keyboard path
+// (arrow nav, Enter, Ctrl+Shift+S) already converges on.
+//
+// Known, accepted coupling, not something to "fix" here: the render loop
+// indexes a.configMgr.GetClientServers() (re-read from disk every frame)
+// while switchToClientServer indexes the in-memory a.clientServers field.
+// They stay in sync today because nothing else mutates one without the
+// other, not because of an enforced shared source of truth.
+func (a *App) resolveClickedServerRow(msg tea.MouseMsg) (index int, ok bool) {
+	if a.configMgr == nil {
+		return 0, false
+	}
+	servers := a.configMgr.GetClientServers()
+	for i := range servers {
+		if zoneInBounds(fmt.Sprintf("server-row:%d", i), msg) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// resolveClickedMemberRow checks every member row's zone (rendered by
+// renderUserList/renderUserListCollapsed, views.go) and returns the flat
+// index of the one whose zone contains the click. buildFlatMemberList()'s
+// own doc comment guarantees its order matches renderUserList's three
+// render loops exactly, so trusting the loop index here carries no risk of
+// drift between render time and click time.
+func (a *App) resolveClickedMemberRow(msg tea.MouseMsg) (index int, ok bool) {
+	flatMembers := a.buildFlatMemberList()
+	for i, m := range flatMembers {
+		if m.User == nil {
+			continue
+		}
+		if zoneInBounds("member-row:"+m.User.ID.String(), msg) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// handleMemberContextMenuMouse handles clicks while the member action
+// popup (a.memberContextMenu) is open. A click on a visible action row does
+// exactly what pressing Enter after arrow-navigating to it does -- set
+// SelectedIndex, call the existing executeMemberAction() -- reusing the
+// same side effect rather than duplicating it.
+func (a *App) handleMemberContextMenuMouse(msg tea.MouseMsg) tea.Cmd {
+	m := a.memberContextMenu
+	if m == nil {
+		return nil
+	}
+	// The popup's pop-in animation re-renders its content at a narrower
+	// width every frame (see renderMemberContextMenuOverlay's width-based
+	// clip), which can slice a zone marker's start/end apart mid-animation
+	// and corrupt that frame's registered bounds -- unlike Settings/Server
+	// Management's slide animations, this one has no DisablePanelAnimations
+	// opt-out and runs on every single open. Ignore clicks until it settles.
+	if m.AnimFrame < contextMenuMaxFrames {
+		return nil
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return nil
+	}
+	// Volume-slider mode has no discrete rows -- a live bar adjusted by
+	// Left/Right only. Out of scope for mouse support, same as the
+	// no-drag policy established elsewhere (see the Mouse Support Plan).
+	if m.VolumeSlider != nil {
+		return nil
+	}
+	for i := range m.Actions {
+		if zoneInBounds(fmt.Sprintf("member-action-row:%d", i), msg) {
+			m.SelectedIndex = i
+			return a.executeMemberAction()
+		}
+	}
+	return nil
 }
 
 // setFocus changes which panel has focus, applying the same textarea

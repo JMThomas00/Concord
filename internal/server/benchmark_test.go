@@ -47,10 +47,12 @@ func BenchmarkMessageBroadcast(b *testing.B) {
 	}
 	b.StopTimer()
 
-	// Cleanup
+	// Cleanup -- hub.unregisterClient (run async via the channel send below)
+	// already closes client.send itself (see hub.go's unregisterClient), so
+	// closing it again here raced with that goroutine and occasionally
+	// double-closed the same channel, panicking the benchmark.
 	for _, client := range clients {
 		hub.unregister <- client
-		close(client.send)
 	}
 }
 

@@ -525,7 +525,7 @@ func (a *App) renderServerIconsCollapsed(width, height int) string {
 		} else {
 			line = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Render(" "+badge) + indicatorStr + unreadDot
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(zone.Mark(fmt.Sprintf("server-row:%d", i), line) + "\n")
 	}
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -633,7 +633,7 @@ func (a *App) renderServerIcons(width, height int) string {
 			line = fmt.Sprintf("  %s %s%s", nameStr, indicatorStr, serverUnreadDot)
 		}
 
-		b.WriteString(line)
+		b.WriteString(zone.Mark(fmt.Sprintf("server-row:%d", i), line))
 		b.WriteString("\n")
 	}
 
@@ -1567,7 +1567,7 @@ func (a *App) renderUserListCollapsed(width, height int) string {
 		} else {
 			line = voicePrefix + a.renderMemberAvatar(m.GetDisplayName(), m.AvatarColor) + dotStr
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(zone.Mark("member-row:"+m.User.ID.String(), line) + "\n")
 	}
 
 	boxStyle := lipgloss.NewStyle().
@@ -1751,6 +1751,13 @@ func (a *App) renderUserList(width, height int) string {
 		flatIndex := 0
 
 		renderMember := func(m *MemberDisplay) {
+			// Rendered into a local builder (not b directly) so the whole
+			// multi-line block for this member can be wrapped in a single
+			// zone.Mark before being appended -- a click anywhere within a
+			// member's block (VU row, name row, title row, status row) then
+			// resolves to this exact member. See mouse.go's
+			// resolveClickedMemberRow.
+			var mb strings.Builder
 			prefix := "  "
 			baseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 			isSelected := a.focus == FocusUserList && len(flatMembers) > 0 && flatIndex == a.selectedMemberIndex
@@ -1799,7 +1806,7 @@ func (a *App) renderUserList(width, height int) string {
 				}
 
 				barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(vuColor))
-				b.WriteString("  " + dirStr + barStyle.Render(bar) + "\n")
+				mb.WriteString("  " + dirStr + barStyle.Render(bar) + "\n")
 			}
 
 			// ── Row 2: avatar · dot · name · quality  ────────────────────────
@@ -1841,7 +1848,7 @@ func (a *App) renderUserList(width, height int) string {
 			}
 			nameStr := baseStyle.Render(name)
 
-			b.WriteString(prefix + avatar + " " + dotStr + " " + nameStr + qualStr + "\n")
+			mb.WriteString(prefix + avatar + " " + dotStr + " " + nameStr + qualStr + "\n")
 
 			// ── Rows 3 & 4 (optional): title, status ──────────────────────────
 			if m.Member != nil && m.Member.CustomTitle != "" {
@@ -1857,7 +1864,7 @@ func (a *App) renderUserList(width, height int) string {
 					runes := []rune(titleText)
 					titleText = string(runes[:titleMaxLen-1]) + "…"
 				}
-				b.WriteString("    " + titleStyle.Render(titleText) + "\n")
+				mb.WriteString("    " + titleStyle.Render(titleText) + "\n")
 			}
 
 			if m.User.StatusText != "" {
@@ -1873,9 +1880,10 @@ func (a *App) renderUserList(width, height int) string {
 					runes := []rune(statusText)
 					statusText = string(runes[:statusMaxLen-1]) + "…"
 				}
-				b.WriteString("    " + statusStyle.Render(statusText) + "\n")
+				mb.WriteString("    " + statusStyle.Render(statusText) + "\n")
 			}
 
+			b.WriteString(zone.Mark("member-row:"+m.User.ID.String(), mb.String()))
 			flatIndex++
 		}
 
@@ -2001,15 +2009,19 @@ func (a *App) renderStatusBar() string {
 		}
 	}
 
-	// Right side: help text (include Server Settings for admins)
-	helpText := "Tab: Navigate  |  Ctrl+S: Settings  |  "
+	// Right side: help text (include Server Settings for admins). Each
+	// clickable hint is zone.Mark-ed independently so a click can resolve
+	// which segment was pressed -- "Tab: Navigate" and "Enter: Join/Leave
+	// voice" are deliberately left unmarked, see Area 5 in "Concord - Mouse
+	// Support Plan".
+	helpText := "Tab: Navigate  |  " + zone.Mark("statusbar-settings", "Ctrl+S: Settings") + "  |  "
 	if a.currentUserRoleLevel() >= roleLevelAdmin {
-		helpText += "Ctrl+B: Server Settings  |  "
+		helpText += zone.Mark("statusbar-server-settings", "Ctrl+B: Server Settings") + "  |  "
 	}
 	if inVoice {
 		helpText += "Enter: Join/Leave voice  |  "
 	}
-	helpText += "Type /help  |  Ctrl+Q: Quit "
+	helpText += zone.Mark("statusbar-help", "Type /help") + "  |  " + zone.Mark("statusbar-quit", "Ctrl+Q: Quit") + " "
 	rightContent := textStyle.Render(helpText)
 
 	// Calculate spacing (must know left/right widths before truncating center)
@@ -2525,10 +2537,11 @@ func (a *App) renderMemberContextMenuOverlay(baseView string) string {
 				keyStyle = keyStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
 				labelStyle = labelStyle.Background(lipgloss.Color(a.theme.Semantic.SidebarSelected))
 			}
-			actionLines = append(actionLines, fmt.Sprintf("%s%s %s",
+			row := fmt.Sprintf("%s%s %s",
 				prefix,
 				keyStyle.Render(fmt.Sprintf("[%s]", action.Key)),
-				labelStyle.Render(action.Label)))
+				labelStyle.Render(action.Label))
+			actionLines = append(actionLines, zone.Mark(fmt.Sprintf("member-action-row:%d", i), row))
 		}
 		hints := hintStyleFull.Render("Enter: Execute  •  Esc: Close")
 		fullLines = append(fullLines, title, "")

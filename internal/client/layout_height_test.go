@@ -8,9 +8,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/themes"
+	"github.com/google/uuid"
 )
 
 // TestRenderMainViewMatchesReportedHeight is the regression test for a real
@@ -48,7 +48,8 @@ func TestRenderMainViewMatchesReportedHeight(t *testing.T) {
 // renderMainView() without panicking -- mirrors the fixture-construction
 // pattern already used for mouse-support testing (see mouse_test.go /
 // commands_test.go), just factored out since this test also needs it.
-func newLayoutTestApp(t *testing.T, width, height int) *App {
+// Takes testing.TB (not *testing.T) so benchmark_test.go can reuse it too.
+func newLayoutTestApp(t testing.TB, width, height int) *App {
 	t.Helper()
 
 	a := &App{}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 // helpMarkdown is the full Concord user guide rendered via glamour.
@@ -564,6 +565,28 @@ func (a *App) renderHelpContent(width, height int) string {
 	thumbPos, thumbSize := helpScrollbarThumb(offset, totalLines, trackHeight)
 
 	// Build each middle line as [content padded to contentWidth] + [2-char scrollbar].
+	// The scrollbar column is zone-marked as one continuous zone spanning
+	// every row (writeZoneMarkedLines's join-mark-split technique, adapted
+	// here since this builds a plain strings.Builder rather than a
+	// settingsSectionBuilder) so a click/drag anywhere in the column can
+	// resolve its row via z.Pos(msg), letting handleHelpScrollbarMouse
+	// (mouse.go) map that row to a scroll offset -- click-to-jump and
+	// click-and-drag both fall out of the same row->offset math.
+	scrollGlyphs := make([]string, trackHeight)
+	for i := 0; i < trackHeight; i++ {
+		if totalLines > trackHeight {
+			if i >= thumbPos && i < thumbPos+thumbSize {
+				scrollGlyphs[i] = thumbStyle.Render(" █")
+			} else {
+				scrollGlyphs[i] = trackStyle.Render(" │")
+			}
+		} else {
+			scrollGlyphs[i] = "  "
+		}
+	}
+	markedScrollbar := zone.Mark("help-scrollbar", strings.Join(scrollGlyphs, "\n"))
+	markedGlyphs := strings.SplitN(markedScrollbar, "\n", trackHeight)
+
 	var middleBuf strings.Builder
 	for i := 0; i < trackHeight; i++ {
 		// Content — pad/clip to contentWidth so the scrollbar column stays aligned.
@@ -573,19 +596,7 @@ func (a *App) renderHelpContent(width, height int) string {
 		}
 		line := lipgloss.NewStyle().Width(contentWidth).Render(contentLine)
 
-		// Scrollbar glyph: thumb (█) or track (│), shown only when content overflows.
-		var scrollGlyph string
-		if totalLines > trackHeight {
-			if i >= thumbPos && i < thumbPos+thumbSize {
-				scrollGlyph = thumbStyle.Render(" █")
-			} else {
-				scrollGlyph = trackStyle.Render(" │")
-			}
-		} else {
-			scrollGlyph = "  "
-		}
-
-		middleBuf.WriteString(line + scrollGlyph)
+		middleBuf.WriteString(line + markedGlyphs[i])
 		if i < trackHeight-1 {
 			middleBuf.WriteString("\n")
 		}
@@ -607,11 +618,17 @@ func (a *App) renderHelpContent(width, height int) string {
 	if focused {
 		borderColor = lipgloss.Color(a.theme.Colors.Yellow)
 	}
-	return lipgloss.NewStyle().
-		Width(width).Height(height).
+	// Border() adds 2 lines on top of Height(N) -- see the matching comment
+	// in renderServerIconsCollapsed (views.go). Found again here 2026-09-07
+	// wiring mouse support to Help & Guide. The whole pane is wrapped in one
+	// zone so a click anywhere focuses it (no per-line selection needed --
+	// this is read-only content; wheel-scroll already works regardless of
+	// focus, this just enables keyboard scroll without pressing Tab first).
+	return zone.Mark("settings-help-panel", lipgloss.NewStyle().
+		Width(width).Height(height-2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Padding(0, 1).Render(content)
+		Padding(0, 1).Render(content))
 }
 
 // helpScrollbarThumb computes the scrollbar thumb start row and height in track coordinates.

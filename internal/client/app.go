@@ -223,6 +223,14 @@ type App struct {
 	srvMgmtAnimClosing bool
 	srvMgmtAnimating   bool
 
+	// helpScrollDragging is true while the user is holding the left mouse
+	// button down on the Help & Guide scrollbar thumb/track. Motion events
+	// during a drag are tracked by Y position alone (not re-checked against
+	// the zone's X bounds) so the scroll keeps following the cursor even if
+	// it drifts off the narrow 2-char-wide scrollbar column mid-drag --
+	// exactly how a real terminal/GUI scrollbar drag behaves.
+	helpScrollDragging bool
+
 	// AFK tracking
 	lastActivityTime time.Time
 	isAFK            bool

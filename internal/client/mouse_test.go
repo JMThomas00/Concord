@@ -2,6 +2,7 @@ package client
 
 import (
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -151,5 +152,226 @@ func TestSetFocusAppliesInputBlurFocusSideEffect(t *testing.T) {
 	a.setFocus(FocusChat)
 	if a.focus != FocusChat {
 		t.Error("expected re-setting the same focus to be a no-op")
+	}
+}
+
+// TestResolveClickedMemberRowNoActiveConnDoesNothing confirms the resolver
+// fails safe when there's no active connection (buildFlatMemberList returns
+// nil in that case) rather than panicking on a nil member list.
+func TestResolveClickedMemberRowNoActiveConnDoesNothing(t *testing.T) {
+	a := &App{}
+	if idx, ok := a.resolveClickedMemberRow(tea.MouseMsg{}); ok {
+		t.Errorf("expected ok=false with no active connection, got idx=%d ok=%v", idx, ok)
+	}
+}
+
+// newTestMemberContextMenuApp builds a minimal App with an open member
+// context menu in action-list mode (not volume-slider mode), for testing
+// handleMemberContextMenuMouse's guard clauses in isolation.
+func newTestMemberContextMenuApp(actions []MemberAction, animFrame int) *App {
+	a := &App{}
+	a.memberContextMenu = &MemberContextMenu{
+		Actions:       actions,
+		SelectedIndex: 0,
+		AnimFrame:     animFrame,
+	}
+	return a
+}
+
+// TestHandleMemberContextMenuMouseAnimationGate confirms clicks are ignored
+// while the popup's pop-in animation is still running -- this animation
+// re-renders at a narrower width each frame (see renderMemberContextMenuOverlay),
+// which can corrupt that frame's zone bounds, so clicks must wait for it to
+// settle rather than risk resolving against a corrupted frame.
+func TestHandleMemberContextMenuMouseAnimationGate(t *testing.T) {
+	a := newTestMemberContextMenuApp([]MemberAction{{Label: "Kick", Key: "K"}}, 0)
+	cmd := a.handleMemberContextMenuMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if cmd != nil {
+		t.Error("expected clicks to be ignored while AnimFrame < contextMenuMaxFrames")
+	}
+	if a.memberContextMenu.SelectedIndex != 0 {
+		t.Error("expected no state mutation during the animation gate")
+	}
+}
+
+// TestHandleMemberContextMenuMouseIgnoresNonPressNonLeftEvents mirrors the
+// equivalent Link Browser test -- only a genuine left-button press should
+// ever execute an action.
+func TestHandleMemberContextMenuMouseIgnoresNonPressNonLeftEvents(t *testing.T) {
+	a := newTestMemberContextMenuApp([]MemberAction{{Label: "Kick", Key: "K"}}, contextMenuMaxFrames)
+	cmd := a.handleMemberContextMenuMouse(tea.MouseMsg{Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	if cmd != nil {
+		t.Error("expected a release event to be ignored")
+	}
+	cmd = a.handleMemberContextMenuMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonRight})
+	if cmd != nil {
+		t.Error("expected a right-click press to be ignored")
+	}
+}
+
+// TestHandleMemberContextMenuMouseVolumeSliderModeIgnored confirms clicks
+// are a no-op while the menu is in per-user volume-slider mode -- there are
+// no discrete rows to click there, and dragging is explicitly out of scope.
+func TestHandleMemberContextMenuMouseVolumeSliderModeIgnored(t *testing.T) {
+	a := newTestMemberContextMenuApp([]MemberAction{{Label: "Kick", Key: "K"}}, contextMenuMaxFrames)
+	a.memberContextMenu.VolumeSlider = &VolumeSliderState{Volume: 1.0}
+	cmd := a.handleMemberContextMenuMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if cmd != nil {
+		t.Error("expected volume-slider mode clicks to be ignored")
+	}
+}
+
+// TestHandleMemberContextMenuMouseNoZoneMatchDoesNothing mirrors the
+// equivalent Link Browser test -- an unmatched click (no real render/scan
+// pass happened in this unit-test context) must not guess an action.
+func TestHandleMemberContextMenuMouseNoZoneMatchDoesNothing(t *testing.T) {
+	a := newTestMemberContextMenuApp([]MemberAction{{Label: "Kick", Key: "K"}, {Label: "Ban", Key: "B"}}, contextMenuMaxFrames)
+	cmd := a.handleMemberContextMenuMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 0, Y: 0})
+	if cmd != nil {
+		t.Error("expected no command when the click doesn't land in any known action row")
+	}
+	if a.memberContextMenu == nil {
+		t.Fatal("context menu should still be open -- an unmatched click must not close it")
+	}
+	if a.memberContextMenu.SelectedIndex != 0 {
+		t.Error("expected no state mutation on an unmatched click")
+	}
+}
+
+// TestToggleCategoryCollapsedFlipsAndPersists confirms a category click
+// toggles its collapsed state (both directions) and rebuilds the flat list
+// to reflect it -- the real behavior a category-row click should trigger,
+// as opposed to selecting it like an ordinary channel.
+func TestToggleCategoryCollapsedFlipsAndPersists(t *testing.T) {
+	a := newLayoutTestApp(t, 160, 40)
+	catID := a.channelTree.FlatList[0].Channel.ID // the GENERAL category from the fixture
+	if !a.channelTree.FlatList[0].IsCategory {
+		t.Fatal("test fixture assumption broken: FlatList[0] is not a category")
+	}
+	initialLen := len(a.channelTree.FlatList)
+
+	a.toggleCategoryCollapsed(catID)
+	if !a.collapsedCategories[catID] {
+		t.Error("expected the category to be collapsed after the first toggle")
+	}
+	if len(a.channelTree.FlatList) >= initialLen {
+		t.Errorf("expected FlatList to shrink once children are hidden, got %d (was %d)", len(a.channelTree.FlatList), initialLen)
+	}
+
+	a.toggleCategoryCollapsed(catID)
+	if a.collapsedCategories[catID] {
+		t.Error("expected the category to be expanded again after the second toggle")
+	}
+	if len(a.channelTree.FlatList) != initialLen {
+		t.Errorf("expected FlatList to restore to %d entries once re-expanded, got %d", initialLen, len(a.channelTree.FlatList))
+	}
+}
+
+// TestResolveClickedChannelRowNoZoneMatchDoesNothing confirms the resolver
+// (now returning the full *ChannelTreeNode, not just a uuid, so callers can
+// branch on IsCategory -- see handleMainViewMouse) fails safe on an
+// unmatched click, mirroring the equivalent tests for the other resolvers.
+func TestResolveClickedChannelRowNoZoneMatchDoesNothing(t *testing.T) {
+	a := newLayoutTestApp(t, 160, 40)
+	if node, ok := a.resolveClickedChannelRow(tea.MouseMsg{X: 0, Y: 0}); ok {
+		t.Errorf("expected ok=false when no channel-row zone has been scanned, got node=%v", node)
+	}
+}
+
+// TestResolveClickedServerRowNilConfigMgr confirms the resolver fails safe
+// (rather than panicking on a nil a.configMgr) -- a real state during early
+// App construction before NewConfigManager has run.
+func TestResolveClickedServerRowNilConfigMgr(t *testing.T) {
+	a := &App{}
+	if idx, ok := a.resolveClickedServerRow(tea.MouseMsg{}); ok {
+		t.Errorf("expected ok=false with a nil configMgr, got idx=%d ok=%v", idx, ok)
+	}
+}
+
+// TestResolveClickedServerRowNoZoneMatchDoesNothing mirrors
+// TestHandleLinkBrowserMouseNoZoneMatchDoesNothing: with a real (but
+// zone-less, since no render/scan pass has happened) App, a click matches no
+// server row and returns ok=false rather than guessing index 0.
+func TestResolveClickedServerRowNoZoneMatchDoesNothing(t *testing.T) {
+	a := newLayoutTestApp(t, 160, 40)
+	if idx, ok := a.resolveClickedServerRow(tea.MouseMsg{X: 0, Y: 0}); ok {
+		t.Errorf("expected ok=false when no server-row zone has been scanned, got idx=%d ok=%v", idx, ok)
+	}
+}
+
+// TestResolveClickedStatusBarHintNoZoneMatchDoesNothing confirms an
+// unmatched click returns ok=false rather than guessing at a segment --
+// mirrors every other resolver's "no zone match" test in this file.
+func TestResolveClickedStatusBarHintNoZoneMatchDoesNothing(t *testing.T) {
+	// X/Y chosen far outside anything this file's other status-bar tests
+	// scan -- (0, 0) isn't safe here since bubblezone's manager is a
+	// process-global singleton that's never reset between tests, and
+	// another test in this file legitimately registers a zone starting at
+	// (0, 0) for its own isolated single-segment scan (a real
+	// TOCTOU-shaped hazard under `go test -count=N`, not merely a style
+	// nit -- it silently passes once and fails on every repeat).
+	a := &App{}
+	if cmd, ok := a.resolveClickedStatusBarHint(tea.MouseMsg{X: 9999, Y: 9999}); ok || cmd != nil {
+		t.Errorf("expected ok=false and cmd=nil when no status-bar zone has been scanned, got cmd=%v ok=%v", cmd, ok)
+	}
+}
+
+// TestResolveClickedStatusBarHintQuit confirms clicking the "Ctrl+Q: Quit"
+// segment returns tea.Quit, using a real zone.Mark/Scan/Get round trip
+// (rather than a bare zoneInBounds check) since the resolver's return value
+// itself -- not just whether it fired -- is what this test cares about.
+func TestResolveClickedStatusBarHintQuit(t *testing.T) {
+	marked := zone.Mark("statusbar-quit", "Ctrl+Q: Quit")
+	zone.Scan(marked)
+
+	var z *zone.ZoneInfo
+	for i := 0; i < 100; i++ {
+		if z = zone.Get("statusbar-quit"); z != nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if z == nil {
+		t.Fatal("expected statusbar-quit to be scanned")
+	}
+
+	a := &App{}
+	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: z.StartX, Y: z.StartY}
+	cmd, ok := a.resolveClickedStatusBarHint(click)
+	if !ok {
+		t.Fatal("expected the click to resolve to the quit segment")
+	}
+	if cmd == nil {
+		t.Fatal("expected a non-nil tea.Quit command")
+	}
+}
+
+// TestResolveClickedStatusBarHintServerSettingsGatedByAdmin confirms a
+// click on the "Ctrl+B: Server Settings" segment is a no-op (ok=true,
+// cmd=nil) for a non-admin -- defense in depth alongside the fact that
+// renderStatusBar only marks this zone at all when the viewer is an admin.
+func TestResolveClickedStatusBarHintServerSettingsGatedByAdmin(t *testing.T) {
+	marked := zone.Mark("statusbar-server-settings", "Ctrl+B: Server Settings")
+	zone.Scan(marked)
+
+	var z *zone.ZoneInfo
+	for i := 0; i < 100; i++ {
+		if z = zone.Get("statusbar-server-settings"); z != nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if z == nil {
+		t.Fatal("expected statusbar-server-settings to be scanned")
+	}
+
+	a := &App{} // no activeConn -> currentUserRoleLevel() returns roleLevelMember
+	click := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: z.StartX, Y: z.StartY}
+	cmd, ok := a.resolveClickedStatusBarHint(click)
+	if !ok {
+		t.Fatal("expected the click to resolve to the server-settings segment")
+	}
+	if cmd != nil {
+		t.Error("expected no command for a non-admin clicking Server Settings")
 	}
 }
