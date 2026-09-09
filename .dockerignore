@@ -1,0 +1,21 @@
+# Mirrors the relevant parts of .gitignore -- none of this belongs in the
+# build context, and some of it (local configs/db files) would leak
+# whatever's on the host machine into the image if it weren't excluded.
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+*.db
+*.db-shm
+*.db-wal
+concord-server.toml
+grapevine-hub.toml
+grapevine-local/
+.git/
+.claude/
+demo/*.gif

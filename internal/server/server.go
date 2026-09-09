@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -62,6 +63,33 @@ func DefaultConfig() *Config {
 	}
 }
 
+// dashboardDisplayMode selects which of the two independent dashboard
+// renderers (if either) Run() uses. Hybrid (raw-ANSI cursor positioning,
+// panels above scrolling log output) and full-screen (a real Bubbletea
+// program, no log pane) are structurally different code paths, not two
+// settings of one bool -- see runWithHybridDashboard/runWithDashboard.
+type dashboardDisplayMode int
+
+const (
+	dashboardDisplayNone dashboardDisplayMode = iota
+	dashboardDisplayHybrid
+	dashboardDisplayFull
+)
+
+// resolveDashboardMode is the pure flag->mode decision cmd/server/main.go
+// uses -- factored out so the hybrid-wins-when-both-set precedence rule is
+// unit-testable without spinning up a real Server/tea.Program.
+func resolveDashboardMode(hybrid, dashboardOnly bool) dashboardDisplayMode {
+	switch {
+	case hybrid:
+		return dashboardDisplayHybrid
+	case dashboardOnly:
+		return dashboardDisplayFull
+	default:
+		return dashboardDisplayNone
+	}
+}
+
 // Server represents the Concord server
 type Server struct {
 	config        *Config
@@ -72,9 +100,9 @@ type Server struct {
 	httpServer    *http.Server
 
 	// Dashboard support
-	dashboardMode bool
-	dashboard     *dashboard.Model
-	stats         *StatsTracker
+	dashboardDisplay dashboardDisplayMode
+	dashboard        *dashboard.Model
+	stats            *StatsTracker
 
 	// Grapevine discovery
 	configPath      string
@@ -147,6 +175,7 @@ func New(config *Config) (*Server, error) {
 	if pluginsDir == "" {
 		pluginsDir = "Plugins"
 	}
+	handlers.SetPluginsDir(pluginsDir)
 	if err := pluginManager.LoadAll(pluginsDir); err != nil {
 		DBLog.Warn("plugin platform failed to load", "error", err)
 	}
@@ -215,9 +244,14 @@ func (s *Server) startGrapevine(mux *http.ServeMux) {
 
 // Run starts the server
 func (s *Server) Run() error {
-	// If dashboard mode is enabled, use hybrid dashboard runner
-	if s.dashboardMode {
+	// Hybrid takes priority if somehow both were set (it's the more capable
+	// of the two -- panels plus live scrolling logs -- so it's the sensible
+	// fallback rather than silently picking full-screen instead).
+	switch s.dashboardDisplay {
+	case dashboardDisplayHybrid:
 		return s.runWithHybridDashboard()
+	case dashboardDisplayFull:
+		return s.runWithDashboard()
 	}
 
 	// Normal mode: Start the hub
@@ -696,17 +730,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SetDashboardMode enables or disables dashboard mode
+// SetBuildInfo records the server binary's own build identity, forwarded
+// to the Handlers that actually construct ReadyPayload.
+func (s *Server) SetBuildInfo(version, gitCommit, buildTime string) {
+	s.handlers.SetBuildInfo(version, gitCommit, buildTime)
+}
+
+// SetDashboardMode enables or disables hybrid dashboard mode (panels above
+// live scrolling logs). Kept as a bool-arg method matching its existing
+// call site in cmd/server/main.go -- see SetFullDashboardMode for the
+// full-screen (no log pane) alternative.
 func (s *Server) SetDashboardMode(enabled bool) {
-	s.dashboardMode = enabled
 	if enabled {
+		s.dashboardDisplay = dashboardDisplayHybrid
 		s.dashboard = dashboard.NewModel()
+	} else if s.dashboardDisplay == dashboardDisplayHybrid {
+		s.dashboardDisplay = dashboardDisplayNone
+	}
+}
+
+// SetFullDashboardMode enables or disables the full-screen dashboard mode
+// (no log pane alongside it) -- see dashboardDisplayMode's doc comment for
+// why this is a separate mode from hybrid, not a variant of it.
+func (s *Server) SetFullDashboardMode(enabled bool) {
+	if enabled {
+		s.dashboardDisplay = dashboardDisplayFull
+		s.dashboard = dashboard.NewModel()
+	} else if s.dashboardDisplay == dashboardDisplayFull {
+		s.dashboardDisplay = dashboardDisplayNone
 	}
 }
 
 // LogDashboardEvent logs an event to the dashboard activity feed
 func (s *Server) LogDashboardEvent(level, component, message string) {
-	if s.dashboardMode && s.dashboard != nil {
+	if s.dashboardDisplay != dashboardDisplayNone && s.dashboard != nil {
 		s.dashboard.AddActivityEvent(level, component, message)
 	}
 }
@@ -754,6 +811,21 @@ func (s *Server) runWithDashboard() error {
 
 	// Start dashboard update loop
 	go s.updateDashboardLoop()
+
+	// Redirect the logger away from stderr for the TUI's lifetime. Without
+	// this, a real log line (e.g. "User authenticated successfully") writes
+	// straight to stderr, which lands on the same alt-screen buffer
+	// tea.WithAltScreen() owns below -- corrupting the dashboard's rendered
+	// boxes until bubbletea's next full repaint (a resize) papers over it.
+	// --dashboard's own flag description promises "no live logs" (unlike
+	// --hybrid, which deliberately keeps them via a scroll region instead)
+	// so discarding here, rather than routing into AddActivityEvent, is the
+	// intended behavior, not a shortcut -- mirrors cmd/hub/main.go's
+	// runWithDashboard, which redirects into its own stats ring buffer for
+	// the same underlying reason, just a different destination.
+	dashboardLevel := Logger.GetLevel()
+	InitLogger(io.Discard, dashboardLevel)
+	defer InitLogger(os.Stderr, dashboardLevel)
 
 	// Run Bubble Tea program (blocks until quit)
 	p := tea.NewProgram(s.dashboard, tea.WithAltScreen())
@@ -1009,8 +1081,10 @@ func (s *Server) updateHybridDashboardLoop(renderer *dashboard.HybridRenderer) {
 
 		renderer.UpdateActivitySummary(lastMsgStr, lastConnStr, totalEvents)
 
-		// Update dashboard in place
-		renderer.UpdateInPlace()
+		// Update dashboard in place -- one Print call for the whole
+		// update (see UpdateInPlace's own doc comment for why that
+		// matters: a separate blank-then-redraw pass visibly flashed).
+		fmt.Print(renderer.UpdateInPlace())
 	}
 }
 

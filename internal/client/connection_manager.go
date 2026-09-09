@@ -60,6 +60,12 @@ type ServerConnection struct {
 	User    *models.User            // Authenticated user
 	Token   string                  // Auth token
 	Servers []*models.Server        // Servers from READY message
+
+	// Connected server's own build identity, from READY -- see Server
+	// Settings > About.
+	ServerVersion   string
+	ServerGitCommit string
+	ServerBuildTime string
 	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
 	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
 	Members  []*MemberDisplay        // Members in current server
@@ -362,6 +368,30 @@ func (cm *ConnectionManager) SendTyping(serverID, channelID uuid.UUID) error {
 	}
 
 	return conn.SendTyping(channelID)
+}
+
+// SendTypingStop mirrors SendTyping's shape for the "stopped without
+// sending" signal -- see OpTypingStop's doc comment in
+// internal/protocol/messages.go.
+func (cm *ConnectionManager) SendTypingStop(serverID, channelID uuid.UUID) error {
+	sc := cm.GetConnection(serverID)
+	if sc == nil {
+		return fmt.Errorf("server %s not found", serverID)
+	}
+
+	if sc.GetState() != StateReady {
+		return nil // Silently ignore if not ready
+	}
+
+	sc.mu.RLock()
+	conn := sc.Connection
+	sc.mu.RUnlock()
+
+	if conn == nil {
+		return nil
+	}
+
+	return conn.SendTypingStop(channelID)
 }
 
 // SendVoiceStateUpdate sends a voice state update (join/leave/mute/deafen) to a server.

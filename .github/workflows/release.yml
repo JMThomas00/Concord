@@ -1,0 +1,183 @@
+name: Release
+
+# Builds real, natively-compiled, voice-included concord-server/-client/-hub
+# binaries for Windows, macOS, and Linux, and attaches them to a GitHub
+# Release. Each OS builds on its own native runner rather than
+# cross-compiling from one host -- this repo's Makefile `dist` target
+# already cross-compiles server+client for 5 platform/arch combos, but only
+# with CGO_ENABLED=0 and the `novoice` build tag, because voice-enabled
+# cross-compilation (malgo/opus CGO deps) genuinely isn't practical from a
+# single host. Native runners sidestep that entirely: each one gets real
+# Cocoa/opus/malgo linking (macOS), real libopus-dev linking (Linux), or
+# the same MSYS2/clang static-link toolchain `make build-windows` already
+# uses locally (Windows) -- see that target's own comments in the Makefile
+# for why clang (not gcc) and why the opus/opusfile libs are linked
+# statically there.
+#
+# Triggers on a version tag push (v*) for a real release, or manually via
+# workflow_dispatch (no tag needed) for testing the matrix itself without
+# cutting a release -- push a test tag or use workflow_dispatch before
+# relying on this for a real release; nothing in this file has been run in
+# CI yet as of when it was written.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # needed to create the Release and upload assets
+
+jobs:
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      # Mirrors build-windows's own local toolchain exactly: clang (not
+      # gcc -- see the Makefile's own comment on the miniaudio.c
+      # compiler-crash bug that motivated this) plus the opus/opusfile
+      # packages, which also provide the static archives the client link
+      # step below needs.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-opus
+            mingw-w64-x86_64-opusfile
+            mingw-w64-x86_64-pkg-config
+            make
+
+      - name: Build server, client (voice), hub
+        run: |
+          make build-windows VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Verify the client has no opus/opusfile/ogg DLL dependency
+        run: |
+          objdump -p build/concord-client.exe | grep -i "DLL Name"
+          if objdump -p build/concord-client.exe | grep -qiE "libopus|libopusfile|libogg"; then
+            echo "::error::concord-client.exe still depends on an opus/opusfile/ogg DLL -- static link did not take"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/concord-server.exe build/concord-client.exe build/concord-hub.exe dist/
+          cd dist && 7z a ../concord-windows-amd64.zip concord-server.exe concord-client.exe concord-hub.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: concord-windows-amd64
+          path: concord-windows-amd64.zip
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      # A native build, not a cross-toolchain -- gets real Cocoa (for
+      # sqweek/dialog's Save As picker) and opus/malgo linking for free.
+      - name: Install voice/dialog dependencies
+        run: brew install opus opusfile pkg-config
+
+      - name: Build server, client (voice), hub
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+          LDFLAGS="-X main.Version=$VERSION -X main.GitCommit=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME"
+          mkdir -p build
+          go build -ldflags "$LDFLAGS" -o build/concord-server ./cmd/server
+          go build -ldflags "$LDFLAGS" -o build/concord-client ./cmd/client
+          go build -ldflags "$LDFLAGS" -o build/concord-hub ./cmd/hub
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/concord-server build/concord-client build/concord-hub dist/
+          tar -C dist -czf concord-macos-$(uname -m).tar.gz concord-server concord-client concord-hub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: concord-macos-${{ runner.arch }}
+          path: concord-macos-*.tar.gz
+
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      # malgo's #cgo linux LDFLAGS only pull in -ldl -lpthread -lm (no
+      # separate ALSA/PulseAudio dev package needed beyond libopus-dev/
+      # libopusfile-dev) -- confirmed by reading malgo's own build tags,
+      # but genuinely verify against a real CI run rather than trusting
+      # that reading alone; add an ALSA/Pulse -dev package here if this
+      # step ever fails on a missing audio header.
+      - name: Install voice dependencies
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev pkg-config
+
+      - name: Build server, client (voice), hub
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+          LDFLAGS="-X main.Version=$VERSION -X main.GitCommit=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME"
+          mkdir -p build
+          go build -ldflags "$LDFLAGS" -o build/concord-server ./cmd/server
+          go build -ldflags "$LDFLAGS" -o build/concord-client ./cmd/client
+          go build -ldflags "$LDFLAGS" -o build/concord-hub ./cmd/hub
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/concord-server build/concord-client build/concord-hub dist/
+          tar -C dist -czf concord-linux-amd64.tar.gz concord-server concord-client concord-hub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: concord-linux-amd64
+          path: concord-linux-amd64.tar.gz
+
+  release:
+    name: Publish Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          draft: true # review before publishing -- see this file's own top comment about it being unverified
+          generate_release_notes: true

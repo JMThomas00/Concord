@@ -537,6 +537,32 @@ func TestUpdateChannel(t *testing.T) {
 	testutil.AssertEqual(t, "New topic", retrieved.Topic)
 }
 
+// TestUpdateChannelType is a regression test for a reported (but, per direct
+// code review, unreproducible) bug: "editing a text-only channel into a
+// voice channel doesn't stick, reverts after exiting the client." The full
+// chain (client form -> protocol.ChannelUpdateRequest.Type -> server
+// HandleUpdateChannel -> here) was read end-to-end and found intact; this
+// proves the one layer an interactive TUI session can't easily exercise
+// from this environment (no real TTY) -- that the `type` column is actually
+// part of the UPDATE statement and survives a fresh read-back, not just an
+// in-memory mutation of the caller's own struct.
+func TestUpdateChannelType(t *testing.T) {
+	db, cleanup := createTestDB(t)
+	defer cleanup()
+
+	fixtures, err := seedTestData(db)
+	testutil.AssertNoError(t, err)
+	testutil.AssertEqual(t, models.ChannelTypeText, fixtures.TextChannel.Type)
+
+	fixtures.TextChannel.Type = models.ChannelTypeVoice
+	err = db.UpdateChannel(fixtures.TextChannel)
+	testutil.AssertNoError(t, err)
+
+	retrieved, err := db.GetChannelByID(fixtures.TextChannel.ID)
+	testutil.AssertNoError(t, err)
+	testutil.AssertEqual(t, models.ChannelTypeVoice, retrieved.Type)
+}
+
 func TestMoveChannelToCategory(t *testing.T) {
 	db, cleanup := createTestDB(t)
 	defer cleanup()

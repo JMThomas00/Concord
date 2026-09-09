@@ -184,6 +184,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleTypingStart(c, msg)
 		})
 
+	case protocol.OpTypingStop:
+		c.requireAuth(func() {
+			c.handlers.HandleTypingStop(c, msg)
+		})
+
 	case protocol.OpPresenceUpdate:
 		c.requireAuth(func() {
 			c.handlers.HandlePresenceUpdate(c, msg)
@@ -384,6 +389,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleSetPluginConfig(c, msg)
 		})
 
+	case protocol.OpPluginInstall:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginInstall(c, msg)
+		})
+
 	case protocol.OpUpdateChannelOverwrite:
 		c.requireAuth(func() {
 			c.handlers.HandleUpdateChannelOverwrite(c, msg)
@@ -470,6 +480,9 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		User:               user,
 		Servers:            servers,
 		PluginChannelKinds: c.handlers.PluginChannelKindInfos(),
+		ServerVersion:      c.handlers.version,
+		ServerGitCommit:    c.handlers.gitCommit,
+		ServerBuildTime:    c.handlers.buildTime,
 	}
 
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
@@ -577,8 +590,11 @@ func (c *Client) identifyAsPlugin(token string) {
 	}
 
 	readyPayload := &protocol.ReadyPayload{
-		SessionID: c.SessionID,
-		User:      user,
+		SessionID:       c.SessionID,
+		User:            user,
+		ServerVersion:   c.handlers.version,
+		ServerGitCommit: c.handlers.gitCommit,
+		ServerBuildTime: c.handlers.buildTime,
 	}
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
 	if err != nil {

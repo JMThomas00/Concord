@@ -444,60 +444,13 @@ func (ch *CommandHandler) handleLockChannel(lock bool) (string, error) {
 	return "Channel unlocked. All users can post.", nil
 }
 
+// handleHelp opens the interactive /help fuzzy finder (help_finder.go) --
+// mirrors handleTheme's own "no args opens an interactive browser" shape.
+// Any args are joined back into the finder's initial query, so
+// "/help mute" opens the finder pre-filtered to mute-related commands.
 func (ch *CommandHandler) handleHelp(args []string) (string, error) {
-	level := ch.app.currentUserRoleLevel()
-
-	// All users can whisper and change theme
-	lines := []string{
-		"Available Commands:",
-		"/whisper @user <msg>       - Send an ephemeral DM (alias: /w)",
-		"/links [N]                 - Show links from recent N messages (default: 20)",
-		"/theme [name]              - Open theme browser, or apply theme directly",
-		"/status <message>          - Set your status (use /status clear to remove)",
-		"/nick <nickname>           - Set your own nickname on this server (use clear to remove)",
-		"/attach <path> [caption]   - Share a local file peer-to-peer (you must stay online for others to download it)",
-		"/download <attachment-id>  - Download a file someone else attached",
-		"/mute                      - Mute current channel (suppress unread badges)",
-		"/unmute                    - Unmute current channel",
-		"/join-voice [#channel]     - Join a voice channel",
-		"/leave-voice               - Leave the current voice channel",
-	}
-
-	if level >= roleLevelMod {
-		lines = append(lines,
-			"/create-channel <name>     - Create a new text channel",
-			"/create-group <name>       - Create a new channel group",
-			"/delete-channel            - Delete the current channel",
-			"/delete-group <name>       - Delete an empty channel group",
-			"/rename-channel <name>     - Rename the current channel",
-			"/move-channel <group>      - Move current channel to a channel group",
-			"/lock                      - Lock current channel (only mods/admins can post)",
-			"/unlock                    - Unlock current channel (all users can post)",
-			"/mute @user [minutes]      - Server-mute a member",
-			"/unmute @user              - Server-unmute a member",
-			"/mute-voice @user          - Server-mute a user in voice",
-			"/deafen-voice @user        - Server-deafen a user in voice",
-			"/unmute-voice @user        - Lift voice mute/deafen",
-			"/kick @user [reason]       - Kick a member from the server",
-			"/timeout @user <minutes>   - Temporarily ban a member",
-			"/pin [N]                   - Pin the Nth most recent message (default: 1)",
-			"/unpin [N]                 - Unpin the Nth pinned message (default: 1)",
-		)
-	}
-
-	if level >= roleLevelAdmin {
-		lines = append(lines,
-			"/roles                     - List all available roles on this server",
-			"/role assign|remove @user <role> - Manage member roles",
-			"/create-role <name> [preset] - Create a new role (presets: text, moderator, admin)",
-			"/title @user <title>       - Assign a custom title to a member (use clear to remove)",
-			"/ban @user [reason]        - Permanently ban a member",
-			"/unban @user               - Lift a ban from a member",
-			"/move-voice @user <channel> - Force-move user to a voice channel",
-		)
-	}
-
-	return strings.Join(lines, "\n"), nil
+	ch.app.openHelpFinder(strings.Join(args, " "))
+	return "", nil
 }
 
 // resolveMember finds a MemberDisplay by @username (strips leading @).

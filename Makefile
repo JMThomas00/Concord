@@ -119,7 +119,12 @@ install: build
 # Build distribution packages for all platforms (novoice — CGO cross-compilation
 # across platforms isn't practical from one host; this is a cross-compile
 # limitation, not a product decision). Use build-windows on Windows for the real,
-# voice-included concord-client.exe.
+# voice-included concord-client.exe. This target stays CGO-disabled/novoice-only
+# by design — it's the quick local "get something running on another OS to test
+# protocol-level stuff" path; .github/workflows/release.yml's native per-OS CI
+# matrix is the actual path to real voice-included cross-platform releases.
+# Includes the hub — a past version of this target omitted it entirely despite
+# the hub being just as CGO-free/cross-compile-clean as the server.
 dist:
 	@echo "Building distribution packages (novoice — use build-windows on Windows for a voice-included client)..."
 	@mkdir -p $(DIST_DIR)
@@ -128,6 +133,8 @@ dist:
 		$(GOBUILD) $(LDFLAGS) -o $(DIST_DIR)/$(SERVER_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/server; \
 		CGO_ENABLED=0 GOOS=$${platform%/*} GOARCH=$${platform#*/} \
 		$(GOBUILD) -tags novoice $(LDFLAGS) -o $(DIST_DIR)/$(CLIENT_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/client; \
+		CGO_ENABLED=0 GOOS=$${platform%/*} GOARCH=$${platform#*/} \
+		$(GOBUILD) $(LDFLAGS) -o $(DIST_DIR)/$(HUB_BINARY)-$${platform%/*}-$${platform#*/}$(if $(findstring windows,$${platform%/*}),.exe,) ./cmd/hub; \
 		echo "Built for $${platform}"; \
 	done
 
@@ -147,13 +154,47 @@ dist:
 # failure rate. Not yet filed upstream. Full investigation: vault note
 # "Concord - Voice Client Build Toolchain Bug". Revisit CC=clang once a GCC
 # point release fixes this.
+# Voice deps are linked STATICALLY so concord-client.exe doesn't depend on
+# libogg-0.dll/libopus-0.dll/libopusfile-0.dll being present alongside it --
+# confirmed 2026-09-08 that without this, only malgo's bundled miniaudio.c
+# portion was actually static; opus/opusfile were always linked dynamically
+# against MSYS2's import libraries, making concord-client.exe not a true
+# single-file executable despite everything else about it being one.
+# Requires MSYS2's static archives (`pacman -S mingw-w64-x86_64-opus
+# mingw-w64-x86_64-opusfile` already provides these alongside the .dlls,
+# no extra package needed).
+#
+# `-Wl,-Bstatic ... -Wl,-Bdynamic` around just the opus/opusfile/ogg libs
+# is required, not optional -- `pkg-config --static --libs opus opusfile`
+# alone (the seemingly-obvious approach) does NOT force static resolution
+# on MinGW; it only adds the extra transitive libs (-logg) that dynamic
+# linking normally hides. Without the explicit -Bstatic/-Bdynamic wrap,
+# MinGW's linker still prefers each lib's .dll.a import archive over its
+# .a static archive regardless of pkg-config's --static flag, silently
+# reproducing the exact DLL dependency this is meant to remove. Verified
+# 2026-09-08 via objdump -p on the resulting .exe (confirms KERNEL32.dll/
+# msvcrt.dll only, no libopus/libopusfile/libogg) and by launching it with
+# only C:\Windows\System32 on PATH -- runs fine with zero MSYS2 DLLs
+# reachable at all. -lm stays outside the static wrap (libm's relevant
+# symbols are effectively part of msvcrt on Windows either way).
+#
+# CGO_LDFLAGS hardcodes the MSYS2 mingw64 lib path rather than shelling
+# out to pkg-config, so it doesn't depend on the PATH-prefix-vs-command-
+# substitution evaluation-order pitfall that affects Make/shell recipes
+# (a bare $(shell pkg-config ...) at Make-parse time, or an inline shell
+# command substitution on the same line as a PATH= prefix, both evaluate
+# before that PATH override is actually in effect for the shell doing the
+# resolving) -- simpler to hardcode the one path than work around that.
 build-windows:
 	@echo "Building for Windows (server, client with voice, hub)..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(SERVER_BINARY).exe ./cmd/server
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(HUB_BINARY).exe ./cmd/hub
-	PATH="/c/msys64/mingw64/bin:$(PATH)" CC=clang CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
+	PATH="/c/msys64/mingw64/bin:$(PATH)" CC=clang CGO_ENABLED=1 \
+		CGO_LDFLAGS="-LC:/msys64/mingw64/lib -Wl,-Bstatic -lopusfile -logg -lopus -Wl,-Bdynamic -lm" \
+		$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY).exe ./cmd/client
 	@echo "Build complete: $(BUILD_DIR)/$(SERVER_BINARY).exe $(BUILD_DIR)/$(CLIENT_BINARY).exe $(BUILD_DIR)/$(HUB_BINARY).exe"
+	@echo "Verify with: objdump -p $(BUILD_DIR)/$(CLIENT_BINARY).exe | grep 'DLL Name' (or move it to a dir with no MSYS2 DLLs on PATH and launch it) -- should show no libogg/libopus/libopusfile dependency."
 
 # Fallback only — no MSYS2/GCC available (e.g. CI, or a dev machine without the
 # toolchain installed). Produces a CGO-free, voice-STRIPPED client. Deliberately

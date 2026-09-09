@@ -72,6 +72,22 @@ const (
 	// relayed between the two clients involved.
 	OpFileTransferSignal OpCode = 59
 
+	// OpTypingStop (60): C→S. Sent when the composer empties without
+	// sending (backspaced to nothing, cleared, or the user switched away)
+	// so peers stop seeing "X is typing..." immediately instead of waiting
+	// out the timeout. Reuses TypingStartPayload's shape as-is -- sending a
+	// message already triggers the equivalent clear server-side via a
+	// direct StopTyping call, this covers the "stopped without sending"
+	// case that had no signal at all before.
+	OpTypingStop OpCode = 60
+
+	// OpPluginInstall (61): C→S, admin-only (PermissionManageServer). Fetch,
+	// checksum-verify, and place a new plugin from a release archive URL --
+	// the first slice of the admin install/update flow (see
+	// PluginInstallRequest, internal/plugins/install.go). Reuses
+	// PluginConfigListPayload for the response, same as OpPluginConfigGet/Set.
+	OpPluginInstall OpCode = 61
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -455,6 +471,13 @@ type ReadyPayload struct {
 	// provide, so the client can render/create plugin channels generically
 	// without any plugin-specific code compiled in.
 	PluginChannelKinds []PluginChannelKindInfo `json:"plugin_channel_kinds,omitempty"`
+	// ServerVersion/ServerGitCommit/ServerBuildTime report the connected
+	// server's own build identity, for Server Settings > About -- piggybacks
+	// on Ready since it's already sent once per connection, no new opcode
+	// needed.
+	ServerVersion   string `json:"server_version,omitempty"`
+	ServerGitCommit string `json:"server_git_commit,omitempty"`
+	ServerBuildTime string `json:"server_build_time,omitempty"`
 }
 
 // PluginChannelKindInfo is the client-facing description of one channel kind
@@ -721,6 +744,14 @@ type PluginInfo struct {
 	// already is the whole identity (e.g. Tukan).
 	Product      string        `json:"product,omitempty"`
 	Version      string        `json:"version"`
+	// SourceURL, when the manifest declares one, is shown as a reference
+	// link in Settings > Plugins so an admin knows where to look for a
+	// newer release -- there's no live version-check or auto-update-prompt
+	// yet (see item 10/13's 7b scoping note in the vault to-do); manually
+	// re-running the install flow against a new [plugin].id is the only
+	// supported update path today (InstallFromURL refuses to overwrite an
+	// existing folder by design).
+	SourceURL    string        `json:"source_url,omitempty"`
 	Enabled      bool          `json:"enabled"`
 	Status       string        `json:"status"`
 	LastError    string        `json:"last_error,omitempty"`
@@ -738,6 +769,19 @@ type PluginConfigListPayload struct {
 // PermissionManageServer, same as the rest of Server Settings.
 type PluginConfigGetRequest struct {
 	ServerID uuid.UUID `json:"server_id"`
+}
+
+// PluginInstallRequest is sent by a server admin (Settings > Plugins >
+// install new plugin) to have the server fetch, checksum-verify, and place
+// a new plugin from a release archive URL. See OpPluginInstall and
+// internal/plugins/install.go's InstallFromURL for what this covers and
+// what it explicitly doesn't (no update-in-place, no live pickup without a
+// restart -- first slice only).
+type PluginInstallRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	PluginID  string    `json:"plugin_id"`  // becomes the new plugin's folder name
+	SourceURL string    `json:"source_url"` // a release archive (.zip) URL
+	SHA256    string    `json:"sha256"`     // expected hex-encoded checksum of that archive
 }
 
 // PluginConfigSetRequest is sent by clients (server admins) to update a

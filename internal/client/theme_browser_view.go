@@ -73,6 +73,7 @@ type SettingsState struct {
 	HelpScrollOffset  int      // current scroll position in lines
 	HelpRenderedLines []string // cached glamour output lines; nil = not yet rendered
 	HelpRenderWidth   int      // content width used for the cached render
+	HelpRenderTheme   string   // theme name used for the cached render -- glamour styling is theme-derived, so a theme switch must invalidate the cache too, not just a width change
 
 	// Server sound override sub-page state (Manage Servers → S key)
 	ServerSoundPageOpen  bool       // server sound override sub-page open

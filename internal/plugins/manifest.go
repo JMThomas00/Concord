@@ -74,6 +74,12 @@ type PluginDef struct {
 	Author            string `toml:"author"`
 	Description       string `toml:"description"`
 	MinConcordVersion string `toml:"min_concord_version"`
+	// SourceURL, if declared, is a release-archive URL an admin can install
+	// or update this plugin from via Settings > Plugins -- see
+	// InstallFromURL (install.go). Purely informational to Concord itself
+	// (no auto-update polling); a plugin without one can still be
+	// installed by an admin supplying a URL directly at install time.
+	SourceURL string `toml:"source_url"`
 }
 
 // Manifest is the parsed, validated contents of a plugin.toml file.

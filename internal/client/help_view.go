@@ -1,10 +1,12 @@
 package client
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/concord-chat/concord/internal/themes"
 	zone "github.com/lrstanley/bubblezone"
 )
 
@@ -54,49 +56,41 @@ Concord supports any number of servers simultaneously. Each server icon in the l
 
 Concord uses a four-panel layout. **Tab** cycles focus between panels:
 
-| Panel | Contents |
-|-------|----------|
-| Server List | Server icons column (left) |
-| Channel List | Channels and categories |
-| Chat | Message viewport and input |
-| Members | Member list (right) |
+- **Server List** — Server icons column (left)
+- **Channel List** — Channels and categories
+- **Chat** — Message viewport and input
+- **Members** — Member list (right)
 
 The focused panel is highlighted with a purple border. Start typing in the **Chat** panel — focus moves to the input box automatically when you press a printable key.
 
 ### Keyboard Shortcuts — Global
 
-| Key | Action |
-|-----|--------|
-| ` + "`Ctrl+Q`" + ` | Quit |
-| ` + "`Ctrl+S`" + ` | Open Settings |
-| ` + "`Ctrl+B`" + ` | Open Server Management (admin) |
-| ` + "`Ctrl+G`" + ` | Open Grapevine Hub Browser (login / add-server screens) |
-| ` + "`Ctrl+T`" + ` | Open Theme Browser |
-| ` + "`[`" + ` | Toggle server list panel (collapse / expand) |
-| ` + "`]`" + ` | Toggle members list panel (collapse / expand) |
-| ` + "`Tab`" + ` | Switch focus between panels |
-| ` + "`Esc`" + ` | Close overlay / cancel / go back |
+- ` + "`Ctrl+Q`" + ` — Quit
+- ` + "`Ctrl+S`" + ` — Open Settings
+- ` + "`Ctrl+B`" + ` — Open Server Management (admin)
+- ` + "`Ctrl+G`" + ` — Open Grapevine Hub Browser (login / add-server screens)
+- ` + "`Ctrl+T`" + ` — Open Theme Browser
+- ` + "`[`" + ` — Toggle server list panel (collapse / expand)
+- ` + "`]`" + ` — Toggle members list panel (collapse / expand)
+- ` + "`Tab`" + ` — Switch focus between panels
+- ` + "`Esc`" + ` — Close overlay / cancel / go back
 
 ### Keyboard Shortcuts — Channel List
 
-| Key | Action |
-|-----|--------|
-| ` + "`↑ / ↓`" + ` | Navigate channels |
-| ` + "`Enter`" + ` | Join selected channel (or join / leave voice) |
-| ` + "`← / → or H / L`" + ` | Collapse / expand a category |
-| ` + "`Shift+↑ / Shift+↓`" + ` | Reorder channel within its category |
+- ` + "`↑ / ↓`" + ` — Navigate channels
+- ` + "`Enter`" + ` — Join selected channel (or join / leave voice)
+- ` + "`← / → or H / L`" + ` — Collapse / expand a category
+- ` + "`Shift+↑ / Shift+↓`" + ` — Reorder channel within its category
 
 ### Keyboard Shortcuts — Chat
 
-| Key | Action |
-|-----|--------|
-| ` + "`PgUp / PgDn`" + ` | Scroll message history |
-| ` + "`Alt+M`" + ` | Enter message navigation mode |
-| ` + "`Ctrl+J or Ctrl+Enter`" + ` | Insert a newline in the input box |
-| ` + "`@`" + ` | Open @mention autocomplete popup |
-| ` + "`↑ / ↓`" + ` in popup | Navigate mention suggestions |
-| ` + "`Enter or Tab`" + ` in popup | Accept selected mention |
-| ` + "`Esc`" + ` in popup | Dismiss autocomplete |
+- ` + "`PgUp / PgDn`" + ` — Scroll message history
+- ` + "`Alt+M`" + ` — Enter message navigation mode
+- ` + "`Ctrl+J or Ctrl+Enter`" + ` — Insert a newline in the input box
+- ` + "`@`" + ` — Open @mention autocomplete popup
+- ` + "`↑ / ↓`" + ` in popup — Navigate mention suggestions
+- ` + "`Enter or Tab`" + ` in popup — Accept selected mention
+- ` + "`Esc`" + ` in popup — Dismiss autocomplete
 
 ### Message Navigation Mode (Alt+M)
 
@@ -108,17 +102,15 @@ Press **Alt+M** from the chat panel to enter message navigation:
 
 ### Keyboard Shortcuts — Members Panel
 
-| Key | Action |
-|-----|--------|
-| ` + "`↑ / ↓`" + ` | Navigate member list |
-| ` + "`Enter`" + ` | Open context menu for selected member |
-| ` + "`W`" + ` | Whisper (ephemeral DM) |
-| ` + "`M`" + ` | Mute / unmute (requires permission) |
-| ` + "`K`" + ` | Kick (requires permission) |
-| ` + "`B`" + ` | Ban (requires permission) |
-| ` + "`R / E`" + ` | Assign / remove role (requires permission) |
-| ` + "`V`" + ` | Adjust per-user volume (voice only) |
-| ` + "`X / D`" + ` | Voice mute / deafen (requires permission) |
+- ` + "`↑ / ↓`" + ` — Navigate member list
+- ` + "`Enter`" + ` — Open context menu for selected member
+- ` + "`W`" + ` — Whisper (ephemeral DM)
+- ` + "`M`" + ` — Mute / unmute (requires permission)
+- ` + "`K`" + ` — Kick (requires permission)
+- ` + "`B`" + ` — Ban (requires permission)
+- ` + "`R / E`" + ` — Assign / remove role (requires permission)
+- ` + "`V`" + ` — Adjust per-user volume (voice only)
+- ` + "`X / D`" + ` — Voice mute / deafen (requires permission)
 
 ---
 
@@ -132,47 +124,41 @@ Type in the input box at the bottom of the chat panel and press **Enter** to sen
 
 Type ` + "`/`" + ` followed by a command name. Available to all users:
 
-| Command | Description |
-|---------|-------------|
-| ` + "`/help`" + ` | Show available commands |
-| ` + "`/whisper @user <msg>`" + ` | Send an ephemeral DM (alias: /w) |
-| ` + "`/links [N]`" + ` | List URLs from the last N messages (default: 20) |
-| ` + "`/theme [name]`" + ` | Open theme browser or apply a theme directly |
-| ` + "`/status <message>`" + ` | Set your status (` + "`/status clear`" + ` to remove) |
-| ` + "`/mute`" + ` | Mute the current channel (hide unread badges) |
-| ` + "`/unmute`" + ` | Unmute the current channel |
-| ` + "`/join-voice [#channel]`" + ` | Join a voice channel (or the currently selected one) |
-| ` + "`/leave-voice`" + ` | Leave the current voice channel |
+- ` + "`/help [query]`" + ` — Open the command finder (type to narrow by name or description, ↑/↓ to select, Enter to insert into the message box)
+- ` + "`/whisper @user <msg>`" + ` — Send an ephemeral DM (alias: /w)
+- ` + "`/links [N]`" + ` — List URLs from the last N messages (default: 20)
+- ` + "`/theme [name]`" + ` — Open theme browser or apply a theme directly
+- ` + "`/status <message>`" + ` — Set your status (` + "`/status clear`" + ` to remove)
+- ` + "`/mute`" + ` — Mute the current channel (hide unread badges)
+- ` + "`/unmute`" + ` — Unmute the current channel
+- ` + "`/join-voice [#channel]`" + ` — Join a voice channel (or the currently selected one)
+- ` + "`/leave-voice`" + ` — Leave the current voice channel
 
 Moderator commands:
 
-| Command | Description |
-|---------|-------------|
-| ` + "`/create-channel <name>`" + ` | Create a text channel |
-| ` + "`/create-group <name>`" + ` | Create a channel category |
-| ` + "`/delete-channel`" + ` | Delete the current channel |
-| ` + "`/rename-channel <name>`" + ` | Rename the current channel |
-| ` + "`/move-channel <group>`" + ` | Move current channel to a category |
-| ` + "`/lock / /unlock`" + ` | Restrict posting to moderators only |
-| ` + "`/mute @user [minutes]`" + ` | Server-mute a member |
-| ` + "`/kick @user [reason]`" + ` | Kick a member |
-| ` + "`/timeout @user <minutes>`" + ` | Temporarily ban a member |
-| ` + "`/pin [N]`" + ` | Pin the Nth most recent message |
-| ` + "`/mute-voice @user`" + ` | Server-mute a user in voice |
-| ` + "`/deafen-voice @user`" + ` | Server-deafen a user in voice |
-| ` + "`/unmute-voice @user`" + ` | Lift voice mute/deafen from a user |
+- ` + "`/create-channel <name>`" + ` — Create a text channel
+- ` + "`/create-group <name>`" + ` — Create a channel category
+- ` + "`/delete-channel`" + ` — Delete the current channel
+- ` + "`/rename-channel <name>`" + ` — Rename the current channel
+- ` + "`/move-channel <group>`" + ` — Move current channel to a category
+- ` + "`/lock / /unlock`" + ` — Restrict posting to moderators only
+- ` + "`/mute @user [minutes]`" + ` — Server-mute a member
+- ` + "`/kick @user [reason]`" + ` — Kick a member
+- ` + "`/timeout @user <minutes>`" + ` — Temporarily ban a member
+- ` + "`/pin [N]`" + ` — Pin the Nth most recent message
+- ` + "`/mute-voice @user`" + ` — Server-mute a user in voice
+- ` + "`/deafen-voice @user`" + ` — Server-deafen a user in voice
+- ` + "`/unmute-voice @user`" + ` — Lift voice mute/deafen from a user
 
 Admin commands:
 
-| Command | Description |
-|---------|-------------|
-| ` + "`/role assign|remove @user <role>`" + ` | Manage member roles |
-| ` + "`/create-role <name> [preset]`" + ` | Create a role (presets: text, moderator, admin) |
-| ` + "`/roles`" + ` | List all roles on this server |
-| ` + "`/title @user <title>`" + ` | Set a display title (` + "`/title @user clear`" + ` to remove) |
-| ` + "`/ban @user [reason]`" + ` | Permanently ban a member |
-| ` + "`/unban @user`" + ` | Lift a ban |
-| ` + "`/move-voice @user <channel>`" + ` | Force-move a user to a voice channel |
+- ` + "`/role assign|remove @user <role>`" + ` — Manage member roles
+- ` + "`/create-role <name> [preset]`" + ` — Create a role (presets: text, moderator, admin)
+- ` + "`/roles`" + ` — List all roles on this server
+- ` + "`/title @user <title>`" + ` — Set a display title (` + "`/title @user clear`" + ` to remove)
+- ` + "`/ban @user [reason]`" + ` — Permanently ban a member
+- ` + "`/unban @user`" + ` — Lift a ban
+- ` + "`/move-voice @user <channel>`" + ` — Force-move a user to a voice channel
 
 ### @Mentions
 
@@ -200,11 +186,9 @@ Voice members appear at the top of the Members panel grouped by channel, separat
 
 ### Voice Controls
 
-| Key | Action |
-|-----|--------|
-| ` + "`Ctrl+M`" + ` | Toggle self-mute |
-| ` + "`Ctrl+D`" + ` | Toggle self-deafen |
-| ` + "`Ctrl+Space`" + ` (default) | Push-to-Talk (hold to transmit in PTT mode) |
+- ` + "`Ctrl+M`" + ` — Toggle self-mute
+- ` + "`Ctrl+D`" + ` — Toggle self-deafen
+- ` + "`Ctrl+Space`" + ` (default) — Push-to-Talk (hold to transmit in PTT mode)
 
 ### Voice Activity Detection vs Push-to-Talk
 
@@ -216,12 +200,10 @@ Switch between modes in **Settings → Audio → PTT Mode**. The PTT key is conf
 
 Concord encodes voice using **Opus** (libopus). Four presets are available in **Settings → Audio → Codec Preset**:
 
-| Preset | Sample Rate | Bitrate | Best For |
-|--------|------------|---------|----------|
-| Low | 8 kHz | 8 kbps | Very low bandwidth |
-| Medium | 16 kHz | 32 kbps | Standard voice (default) |
-| High | 24 kHz | 64 kbps | High clarity |
-| Ultra | 48 kHz | 128 kbps | Near-transparent quality |
+- **Low** — 8 kHz, 8 kbps — very low bandwidth
+- **Medium** — 16 kHz, 32 kbps — standard voice (default)
+- **High** — 24 kHz, 64 kbps — high clarity
+- **Ultra** — 48 kHz, 128 kbps — near-transparent quality
 
 Changing the preset hot-reloads the bitrate without reconnecting. A sample rate change takes effect on the next voice session.
 
@@ -241,11 +223,9 @@ These can be hidden individually in **Settings → Display → Members Panel**.
 
 ### Channel Types
 
-| Type | Prefix | Description |
-|------|--------|-------------|
-| Text | ` + "`#`" + ` | Standard chat channel |
-| Voice | ` + "`♪`" + ` | Real-time audio channel |
-| Category | ` + "`▼`" + ` | Folder grouping channels |
+- **Text** (` + "`#`" + `) — Standard chat channel
+- **Voice** (` + "`♪`" + `) — Real-time audio channel
+- **Category** (` + "`▼`" + `) — Folder grouping channels
 
 ### Creating Channels & Categories
 
@@ -267,12 +247,10 @@ Roles define what members can do. Each role has a **colour**, **display order**,
 
 ### Built-in Permission Levels
 
-| Level | Can Do |
-|-------|--------|
-| Member | Read and send messages, use voice |
-| Moderator | + mute, kick, timeout, pin, manage channels |
-| Admin | + ban, manage roles, server configuration |
-| Owner | Full control, cannot be moderated |
+- **Member** — Read and send messages, use voice
+- **Moderator** — + mute, kick, timeout, pin, manage channels
+- **Admin** — + ban, manage roles, server configuration
+- **Owner** — Full control, cannot be moderated
 
 ### The Admin Bypass Rule
 
@@ -360,18 +338,16 @@ CGO_ENABLED=0 go build -tags novoice -o build/concord-client-novoice.exe ./cmd/c
 
 Open **Settings → Manage Servers** and press **B** to browse servers via a hub. Before you have any servers (login screen or the Add Server dialog), **Ctrl+G** opens it directly.
 
-| Key | Action |
-|-----|--------|
-| ` + "`↑/↓ or j/k`" + ` | Navigate the server list |
-| ` + "`Enter`" + ` | Open server details |
-| ` + "`A`" + ` (in details) | Join — adds the server and opens login |
-| ` + "`/`" + ` | Search by name, description, or tags |
-| ` + "`Tab / Shift+Tab`" + ` | Cycle category filter |
-| ` + "`H / L`" + ` | Switch between your hubs |
-| ` + "`R`" + ` | Refresh the listing |
-| ` + "`+`" + ` | Add a hub by URL (pick discovered peer hubs with ` + "`↑/↓`" + `) |
-| ` + "`X`" + ` | Remove the selected hub (removing the last one restores the default) |
-| ` + "`Esc`" + ` | Back / close |
+- ` + "`↑/↓ or j/k`" + ` — Navigate the server list
+- ` + "`Enter`" + ` — Open server details
+- ` + "`A`" + ` (in details) — Join — adds the server and opens login
+- ` + "`/`" + ` — Search by name, description, or tags
+- ` + "`Tab / Shift+Tab`" + ` — Cycle category filter
+- ` + "`H / L`" + ` — Switch between your hubs
+- ` + "`R`" + ` — Refresh the listing
+- ` + "`+`" + ` — Add a hub by URL (pick discovered peer hubs with ` + "`↑/↓`" + `)
+- ` + "`X`" + ` — Remove the selected hub (removing the last one restores the default)
+- ` + "`Esc`" + ` — Back / close
 
 Servers listed by federated peer hubs appear under a ` + "`── via <hub> ──`" + ` header. Added hubs are saved to your client config.
 
@@ -422,48 +398,42 @@ Over 40 themes are embedded, including **Dracula**, **Alucard Dark/Light**, **No
 
 ### Notifications
 
-| Field | Description |
-|-------|-------------|
-| Sounds Muted | Suppress all notification sounds |
-| Mentions Only | Only play sounds for @mentions directed at you |
-| Bell on Mention | Fire a terminal bell (` + "`\\a`" + `) on each @mention |
-| Mention Sound | Sound for @mention alerts |
-| Message Sound | Sound for all other messages |
-| Mute Manager | Per-server and per-channel mute overrides |
+- **Sounds Muted** — Suppress all notification sounds
+- **Mentions Only** — Only play sounds for @mentions directed at you
+- **Bell on Mention** — Fire a terminal bell (` + "`\\a`" + `) on each @mention
+- **Mention Sound** — Sound for @mention alerts
+- **Message Sound** — Sound for all other messages
+- **Mute Manager** — Per-server and per-channel mute overrides
 
 ### Display
 
-| Field | Description |
-|-------|-------------|
-| Timestamp Format | 12-hour or 24-hour clock |
-| Timestamp Style | Absolute (date+time) or Relative (e.g. "Today at 15:04") |
-| Message Density | Compact / Normal / Spacious |
-| Show Avatars | Coloured circle before each username |
-| Date Separators | ` + "`──── Today ────`" + ` dividers between days |
-| Message Grouping Gap | Minutes before a new header is shown for the same sender |
-| Show Members Panel | Toggle the right-hand members column |
-| Server List Panel | Expand or collapse the left server icon column |
-| Members Panel | Expand or collapse the right members column |
-| Voice Level Bar | Show/hide the ` + "`↑[████]`" + ` VU meter in Members |
-| Connection Quality | Show/hide the ` + "`◆◆◆◇`" + ` quality bar in Members |
-| Panel Animations | Enable/disable slide animations for Settings and Server Management panels |
-| Typing Animation | Style of the typing indicator spinner (8 options) |
+- **Timestamp Format** — 12-hour or 24-hour clock
+- **Timestamp Style** — Absolute (date+time) or Relative (e.g. "Today at 15:04")
+- **Message Density** — Compact / Normal / Spacious
+- **Show Avatars** — Coloured circle before each username
+- **Date Separators** — ` + "`──── Today ────`" + ` dividers between days
+- **Message Grouping Gap** — Minutes before a new header is shown for the same sender
+- **Show Members Panel** — Toggle the right-hand members column
+- **Server List Panel** — Expand or collapse the left server icon column
+- **Members Panel** — Expand or collapse the right members column
+- **Voice Level Bar** — Show/hide the ` + "`↑[████]`" + ` VU meter in Members
+- **Connection Quality** — Show/hide the ` + "`◆◆◆◇`" + ` quality bar in Members
+- **Panel Animations** — Enable/disable slide animations for Settings and Server Management panels
+- **Typing Animation** — Style of the typing indicator spinner (8 options)
 
 ### Audio
 
-| Field | Description |
-|-------|-------------|
-| Input Device | Microphone source (blank = system default) |
-| Output Device | Speaker/headphone output (blank = system default) |
-| Input Gain | Microphone amplification (0.0–2.0, default 1.0) |
-| Output Volume | Playback volume (0.0–1.0, default 1.0) |
-| Voice Activity Detection | Auto-transmit when mic exceeds the threshold |
-| VAD Threshold | Sensitivity for VAD (0.0–1.0) |
-| Push-to-Talk | Transmit only while PTT key is held |
-| PTT Key | Configurable key combination (default: Ctrl+Space) |
-| Noise Suppression | Reduce background noise |
-| Echo Cancellation | Reduce microphone echo |
-| Codec Preset | Opus quality preset (Low / Medium / High / Ultra) |
+- **Input Device** — Microphone source (blank = system default)
+- **Output Device** — Speaker/headphone output (blank = system default)
+- **Input Gain** — Microphone amplification (0.0–2.0, default 1.0)
+- **Output Volume** — Playback volume (0.0–1.0, default 1.0)
+- **Voice Activity Detection** — Auto-transmit when mic exceeds the threshold
+- **VAD Threshold** — Sensitivity for VAD (0.0–1.0)
+- **Push-to-Talk** — Transmit only while PTT key is held
+- **PTT Key** — Configurable key combination (default: Ctrl+Space)
+- **Noise Suppression** — Reduce background noise
+- **Echo Cancellation** — Reduce microphone echo
+- **Codec Preset** — Opus quality preset (Low / Medium / High / Ultra)
 
 ---
 
@@ -496,7 +466,7 @@ Desktop notifications for @mentions and DMs when Concord is running in the backg
 
 ---
 
-*Concord v0.1.0 — Built with Go, bubbletea, and lipgloss*
+*Concord — Built with Go, bubbletea, and lipgloss. See Settings > About for the exact build version.*
 *Source: github.com/JMThomas00/Concord*
 `
 
@@ -518,15 +488,18 @@ func (a *App) renderHelpContent(width, height int) string {
 	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 	top.writeLine(titleStyle.Render("Help & User Guide"))
-	top.writeLine(dimStyle.Render("Complete reference for Concord v0.1.0"))
+	top.writeLine(dimStyle.Render(fmt.Sprintf("Complete reference for Concord v%s", a.clientVersion)))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE — glamour-rendered markdown with inline scrollbar ──
-	// Cache rendered lines; invalidate when content width changes.
-	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderWidth != contentWidth) {
-		s.HelpRenderedLines = renderHelpMarkdown(contentWidth)
+	// Cache rendered lines; invalidate when content width OR the active
+	// theme changes -- the style is theme-derived now (buildThemedGlamourStyle),
+	// so a theme switch must re-render, not just a resize.
+	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderWidth != contentWidth || s.HelpRenderTheme != a.theme.Meta.Name) {
+		s.HelpRenderedLines = renderHelpMarkdown(contentWidth, a.theme)
 		s.HelpRenderWidth = contentWidth
+		s.HelpRenderTheme = a.theme.Meta.Name
 	}
 
 	var allLines []string
@@ -650,14 +623,14 @@ func helpScrollbarThumb(offset, totalLines, trackHeight int) (thumbPos, thumbSiz
 
 // renderHelpMarkdown renders the help markdown document via glamour and returns
 // it as a slice of lines ready for the scroll-window display.
-func renderHelpMarkdown(width int) []string {
+func renderHelpMarkdown(width int, theme *themes.Theme) []string {
 	wrapWidth := width - 2
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
 
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStylePath("dark"),
+		glamour.WithStyles(buildThemedGlamourStyle(theme)),
 		glamour.WithWordWrap(wrapWidth),
 	)
 	if err != nil {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 func init() {
 	// Initialize loggers for tests (silent mode)
-	InitLogger(log.FatalLevel) // Only log fatal errors during tests
+	InitLogger(os.Stderr, log.FatalLevel) // Only log fatal errors during tests
 }
 
 func TestNewHub(t *testing.T) {

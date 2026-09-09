@@ -13,6 +13,16 @@ import (
 	"github.com/concord-chat/concord/internal/themes"
 )
 
+// Version/GitCommit/BuildTime are populated at build time via the
+// Makefile's shared LDFLAGS ("-X main.Version=..." etc.) -- see
+// Settings > About. Defaults here keep a plain `go build`/`go run` (no
+// ldflags) sensible instead of showing empty strings.
+var (
+	Version   = "dev"
+	GitCommit = "unknown"
+	BuildTime = "unknown"
+)
+
 func main() {
 	// Set up logging to file for debugging
 	logFile, err := os.OpenFile("concord-client.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -70,6 +80,7 @@ func main() {
 	// Create application
 	app := client.NewApp(serversConfig.Servers, serversConfig.DefaultPreferences, configMgr, identity)
 	app.SetTheme(theme)
+	app.SetBuildInfo(Version, GitCommit, BuildTime)
 
 	// Zone manager for mouse hit-testing: components mark their rendered
 	// regions with zone.Mark() at View() time, and App.View() scans the
@@ -98,13 +109,13 @@ func main() {
 
 func printBanner() {
 	banner := `
-   ____                              _ 
+   ____                              _
   / ___|___  _ __   ___ ___  _ __ __| |
  | |   / _ \| '_ \ / __/ _ \| '__/ _' |
  | |__| (_) | | | | (_| (_) | | | (_| |
   \____\___/|_| |_|\___\___/|_|  \__,_|
-                                       
-  Terminal Chat Client v0.1.0
+
+  Terminal Chat Client v%s
 `
-	fmt.Println(banner)
+	fmt.Printf(banner, Version)
 }

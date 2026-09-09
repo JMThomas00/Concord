@@ -1,7 +1,7 @@
 # Concord — Claude Code Reference
 
 **A terminal-based chat application inspired by Discord**
-**Last Updated:** 2026-09-06
+**Last Updated:** 2026-09-08
 
 ---
 
@@ -16,7 +16,7 @@ Concord is a self-hosted, terminal-first chat platform built in Go. Each server 
 
 ## Development Commands
 
-This repo has no CI config and no `.golangci.yml` — the commands below are the actual gate used session-to-session (see the Makefile's `test`/`fmt`/`lint` targets for the same thing in `make` form).
+This repo has no `.golangci.yml` — the commands below are the actual gate used session-to-session (see the Makefile's `test`/`fmt`/`lint` targets for the same thing in `make` form). `.github/workflows/release.yml` exists (added 2026-09-08, not yet run) but only builds/publishes tagged releases — it isn't a PR-gating CI check, so this remains the real day-to-day gate.
 
 ```bash
 # Full check — run this before considering any change done. The server, models,
@@ -54,6 +54,18 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 - `voice_engine.go` — `//go:build !novoice` (real audio engine, CGO)
 - `voice_engine_stub.go` — `//go:build novoice` (stub, CGO-free)
 
+**Windows client static linking (added 2026-09-08):** `build-windows`'s client link step passes `CGO_LDFLAGS="-LC:/msys64/mingw64/lib -Wl,-Bstatic -lopusfile -logg -lopus -Wl,-Bdynamic -lm"` so `concord-client.exe` has no `libopus-0.dll`/`libopusfile-0.dll`/`libogg-0.dll` runtime dependency (only malgo's bundled `miniaudio.c` was ever static before this). **`pkg-config --static --libs opus opusfile` alone does NOT work** — it only adds transitive libs like `-logg`, but MinGW's linker still prefers each lib's `.dll.a` import archive over its `.a` static archive regardless of that flag; the explicit `-Wl,-Bstatic ... -Wl,-Bdynamic` wrap is what actually forces static resolution. Verify with `objdump -p build/concord-client.exe | grep "DLL Name"` (should show only `KERNEL32.dll`/`msvcrt.dll`) or by moving the exe to a directory with no MSYS2 DLLs on `PATH` and launching it.
+
+---
+
+## Distribution & Release
+
+**`.github/workflows/release.yml`** (added 2026-09-08, not yet run in CI): triggers on a `v*` tag push or manual `workflow_dispatch`. Builds server+client(voice)+hub natively per-OS (`windows-latest` via MSYS2+clang mirroring `build-windows`, `macos-latest` via `brew install opus opusfile`, `ubuntu-latest` via `apt-get install libopus-dev libopusfile-dev`) — native runners sidestep the voice-enabled-cross-compilation problem entirely rather than trying to solve it. Publishes a **draft** GitHub Release with all three platforms' artifacts attached; review before publishing. The `dist` Makefile target remains the quick local CGO-disabled/`novoice`-only cross-compile path for ad-hoc protocol-level testing on another OS — this workflow is the real path to voice-included cross-platform releases.
+
+**`Dockerfile` / `docker-compose.yml` / `.dockerignore`** (added 2026-09-08, **not verified — no Docker available in the environment that wrote them**): multi-stage build (`golang:1.24-alpine` → `alpine:3.20`), contains only `concord-server` and `concord-hub` (both pure Go, no CGO) — the client is a TUI app and isn't a sensible container workload. Neither binary gets new non-interactive bootstrap config support; both already skip their first-run wizard whenever their config file exists, so the documented pattern is run-once-interactively-to-generate-config, then mount that file for all subsequent detached runs. See `docker-compose.yml`'s own top comment for the exact one-time setup steps. **Needs a real `docker build`/`docker run` smoke test before relying on it.**
+
+**`scripts/install.sh`** (added 2026-09-08, dry-run verified with a faked `uname`/`curl` against a locally-built fake archive — the real GitHub Release download path is untested since no tagged release exists yet): `curl -fsSL <url>/install.sh | sh` — detects OS/arch, downloads the matching release asset, installs to `/usr/local/bin` (falls back to `~/.local/bin`). `CONCORD_INSTALL_BINARY` env var picks server/client/hub (defaults to client). No package-manager listing yet (AUR/APT/Homebrew/Winget/Flatpak) — see the vault to-do's item 12 for that follow-on work, deliberately deferred until a real tagged release exists to point at.
+
 ---
 
 ## Protocol Specification
@@ -63,7 +75,7 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 { "op": 3, "d": { ... }, "s": 42, "t": "EVENT_NAME" }
 ```
 
-OpCodes are defined in `internal/protocol/messages.go` and now run through op `59`. Beyond the original chat/moderation/voice set, later ranges cover: `40-44` retention policy + custom titles, `45-48` voice signaling/moderation, `49-56` the plugin platform (remote-pane enter/input/resize/leave/frame, the generic plugin event envelope, plugin config get/set), `57` channel permission overwrites, `58` self-service nicknames, `59` P2P file-transfer signaling. Always check this file directly for the current, authoritative list rather than trusting a cached mental model of it — it has grown considerably since v0.1.0's initial protocol design.
+OpCodes are defined in `internal/protocol/messages.go` and now run through op `61`. Beyond the original chat/moderation/voice set, later ranges cover: `40-44` retention policy + custom titles, `45-48` voice signaling/moderation, `49-56` the plugin platform (remote-pane enter/input/resize/leave/frame, the generic plugin event envelope, plugin config get/set), `57` channel permission overwrites, `58` self-service nicknames, `59` P2P file-transfer signaling, `60` typing-stop, `61` plugin install (admin-triggered fetch/verify/place, see Plugin Platform below). Always check this file directly for the current, authoritative list rather than trusting a cached mental model of it — it has grown considerably since v0.1.0's initial protocol design.
 
 ### Connection Flow
 ```
@@ -159,6 +171,7 @@ External programs attach to a Concord server as privileged clients — bots, int
 - **Generic, manifest-driven config UI** — both plugin-level settings (`[[server_config_field]]`) and per-channel-kind creation fields (`[[channel_kind.create_field]]`) are typed field descriptors (`text`/`number`/`boolean`/`select`/`channel_select`) rendered by one generic form on the client (`plugin_channel_form.go`, Settings > Plugins) — a new plugin never needs bespoke client-side UI code, just manifest entries.
 - **Multi-install of the same underlying plugin is supported** — two folders with the same binary but different `[plugin].id` run as fully independent installs (separate service account, process, channel, config). Set `[plugin].product` when several personas share one identity (e.g. Mynah's "Burt"/"Alice") so Settings > Plugins can group them.
 - **A plugin only learns about its owned channels at identify/reconnect time** (`GetChannelsByPlugin`, pushed on every identify) — there's no separate "plugin channel registry" push mechanism, so if you add a new way for a plugin to need channel state, make sure it's covered by that same identify-time push, not just the live `CHANNEL_CREATE` event.
+- **Admin-triggered install (added 2026-09-08, first slice only)** — `OpPluginInstall` (op 61, `PermissionManageServer`-gated) drives `InstallFromURL` (`internal/plugins/install.go`): downloads a `.zip` from an admin-supplied URL, verifies its SHA256, extracts it to `Plugins/<id>/`, confirms the extracted `plugin.toml`'s `[plugin].id` matches. `[plugin].source_url` in the manifest schema is purely informational (shown in Server Settings > Plugins as a reference link, `PluginInfo.SourceURL`) — no auto-update polling. **Fresh installs only**: refuses to overwrite an existing plugin folder, and does not attempt live pickup — `Manager.LoadAll` isn't safe to re-invoke while other plugins are already running (it unconditionally rotates every existing plugin's token and starts a fresh supervisor without stopping the old one first, orphaning the running process). A server restart is required to actually start a freshly installed plugin, same as the pre-existing manual drop-a-folder-in workflow always required. True update-in-place and a client-side version-mismatch prompt remain unbuilt.
 
 ---
 
@@ -192,13 +205,18 @@ Because there's no server storage, **the sender must stay online for anyone to d
 | Display Settings | Settings > Display | ✅ Full (live preview) |
 | Notification Settings | Settings > Notifications | ✅ Full (per-server overrides) |
 | Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, PTT, codec) |
-| Help & Guide | Settings > Help | ✅ Full (glamour markdown) |
+| Help & Guide | Settings > Help | ✅ Full (glamour markdown, theme-derived style — `buildThemedGlamourStyle`) |
+| About | Settings > About | ✅ Full (client build info; server build info once connected) |
 | Server Management | Ctrl+B | ✅ Full (add/edit/remove servers) |
 | Server Settings | In-server panel | ✅ Full |
 | ↳ Channels | Channels tab | ✅ Full (create/delete/rename/reorder) |
 | ↳ Roles | Roles tab | ✅ Full (CRUD, permissions editor, display order) |
 | ↳ Members | Members tab | ✅ Full (list, kick/ban/role assign) |
-| ↳ Messages | Messages tab | ✅ Full (retention policies, prune) |
+| ↳ Messages | Messages tab | ✅ Full (retention policies incl. per-channel custom overrides, prune) |
+| ↳ Plugins | Plugins tab | ✅ Full (enable/disable, config, admin install via `OpPluginInstall`) |
+| ↳ About | About tab | ✅ Full (connected server's build info) |
+
+Chat messages themselves render markdown too (bold/italic/inline code/fenced code/lists, plus clickable OSC 8 links and @mention highlighting) via a separate, minimal-feature-set glamour renderer — see `internal/client/message_markdown.go` and `buildChatGlamourStyle`. Deliberately excludes glamour's Table/Linkify extensions (goldmark's GFM Linkify auto-links bare URLs, and glamour's own link renderer then prints the link text and href as two separate visible runs — confirmed via `TestProbeChatGlamourPipeline`); Concord substitutes/restores URLs itself instead via an opaque placeholder token, both for that reason and to keep its own OSC 8/zone-marked clickable-link behavior.
 
 ---
 
@@ -240,8 +258,8 @@ Selected themes: dracula, alucard-dark, alucard-light, catppuccin-mocha, gruvbox
 ## Known Issues / Remaining Work
 
 1. **Voice multi-user mesh** — P2P WebRTC with N>2 clients has not been fully stress-tested. The ICE/STUN negotiation and mesh complexity (N×(N-1) peer connections) need validation.
-2. **Message retention UI** — The 'N' (channel override) and 'D' (delete override) options in Server Settings > Messages need to be wired up.
-3. **Most permissions still only checked at the role-bitfield level, not the overwrite-aware path** — see Permissions & Channel Overwrites above; only `PermissionSendMessages`/`PermissionAttachFiles` go through `hasChannelPermission`. A permission the Roles editor lets you toggle isn't guaranteed to be enforced for the action it implies.
-4. **Invites (`PermissionCreateInvite`) are unbuilt** — the permission bit exists, no invite-generation/redemption code does. Deferred to its own future initiative.
-5. **Auto re-connect after server offline** — Users currently have to re-login after a server goes offline and comes back. Seamless reconnect with saved token should be implemented.
-6. **`-race` needs a real C toolchain** — unavailable on some machines this project is developed from; a concurrency bug can slip through a normal `go test` pass. Worth an explicit `-race` run (see Development Commands) whenever touching shared state (connection lifecycle, plugin supervision, the hub's client map) if a toolchain is available.
+2. **Most permissions still only checked at the role-bitfield level, not the overwrite-aware path** — see Permissions & Channel Overwrites above; only `PermissionSendMessages`/`PermissionAttachFiles` go through `hasChannelPermission`. A permission the Roles editor lets you toggle isn't guaranteed to be enforced for the action it implies.
+3. **Invites (`PermissionCreateInvite`) are unbuilt** — the permission bit exists, no invite-generation/redemption code does. Deferred to its own future initiative.
+4. **`-race` needs a real C toolchain** — unavailable on some machines this project is developed from; a concurrency bug can slip through a normal `go test` pass. Worth an explicit `-race` run (see Development Commands) whenever touching shared state (connection lifecycle, plugin supervision, the hub's client map) if a toolchain is available.
+5. **Plugin update-in-place is unbuilt** — `OpPluginInstall` (2026-09-08) only supports fresh installs; there's no way yet to safely update an already-running plugin without a full server restart (`Manager.LoadAll` isn't safe to re-invoke live while other plugins' supervisors are running). See the Plugin Platform section above.
+6. **This branch's CI/Docker/install-script additions are unverified** — `.github/workflows/release.yml` has never actually run (needs a real tag push), the `Dockerfile`/`docker-compose.yml` have never been built/run (no Docker in the environment that wrote them), and `scripts/install.sh` was only dry-run tested against a local fake archive, not a real GitHub Release. See Distribution & Release above.

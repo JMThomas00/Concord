@@ -202,12 +202,27 @@ func (c *Connection) SendTyping(channelID uuid.UUID) error {
 	payload := &protocol.TypingStartPayload{
 		ChannelID: channelID,
 	}
-	
+
 	msg, err := protocol.NewMessage(protocol.OpTypingStart, payload)
 	if err != nil {
 		return err
 	}
-	
+
+	return c.Send(msg)
+}
+
+// SendTypingStop tells the server we stopped typing without sending --
+// see OpTypingStop's doc comment in internal/protocol/messages.go.
+func (c *Connection) SendTypingStop(channelID uuid.UUID) error {
+	payload := &protocol.TypingStartPayload{
+		ChannelID: channelID,
+	}
+
+	msg, err := protocol.NewMessage(protocol.OpTypingStop, payload)
+	if err != nil {
+		return err
+	}
+
 	return c.Send(msg)
 }
 

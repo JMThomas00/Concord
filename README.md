@@ -12,6 +12,13 @@ A terminal-based chat application inspired by Discord, built in Go with a beauti
   Terminal Chat — IRC-like, self-hosted, keyboard-driven
 ```
 
+<!--
+  Demo GIF placeholder. Regenerate with `vhs demo/concord-demo.tape`
+  (needs a real terminal + a running demo server — see that file's own
+  prerequisites comment) and uncomment the line below once recorded:
+  ![Concord demo](demo/concord-demo.gif)
+-->
+
 ## Features
 
 - **Self-hosted servers** — run your own server, share a host:port, done
@@ -599,12 +606,18 @@ MIT License — see LICENSE file for details.
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) — TUI framework
 - [Lip Gloss](https://github.com/charmbracelet/lipgloss) — terminal styling
 - [Bubbles](https://github.com/charmbracelet/bubbles) — TUI components
-- [Glamour](https://github.com/charmbracelet/glamour) — markdown rendering
+- [Glamour](https://github.com/charmbracelet/glamour) — markdown rendering (Help & Guide, chat messages, `/help`)
+- [goldmark](https://github.com/yuin/goldmark) — the markdown parser Glamour is built on; used directly for the chat message renderer's minimal-feature-set pipeline
+- [bubblezone](https://github.com/lrstanley/bubblezone) — mouse zone tracking that powers click-to-focus, click-to-select, and clickable links throughout the client
 - [charmbracelet/log](https://github.com/charmbracelet/log) — structured logging
+- [termenv](https://github.com/muesli/termenv) — terminal color profile detection
 - [modernc SQLite](https://gitlab.com/cznic/sqlite) — pure-Go SQLite (server, no CGO)
+- [go-toml](https://github.com/pelletier/go-toml) — server/hub/theme TOML configuration
 - [Gorilla WebSocket](https://github.com/gorilla/websocket) — WebSocket transport
 - [pion/webrtc](https://github.com/pion/webrtc) — pure-Go WebRTC
 - [miniaudio / malgo](https://github.com/gen2brain/malgo) — cross-platform audio I/O
 - [hraban/opus](https://github.com/hraban/opus) — Opus codec bindings
 - [beeep](https://github.com/gen2brain/beeep) — cross-platform desktop notifications
+- [sqweek/dialog](https://github.com/sqweek/dialog) — native Save As dialog for `/download`
+- [atotto/clipboard](https://github.com/atotto/clipboard) — clipboard copy in message navigation mode
 - [Dracula Theme](https://draculatheme.com) — colour inspiration

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -55,27 +56,42 @@ func (h *HybridRenderer) RenderInitial() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, panels...)
 }
 
-// UpdateInPlace updates the dashboard without disrupting logs
-func (h *HybridRenderer) UpdateInPlace() {
-	// Move to dashboard start line (absolute positioning)
-	fmt.Printf("\033[%d;1H", h.dashboardStartLine)
+// UpdateInPlace returns the ANSI sequence that redraws the dashboard in
+// place without disrupting logs -- the caller writes it in one shot (e.g.
+// fmt.Print(renderer.UpdateInPlace())), matching RenderInitial's own
+// "build a string, let the caller print it" convention rather than this
+// method writing to stdout directly, which also makes it testable without
+// redirecting a real file descriptor.
+//
+// Overwrites each dashboard line directly rather than blanking the whole
+// region first and redrawing after. The previous two-pass approach (clear
+// every line via its own fmt.Print, THEN print the new content via a
+// separate fmt.Print) let the terminal actually paint the fully-blanked
+// intermediate frame before the real content arrived over the wire --
+// visible as a flash on every ~1s update tick (updateHybridDashboardLoop,
+// server.go). Fixed 2026-09-08. Since every panel is a fixed-width/height
+// lipgloss box, there's no need to blank first to avoid stale leftover
+// characters either -- "\033[K" (clear to end of line) after each line's
+// own content handles that case without ever showing a blank frame.
+func (h *HybridRenderer) UpdateInPlace() string {
+	var b strings.Builder
 
-	// Clear dashboard area (panelHeight lines)
-	for i := 0; i < h.panelHeight; i++ {
-		fmt.Print("\033[2K") // Clear entire line
-		if i < h.panelHeight-1 {
-			fmt.Print("\033[B") // Move down one line
+	// Move to dashboard start line (absolute positioning).
+	fmt.Fprintf(&b, "\033[%d;1H", h.dashboardStartLine)
+
+	lines := strings.Split(h.RenderInitial(), "\n")
+	for i, line := range lines {
+		b.WriteString(line)
+		b.WriteString("\033[K") // erase any leftover chars past this line's new content
+		if i < len(lines)-1 {
+			b.WriteString("\r\n") // explicit CR+LF -- reliable column-1 reset regardless of terminal LF handling
 		}
 	}
 
-	// Move back to dashboard start
-	fmt.Printf("\033[%d;1H", h.dashboardStartLine)
+	// Move cursor to scroll region start (for logs to continue in correct area).
+	fmt.Fprintf(&b, "\033[%d;1H", h.scrollRegionStartLine)
 
-	// Render updated panels
-	fmt.Print(h.RenderInitial())
-
-	// Move cursor to scroll region start (for logs to continue in correct area)
-	fmt.Printf("\033[%d;1H", h.scrollRegionStartLine)
+	return b.String()
 }
 
 // UpdateSystemStats updates the system statistics panel

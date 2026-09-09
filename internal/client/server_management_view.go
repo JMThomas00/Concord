@@ -38,7 +38,7 @@ func (a *App) openServerManagement(returnTo View, categoryIndex int) tea.Cmd {
 		return nil
 	}
 
-	categories := []string{"Channels", "Roles", "Members", "Messages", "Plugins"}
+	categories := []string{"Channels", "Roles", "Members", "Messages", "Plugins", "About"}
 
 	// Load initial data for the selected category
 	serverID := a.getActiveServerID()
@@ -1037,7 +1037,32 @@ func (a *App) handleEditAction() {
 				FocusField:         0,
 			}
 		}
-	case 3: // Edit server default retention policy — pre-fill with current values
+	case 3: // Edit retention policy — pre-fill with current values
+		// A focused row in the Exempt Channels list edits that channel's own
+		// override instead of the server default -- otherwise E always fell
+		// through to the server-default policy even with a specific channel
+		// highlighted, with no way to set a custom per-channel value at all
+		// (only full exemption via N).
+		if len(s.ChannelOverrides) > 0 && s.SelectedOverride >= 0 && s.SelectedOverride < len(s.ChannelOverrides) {
+			override := s.ChannelOverrides[s.SelectedOverride]
+			form := &RetentionFormState{
+				Mode:       "channel",
+				ChannelID:  override.ChannelID,
+				FocusField: 0,
+			}
+			if override.TimeRetentionDays != nil {
+				form.TimeRetentionDays = strconv.Itoa(*override.TimeRetentionDays)
+			}
+			if override.SystemTimeRetentionDays != nil {
+				form.SystemTimeRetentionDays = strconv.Itoa(*override.SystemTimeRetentionDays)
+			}
+			if override.MaxMessageCount != nil {
+				form.MaxMessageCount = strconv.Itoa(*override.MaxMessageCount)
+			}
+			s.RetentionFormState = form
+			return
+		}
+
 		form := &RetentionFormState{
 			Mode:       "server",
 			FocusField: 0,
@@ -3059,7 +3084,7 @@ func (a *App) handleRemoveExemptKey(msg tea.KeyMsg) tea.Cmd {
 				if err == nil {
 					_ = a.activeConn.Connection.Send(pmsg)
 					chName := a.resolveChannelName(*override.ChannelID)
-					a.statusMessage = fmt.Sprintf("#%s exemption removed", chName)
+					a.statusMessage = fmt.Sprintf("#%s override removed", chName)
 				}
 			}
 		}
@@ -3077,9 +3102,9 @@ func (a *App) renderRemoveExemptPage(width, height int, s *ServerManagementState
 	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
-		Render("Remove Channel Exemption"))
+		Render("Remove Channel Override"))
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Render("Select a channel to remove its exemption — it will be pruned normally"))
+		Render("Select a channel to remove its override — it will use the server default again"))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
@@ -3089,22 +3114,23 @@ func (a *App) renderRemoveExemptPage(width, height int, s *ServerManagementState
 	selectedStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Background)).
 		Background(lipgloss.Color(a.theme.Colors.Red)).Bold(true)
-	exemptBadge := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Render(" (exempt)")
+	badgeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
 	if len(s.ChannelOverrides) == 0 {
-		middle.writeLine(dimStyle.Render("  No exempt channels to remove"))
+		middle.writeLine(dimStyle.Render("  No channel overrides to remove"))
 	} else {
 		for i, override := range s.ChannelOverrides {
 			chName := "unknown"
 			if override.ChannelID != nil {
 				chName = a.resolveChannelName(*override.ChannelID)
 			}
+			suffix := retentionOverrideSuffix(override)
 			id := fmt.Sprintf("srvmgmt-remove-exempt-row:%d", i)
 			if i == s.RemoveExemptSelected {
-				middle.writeLine(zone.Mark(id, selectedStyle.Render(fmt.Sprintf("  # %s (exempt)", chName))))
+				middle.writeLine(zone.Mark(id, selectedStyle.Render(fmt.Sprintf("  # %s %s", chName, suffix))))
 			} else {
-				middle.writeLine(zone.Mark(id, normalStyle.Render(fmt.Sprintf("  # %s", chName))+exemptBadge))
+				middle.writeLine(zone.Mark(id, normalStyle.Render(fmt.Sprintf("  # %s ", chName))+badgeStyle.Render(suffix)))
 			}
 		}
 	}
@@ -3300,6 +3326,8 @@ func (a *App) renderServerManagementView() string {
 		} else {
 			contentPanel = a.renderPluginsCategory(contentWidth, totalHeight-1, s)
 		}
+	case 5: // About
+		contentPanel = a.renderServerAboutContent(contentWidth, totalHeight-1)
 	}
 
 	// ── Assemble ───────────────────────────────────────────────────
@@ -4000,6 +4028,68 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 // plugin discovered under the server's Plugins directory, its version,
 // process status, and enabled/disabled state — a Minecraft-mods-style view
 // with zero per-plugin code, sourced entirely from OpPluginConfigGet.
+// renderServerAboutContent renders Server Settings' About category: the
+// connected server's own build identity, reported once at connect time via
+// ReadyPayload and cached on the active ServerConnection (see
+// handleReady/EventReady in app.go). Distinct from Settings > About
+// (Ctrl+S), which shows the client binary's own build info.
+func (a *App) renderServerAboutContent(width, height int) string {
+	layout := calculateSettingsLayout(width, height, 2, 0)
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+
+	// ── TOP SECTION ──
+	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("About"))
+	top.writeLine(dimStyle.Render("Connected server's build information"))
+	top.writeBlank()
+	top.writeLine(a.renderSeparator(layout.interiorWidth))
+
+	// ── MIDDLE SECTION ──
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+
+	writeRow := func(label, value string) {
+		middle.writeLine(labelStyle.Render(label))
+		middle.writeLine(normalStyle.Render("    " + value))
+		middle.writeBlank()
+	}
+
+	if a.activeConn == nil {
+		middle.writeLine(dimStyle.Render("  No active server connection"))
+	} else {
+		a.activeConn.mu.RLock()
+		serverVersion := a.activeConn.ServerVersion
+		serverGitCommit := a.activeConn.ServerGitCommit
+		serverBuildTime := a.activeConn.ServerBuildTime
+		a.activeConn.mu.RUnlock()
+
+		writeRow("Version", serverVersion)
+		writeRow("Git Commit", serverGitCommit)
+		writeRow("Build Time", serverBuildTime)
+	}
+
+	middle.pad()
+
+	// ── BOTTOM SECTION ──
+	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
+	bottom.writeLine(helpStyle.Render("Esc close"))
+	bottom.pad()
+
+	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height - 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Padding(0, 1).
+		Render(content)
+}
+
 func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState) string {
 	layout := calculateSettingsLayout(width, height, 3, 1)
 
@@ -4074,6 +4164,13 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 			if p.LastError != "" && (selected || p.Status == "crashed") {
 				errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Italic(true)
 				middle.writeLine(errStyle.Render("    ⚠ " + p.LastError))
+			}
+			// Reference-only for now -- there's no live version check or
+			// update-in-place yet (see the item 10/13 7b scoping note in
+			// the vault to-do); this just tells an admin where to look.
+			if p.SourceURL != "" && selected {
+				sourceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true)
+				middle.writeLine(sourceStyle.Render("    Source: " + p.SourceURL))
 			}
 		}
 	}
@@ -4748,6 +4845,28 @@ func (a *App) resolveChannelName(channelID uuid.UUID) string {
 	return channelID.String()[:8]
 }
 
+// retentionOverrideSuffix describes what a channel override in the
+// ChannelOverrides list actually does: "(exempt)" when every limit is nil
+// (kept on prune, the original N-key-only behavior), or the specific
+// custom limit(s) it sets otherwise -- these are the same underlying
+// MessageRetentionPolicy shape, distinguished only by which fields are set.
+func retentionOverrideSuffix(override *models.MessageRetentionPolicy) string {
+	if override.TimeRetentionDays == nil && override.SystemTimeRetentionDays == nil && override.MaxMessageCount == nil {
+		return "(exempt)"
+	}
+	var parts []string
+	if override.TimeRetentionDays != nil {
+		parts = append(parts, fmt.Sprintf("%dd", *override.TimeRetentionDays))
+	}
+	if override.SystemTimeRetentionDays != nil {
+		parts = append(parts, fmt.Sprintf("sys %dd", *override.SystemTimeRetentionDays))
+	}
+	if override.MaxMessageCount != nil {
+		parts = append(parts, fmt.Sprintf("%d msgs", *override.MaxMessageCount))
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
+}
+
 // renderMessagesCategory renders the Messages/Retention management category
 func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState) string {
 	layout := calculateSettingsLayout(width, height, 2, 1)
@@ -4791,10 +4910,13 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 	}
 	middle.writeBlank()
 
-	// Exempt Channels (channel overrides with no limits)
-	middle.writeLine(sectionStyle.Render("Exempt Channels  (kept on prune)"))
+	// Channel Overrides -- either a full exemption (all limits nil, "kept on
+	// prune") or a custom per-channel limit that differs from the server
+	// default. Both are stored the same way (a MessageRetentionPolicy row
+	// with a non-nil ChannelID); only the label distinguishes them.
+	middle.writeLine(sectionStyle.Render("Channel Overrides"))
 	if len(s.ChannelOverrides) == 0 {
-		middle.writeLine(dimStyle.Render("  No exempt channels configured"))
+		middle.writeLine(dimStyle.Render("  No channel overrides configured"))
 	} else {
 		for i, override := range s.ChannelOverrides {
 			selected := s.FocusOnForm && i == s.SelectedOverride
@@ -4802,14 +4924,15 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 			if override.ChannelID != nil {
 				chName = a.resolveChannelName(*override.ChannelID)
 			}
-			label := fmt.Sprintf("  # %s", chName)
+			suffix := retentionOverrideSuffix(override)
+			label := fmt.Sprintf("  # %s %s", chName, suffix)
 			if selected {
 				line := lipgloss.NewStyle().
 					Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 					Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
 					Bold(true).
 					Width(layout.interiorWidth).
-					Render("▶ # " + chName)
+					Render(fmt.Sprintf("▶ # %s %s", chName, suffix))
 				middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-override-row:%d", i), line))
 			} else {
 				middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-override-row:%d", i), dimStyle.Render(label)))
@@ -4821,9 +4944,9 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 	// Actions
 	middle.writeLine(sectionStyle.Render("Actions"))
 	actionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	middle.writeLine(actionStyle.Render("  E · Edit server default policy"))
+	middle.writeLine(actionStyle.Render("  E · Edit selected override, or server default if none selected"))
 	middle.writeLine(actionStyle.Render("  N · Exempt a channel from pruning"))
-	middle.writeLine(actionStyle.Render("  D · Remove selected channel exemption"))
+	middle.writeLine(actionStyle.Render("  D · Remove selected channel override"))
 	middle.writeLine(actionStyle.Render("  P · Run manual prune now"))
 	middle.pad()
 
@@ -4844,7 +4967,9 @@ func (a *App) renderMessagesCategory(width, height int, s *ServerManagementState
 		Padding(0, 1).Render(content)
 }
 
-// renderRetentionFormPage renders the Edit Server Default Policy as a full settings page
+// renderRetentionFormPage renders the retention policy editor -- either the
+// server default or one channel's override, per form.Mode -- as a full
+// settings page.
 func (a *App) renderRetentionFormPage(width, height int, s *ServerManagementState) string {
 	form := s.RetentionFormState
 	if form == nil {
@@ -4857,8 +4982,12 @@ func (a *App) renderRetentionFormPage(width, height int, s *ServerManagementStat
 
 	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
+	scopeLabel := "Editing: server default"
+	if form.Mode == "channel" && form.ChannelID != nil {
+		scopeLabel = fmt.Sprintf("Editing: #%s", a.resolveChannelName(*form.ChannelID))
+	}
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
-		Render("Edit Server Default Policy"))
+		Render(scopeLabel))
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 		Render("Leave fields empty to disable the limit"))
 	top.writeBlank()

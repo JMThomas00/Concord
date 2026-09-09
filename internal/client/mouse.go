@@ -140,10 +140,7 @@ func (a *App) resolveClickedStatusBarHint(msg tea.MouseMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	if zoneInBounds("statusbar-help", msg) {
-		result, err := a.commandHandler.Execute(&Command{Name: "help"})
-		if err == nil {
-			a.openHelpModal(result)
-		}
+		a.openHelpFinder("")
 		return nil, true
 	}
 	if zoneInBounds("statusbar-quit", msg) {

@@ -231,6 +231,25 @@ type App struct {
 	// exactly how a real terminal/GUI scrollbar drag behaves.
 	helpScrollDragging bool
 
+	// Build identity, set once at startup via SetBuildInfo -- see
+	// Settings > About. Server counterparts (serverVersion/etc.) are
+	// per-connection, not per-app, since each connected server reports its
+	// own build info at Ready time -- see ServerConnection.
+	clientVersion   string
+	clientGitCommit string
+	clientBuildTime string
+
+	// messageRenderCache caches renderMessageContent's glamour-rendered
+	// output per message ID -- glamour is much heavier than the old
+	// plain-regex styling it replaced, and every visible message gets
+	// re-rendered on every redraw. Each entry's own width/theme fields
+	// (see messageRenderCacheEntry) are checked on read, so a resize or
+	// theme change alone doesn't require touching every entry -- but the
+	// map is still fully cleared on either (see SetTheme and the
+	// tea.WindowSizeMsg handler) rather than left to accumulate one stale
+	// entry per message per past width/theme for the life of the session.
+	messageRenderCache map[uuid.UUID]messageRenderCacheEntry
+
 	// AFK tracking
 	lastActivityTime time.Time
 	isAFK            bool
@@ -260,8 +279,8 @@ type App struct {
 	// Link browser state
 	linkBrowserState *LinkBrowserState
 
-	// Help modal state
-	helpModalState *HelpModalState
+	// Help fuzzy finder state (nil when closed) -- see help_finder.go
+	helpFinderState *HelpFinderState
 
 	// Member panel navigation state
 	selectedMemberIndex int                // Index in flattened member list
@@ -309,12 +328,6 @@ const (
 // linkBrowserVisibleRows caps how many links the browser shows at once;
 // beyond that it scrolls, following SelectedIndex.
 const linkBrowserVisibleRows = 10
-
-// HelpModalState holds the state for the help modal overlay
-type HelpModalState struct {
-	Content      string // Multi-line help text to display
-	ScrollOffset int    // For future scrolling support (start at 0)
-}
 
 // MemberContextMenu holds the state for the member action context menu
 type MemberContextMenu struct {
@@ -960,13 +973,50 @@ func (a *App) scheduleReconnect(serverID uuid.UUID) tea.Cmd {
 
 	delay := strategy.NextDelay(attemptCount)
 
-	return func() tea.Msg {
-		// Notify about retry
+	retryingCmd := func() tea.Msg {
+		return ConnectionRetryingMsg{ServerID: serverID, AttemptCount: attemptCount, NextDelay: delay}
+	}
+	sleepThenReconnectCmd := func() tea.Msg {
 		time.Sleep(delay)
 
 		// Attempt reconnection
 		return a.connectServerAsync(serverID, token)()
 	}
+
+	return tea.Batch(retryingCmd, sleepThenReconnectCmd)
+}
+
+// retryConnectionNow immediately attempts to reconnect a disconnected or
+// errored server, bypassing whatever's left of scheduleReconnect's backoff
+// delay (ctrl+r, see handleKeyPress). Both StateDisconnected (the state
+// right after a drop, during the first reconnect cycle's sleep) and
+// StateError (a failed attempt, during a later cycle's sleep) count as
+// "a reconnect is pending" -- scheduleReconnect's own ConnectionRetryingMsg
+// fires in both cases without changing sc.State, so gating on StateError
+// alone would silently no-op during that first cycle. If an automatic
+// scheduleReconnect attempt is already sleeping in the background, this
+// races it harmlessly -- both just end up sending the same
+// connectServerAsync attempt, and whichever ConnectionReadyMsg/
+// ConnectionFailedMsg lands last is the one that sticks. Not worth a
+// cancellation token for that.
+func (a *App) retryConnectionNow(serverID uuid.UUID) tea.Cmd {
+	sc := a.connMgr.GetConnection(serverID)
+	if sc == nil {
+		return nil
+	}
+	state := sc.GetState()
+	if state != StateError && state != StateDisconnected {
+		return nil
+	}
+
+	sc.mu.RLock()
+	token := sc.Token
+	sc.mu.RUnlock()
+
+	a.statusMessage = "Retrying connection now..."
+	a.statusError = false
+
+	return a.connectServerAsync(serverID, token)
 }
 
 // autoConnectServer performs HTTP-only login/register for a server in the background.
@@ -994,6 +1044,12 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 // Update implements tea.Model
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// Captured during the tea.KeyMsg case below (before a.input's own
+	// value can change) and consumed after the later `switch a.view`
+	// block, once a.input.Update(msg) has actually applied the keystroke
+	// -- see that later check's own comment for why the ordering matters.
+	wasComposing := false
 
 	switch msg := msg.(type) {
 	case afkCheckMsg:
@@ -1165,6 +1221,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Store current view before handling key
 		viewBeforeKey := a.view
+		// Captured BEFORE handleKeyPress/a.input.Update -- see the
+		// consuming check after the later `switch a.view` block.
+		wasComposing = a.view == ViewMain && a.focus == FocusInput && len(a.input.Value()) > 0
 		cmd := a.handleKeyPress(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1173,25 +1232,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.view != viewBeforeKey {
 			return a, tea.Batch(cmds...)
 		}
-		// Send typing indicator when composing (throttled to once per 4 seconds).
-		// Only send if there's actual text in the input box — this way the indicator
-		// automatically clears when the message is sent (input empties).
-		if a.view == ViewMain && a.focus == FocusInput &&
-			len(a.input.Value()) > 0 &&
-			a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil &&
-			time.Since(a.lastTypingSent) > 2*time.Second {
-			a.lastTypingSent = time.Now()
-			serverID := a.currentClientServer.ID
-			channelID := a.currentChannel.ID
-			cmds = append(cmds, func() tea.Msg {
-				_ = a.connMgr.SendTyping(serverID, channelID)
-				return nil
-			})
-		}
 
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		// Every cached message render is keyed in part on viewport width --
+		// a resize invalidates all of them at once; see messageRenderCache's
+		// own doc comment for why this clears the whole map rather than
+		// leaving now-unreachable old-width entries to accumulate.
+		a.messageRenderCache = nil
 		// updateViewportSize sets chatViewport.Width/Height using the same layout
 		// math as renderMainView/renderChatPanel, so updateChatContent below renders
 		// with correct line widths (fixes blank chat on first load).
@@ -1257,30 +1306,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-subscribe to connection events
 		cmds = append(cmds, a.waitForConnEvent())
 
-	case ConnectedMsg:
-		a.statusMessage = "Connected to server"
-		a.statusError = false
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
-
-	case DisconnectedMsg:
-		a.statusMessage = "Disconnected from server"
-		a.statusError = true
-		// A dropped connection can't relay a leave_pane signal — the
-		// plugin has no way to ask Concord to release the pane over a
-		// connection that no longer exists, and 'q' has nothing to reach
-		// either. Without this, a viewer who'd focused a plugin pane
-		// before the connection dropped would be stuck: every key
-		// captured by the pane guards in handleKeyPress/Update, no
-		// escape route left. Release it here instead, the same way a
-		// clean leave_pane would.
-		if a.pluginPane != nil {
-			a.leavePluginPane()
-			a.focus = FocusChannelList
-		}
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
-
 	case LoginSuccessMsg:
 		a.view = ViewMain
 		a.focus = FocusInput
@@ -1342,7 +1367,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if sc != nil {
 			sc.SetState(StateError)
 			sc.LastError = fmt.Errorf("%s", msg.Error)
-			a.statusMessage = fmt.Sprintf("Connection failed: %s", msg.Error)
+			if msg.Retry {
+				a.statusMessage = fmt.Sprintf("Connection failed: %s (ctrl+r to retry now)", msg.Error)
+			} else {
+				a.statusMessage = fmt.Sprintf("Connection failed: %s", msg.Error)
+			}
 			a.statusError = true
 
 			if msg.Retry {
@@ -1351,7 +1380,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ConnectionRetryingMsg:
-		a.statusMessage = fmt.Sprintf("Reconnecting (attempt %d)...", msg.AttemptCount)
+		a.statusMessage = fmt.Sprintf("Reconnecting (attempt %d)... (ctrl+r to retry now)", msg.AttemptCount)
 		a.statusError = false
 
 	case ServerPingResultMsg:
@@ -1564,6 +1593,51 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Typing indicator start/stop signals. Deliberately placed here, after
+	// a.input.Update(msg) has already run above (ViewMain's FocusInput
+	// branch) -- not inside the tea.KeyMsg case itself. That case runs
+	// BEFORE this function's later `switch a.view` block applies the
+	// keystroke to a.input, so a check placed there always reads the
+	// PRE-keystroke value; wasComposing and "is it empty now" would then
+	// be reading the exact same stale snapshot, and the two conditions can
+	// never both be true in the same call. Confirmed live 2026-09-08: the
+	// backspace-to-empty stop signal never fired at all (not even one
+	// keystroke late) because of this, unlike the "start typing" half,
+	// which merely showed the indicator one keystroke later than
+	// necessary -- easy to miss until the stop case made it obviously
+	// broken. Both halves are checked here now, after the real update.
+	if _, ok := msg.(tea.KeyMsg); ok {
+		if a.view == ViewMain && a.focus == FocusInput &&
+			a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil {
+			if len(a.input.Value()) > 0 && time.Since(a.lastTypingSent) > 2*time.Second {
+				a.lastTypingSent = time.Now()
+				serverID := a.currentClientServer.ID
+				channelID := a.currentChannel.ID
+				cmds = append(cmds, func() tea.Msg {
+					_ = a.connMgr.SendTyping(serverID, channelID)
+					return nil
+				})
+			} else if wasComposing && len(a.input.Value()) == 0 {
+				// The input box just emptied (backspaced to nothing,
+				// Ctrl+U/clear, Escape, or the message was just sent) --
+				// tell peers we stopped typing right away instead of
+				// leaving them staring at "X is typing..." for up to the
+				// full 5s server/client timeout. Sending a message
+				// already triggers this same clear server-side
+				// (handlers.go's message-send path calls StopTyping
+				// directly), so this duplicates that in the send case --
+				// harmless, StopTyping is a no-op if there's nothing to
+				// clear.
+				serverID := a.currentClientServer.ID
+				channelID := a.currentChannel.ID
+				cmds = append(cmds, func() tea.Msg {
+					_ = a.connMgr.SendTypingStop(serverID, channelID)
+					return nil
+				})
+			}
+		}
+	}
+
 	return a, tea.Batch(cmds...)
 }
 
@@ -1646,9 +1720,9 @@ func (a *App) View() string {
 		return zone.Scan(a.renderLinkBrowserOverlay(baseView))
 	}
 
-	// Render help modal overlay if active
-	if a.helpModalState != nil {
-		return zone.Scan(a.renderHelpModalOverlay(baseView))
+	// Render help finder overlay if active
+	if a.helpFinderState != nil {
+		return zone.Scan(a.renderHelpFinderOverlay(baseView))
 	}
 
 	// Render member context menu overlay if active
@@ -1695,6 +1769,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Link browser intercepts all keys when visible
 	if a.linkBrowserState != nil {
 		return a.handleLinkBrowserKey(msg)
+	}
+
+	// Help finder intercepts all keys when visible -- unlike the old
+	// static help modal it replaced (which only ever handled Esc,
+	// everything else fell through to the input box underneath), typing
+	// here needs to reach the finder's own query, not the chat input.
+	if a.helpFinderState != nil {
+		return a.handleHelpFinderKey(msg)
 	}
 
 	// Route to view-specific handlers first
@@ -1773,6 +1855,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		return nil
+
+	case "ctrl+r":
+		// Manual "retry now" for a server stuck in StateError -- bypasses
+		// whatever's left of the automatic reconnect's backoff delay.
+		// No-op (falls through, returns nil below) if the active server
+		// isn't actually in an error state.
+		if a.view == ViewMain && a.currentClientServer != nil {
+			return a.retryConnectionNow(a.currentClientServer.ID)
+		}
 
 	case "ctrl+s":
 		// Context-aware: Open Settings from login/main view, otherwise cycle servers
@@ -1998,11 +2089,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "esc":
-		// Close help modal if active
-		if a.helpModalState != nil {
-			a.closeHelpModal()
-			return nil
-		}
 		// Volume slider: Esc exits slider mode back to the action list.
 		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider != nil {
 			a.memberContextMenu.VolumeSlider = nil
@@ -3739,19 +3825,6 @@ func resolveLinkBrowserRowIndex(scrollOffset int, digit string, totalLinks int) 
 	return idx, true
 }
 
-// openHelpModal opens the help modal with the provided content
-func (a *App) openHelpModal(content string) {
-	a.helpModalState = &HelpModalState{
-		Content:      content,
-		ScrollOffset: 0,
-	}
-}
-
-// closeHelpModal closes the help modal
-func (a *App) closeHelpModal() {
-	a.helpModalState = nil
-}
-
 // openURL opens a URL in the default browser
 func (a *App) openURL(url string) tea.Cmd {
 	return func() tea.Msg {
@@ -4597,6 +4670,14 @@ func (a *App) updateChatContent() {
 
 		// Apply width and highlighting
 		if isSelected || isInLevel2 {
+			// contentLine is markdown-rendered (renderMessageContent) and
+			// carries its own ANSI resets after every heading/bold/code
+			// span -- each one would otherwise cancel the highlight
+			// background applied below partway through the message,
+			// leaving disconnected boxes instead of one solid highlight.
+			// See reassertBackgroundAfterResets's own doc comment.
+			contentLine = reassertBackgroundAfterResets(contentLine, a.theme.Colors.Selection)
+
 			// Apply highlight with alignment
 			if msg.IsOwn {
 				// Right-align with highlight and symmetric right padding
@@ -4707,133 +4788,123 @@ func osc8Link(url, styledText string) string {
 	return "\033]8;;" + url + st + styledText + "\033]8;;" + st
 }
 
-// renderMessageContent renders a message's text, styling @mentions and URLs.
-// msgID (the message's UUID string) gives each link within it a stable zone
-// ID (see zone.Mark below) so a mouse click on rendered link text can be
+// renderMessageContent renders a message's text as markdown -- bold,
+// italic, inline code, fenced code blocks, and simple lists via glamour,
+// themed to match the active Concord theme (buildChatGlamourStyle) -- then
+// overlays @mention/@everyone/@here highlighting and clickable OSC 8 links
+// on top of glamour's own output. msgID (the message's UUID string) gives
+// each link within it a stable zone ID (see zone.Mark in
+// restoreURLPlaceholders) so a mouse click on rendered link text can be
 // resolved back to the exact URL -- see handleMainViewMouse in mouse.go.
+//
+// Cached per message ID (a.messageRenderCache) since glamour rendering is
+// meaningfully heavier than the plain-regex styling this replaced, and
+// every visible message re-renders on every redraw.
 func (a *App) renderMessageContent(msgID, text string, width int, rightAlign bool) string {
-	// Determine current user's alias
+	cacheID, cacheable := uuid.Parse(msgID)
+	if cacheable == nil {
+		if entry, ok := a.messageRenderCache[cacheID]; ok &&
+			entry.Text == text && entry.Width == width && entry.Theme == a.theme.Meta.Name {
+			return entry.Rendered
+		}
+	}
+
+	// A reply quote is permanently embedded as the message's own first
+	// line at send time (see handleSendMessage's quotedContent) -- peel it
+	// off and keep its existing fixed dim-italic treatment untouched;
+	// everything else goes through markdown rendering.
+	quotePrefix := ""
+	body := text
+	firstLine := text
+	rest := ""
+	if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+		firstLine = text[:nl]
+		rest = text[nl+1:]
+	}
+	if strings.HasPrefix(firstLine, "↩ ") {
+		replyStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")). // Dim gray (same as input box)
+			Italic(true)
+		quotePrefix = replyStyle.Render(firstLine) + "\n"
+		body = rest
+	}
+
 	var alias string
 	if a.activeConn != nil && a.activeConn.User != nil {
 		alias = a.activeConn.User.Username
 	}
 
-	msgStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Semantic.ChatFg))
-	mentionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Semantic.ChatMention)).
-		Bold(true)
-	linkStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-		Underline(true)
+	rendered := quotePrefix + a.renderChatMarkdownBody(msgID, body, width, alias)
 
-	// linkIndex counts links across the whole message (not reset per line),
-	// so each gets a unique, stable zone ID for the message's lifetime.
+	if cacheable == nil {
+		if a.messageRenderCache == nil {
+			a.messageRenderCache = make(map[uuid.UUID]messageRenderCacheEntry)
+		}
+		a.messageRenderCache[cacheID] = messageRenderCacheEntry{
+			Text: text, Width: width, Theme: a.theme.Meta.Name, Rendered: rendered,
+		}
+	}
+	return rendered
+}
+
+// renderChatMarkdownBody runs the actual glamour + URL/mention pipeline
+// over a message's body (already stripped of any reply-quote first line).
+// See newChatMarkdownRenderer's doc comment for why URLs are substituted
+// with placeholders before glamour ever sees them, rather than zone-marked
+// in a post-pass the way @mentions are.
+func (a *App) renderChatMarkdownBody(msgID, body string, width int, alias string) string {
+	if body == "" {
+		return ""
+	}
+
+	substituted, urls := extractURLPlaceholders(body)
+
+	wrapWidth := width
+	if wrapWidth < 10 {
+		wrapWidth = 10
+	}
+	fallback := func() string {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Semantic.ChatFg)).Render(body)
+	}
+	r, err := newChatMarkdownRenderer(a.theme, wrapWidth)
+	if err != nil {
+		return fallback()
+	}
+	out, err := r.Render(substituted)
+	if err != nil {
+		return fallback()
+	}
+
+	// Trim the leading/trailing blank lines glamour's paragraph handling
+	// still adds even with Document margin/prefix/suffix zeroed out (same
+	// trim renderHelpMarkdown already does for its own document-level
+	// blank lines).
+	lines := strings.Split(out, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	linkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Underline(true)
+	mentionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Semantic.ChatMention)).Bold(true)
 	linkIndex := 0
-
-	// renderLine processes a single line (no \n) applying URL and @mention styling.
-	renderLine := func(line string) string {
-		// Check if this is a reply quote line (starts with "↩")
-		if strings.HasPrefix(line, "↩ ") {
-			// Apply gray italic styling to the entire quote line
-			replyStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("240")).  // Dim gray (same as input box)
-				Italic(true)
-			return replyStyle.Render(line)
-		}
-
-		var out strings.Builder
-		seg := line
-		for len(seg) > 0 {
-			urlLoc := urlRegex.FindStringIndex(seg)
-			mentionLoc := []int{-1, -1}
-			everyoneLoc := []int{-1, -1}
-
-			// Check for @everyone or @here
-			if idx := strings.Index(strings.ToLower(seg), "@everyone"); idx != -1 {
-				everyoneLoc = []int{idx, idx + len("@everyone")}
-			} else if idx := strings.Index(strings.ToLower(seg), "@here"); idx != -1 {
-				everyoneLoc = []int{idx, idx + len("@here")}
-			}
-
-			// Check for personal mention
-			if alias != "" {
-				token := "@" + alias
-				if idx := strings.Index(strings.ToLower(seg), strings.ToLower(token)); idx != -1 {
-					mentionLoc = []int{idx, idx + len(token)}
-				}
-			}
-
-			useURL := urlLoc != nil
-			useMention := mentionLoc[0] != -1
-			useEveryone := everyoneLoc[0] != -1
-
-			// Determine which match comes first
-			if useURL && useMention {
-				if mentionLoc[0] < urlLoc[0] {
-					useURL = false
-				} else {
-					useMention = false
-				}
-			}
-			if useURL && useEveryone {
-				if everyoneLoc[0] < urlLoc[0] {
-					useURL = false
-				} else {
-					useEveryone = false
-				}
-			}
-			if useMention && useEveryone {
-				if everyoneLoc[0] < mentionLoc[0] {
-					useMention = false
-				} else {
-					useEveryone = false
-				}
-			}
-
-			switch {
-			case useEveryone:
-				if everyoneLoc[0] > 0 {
-					out.WriteString(msgStyle.Render(seg[:everyoneLoc[0]]))
-				}
-				out.WriteString(mentionStyle.Render(seg[everyoneLoc[0]:everyoneLoc[1]]))
-				seg = seg[everyoneLoc[1]:]
-			case useMention:
-				if mentionLoc[0] > 0 {
-					out.WriteString(msgStyle.Render(seg[:mentionLoc[0]]))
-				}
-				out.WriteString(mentionStyle.Render(seg[mentionLoc[0]:mentionLoc[1]]))
-				seg = seg[mentionLoc[1]:]
-			case useURL:
-				if urlLoc[0] > 0 {
-					out.WriteString(msgStyle.Render(seg[:urlLoc[0]]))
-				}
-				rawURL := seg[urlLoc[0]:urlLoc[1]]
-				zoneID := fmt.Sprintf("link:%s:%d", msgID, linkIndex)
-				linkIndex++
-				out.WriteString(zone.Mark(zoneID, osc8Link(rawURL, linkStyle.Render(rawURL))))
-				seg = seg[urlLoc[1]:]
-			default:
-				out.WriteString(msgStyle.Render(seg))
-				seg = ""
-			}
-		}
-		return out.String()
-	}
-
-	// Process each newline-separated line independently and apply Width() per line.
-	// Applying Width() to the whole multi-line string causes lipgloss to
-	// miscount visible characters when OSC 8 sequences are on a continuation
-	// line, which shifts the link far to the right with blank space before it.
-	lines := strings.Split(text, "\n")
-	renderedLines := make([]string, len(lines))
-
-	// Just render each line with styling (mentions, links) - no width/alignment here
-	// Width and alignment will be handled by the caller
 	for i, line := range lines {
-		renderedLines[i] = renderLine(line)
+		// glamour pads every line with individually ANSI-wrapped trailing
+		// spaces out to the full wrapWidth (confirmed live 2026-09-08) --
+		// harmless for Help & Guide (always left-aligned), but for a chat
+		// message it leaves the caller's own Width().Align(Right) wrap
+		// (own messages, app.go) with a line that's already the full
+		// viewport width and nothing left to redistribute, so the message
+		// renders stuck at the left edge instead of right-aligned. Strip
+		// it here so callers get a line only as wide as its real content.
+		line = trimTrailingRenderedPadding(line)
+		line = restoreURLPlaceholders(line, msgID, urls, &linkIndex, linkStyle)
+		line = highlightMentions(line, alias, mentionStyle)
+		lines[i] = line
 	}
-	return strings.Join(renderedLines, "\n")
+	return strings.Join(lines, "\n")
 }
 
 // scrollToBottom scrolls the chat to the bottom
@@ -5097,13 +5168,12 @@ func (a *App) handleSlashCommand(input string) tea.Cmd {
 		return pumpCmd
 	}
 
-	// Special handling for help command - display in modal overlay
-	if cmd.Name == "help" {
-		a.openHelpModal(result)
-	} else {
-		a.statusMessage = result
-		a.statusError = false
-	}
+	// /help opens the interactive fuzzy finder directly (handleHelp calls
+	// openHelpFinder itself and returns "", mirroring /theme's no-args
+	// "open the interactive browser" pattern) -- no special-casing needed
+	// here, unlike the old plain-text modal this replaced.
+	a.statusMessage = result
+	a.statusError = false
 	return pumpCmd
 }
 
@@ -5217,42 +5287,14 @@ func (a *App) handleTabCompletion() {
 	// Remove the leading slash and get the partial command
 	partial := strings.TrimPrefix(input, "/")
 
-	// Available commands
-	commands := []string{
-		"attach",
-		"ban",
-		"create-channel",
-		"create-category",
-		"create-group",
-		"create-role",
-		"delete-channel",
-		"delete-category",
-		"delete-group",
-		"download",
-		"help",
-		"kick",
-		"links",
-		"move-channel",
-		"mute",
-		"pin",
-		"rename-channel",
-		"role",
-		"roles",
-		"status",
-		"theme",
-		"timeout",
-		"title",
-		"unban",
-		"unmute",
-		"unpin",
-		"whisper",
-	}
-
-	// Find matching commands
+	// visibleSlashCommands (help_finder.go) is the single canonical list --
+	// used to be a separate hardcoded slice here that had drifted out of
+	// sync with handleHelp's own list (missing several mod/admin commands
+	// entirely, e.g. join-voice/leave-voice/nick/deafen-voice/move-voice).
 	var matches []string
-	for _, cmd := range commands {
-		if strings.HasPrefix(cmd, partial) {
-			matches = append(matches, cmd)
+	for _, cmd := range visibleSlashCommands(a.currentUserRoleLevel()) {
+		if strings.HasPrefix(cmd.Name, partial) {
+			matches = append(matches, cmd.Name)
 		}
 	}
 
@@ -5418,8 +5460,20 @@ type ProtocolMsg struct {
 func (a *App) SetTheme(theme *themes.Theme) {
 	a.theme = theme
 	a.styles = theme.BuildStyles()
+	// Message markdown rendering is theme-derived (buildChatGlamourStyle) --
+	// every cached entry is now stale.
+	a.messageRenderCache = nil
 	// Refresh chat viewport with new theme colors
 	a.updateChatContent()
+}
+
+// SetBuildInfo records the client binary's own build identity, called once
+// at startup from cmd/client/main.go with the vars the Makefile's ldflags
+// populate. Read by Settings > About.
+func (a *App) SetBuildInfo(version, gitCommit, buildTime string) {
+	a.clientVersion = version
+	a.clientGitCommit = gitCommit
+	a.clientBuildTime = buildTime
 }
 
 // SetToken sets the authentication token for the active connection
@@ -5467,6 +5521,22 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 			}
 			a.statusError = true
 			a.stopVoiceEngine()
+		}
+		// A dropped connection can't relay a leave_pane signal -- the plugin
+		// has no way to ask Concord to release the pane over a connection
+		// that no longer exists, and 'q' has nothing to reach either.
+		// Without this, a viewer who'd focused a plugin pane before the
+		// connection dropped is stuck: every key is captured by the pane
+		// guards in handleKeyPress/Update, no escape route left. Release it
+		// here instead, the same way a clean leave_pane would. (This logic
+		// used to live in an unreachable top-level `case DisconnectedMsg`
+		// in Update() -- ConnectedMsg/DisconnectedMsg are always pre-wrapped
+		// in ServerScopedMsg before dispatch, so that case could never
+		// actually fire; moved here where DisconnectedMsg is genuinely
+		// handled, found while removing that dead code.)
+		if a.pluginPane != nil {
+			a.leavePluginPane()
+			a.focus = FocusChannelList
 		}
 		if hasToken {
 			return a.scheduleReconnect(serverID)
@@ -5539,6 +5609,9 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	sc.mu.Lock()
 	sc.User = payload.User
 	sc.Servers = payload.Servers
+	sc.ServerVersion = payload.ServerVersion
+	sc.ServerGitCommit = payload.ServerGitCommit
+	sc.ServerBuildTime = payload.ServerBuildTime
 	sc.mu.Unlock()
 
 	// Cache plugin-provided channel kinds so the client can render/create
@@ -5605,6 +5678,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		// Store servers in the server connection
 		sc.mu.Lock()
 		sc.Servers = payload.Servers
+		sc.ServerVersion = payload.ServerVersion
+		sc.ServerGitCommit = payload.ServerGitCommit
+		sc.ServerBuildTime = payload.ServerBuildTime
 		sc.mu.Unlock()
 
 		log.Printf("READY received: User=%s, %d servers available", payload.User.Username, len(payload.Servers))

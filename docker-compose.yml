@@ -1,0 +1,48 @@
+# Runs a Concord server and a Grapevine hub as two services from the same
+# image, each with its own persistent data directory. See the "Docker
+# Deployment" section of the docs for the full one-time setup walkthrough --
+# short version below.
+#
+# ONE-TIME SETUP (do this before `docker compose up`):
+#
+#   1. Build the image:                docker build -t concord .
+#   2. Generate the server's config:   docker run -it --rm -v "$(pwd)/server-data:/app/data" concord concord-server
+#        Walk through the first-run wizard (ToS, server name, host/port,
+#        etc.) -- set host to 0.0.0.0 so it's reachable from outside the
+#        container -- then Ctrl+C once it reaches "Server listening on...".
+#        This is exactly the same wizard a bare-metal install runs; nothing
+#        Docker-specific about it. concord-server.toml now exists in
+#        ./server-data and every subsequent run skips the wizard entirely.
+#   3. Generate the hub's config:      docker run -it --rm -v "$(pwd)/hub-data:/app/data" concord concord-hub
+#        Same idea -- walk the wizard once, Ctrl+C, grapevine-hub.toml now
+#        exists in ./hub-data.
+#   4. docker compose up -d
+#
+# Both binaries already skip their setup wizard whenever a config file is
+# present (see Dockerfile's own comment) -- this is that behavior, not
+# anything new built for Docker specifically.
+#
+# Neither service does TLS in-process. Put a reverse proxy (Caddy, nginx,
+# or a Cloudflare Tunnel -- see "Concord - Cloudflare Tunnel Setup" in the
+# project docs for that specific pairing) in front if you need HTTPS/WSS.
+
+services:
+  server:
+    build: .
+    image: concord
+    command: ["concord-server"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server-data:/app/data
+    restart: unless-stopped
+
+  hub:
+    build: .
+    image: concord
+    command: ["concord-hub"]
+    ports:
+      - "7777:7777"
+    volumes:
+      - ./hub-data:/app/data
+    restart: unless-stopped

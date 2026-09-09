@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,33 @@ type Handlers struct {
 	typingManager *TypingManager
 	stats         *StatsTracker
 	plugins       *plugins.Manager
+
+	// pluginsDir is the resolved plugins directory (config.PluginsDir,
+	// defaulting to "Plugins" -- see server.go), set once at startup via
+	// SetPluginsDir. Needed by HandlePluginInstall to know where to place a
+	// newly fetched plugin folder.
+	pluginsDir string
+
+	// Build identity, set once at startup via SetBuildInfo -- reported to
+	// every connecting client via ReadyPayload, see Server Settings > About.
+	version   string
+	gitCommit string
+	buildTime string
+}
+
+// SetPluginsDir records the resolved plugins directory, called once at
+// startup from server.go alongside the existing pluginManager.LoadAll call.
+func (h *Handlers) SetPluginsDir(dir string) {
+	h.pluginsDir = dir
+}
+
+// SetBuildInfo records the server binary's own build identity, called once
+// at startup from cmd/server/main.go with the vars the Makefile's ldflags
+// populate.
+func (h *Handlers) SetBuildInfo(version, gitCommit, buildTime string) {
+	h.version = version
+	h.gitCommit = gitCommit
+	h.buildTime = buildTime
 }
 
 // NewHandlers creates a new Handlers instance
@@ -442,6 +470,20 @@ func (h *Handlers) HandleTypingStart(c *Client, msg *protocol.Message) {
 	// TODO: Look up channel to get server ID
 	// For now, use a nil UUID
 	h.typingManager.StartTyping(c.UserID, payload.ChannelID, uuid.Nil, c.User.Username, c.IsPlugin)
+}
+
+// HandleTypingStop processes an explicit "stopped typing without sending"
+// signal, reusing TypingStartPayload's shape (only ChannelID is needed) and
+// the same StopTyping call the message-send path already makes -- see
+// OpTypingStop's doc comment in internal/protocol/messages.go.
+func (h *Handlers) HandleTypingStop(c *Client, msg *protocol.Message) {
+	var payload protocol.TypingStartPayload
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid typing payload")
+		return
+	}
+
+	h.typingManager.StopTyping(c.UserID, payload.ChannelID)
 }
 
 // HandlePresenceUpdate processes a presence update
@@ -2772,6 +2814,7 @@ func (h *Handlers) buildPluginInfo(installed *models.InstalledPlugin) protocol.P
 	}
 	if manifest != nil {
 		info.Product = manifest.Plugin.Product
+		info.SourceURL = manifest.Plugin.SourceURL
 		for _, f := range manifest.ServerConfigFields {
 			info.ConfigFields = append(info.ConfigFields, protocol.PluginField{
 				Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,
@@ -2784,6 +2827,49 @@ func (h *Handlers) buildPluginInfo(installed *models.InstalledPlugin) protocol.P
 		info.ConfigValues = values
 	}
 	return info
+}
+
+// HandlePluginInstall fetches, checksum-verifies, and places a new plugin
+// from a release archive URL, for the Settings > Plugins "install new
+// plugin" action -- the first slice of the admin install/update flow (see
+// internal/plugins/install.go's InstallFromURL for exactly what this does
+// and doesn't cover). A successful install still needs a server restart to
+// actually start the plugin -- InstallFromURL's doc comment explains why
+// live pickup isn't safe to attempt here yet.
+func (h *Handlers) HandlePluginInstall(c *Client, msg *protocol.Message) {
+	var req protocol.PluginInstallRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManageServer); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	install := plugins.InstallRequest{
+		PluginID:  req.PluginID,
+		SourceURL: req.SourceURL,
+		SHA256:    req.SHA256,
+	}
+	if err := plugins.InstallFromURL(ctx, h.pluginsDir, install); err != nil {
+		c.sendError(protocol.ErrorCodeServerError, "Plugin install failed: "+err.Error())
+		return
+	}
+
+	MsgLog.Info("plugin installed, restart required to activate", "plugin_id", req.PluginID, "admin", c.UserID)
+
+	// Re-send the current installed-plugin list (same pattern
+	// HandleSetPluginConfig uses) -- PluginConfigGetRequest and
+	// PluginInstallRequest share the same leading ServerID field/JSON key,
+	// so unmarshaling msg.Data into the former still resolves correctly.
+	// The freshly installed plugin won't appear in it yet -- it isn't
+	// provisioned/started until the next LoadAll (server restart), by
+	// design (see InstallFromURL's doc comment).
+	h.HandleGetPluginConfig(c, msg)
 }
 
 // HandleSetPluginConfig toggles a plugin's enabled flag and/or updates its
