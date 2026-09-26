@@ -46,18 +46,20 @@ Sleep 1s
 
 # Type a chat message showing off markdown rendering (item 3): bold,
 # inline code, and a link all in one line.
-Type "Hey everyone -- just shipped **markdown** support with `glamour` 🎉 see https://github.com/concord-chat/concord"
+Type "Hey everyone -- just shipped **markdown** support with `glamour` 🎉 see https://github.com/JMThomas00/Concord"
 Sleep 500ms
 Enter
 Sleep 1500ms
 
 # Switch focus to the channel list and select a voice channel to show
-# joining voice (Enter twice: once to focus, once to join).
-Type "@"
+# joining voice. Shift+Tab cycles focus backward: Input -> Chat -> Channel
+# List (two presses) -- a single forward Tab from Input lands on the User
+# List instead (Input -> User List -> Server Icons -> Channel List), which
+# would have this Down/Down/Enter sequence opening a member's context menu
+# instead of joining a voice channel.
+Shift+Tab
 Sleep 300ms
-Escape
-Sleep 300ms
-Tab
+Shift+Tab
 Sleep 500ms
 Down
 Sleep 300ms
@@ -83,9 +85,13 @@ Sleep 1500ms
 
 # Open Settings > Help & Guide briefly to show the themed glamour rendering
 # from item 3a (headings, bullet lists, inline code all matching the
-# active theme).
+# active theme). Categories are Theme, Notifications, Display, Audio,
+# Manage Servers, About, Help & Guide (item 4 inserted "About" right before
+# Help & Guide) -- that's 6 Downs from the initial "Theme" selection, not 5.
 Ctrl+S
 Sleep 800ms
+Down
+Sleep 300ms
 Down
 Sleep 300ms
 Down

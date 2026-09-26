@@ -3120,7 +3120,9 @@ func (a *App) renderRemoveExemptPage(width, height int, s *ServerManagementState
 	if len(s.ChannelOverrides) == 0 {
 		middle.writeLine(dimStyle.Render("  No channel overrides to remove"))
 	} else {
-		for i, override := range s.ChannelOverrides {
+		start, end := visibleListWindow(s.RemoveExemptSelected, len(s.ChannelOverrides), layout.middleLines)
+		for i := start; i < end; i++ {
+			override := s.ChannelOverrides[i]
 			chName := "unknown"
 			if override.ChannelID != nil {
 				chName = a.resolveChannelName(*override.ChannelID)
@@ -5086,6 +5088,35 @@ func (a *App) renderPruneConfirmPage(width, height int, s *ServerManagementState
 		Padding(0, 1).Render(content)
 }
 
+// visibleListWindow returns [start, end) into a `total`-item list so that
+// `selected` stays visible within a `visible`-row window, centering the
+// selection when the list is longer than the window. Used by single-line-
+// per-row picker pages (renderChannelPickerPage, renderRemoveExemptPage)
+// that previously wrote every row unconditionally regardless of the
+// panel's actual height -- a regression found live 2026-09-11 ("not all
+// channels are present" in the exempt-channel picker): with more channels
+// than the panel's visible row count, ALL of them were still written into
+// the section builder (settingsSectionBuilder.pad() only pads a SHORT
+// buffer, per its own doc comment -- it never truncates a long one), so
+// the whole page rendered taller than its bordered box and bubbletea's
+// renderer silently dropped the excess from the TOP of the screen (the
+// same failure mode as the 2026-09-06 renderMainView height bug). No
+// separate scroll-offset field is needed since the window is derived
+// purely from the current selection each render.
+func visibleListWindow(selected, total, visible int) (start, end int) {
+	if visible <= 0 || total <= visible {
+		return 0, total
+	}
+	start = selected - visible/2
+	if start < 0 {
+		start = 0
+	}
+	if start > total-visible {
+		start = total - visible
+	}
+	return start, start + visible
+}
+
 // renderChannelPickerPage renders the exempt channel picker as a full settings page
 func (a *App) renderChannelPickerPage(width, height int, s *ServerManagementState) string {
 	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
@@ -5112,7 +5143,9 @@ func (a *App) renderChannelPickerPage(width, height int, s *ServerManagementStat
 	if len(s.OverrideChannelList) == 0 {
 		middle.writeLine(dimStyle.Render("  No channels available to exempt"))
 	} else {
-		for i, ch := range s.OverrideChannelList {
+		start, end := visibleListWindow(s.OverrideChannelSelected, len(s.OverrideChannelList), layout.middleLines)
+		for i := start; i < end; i++ {
+			ch := s.OverrideChannelList[i]
 			line := fmt.Sprintf("  # %s", ch.Name)
 			id := fmt.Sprintf("srvmgmt-exempt-channel-row:%d", i)
 			if i == s.OverrideChannelSelected {

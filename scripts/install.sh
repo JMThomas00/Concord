@@ -20,7 +20,7 @@
 
 set -eu
 
-REPO="concord-chat/concord"
+REPO="JMThomas00/Concord"
 BINARY="${CONCORD_INSTALL_BINARY:-concord-client}"
 
 case "$BINARY" in
@@ -69,12 +69,21 @@ fi
 asset="concord-${platform}.${archive_ext}"
 url="https://github.com/$REPO/releases/latest/download/$asset"
 
-install_dir="${CONCORD_INSTALL_DIR:-/usr/local/bin}"
-if [ ! -w "$install_dir" ] 2>/dev/null; then
-  install_dir="$HOME/.local/bin"
+if [ -n "${CONCORD_INSTALL_DIR:-}" ]; then
+  install_dir="$CONCORD_INSTALL_DIR"
   mkdir -p "$install_dir"
-  echo "note: /usr/local/bin isn't writable, installing to $install_dir instead"
-  echo "      (make sure it's on your PATH)"
+  if [ ! -w "$install_dir" ]; then
+    echo "error: CONCORD_INSTALL_DIR ($install_dir) isn't writable" >&2
+    exit 1
+  fi
+else
+  install_dir="/usr/local/bin"
+  if [ ! -w "$install_dir" ]; then
+    install_dir="$HOME/.local/bin"
+    mkdir -p "$install_dir"
+    echo "note: /usr/local/bin isn't writable, installing to $install_dir instead"
+    echo "      (make sure it's on your PATH)"
+  fi
 fi
 
 tmp_dir="$(mktemp -d)"
@@ -82,11 +91,16 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 echo "Downloading $asset..."
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$url" -o "$tmp_dir/$asset"
+  fetch() { curl -fsSL "$url" -o "$tmp_dir/$asset"; }
 elif command -v wget >/dev/null 2>&1; then
-  wget -q "$url" -O "$tmp_dir/$asset"
+  fetch() { wget -q "$url" -O "$tmp_dir/$asset"; }
 else
   echo "error: need curl or wget to download the release archive" >&2
+  exit 1
+fi
+if ! fetch; then
+  echo "error: couldn't download $url" >&2
+  echo "  (no published release with that asset yet? see https://github.com/$REPO/releases)" >&2
   exit 1
 fi
 

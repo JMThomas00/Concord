@@ -102,6 +102,13 @@ type NotificationConfig struct {
 	BellOnMention bool  `json:"bell_on_mention"` // Write terminal bell \a on every @mention
 	MentionSound string `json:"mention_sound"`  // Sound name for @mention alerts
 	MessageSound string `json:"message_sound"`  // Sound name for regular message alerts
+
+	// Desktop (OS-native) popup notifications -- independent of the sound
+	// settings above. Zero values ("") are deliberately the safe/off
+	// defaults so upgrading an existing config.json never starts firing
+	// surprise popups for users who never opted in.
+	DesktopNotifyMode  string `json:"desktop_notify_mode"`  // "" / "off" (default), "mentions", "all"
+	DesktopNotifyScope string `json:"desktop_notify_scope"` // "" / "all_servers" (default), "current_server"
 }
 
 // DisplayConfig holds display and appearance preferences

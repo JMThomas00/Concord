@@ -52,6 +52,12 @@ type Hub struct {
 	// onVoiceLeave is an optional callback invoked (in a goroutine) when a user
 	// disconnects while in a voice channel. Handlers.go sets this to handle DB cleanup.
 	onVoiceLeave func(userID, serverID, channelID uuid.UUID)
+
+	// onUserDisconnect is an optional callback invoked (in a goroutine) when a
+	// user disconnects, with their Status already set to StatusOffline.
+	// Handlers.go sets this to persist the offline status to the database --
+	// see unregisterClient's own doc comment for the real bug this closes.
+	onUserDisconnect func(user *models.User)
 }
 
 // BroadcastMessage represents a message to be sent to multiple clients
@@ -90,6 +96,16 @@ func (h *Hub) SetVoiceLeaveCallback(fn func(userID, serverID, channelID uuid.UUI
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onVoiceLeave = fn
+}
+
+// SetUserDisconnectCallback registers the callback invoked when a client
+// disconnects, so the caller can persist the resulting offline status to the
+// database. The callback is run in a new goroutine to avoid blocking the
+// hub's event loop.
+func (h *Hub) SetUserDisconnectCallback(fn func(user *models.User)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onUserDisconnect = fn
 }
 
 // Run starts the hub's main loop
@@ -178,16 +194,34 @@ func (h *Hub) unregisterClient(client *Client) {
 	close(client.send)
 
 	cb := h.onVoiceLeave
+	disconnectCb := h.onUserDisconnect
 
 	h.mu.Unlock()
 
 	HubLog.Info("Client unregistered", "user_id", client.UserID)
 
-	// Broadcast offline presence to all servers this user was in
+	// Broadcast offline presence to all servers this user was in.
+	//
+	// Real bug fixed 2026-09-13: this broadcast is the ONLY thing that ever
+	// told anyone this user went offline -- the offline status was never
+	// persisted to the database, only announced live to whichever clients
+	// happened to be connected at that exact moment. A user who disconnected
+	// while no other client was around to receive the broadcast (or who
+	// simply lost power/network without a clean close) stayed "online"
+	// forever in storage, since SetOnline()+UpdateUserStatus() (client.go,
+	// on identify) is the only other place status is ever written. The next
+	// person to connect would then read that stale "online" status straight
+	// out of the database via SERVER_CREATE's Users[] list, showing a member
+	// as online whose machine had been off for weeks. onUserDisconnect below
+	// closes that gap by actually persisting the offline status, the same
+	// way HandlePresenceUpdate already does for an explicit /status change.
 	if user != nil && len(serverIDs) > 0 {
 		offlineUser := *user
 		offlineUser.Status = models.StatusOffline
 		h.BroadcastPresenceUpdate(&offlineUser, serverIDs)
+		if disconnectCb != nil {
+			go disconnectCb(&offlineUser)
+		}
 	}
 
 	// If the user was in a voice channel, run DB cleanup + broadcast leave event

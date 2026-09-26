@@ -380,6 +380,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 			case 1: // Notifications category
 				if s.NotifFocusField > 0 {
 					s.NotifFocusField--
+					a.updateNotifScroll(s)
 				}
 			case 2: // Display category
 				if s.DisplayFocusField > 0 {
@@ -422,8 +423,9 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 					a.previewTheme(s.AvailableThemes[s.SelectedTheme])
 				}
 			case 1: // Notifications category
-				if s.NotifFocusField < 5 {
+				if s.NotifFocusField < 7 {
 					s.NotifFocusField++
+					a.updateNotifScroll(s)
 				}
 			case 2: // Display category
 				if s.DisplayFocusField < 12 {
@@ -640,17 +642,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "space":
 		if s.FocusOnForm && s.SelectedCategory == 1 {
-			switch s.NotifFocusField {
-			case 0: // Notification Sounds toggle
-				a.notifConfig.SoundsMuted = !a.notifConfig.SoundsMuted
-				a.saveNotifConfig()
-			case 1: // Mentions Only toggle
-				a.notifConfig.MentionsOnly = !a.notifConfig.MentionsOnly
-				a.saveNotifConfig()
-			case 2: // Terminal Bell on Mention toggle
-				a.notifConfig.BellOnMention = !a.notifConfig.BellOnMention
-				a.saveNotifConfig()
-			}
+			a.handleNotifFieldActivate(s)
 		}
 		if s.FocusOnForm && s.SelectedCategory == 2 {
 			a.handleDisplayFieldActivate(s)
@@ -692,27 +684,49 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// handleNotifFieldActivate is called on Enter for the Notifications category.
+// handleNotifFieldActivate is called on Space/Enter for the Notifications
+// category. Fields 0-1 are the "Desktop Notifications" section (OS-native
+// popups); fields 2-7 are the "Audio Notifications" section (sounds/bell).
+// Originally the desktop fields lived on their own "Messages" category --
+// merged back in here since both sections govern the same underlying
+// incoming-message event and belong together for the user.
 func (a *App) handleNotifFieldActivate(s *SettingsState) {
 	switch s.NotifFocusField {
-	case 0: // Notification Sounds toggle
+	case 0: // Desktop Notifications: cycle off → mentions → all → off
+		switch a.notifConfig.DesktopNotifyMode {
+		case DesktopNotifyModeMentions:
+			a.notifConfig.DesktopNotifyMode = DesktopNotifyModeAll
+		case DesktopNotifyModeAll:
+			a.notifConfig.DesktopNotifyMode = DesktopNotifyModeOff
+		default: // "" or DesktopNotifyModeOff
+			a.notifConfig.DesktopNotifyMode = DesktopNotifyModeMentions
+		}
+		a.saveNotifConfig()
+	case 1: // Notify From: cycle all servers → current server → all servers
+		if a.notifConfig.DesktopNotifyScope == DesktopNotifyScopeCurrentServer {
+			a.notifConfig.DesktopNotifyScope = DesktopNotifyScopeAllServers
+		} else {
+			a.notifConfig.DesktopNotifyScope = DesktopNotifyScopeCurrentServer
+		}
+		a.saveNotifConfig()
+	case 2: // Notification Sounds toggle
 		a.notifConfig.SoundsMuted = !a.notifConfig.SoundsMuted
 		a.saveNotifConfig()
-	case 1: // Mentions Only toggle
+	case 3: // Mentions Only toggle
 		a.notifConfig.MentionsOnly = !a.notifConfig.MentionsOnly
 		a.saveNotifConfig()
-	case 2: // Terminal Bell on Mention toggle
+	case 4: // Terminal Bell on Mention toggle
 		a.notifConfig.BellOnMention = !a.notifConfig.BellOnMention
 		a.saveNotifConfig()
-	case 3: // @Mention sound picker
+	case 5: // @Mention sound picker
 		s.NotifSoundPickerOpen = true
 		s.NotifSoundTarget = 0
 		s.NotifSoundCursor = FindSoundIndex(a.notifConfig.MentionSound)
-	case 4: // Message sound picker
+	case 6: // Message sound picker
 		s.NotifSoundPickerOpen = true
 		s.NotifSoundTarget = 1
 		s.NotifSoundCursor = FindSoundIndex(a.notifConfig.MessageSound)
-	case 5: // Mute manager
+	case 7: // Mute manager
 		s.NotifMutePickerOpen = true
 		s.NotifMuteTab = 0
 		s.NotifMuteServerIdx = 0
@@ -1702,6 +1716,7 @@ func (a *App) renderNotificationsContent(width, height int) string {
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	sectionHeaderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	selectedStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
 		Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).Bold(true)
@@ -1716,19 +1731,26 @@ func (a *App) renderNotificationsContent(width, height int) string {
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
 		Render("Notification Settings"))
-	top.writeLine(dimStyle.Render("Sounds, desktop alerts, and muting"))
+	top.writeLine(dimStyle.Render("Desktop popups, sounds, and muting for new messages"))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE ──
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	// Build all middle lines into a slice first so they can be scroll-
+	// windowed -- mirrors renderDisplayContent's own pattern (notifFieldLineStarts
+	// below is this page's equivalent of displayFieldLineStarts), needed now
+	// that this page covers two sections (desktop popups + sounds) instead
+	// of the single flat list it used to be.
+	var allMiddleLines []string
+	addLine := func(str string) { allMiddleLines = append(allMiddleLines, str) }
+	addBlank := func() { allMiddleLines = append(allMiddleLines, "") }
 
 	cfg := a.notifConfig
 
-	// helper to render a settings row (label + value line) with focus highlight.
-	// Both lines are wrapped in a single zone spanning both (see
-	// writeZoneMarkedLines) so a click anywhere on either line of a field
-	// resolves to that field, not just its label or its value individually.
+	// writeField renders a label+value row, zone-marked as a single unit
+	// (see writeZoneMarkedLines's doc comment for why one zone spanning
+	// both lines is needed rather than two separate zone.Mark calls) so a
+	// click anywhere on either line resolves to that field.
 	writeField := func(fieldIdx int, label, value string) {
 		isSelected := focused && focusField == fieldIdx
 		lStyle := labelStyle
@@ -1739,67 +1761,130 @@ func (a *App) renderNotificationsContent(width, height int) string {
 			vStyle = selectedStyle
 			marker = "▶ "
 		}
-		writeZoneMarkedLines(middle, fmt.Sprintf("notif-field:%d", fieldIdx),
-			lStyle.Render(marker+label), vStyle.Render("    "+value))
-		middle.writeBlank()
+		marked := zone.Mark(fmt.Sprintf("notif-field:%d", fieldIdx),
+			lStyle.Render(marker+label)+"\n"+vStyle.Render("    "+value))
+		parts := strings.SplitN(marked, "\n", 2)
+		addLine(parts[0])
+		addLine(parts[1])
+		addBlank()
 	}
 
-	// Field 0: Notification sounds toggle
+	// ── Desktop Notifications section ──
+	addLine(sectionHeaderStyle.Render("  Desktop Notifications"))
+	addBlank()
+
+	modeVal := "Off"
+	switch cfg.DesktopNotifyMode {
+	case DesktopNotifyModeAll:
+		modeVal = "All Messages"
+	case DesktopNotifyModeMentions:
+		modeVal = "@Mentions Only"
+	}
+	writeField(0, "Desktop Notifications", modeVal+" ◀▶")
+
+	scopeVal := "All Connected Servers"
+	if cfg.DesktopNotifyScope == DesktopNotifyScopeCurrentServer {
+		scopeVal = "Current Server Only"
+	}
+	writeField(1, "Notify From", scopeVal+" ◀▶")
+
+	addLine(dimStyle.Render("  A popup never appears for a channel you're already viewing."))
+	addBlank()
+
+	// Divider
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addBlank()
+
+	// ── Audio Notifications section ──
+	addLine(sectionHeaderStyle.Render("  Audio Notifications"))
+	addBlank()
+
+	// Field 2: Notification sounds toggle
 	soundsVal := "[✓] Enabled"
 	if cfg.SoundsMuted {
 		soundsVal = "[ ] Disabled"
 	}
-	writeField(0, "Notification Sounds", soundsVal)
+	writeField(2, "Notification Sounds", soundsVal)
 
-	// Field 1: Mentions only toggle
+	// Field 3: Mentions only toggle
 	mentionsOnlyVal := "[ ] Off  (sounds for all messages)"
 	if cfg.MentionsOnly {
 		mentionsOnlyVal = "[✓] On   (sounds for @mentions only)"
 	}
-	writeField(1, "Mentions Only", mentionsOnlyVal)
+	writeField(3, "Mentions Only", mentionsOnlyVal)
 
-	// Field 2: Terminal bell on mention toggle
+	// Field 4: Terminal bell on mention toggle
 	bellVal := "[ ] Off"
 	if cfg.BellOnMention {
 		bellVal = "[✓] On"
 	}
-	writeField(2, "Terminal Bell on Mention", bellVal)
+	writeField(4, "Terminal Bell on Mention", bellVal)
 
-	// Field 3: @Mention sound
+	// Field 5: @Mention sound
 	mentionSound := cfg.MentionSound
 	if mentionSound == "" {
 		mentionSound = "None"
 	}
-	writeField(3, "@Mention Alert Sound", mentionSound+" ▾")
+	writeField(5, "@Mention Alert Sound", mentionSound+" ▾")
 
-	// Field 4: Message sound
+	// Field 6: Message sound
 	msgSound := cfg.MessageSound
 	if msgSound == "" {
 		msgSound = "None"
 	}
-	writeField(4, "Message Alert Sound", msgSound+" ▾")
+	writeField(6, "Message Alert Sound", msgSound+" ▾")
 
 	// Divider
-	middle.writeLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
-	middle.writeBlank()
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addBlank()
 
-	// Field 5: Mute manager link
+	// Field 7: Mute manager link -- shared by both sections above, since a
+	// muted server/channel suppresses both sounds and desktop popups.
 	muteLabel := "Manage Muted Servers & Channels"
 	numMuted := len(a.mutedServers) + len(a.mutedChannels)
 	muteHint := "none muted"
 	if numMuted > 0 {
 		muteHint = fmt.Sprintf("%d muted", numMuted)
 	}
-	isSelected5 := focused && focusField == 5
-	marker5 := "  "
-	lStyle5 := labelStyle
-	if isSelected5 {
-		marker5 = "▶ "
-		lStyle5 = selectedStyle
+	isSelected7 := focused && focusField == 7
+	marker7 := "  "
+	lStyle7 := labelStyle
+	if isSelected7 {
+		marker7 = "▶ "
+		lStyle7 = selectedStyle
 	}
-	writeZoneMarkedLines(middle, "notif-field:5",
-		lStyle5.Render(marker5+muteLabel), dimStyle.Render("    "+muteHint))
+	marked7 := zone.Mark("notif-field:7",
+		lStyle7.Render(marker7+muteLabel)+"\n"+dimStyle.Render("    "+muteHint))
+	parts7 := strings.SplitN(marked7, "\n", 2)
+	addLine(parts7[0])
+	addLine(parts7[1])
 
+	// Apply scroll window: clip allMiddleLines to layout.middleLines starting at NotifScrollOffset.
+	offset := 0
+	if s != nil {
+		offset = s.NotifScrollOffset
+	}
+	total := len(allMiddleLines)
+	maxOffset := total - layout.middleLines
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	end := offset + layout.middleLines
+	if end > total {
+		end = total
+	}
+	window := allMiddleLines[offset:end]
+
+	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	for _, line := range window {
+		middle.writeLine(line)
+	}
 	middle.pad()
 
 	// ── BOTTOM ──
@@ -1807,7 +1892,7 @@ func (a *App) renderNotificationsContent(width, height int) string {
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
 	bottom.writeBlank()
-	bottom.writeLine(helpStyle.Render("↑↓ navigate · Space / Enter toggle or open · Tab back to menu"))
+	bottom.writeLine(helpStyle.Render("↑↓ navigate · Space / Enter toggle, cycle, or open · Tab back to menu"))
 	bottom.writeLine(helpStyle.Render("P preview sound · Esc back"))
 	bottom.pad()
 
@@ -2262,6 +2347,32 @@ func (a *App) renderDisplayContent(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
+}
+
+// notifFieldLineStarts maps each Notifications field index to its first line
+// in the middle section. Layout: header+blank (2), fields 0-1 (3 lines
+// each), note+blank (2), divider+blank (2), header+blank (2), fields 2-6
+// (3 lines each), divider+blank (2), field 7 (2 lines, no trailing blank).
+var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31}
+
+// updateNotifScroll adjusts NotifScrollOffset so the focused field is visible.
+func (a *App) updateNotifScroll(s *SettingsState) {
+	contentHeight := a.height - 2
+	layout := calculateSettingsLayout(100, contentHeight, 2, 1)
+	if s.NotifFocusField < 0 || s.NotifFocusField >= len(notifFieldLineStarts) {
+		return
+	}
+	fieldStart := notifFieldLineStarts[s.NotifFocusField]
+	fieldEnd := fieldStart + 3
+	if fieldStart < s.NotifScrollOffset {
+		s.NotifScrollOffset = fieldStart
+	}
+	if fieldEnd > s.NotifScrollOffset+layout.middleLines {
+		s.NotifScrollOffset = fieldEnd - layout.middleLines
+	}
+	if s.NotifScrollOffset < 0 {
+		s.NotifScrollOffset = 0
+	}
 }
 
 // displayFieldLineStarts maps each Display field index to its first line in the middle section.

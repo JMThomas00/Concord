@@ -145,12 +145,14 @@ func (a *App) updateHelpScrollFromRow(absY int) {
 }
 
 // handleNotificationsCategoryMouse handles clicks on the Notifications
-// category: the main field list (6 fields, each a zone-marked 2-line block
-// -- see writeZoneMarkedLines in settings_view.go) and the @mention/message
-// sound picker sub-page. The mute-manager picker (NotifMutePickerOpen) is
-// not yet wired -- it has its own internal tab bar (Servers/Channels) that
-// needs its own look, deferred the same way the member-list/Hub-Browser
-// gaps were in the first pass rather than guessed at.
+// category: the main field list (8 fields -- Desktop Notifications section
+// (mode/scope) plus the Audio Notifications section (sounds/mentions-only/
+// bell/mention sound/message sound) and the mute-manager link, each a
+// zone-marked 2-line block -- see writeZoneMarkedLines in settings_view.go)
+// and the @mention/message sound picker sub-page. The mute-manager picker
+// (NotifMutePickerOpen) is not yet wired -- it has its own internal tab bar
+// (Servers/Channels) that needs its own look, deferred the same way the
+// member-list/Hub-Browser gaps were in the first pass rather than guessed at.
 func (a *App) handleNotificationsCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 	s := a.settingsState
 
@@ -164,7 +166,7 @@ func (a *App) handleNotificationsCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 
-	for field := 0; field <= 5; field++ {
+	for field := 0; field <= 7; field++ {
 		if zoneInBounds(fmt.Sprintf("notif-field:%d", field), msg) {
 			s.NotifFocusField = field
 			return a.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})

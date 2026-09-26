@@ -1,6 +1,10 @@
 package client
 
 import (
+	"strings"
+
+	"github.com/alecthomas/chroma/v2"
+	chromastyles "github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/concord-chat/concord/internal/themes"
 )
@@ -57,12 +61,27 @@ func buildThemedGlamourStyle(theme *themes.Theme) ansi.StyleConfig {
 				Bold:        boolPtr(true),
 			},
 		},
-		H1: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "# "}},
-		H2: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "## "}},
-		H3: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "### "}},
-		H4: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "#### "}},
-		H5: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "##### "}},
-		H6: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "###### "}},
+		// H1-H6 deliberately carry NO "#"/"##"/... Prefix -- glamour's own
+		// bundled styles (e.g. "dark") keep the literal markdown hash marks
+		// as a heading-level cue, but a real live report (2026-09-11) called
+		// that out as not looking like an "actual header." Since a terminal
+		// can't vary font size, level is instead conveyed by color (H1/H2
+		// share Heading's bold Purple; H3+ switch to bold Cyan) and a 2-
+		// column Indent nesting subsections under their parent section --
+		// this doc only ever uses H2 (section) and H3 (subsection), see
+		// helpMarkdown below, but H1/H4-H6 get sensible fallbacks too.
+		H1: ansi.StyleBlock{},
+		H2: ansi.StyleBlock{},
+		H3: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{Color: themeColor(c.Cyan)},
+			Indent:         uintPtr(2),
+		},
+		H4: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{Color: themeColor(c.Cyan)},
+			Indent:         uintPtr(2),
+		},
+		H5: ansi.StyleBlock{Indent: uintPtr(4)},
+		H6: ansi.StyleBlock{Indent: uintPtr(4)},
 
 		Text:          ansi.StylePrimitive{Color: themeColor(c.Foreground)},
 		Strikethrough: ansi.StylePrimitive{CrossedOut: boolPtr(true)},
@@ -123,34 +142,13 @@ func buildThemedGlamourStyle(theme *themes.Theme) ansi.StyleConfig {
 				},
 				Margin: uintPtr(2),
 			},
-			Chroma: &ansi.Chroma{
-				Text:                ansi.StylePrimitive{Color: themeColor(c.Foreground)},
-				Error:               ansi.StylePrimitive{Color: themeColor(c.Foreground), BackgroundColor: themeColor(c.Red)},
-				Comment:             ansi.StylePrimitive{Color: themeColor(c.Comment)},
-				CommentPreproc:      ansi.StylePrimitive{Color: themeColor(c.Pink)},
-				Keyword:             ansi.StylePrimitive{Color: themeColor(c.Pink)},
-				KeywordReserved:     ansi.StylePrimitive{Color: themeColor(c.Pink)},
-				KeywordNamespace:    ansi.StylePrimitive{Color: themeColor(c.Pink)},
-				KeywordType:         ansi.StylePrimitive{Color: themeColor(c.Cyan)},
-				Operator:            ansi.StylePrimitive{Color: themeColor(c.Pink)},
-				Punctuation:         ansi.StylePrimitive{Color: themeColor(c.Foreground)},
-				Name:                ansi.StylePrimitive{Color: themeColor(c.Cyan)},
-				NameBuiltin:         ansi.StylePrimitive{Color: themeColor(c.Cyan)},
-				NameTag:             ansi.StylePrimitive{Color: themeColor(c.Pink)},
-				NameAttribute:       ansi.StylePrimitive{Color: themeColor(c.Green)},
-				NameClass:           ansi.StylePrimitive{Color: themeColor(c.Cyan)},
-				NameConstant:        ansi.StylePrimitive{Color: themeColor(c.Purple)},
-				NameDecorator:       ansi.StylePrimitive{Color: themeColor(c.Green)},
-				NameFunction:        ansi.StylePrimitive{Color: themeColor(c.Green)},
-				LiteralNumber:       ansi.StylePrimitive{Color: themeColor(c.Cyan)},
-				LiteralString:       ansi.StylePrimitive{Color: themeColor(c.Yellow)},
-				LiteralStringEscape: ansi.StylePrimitive{Color: themeColor(c.Pink)},
-				GenericDeleted:      ansi.StylePrimitive{Color: themeColor(c.Red)},
-				GenericEmph:         ansi.StylePrimitive{Color: themeColor(c.Yellow), Italic: boolPtr(true)},
-				GenericInserted:     ansi.StylePrimitive{Color: themeColor(c.Green)},
-				GenericStrong:       ansi.StylePrimitive{Color: themeColor(c.Orange), Bold: boolPtr(true)},
-				GenericSubheading:   ansi.StylePrimitive{Color: themeColor(c.Purple)},
-			},
+			// Theme (a pre-registered chroma style name), not Chroma -- see
+			// registerChromaStyleForTheme's doc comment for why glamour's
+			// own Chroma-field auto-registration path is deliberately
+			// avoided here (it can panic on terminal-default's bare ANSI
+			// color indices, and never updates after the first theme it
+			// ever sees in a process).
+			Theme: registerChromaStyleForTheme(theme),
 		},
 
 		Table: ansi.StyleTable{
@@ -204,6 +202,137 @@ func buildChatGlamourStyle(theme *themes.Theme) ansi.StyleConfig {
 	s.Text.Color = chatFg
 
 	return s
+}
+
+// chromaHex returns v unchanged if it's a "#rrggbb"-style hex color, or ""
+// otherwise. Chroma's own style-entry parser (github.com/alecthomas/chroma/v2's
+// ParseStyleEntry) only understands "#rrggbb"/"bg:#rrggbb"/bold/italic/
+// underline/noinherit -- unlike lipgloss/termenv (used for everything else
+// in Concord's UI), it has no concept of the bare ANSI palette indices
+// ("0"-"15") the terminal-default theme deliberately uses for its other
+// color fields (see CLAUDE.md's Themes section). Feeding one of those
+// straight to chroma doesn't degrade gracefully -- chroma.MustNewStyle
+// panics outright (not a returned error) with e.g. `unknown style element
+// "2"` for terminal-default's green="2". Route every chroma-bound color
+// through this so an unrecognized value is simply omitted (chroma treats a
+// missing color as "inherit/unstyled") instead of crashing the whole TUI.
+func chromaHex(v string) string {
+	if !strings.HasPrefix(v, "#") {
+		return ""
+	}
+	return v
+}
+
+// composeChromaStyle builds one chroma style-entry string (e.g.
+// "#a6e3a1 bg:#1e1e2e bold") from pre-validated (chromaHex-filtered)
+// color/background values, mirroring the space-separated grammar
+// chroma.ParseStyleEntry expects.
+func composeChromaStyle(color, bg string, bold, italic bool) string {
+	var parts []string
+	if color != "" {
+		parts = append(parts, color)
+	}
+	if bg != "" {
+		parts = append(parts, "bg:"+bg)
+	}
+	if italic {
+		parts = append(parts, "italic")
+	}
+	if bold {
+		parts = append(parts, "bold")
+	}
+	return strings.Join(parts, " ")
+}
+
+// chromaStyleEntries builds the chroma.StyleEntries mapping used for
+// code-block syntax highlighting, field-for-field the same color choices
+// buildThemedGlamourStyle used to build inline as an *ansi.Chroma (moved
+// here so they can be safely validated via chromaHex before ever reaching
+// chroma's parser -- see registerChromaStyleForTheme's doc comment).
+func chromaStyleEntries(theme *themes.Theme) chroma.StyleEntries {
+	c := theme.Colors
+	return chroma.StyleEntries{
+		chroma.Text:                composeChromaStyle(chromaHex(c.Foreground), "", false, false),
+		chroma.Error:               composeChromaStyle(chromaHex(c.Foreground), chromaHex(c.Red), false, false),
+		chroma.Comment:             composeChromaStyle(chromaHex(c.Comment), "", false, false),
+		chroma.CommentPreproc:      composeChromaStyle(chromaHex(c.Pink), "", false, false),
+		chroma.Keyword:             composeChromaStyle(chromaHex(c.Pink), "", false, false),
+		chroma.KeywordReserved:     composeChromaStyle(chromaHex(c.Pink), "", false, false),
+		chroma.KeywordNamespace:    composeChromaStyle(chromaHex(c.Pink), "", false, false),
+		chroma.KeywordType:         composeChromaStyle(chromaHex(c.Cyan), "", false, false),
+		chroma.Operator:            composeChromaStyle(chromaHex(c.Pink), "", false, false),
+		chroma.Punctuation:         composeChromaStyle(chromaHex(c.Foreground), "", false, false),
+		chroma.Name:                composeChromaStyle(chromaHex(c.Cyan), "", false, false),
+		chroma.NameBuiltin:         composeChromaStyle(chromaHex(c.Cyan), "", false, false),
+		chroma.NameTag:             composeChromaStyle(chromaHex(c.Pink), "", false, false),
+		chroma.NameAttribute:       composeChromaStyle(chromaHex(c.Green), "", false, false),
+		chroma.NameClass:           composeChromaStyle(chromaHex(c.Cyan), "", false, false),
+		chroma.NameConstant:        composeChromaStyle(chromaHex(c.Purple), "", false, false),
+		chroma.NameDecorator:       composeChromaStyle(chromaHex(c.Green), "", false, false),
+		chroma.NameFunction:        composeChromaStyle(chromaHex(c.Green), "", false, false),
+		chroma.LiteralNumber:       composeChromaStyle(chromaHex(c.Cyan), "", false, false),
+		chroma.LiteralString:       composeChromaStyle(chromaHex(c.Yellow), "", false, false),
+		chroma.LiteralStringEscape: composeChromaStyle(chromaHex(c.Pink), "", false, false),
+		chroma.GenericDeleted:      composeChromaStyle(chromaHex(c.Red), "", false, false),
+		chroma.GenericEmph:         composeChromaStyle(chromaHex(c.Yellow), "", false, true),
+		chroma.GenericInserted:     composeChromaStyle(chromaHex(c.Green), "", false, false),
+		chroma.GenericStrong:       composeChromaStyle(chromaHex(c.Orange), "", true, false),
+		chroma.GenericSubheading:   composeChromaStyle(chromaHex(c.Purple), "", false, false),
+	}
+}
+
+// chromaStyleNameForTheme is the chroma style registry name used for a given
+// Concord theme's code-block syntax highlighting -- keyed by theme name,
+// the same identity already used by HelpRenderTheme's cache-invalidation
+// check (help_view.go).
+func chromaStyleNameForTheme(theme *themes.Theme) string {
+	return "concord-chroma-" + theme.Meta.Name
+}
+
+// registerChromaStyleForTheme registers (once per theme name; cheap no-op
+// on repeat calls) a chroma style for code-block syntax highlighting
+// derived from the given Concord theme, and returns its registry name for
+// use as ansi.StyleCodeBlock.Theme.
+//
+// This works around two real problems in glamour's own auto-registration
+// path (glamour/ansi/codeblock.go's CodeBlockElement.Render, triggered
+// whenever ansi.StyleCodeBlock.Chroma is set instead of Theme):
+//
+//  1. glamour always registers under one hardcoded name ("charm") and only
+//     the FIRST time ever in the process (`if !ok { styles.Register(...) }`)
+//     -- using whatever theme happened to be active at that moment. Every
+//     later theme switch's code blocks then silently keep showing that
+//     first theme's colors, never following the new one.
+//  2. glamour feeds theme.Colors values straight into chroma's style-entry
+//     parser with no validation. Live bug found 2026-09-11: switching to
+//     the terminal-default theme (green="2", a bare ANSI palette index --
+//     valid for the rest of Concord's UI, but not for chroma) and then
+//     opening Settings > Help & Guide crashed the whole TUI with
+//     `chroma.MustNewStyle`'s panic: `invalid entry for NameFunction:
+//     unknown style element "2"` -- MustNewStyle panics outright rather
+//     than returning an error.
+//
+// Registering our own uniquely-named (per theme) style ahead of time makes
+// glamour's own `if !ok` check see it as already-registered and skip its
+// path entirely, using ours instead -- every theme gets its own always-
+// up-to-date entry, and chromaStyleEntries only ever emits chromaHex-
+// validated colors, so chroma.NewStyle can't fail here the way
+// chroma.MustNewStyle did.
+func registerChromaStyleForTheme(theme *themes.Theme) string {
+	name := chromaStyleNameForTheme(theme)
+	if _, ok := chromastyles.Registry[name]; ok {
+		return name
+	}
+	style, err := chroma.NewStyle(name, chromaStyleEntries(theme))
+	if err != nil {
+		// Should be unreachable -- chromaStyleEntries only emits
+		// chromaHex-validated tokens. Fall back to "" (glamour's own
+		// StylePrimitive-only rendering, no syntax highlighting) rather
+		// than risk propagating a bad style name.
+		return ""
+	}
+	chromastyles.Register(style)
+	return name
 }
 
 // themeColor turns a theme color field into the *string glamour's

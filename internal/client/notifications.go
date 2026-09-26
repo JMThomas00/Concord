@@ -7,6 +7,77 @@ import (
 	"github.com/gen2brain/beeep"
 )
 
+// Desktop notification mode/scope values -- stored in
+// NotificationConfig.DesktopNotifyMode/DesktopNotifyScope. The zero value of
+// each ("") is deliberately treated as the safe "off"/"all_servers" default
+// by shouldSendDesktopNotification, so existing config.json files that
+// predate this feature never start popping notifications unexpectedly.
+const (
+	DesktopNotifyModeOff      = "off"
+	DesktopNotifyModeMentions = "mentions"
+	DesktopNotifyModeAll      = "all"
+
+	DesktopNotifyScopeAllServers    = "all_servers"
+	DesktopNotifyScopeCurrentServer = "current_server"
+)
+
+// desktopNotifyBodyLimit truncates a notification body so a long message
+// doesn't produce an oversized OS popup.
+const desktopNotifyBodyLimit = 200
+
+func init() {
+	// beeep.AppName defaults to "DefaultAppName" -- that's what a Windows
+	// toast's title bar shows unless this is set, regardless of the
+	// title/message passed to Notify. Set once at package load so every
+	// OS's native popup is correctly attributed to Concord.
+	beeep.AppName = "Concord"
+}
+
+// shouldSendDesktopNotification decides whether an OS-native desktop popup
+// should fire for an incoming message. Pure/side-effect-free on purpose --
+// beeep.Notify actually pops a real native toast, so the decision logic is
+// kept separate and unit-testable without ever invoking it.
+//
+// isCurrentChannel always suppresses the popup (mirrors the sound path's
+// own "sound plays even in the current channel; desktop popup only when
+// away from it" comment in app.go) -- a popup for a message you're already
+// looking at is just noise. isCurrentServer only matters when scope is
+// "current_server": it's the currently-active/connected server tab, not
+// necessarily the message's own server.
+func shouldSendDesktopNotification(mode, scope string, isMention, isCurrentChannel, isCurrentServer bool) bool {
+	if isCurrentChannel {
+		return false
+	}
+	switch mode {
+	case DesktopNotifyModeAll:
+		// proceed
+	case DesktopNotifyModeMentions:
+		if !isMention {
+			return false
+		}
+	default: // "" (unset) or DesktopNotifyModeOff
+		return false
+	}
+	if scope == DesktopNotifyScopeCurrentServer && !isCurrentServer {
+		return false
+	}
+	return true
+}
+
+// sendDesktopNotification pops a native OS notification (Windows toast,
+// macOS Notification Center, Linux D-Bus/notify-send via beeep's platform
+// backends -- already pulled in transitively since beeep is a direct
+// dependency used for sound alerts) asynchronously, matching playSound's
+// own "never block the event loop" pattern.
+func (a *App) sendDesktopNotification(title, message string) {
+	if runes := []rune(message); len(runes) > desktopNotifyBodyLimit {
+		message = string(runes[:desktopNotifyBodyLimit-1]) + "…"
+	}
+	go func() {
+		_ = beeep.Notify(title, message, "") //nolint:errcheck
+	}()
+}
+
 // soundTone is a single frequency+duration pair for a beep sound.
 type soundTone struct {
 	Freq float64 // Hz
@@ -72,11 +143,24 @@ func (a *App) playSound(name string) {
 	}
 }
 
-// triggerMessageNotification fires the appropriate sound for an incoming message,
-// respecting global config and any per-server overrides.
-// serverID is used to look up per-server sound overrides.
-func (a *App) triggerMessageNotification(authorName, serverName, channelName, content string, isMention bool) {
+// triggerMessageNotification fires the appropriate sound (and, if enabled,
+// OS desktop popup) for an incoming message, respecting global config and
+// any per-server sound overrides. isCurrentChannel/isCurrentServer describe
+// the message's context relative to what the user is currently looking at
+// -- desktop popups (unlike sounds) are gated on these, since a popup for a
+// channel already on screen is redundant. Desktop notifications deliberately
+// don't participate in ServerSoundOverride -- scope/mode are global-only
+// settings (Settings > Messages), not per-server.
+func (a *App) triggerMessageNotification(authorName, serverName, channelName, content string, isMention, isCurrentChannel, isCurrentServer bool) {
 	cfg := a.notifConfig
+
+	if shouldSendDesktopNotification(cfg.DesktopNotifyMode, cfg.DesktopNotifyScope, isMention, isCurrentChannel, isCurrentServer) {
+		title := fmt.Sprintf("%s (#%s)", serverName, channelName)
+		if isMention {
+			title = fmt.Sprintf("Mention in #%s (%s)", channelName, serverName)
+		}
+		a.sendDesktopNotification(title, fmt.Sprintf("%s: %s", authorName, content))
+	}
 
 	// Resolve effective settings: start with globals, apply server override if present.
 	muted := cfg.SoundsMuted

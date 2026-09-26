@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/concord-chat/concord/internal/themes"
 	zone "github.com/lrstanley/bubblezone"
+	ansitruncate "github.com/muesli/reflow/truncate"
 )
 
 // helpMarkdown is the full Concord user guide rendered via glamour.
@@ -86,7 +87,7 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 
 - ` + "`PgUp / PgDn`" + ` — Scroll message history
 - ` + "`Alt+M`" + ` — Enter message navigation mode
-- ` + "`Ctrl+J or Ctrl+Enter`" + ` — Insert a newline in the input box
+- ` + "`Ctrl+J`" + ` — Insert a newline in the input box (works on every platform; Ctrl+Enter/Shift+Enter may also work depending on your terminal, but many — including Windows Terminal/PowerShell — can't tell them apart from a plain Enter)
 - ` + "`@`" + ` — Open @mention autocomplete popup
 - ` + "`↑ / ↓`" + ` in popup — Navigate mention suggestions
 - ` + "`Enter or Tab`" + ` in popup — Accept selected mention
@@ -118,7 +119,7 @@ Press **Alt+M** from the chat panel to enter message navigation:
 
 ### Sending Messages
 
-Type in the input box at the bottom of the chat panel and press **Enter** to send. Use **Ctrl+J** or **Ctrl+Enter** for a newline inside the message.
+Type in the input box at the bottom of the chat panel and press **Enter** to send. Use **Ctrl+J** for a newline inside the message — it's the one shortcut guaranteed to work the same way on every platform.
 
 ### Slash Commands
 
@@ -398,12 +399,21 @@ Over 40 themes are embedded, including **Dracula**, **Alucard Dark/Light**, **No
 
 ### Notifications
 
+**Desktop Notifications** — OS-native popups (Windows toast, macOS Notification Center, or Linux notification daemon, depending on your OS) for new messages:
+
+- **Desktop Notifications** — Off / @Mentions Only / All Messages
+- **Notify From** — All Connected Servers, or only the one you currently have open
+
+A popup never appears for a channel you're already viewing — only for messages you'd otherwise miss.
+
+**Audio Notifications** — sound and terminal-bell alerts:
+
 - **Sounds Muted** — Suppress all notification sounds
 - **Mentions Only** — Only play sounds for @mentions directed at you
 - **Bell on Mention** — Fire a terminal bell (` + "`\\a`" + `) on each @mention
 - **Mention Sound** — Sound for @mention alerts
 - **Message Sound** — Sound for all other messages
-- **Mute Manager** — Per-server and per-channel mute overrides
+- **Mute Manager** — Per-server and per-channel mute overrides (silences both sounds and desktop popups)
 
 ### Display
 
@@ -458,12 +468,6 @@ A server-side bot framework with event hooks (message received, user joined, rea
 - **Ollama** (for local self-hosted models)
 - An in-client ` + "`/ai`" + ` command for inline compose assistance
 
-### 🔔 OS-Level Notifications
-
-*Coming in a future release*
-
-Desktop notifications for @mentions and DMs when Concord is running in the background, using the native notification system on Windows, macOS, and Linux.
-
 ---
 
 *Concord — Built with Go, bubbletea, and lipgloss. See Settings > About for the exact build version.*
@@ -496,7 +500,20 @@ func (a *App) renderHelpContent(width, height int) string {
 	// Cache rendered lines; invalidate when content width OR the active
 	// theme changes -- the style is theme-derived now (buildThemedGlamourStyle),
 	// so a theme switch must re-render, not just a resize.
-	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderWidth != contentWidth || s.HelpRenderTheme != a.theme.Meta.Name) {
+	//
+	// The width check is additionally gated on !a.helpResizing: renderHelpMarkdown
+	// does a full goldmark+chroma pass over the whole document (~40ms
+	// measured on a high-end desktop CPU), and a live window-drag resize
+	// fires many WindowSizeMsg ticks in quick succession -- recomputing on
+	// every single one of them (real bug, live-reported 2026-09-11) blocked
+	// the render loop repeatedly, seen as very slow redraws while widening
+	// and garbled/torn frames while narrowing. While a resize is still in
+	// progress this deliberately keeps showing the last-computed (possibly
+	// stale-width) lines; the debounce timer in Update() clears helpResizing
+	// once the resize actually settles, and the next render then does the
+	// one real recompute at the final width. A theme switch isn't part of a
+	// resize drag, so it still always recomputes immediately regardless.
+	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderTheme != a.theme.Meta.Name || (!a.helpResizing && s.HelpRenderWidth != contentWidth)) {
 		s.HelpRenderedLines = renderHelpMarkdown(contentWidth, a.theme)
 		s.HelpRenderWidth = contentWidth
 		s.HelpRenderTheme = a.theme.Meta.Name
@@ -567,6 +584,16 @@ func (a *App) renderHelpContent(width, height int) string {
 		if i < len(window) {
 			contentLine = window[i]
 		}
+		// Guards against the debounced resize cache briefly showing a line
+		// rendered at a wider, stale width than the current, now-narrower
+		// contentWidth. lipgloss.Style.Width alone only PADS short content
+		// -- given content already wider than the target, it word-WRAPS it
+		// into multiple lines rather than truncating, which would throw off
+		// this whole fixed-row-per-line loop (each row assumes exactly one
+		// physical line in, one out). ansitruncate.String actually cuts a
+		// single line down to a printable-cell width, ANSI-escape-aware, so
+		// wide stale content collapses back to one row instead of several.
+		contentLine = ansitruncate.String(contentLine, uint(contentWidth))
 		line := lipgloss.NewStyle().Width(contentWidth).Render(contentLine)
 
 		middleBuf.WriteString(line + markedGlyphs[i])

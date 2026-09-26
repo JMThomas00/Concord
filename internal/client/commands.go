@@ -17,7 +17,6 @@ import (
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/concord-chat/concord/internal/themes"
 	"github.com/google/uuid"
-	"github.com/sqweek/dialog"
 )
 
 // Command represents a parsed slash command
@@ -1202,11 +1201,11 @@ func (ch *CommandHandler) handleDownload(args []string) (string, error) {
 	// Ask where to save via the OS's native Save As dialog rather than
 	// silently dropping it into ~/Downloads -- this blocks the TUI while
 	// open, same as any other modal file picker.
-	destPath, dlgErr := dialog.File().SetStartFile(found.Filename).Title("Save " + found.Filename + " as").Save()
+	destPath, dlgErr := promptSavePath(found.Filename)
 	switch {
 	case dlgErr == nil:
 		// proceed with the chosen path
-	case errors.Is(dlgErr, dialog.ErrCancelled):
+	case errors.Is(dlgErr, errSaveDialogCancelled):
 		return "Download cancelled", nil
 	default:
 		// Save dialog unavailable in this environment (e.g. no display) --

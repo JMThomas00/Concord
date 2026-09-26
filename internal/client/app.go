@@ -159,6 +159,28 @@ type App struct {
 	typingFrame     int                     // current animation frame index
 	lastTypingSent  time.Time               // when we last sent OpTypingStart
 
+	// lastKeystrokeAt is updated at the top of every handleKeyPress call,
+	// regardless of which key or which view handles it -- see its use in
+	// the "enter" case's ViewMain/FocusInput branch for why: a real,
+	// live-reported bug (2026-09-13) where pasting multi-line text sent
+	// each line as its own message in rapid-fire succession. Root cause is
+	// platform-specific but has no platform-specific fix available: on
+	// Windows, bubbletea's native console-input reader (key_windows.go)
+	// has no concept of "paste" at all -- ReadConsoleInput just replays
+	// pasted text as a flood of ordinary synthetic keystrokes, including a
+	// real KeyEnter for every embedded newline, completely indistinguishable
+	// from a deliberate press at the tea.KeyMsg level (Paste is never set
+	// on that code path). A POSIX terminal without bracketed-paste support
+	// hits the same failure mode for the same reason. Since there's no
+	// reliable "this came from a paste" signal on any of these paths, this
+	// times the gap since the previous keystroke instead: a burst of
+	// machine-replayed keystrokes lands microseconds to low-single-digit
+	// milliseconds apart, far faster than any real human types (even a
+	// very fast typist rarely sustains sub-20ms gaps, and essentially
+	// never right before a deliberate Enter-to-send). See
+	// pasteBurstKeyThreshold.
+	lastKeystrokeAt time.Time
+
 	// Theme browser state
 	themeBrowserState *ThemeBrowserState
 
@@ -230,6 +252,56 @@ type App struct {
 	// it drifts off the narrow 2-char-wide scrollbar column mid-drag --
 	// exactly how a real terminal/GUI scrollbar drag behaves.
 	helpScrollDragging bool
+
+	// helpResizing/helpResizeGen debounce Help & Guide's markdown re-render
+	// across a live window-drag resize. renderHelpMarkdown does a full
+	// goldmark+chroma pass over the whole document (~40ms measured on a
+	// high-end desktop CPU, worse on weaker hardware) and used to run
+	// synchronously on every single tea.WindowSizeMsg tick -- a drag-resize
+	// fires many of those in quick succession, so the render loop was
+	// getting blocked repeatedly, which a real live report (2026-09-11)
+	// showed as both very slow redraws while widening and garbled/torn
+	// frames while narrowing. helpResizeGen is bumped on every resize tick;
+	// helpResizeSettleCmd schedules a check 150ms later that only takes
+	// effect if no newer resize has happened since (helpResizeGen still
+	// matches) -- see the WindowSizeMsg/helpResizeSettledMsg handling in
+	// Update() and the gated cache check in renderHelpContent.
+	helpResizing  bool
+	helpResizeGen int
+
+	// inPasteBurst/pasteBurstGen/cachedMainView cut the cost of a
+	// machine-replayed paste burst (see lastKeystrokeAt's doc comment) the
+	// same way helpResizing cuts the cost of a live drag-resize: a real,
+	// live-reported bug (2026-09-13) where pasting longer text visibly
+	// "streamed in" -- because bubbletea's event loop runs a full
+	// Update()+View() cycle for EVERY replayed keystroke with no batching
+	// (confirmed in tea.go's eventLoop), and View()'s ViewMain path
+	// (renderMainView, ~1.7ms measured, plus zone.Scan's own ~1.5ms full-string
+	// mouse-zone pass over the result) both re-run unconditionally every
+	// single time even though nothing but the input box's text actually
+	// changed. Neither the sidebar/channel list/user list content nor the
+	// mouse-click zones they register can possibly have changed mid-paste, so
+	// re-deriving them hundreds of times in a fraction of a second is pure
+	// waste -- and it's exactly what the user was seeing "streamed in".
+	//
+	// While inPasteBurst is true, View() skips renderMainView+zone.Scan
+	// entirely and replays cachedMainView (the last fully-rendered,
+	// already-zone-scanned frame) unchanged -- bubbletea's renderer diffs an
+	// unchanged frame and skips the terminal write too, so this also avoids
+	// hundreds of wasted terminal writes, not just CPU. The tradeoff -- the
+	// input box's visible text doesn't update on every single replayed
+	// keystroke during the burst -- is the right one here: a real paste
+	// normally appears to the user as one atomic chunk of text landing in the
+	// box, not a character-by-character typewriter effect, so freezing the
+	// frame until the burst settles and then jumping straight to the final,
+	// fully-pasted text is closer to correct behavior, not a regression.
+	// pasteBurstGen/pasteBurstSettleCmd/pasteBurstSettledMsg mirror
+	// helpResizeGen/helpResizeSettleCmd/helpResizeSettledMsg's exact
+	// stale-tick-is-a-safe-no-op debounce shape -- see those and the
+	// tea.KeyMsg/pasteBurstSettledMsg handling in Update().
+	inPasteBurst   bool
+	pasteBurstGen  int
+	cachedMainView string
 
 	// Build identity, set once at startup via SetBuildInfo -- see
 	// Settings > About. Server counterparts (serverVersion/etc.) are
@@ -649,10 +721,20 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	input.ShowLineNumbers = false
 	input.Prompt = "" // remove the default "> " prompt gutter character
 	// Configure keybindings: Enter sends the message (handled in handleKeyPress).
-	// Ctrl+Enter or Ctrl+J inserts a newline in the compose box.
-	// - Ctrl+Enter: works in Windows Terminal and terminals with CSI u support
-	// - Ctrl+J: sends ASCII 0x0A (LF), distinct from 0x0D (CR/Enter) in all terminals
-	// - Shift+Enter: kept as fallback for kitty/modern terminal emulators
+	// Ctrl+J is the only ONE of these guaranteed to actually reach us as a
+	// distinct key: it sends ASCII 0x0A (LF), which is unambiguous from
+	// 0x0D (CR/Enter) on every platform. Ctrl+Enter/Shift+Enter are kept
+	// registered in case some terminal/protocol combo does report them
+	// distinctly (e.g. a POSIX terminal with CSI u / modifyOtherKeys
+	// support), but don't rely on either -- confirmed live (2026-09-13,
+	// Windows Terminal/PowerShell) that Ctrl+Enter does NOT work there:
+	// bubbletea's own Windows console-input reader (key_windows.go's
+	// keyType()) maps VK_RETURN to KeyEnter unconditionally, discarding
+	// the Ctrl/Shift modifier state before Concord's code ever sees the
+	// event -- there is no key wired to this app that can distinguish
+	// them on that platform. This isn't fixable here short of patching
+	// bubbletea itself; Ctrl+J is what Settings/Help & Guide document as
+	// the reliable shortcut for exactly this reason.
 	input.KeyMap.InsertNewline.SetKeys("ctrl+enter", "ctrl+j", "shift+enter")
 	// Remove background color to match terminal background
 	input.FocusedStyle.Base = input.FocusedStyle.Base.Background(lipgloss.NoColor{})
@@ -1147,6 +1229,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case helpResizeSettledMsg:
+		// Only act if no newer resize has happened since this timer was
+		// scheduled -- see helpResizing's doc comment for the full debounce
+		// design. A stale tick (superseded by a later resize) is a no-op;
+		// that later resize's own timer will be the one that actually lands.
+		if msg.gen == a.helpResizeGen {
+			a.helpResizing = false
+		}
+
+	case pasteBurstSettledMsg:
+		// Same stale-tick-is-a-safe-no-op shape as helpResizeSettledMsg above
+		// -- see inPasteBurst's doc comment. Once the burst truly ends,
+		// clearing the flag lets the very next View() call fall through to a
+		// real renderMainView()+zone.Scan() pass and refresh cachedMainView,
+		// so the frozen frame catches up to the fully-pasted text in one jump.
+		if msg.gen == a.pasteBurstGen {
+			a.inPasteBurst = false
+		}
+
 	case settingsPanelAnimTickMsg:
 		if a.settingsAnimating {
 			if !a.settingsAnimClosing {
@@ -1228,6 +1329,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		// See inPasteBurst's doc comment: handleKeyPress may have just
+		// flagged this keystroke as part of a machine-replayed paste burst.
+		// Schedule (or re-schedule) the settle check that eventually clears
+		// it, mirroring helpResizeGen/helpResizeSettleCmd exactly -- a stale
+		// tick from an earlier keystroke in the same burst is a safe no-op
+		// once pasteBurstGen has moved on.
+		if a.inPasteBurst {
+			a.pasteBurstGen++
+			cmds = append(cmds, pasteBurstSettleCmd(a.pasteBurstGen))
+		}
 		// If view changed, skip component updates (view transition handled)
 		if a.view != viewBeforeKey {
 			return a, tea.Batch(cmds...)
@@ -1250,6 +1361,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.scrollToBottom()
 		}
 		a.resizePluginPane()
+
+		// Debounce Help & Guide's expensive full-document re-render across a
+		// live drag-resize -- see helpResizing's doc comment. renderHelpContent
+		// keeps showing its last-computed (possibly stale-width) lines until
+		// this settle tick actually lands with no newer resize superseding it.
+		a.helpResizing = true
+		a.helpResizeGen++
+		cmds = append(cmds, helpResizeSettleCmd(a.helpResizeGen))
 
 	case tea.FocusMsg:
 		// Real report (2026-09-06, Omarchy/Hyprland): the input box's
@@ -1677,6 +1796,16 @@ func (a *App) View() string {
 		return zone.Scan(a.renderHubBrowserView())
 	}
 
+	// See inPasteBurst's doc comment: skip the expensive renderMainView()+
+	// zone.Scan() pass entirely during a detected paste burst and replay the
+	// last fully-rendered frame instead -- none of the overlays below can be
+	// active mid-paste in practice, but they're excluded explicitly anyway
+	// since none of them are what cachedMainView captured.
+	if a.view == ViewMain && a.inPasteBurst && a.cachedMainView != "" &&
+		a.linkBrowserState == nil && a.helpFinderState == nil && a.memberContextMenu == nil {
+		return a.cachedMainView
+	}
+
 	var baseView string
 	switch a.view {
 	case ViewToS:
@@ -1730,11 +1859,29 @@ func (a *App) View() string {
 		return zone.Scan(a.renderMemberContextMenuOverlay(baseView))
 	}
 
-	return zone.Scan(baseView)
+	rendered := zone.Scan(baseView)
+	// Keep cachedMainView fresh on every real render so the fast path above
+	// always has an up-to-date frame ready to replay the next time a burst
+	// is detected -- see inPasteBurst's doc comment.
+	if a.view == ViewMain {
+		a.cachedMainView = rendered
+	}
+	return rendered
 }
+
+// pasteBurstKeyThreshold is how close together two keystrokes have to land
+// for the second to be treated as part of a machine-replayed paste burst
+// rather than deliberate human input -- see lastKeystrokeAt's doc comment.
+const pasteBurstKeyThreshold = 20 * time.Millisecond
 
 // handleKeyPress handles keyboard input
 func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
+	sinceLastKeystroke := time.Since(a.lastKeystrokeAt)
+	a.lastKeystrokeAt = time.Now()
+	if sinceLastKeystroke < pasteBurstKeyThreshold {
+		a.inPasteBurst = true
+	}
+
 	// A remote-pane plugin channel captures every key, full stop — every
 	// global keybind below (tab cycling focus, [ / ] toggling panels,
 	// ctrl+s opening Settings, etc.) would otherwise fire on the very same
@@ -1917,6 +2064,28 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "tab":
 		if a.view == ViewAddServer {
 			a.cycleAddServerFocus()
+		} else if a.view == ViewMain && a.focus == FocusInput && sinceLastKeystroke < pasteBurstKeyThreshold {
+			// A real, serious bug found live (2026-09-13): a literal tab
+			// character is extremely common in pasted content (most code
+			// snippets indent with one), and an ordinary Tab press here
+			// means "cycle focus to the next panel" -- so a tab-indented
+			// line arriving mid-paste-replay (see lastKeystrokeAt's doc
+			// comment for why paste replays as individual keystrokes with
+			// no way to flag them as such) would silently yank focus off
+			// the compose box mid-message. Everything typed after that
+			// then lands wherever focus ended up instead -- observed
+			// live landing on the members panel, where a subsequent "r"
+			// (the very next letter, from mid-word) triggered its own
+			// "assign role to selected member" shortcut, which overwrote
+			// the entire compose box with a "/role assign @user " template
+			// and swallowed the rest of the paste into that instead of the
+			// intended message. Insert a literal tab instead of cycling
+			// focus -- textarea's own sanitizer (runeutil, see its
+			// default replaceTab) converts it to 4 spaces automatically,
+			// so pasted code keeps its indentation rather than losing it
+			// outright.
+			a.input.InsertRune('\t')
+			return nil
 		} else if a.view == ViewMain && a.focus == FocusInput {
 			// @mention completion takes priority — works inside slash commands too
 			if a.showMentionPopup && len(a.mentionSuggestions) > 0 {
@@ -2082,8 +2251,19 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				}
 				return nil
 			}
-			// If focused on input, send message
+			// If focused on input, send message -- unless this Enter is
+			// suspiciously close on the heels of the previous keystroke,
+			// which means it's almost certainly one line-ending of a
+			// multi-line paste being replayed as individual keystrokes
+			// (see lastKeystrokeAt's doc comment), not a deliberate,
+			// isolated Enter-to-send. Insert a real newline instead, the
+			// same as a genuine Ctrl+J/Ctrl+Enter would, so pasted text
+			// lands as one reviewable multi-line draft.
 			if a.focus == FocusInput {
+				if sinceLastKeystroke < pasteBurstKeyThreshold {
+					a.input.InsertRune('\n')
+					return nil
+				}
 				return a.handleSendMessage()
 			}
 		}
@@ -4656,7 +4836,7 @@ func (a *App) updateChatContent() {
 			contentLine = lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, line)
 		} else if msg.IsWhisper {
 			// Whisper: render with alignment based on ownership
-			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, viewportWidth, msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(viewportWidth), msg.IsOwn)
 			// Apply whisper styling (orange/italic) to the rendered content
 			whisperStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Orange)).
@@ -4665,7 +4845,7 @@ func (a *App) updateChatContent() {
 		} else {
 			// Regular messages — highlight @mentions of the current user
 			// Pass alignment based on message ownership
-			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, viewportWidth, msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(viewportWidth), msg.IsOwn)
 		}
 
 		// Apply width and highlighting
@@ -4685,15 +4865,15 @@ func (a *App) updateChatContent() {
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
 					Width(viewportWidth).
 					Align(lipgloss.Right).
-					PaddingRight(2)
-				contentLine = contentStyle.Render(contentLine)
+					PaddingRight(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			} else {
 				// Left-align with highlight and left padding
 				contentStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
 					Width(viewportWidth).
-					PaddingLeft(2)
-				contentLine = contentStyle.Render(contentLine)
+					PaddingLeft(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			}
 		} else {
 			// No highlight - apply width for proper formatting
@@ -4701,12 +4881,12 @@ func (a *App) updateChatContent() {
 				contentStyle := lipgloss.NewStyle().
 					Width(viewportWidth).
 					Align(lipgloss.Right).
-					PaddingRight(2)
-				contentLine = contentStyle.Render(contentLine)
+					PaddingRight(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			} else {
 				// Left-align with left padding to match right side visual spacing
-				contentStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
-				contentLine = contentStyle.Render(contentLine)
+				contentStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			}
 		}
 		content.WriteString(contentLine)
@@ -4788,6 +4968,26 @@ func osc8Link(url, styledText string) string {
 	return "\033]8;;" + url + st + styledText + "\033]8;;" + st
 }
 
+// messageGutterWidth is the fixed left/right padding every rendered message
+// line reserves (PaddingLeft/PaddingRight(2) below) regardless of ownership.
+// messageWrapWidth uses the same constant so glamour never wraps a line any
+// wider than what that padding will actually leave room for -- see
+// styleMessageLines's doc comment for what goes wrong when the two disagree.
+const messageGutterWidth = 2
+
+// messageWrapWidth is the width to hand renderMessageContent so its
+// glamour-wrapped output already fits within the gutter the caller reserves
+// afterward via PaddingLeft/PaddingRight, rather than wrapping to the full
+// viewport width and asking lipgloss's own per-render word-wrap to shrink it
+// again later (see styleMessageLines).
+func messageWrapWidth(viewportWidth int) int {
+	w := viewportWidth - messageGutterWidth
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
 // renderMessageContent renders a message's text as markdown -- bold,
 // italic, inline code, fenced code blocks, and simple lists via glamour,
 // themed to match the active Concord theme (buildChatGlamourStyle) -- then
@@ -4800,6 +5000,35 @@ func osc8Link(url, styledText string) string {
 // Cached per message ID (a.messageRenderCache) since glamour rendering is
 // meaningfully heavier than the plain-regex styling this replaced, and
 // every visible message re-renders on every redraw.
+// styleMessageLines applies style to content one already-wrapped line at a
+// time, rejoining with "\n", instead of handing the whole (possibly
+// multi-line) block to a single style.Render() call.
+//
+// Real bug found live (2026-09-13): renderMessageContent/renderChatMarkdownBody
+// already word-wrap a message's markdown to viewportWidth via glamour before
+// returning it. Passing that multi-line result to ONE lipgloss
+// Width(viewportWidth).Render() call doesn't just pad/align it -- lipgloss
+// performs its OWN word-wrap on any input line that doesn't fit the target
+// width, and PaddingRight(2)/PaddingLeft(2) shrinks the usable width by 2
+// columns from what the content was originally wrapped to. Any glamour-
+// wrapped line within 2 columns of the full width (common in any
+// reasonably long message) would then get silently re-wrapped a second
+// time, breaking it again -- confirmed by reproducing it directly:
+// lipgloss.NewStyle().Width(20).PaddingRight(2).Render() on a line longer
+// than 18 visible columns splits it across several new lines instead of
+// leaving it alone. That's the mechanism behind the "weird" wrapping
+// (stray single words dangling on their own line) reported for a long,
+// multi-line pasted message -- worse at moderate widths, where more lines
+// happen to land within 2 columns of the boundary, and less visible once
+// the terminal's widened enough that fewer lines are that close to it.
+func styleMessageLines(content string, style lipgloss.Style) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = style.Render(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (a *App) renderMessageContent(msgID, text string, width int, rightAlign bool) string {
 	cacheID, cacheable := uuid.Parse(msgID)
 	if cacheable == nil {
@@ -5395,6 +5624,40 @@ const panelAnimMaxFrames = 60
 type settingsPanelAnimTickMsg struct{}
 type srvMgmtPanelAnimTickMsg struct{}
 
+// helpResizeSettledMsg carries the resize generation it was scheduled
+// against, so a stale timer (superseded by a later resize before it fired)
+// can recognize itself as stale and no-op -- see helpResizing's doc comment.
+type helpResizeSettledMsg struct{ gen int }
+
+// helpResizeSettleCmd fires once, 150ms after being scheduled, checking
+// whether the resize that scheduled it was the last one to happen.
+func helpResizeSettleCmd(gen int) tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+		return helpResizeSettledMsg{gen: gen}
+	})
+}
+
+// pasteBurstSettledMsg carries the burst generation it was scheduled
+// against, so a stale timer (superseded by a later keystroke in the same
+// burst before it fired) can recognize itself as stale and no-op -- see
+// inPasteBurst's doc comment.
+type pasteBurstSettledMsg struct{ gen int }
+
+// pasteBurstSettleCmd fires once, pasteBurstSettleDelay after being
+// scheduled, checking whether the keystroke that scheduled it was the last
+// one to land. The delay is deliberately much shorter than
+// helpResizeSettleCmd's 150ms -- it only needs to comfortably clear
+// pasteBurstKeyThreshold's 20ms keystroke-to-keystroke gap, not debounce a
+// slow human action like a mouse drag, so a small value keeps the frozen
+// frame's catch-up jump feeling instant once a paste actually finishes.
+const pasteBurstSettleDelay = 40 * time.Millisecond
+
+func pasteBurstSettleCmd(gen int) tea.Cmd {
+	return tea.Tick(pasteBurstSettleDelay, func(time.Time) tea.Msg {
+		return pasteBurstSettledMsg{gen: gen}
+	})
+}
+
 func settingsPanelAnimTick() tea.Cmd {
 	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
 		return settingsPanelAnimTickMsg{}
@@ -5842,7 +6105,8 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			if sc.ServerInfo != nil {
 				srvName = sc.ServerInfo.Name
 			}
-			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
+			isCurrentServer := a.activeConn != nil && a.activeConn.ServerID == serverID
+			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention, isCurrentChannel, isCurrentServer)
 		}
 
 		log.Printf("MESSAGE_CREATE: channel=%s, author=%s, activeConn=%v, currentChannel=%v",
@@ -6710,15 +6974,20 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				if payload.Policy == nil || payload.Policy.ChannelID == nil {
 					a.serverManagementState.RetentionPolicy = payload.Policy
 				}
-				// Always apply the full override list when provided
-				if payload.ChannelOverrides != nil {
-					a.serverManagementState.ChannelOverrides = payload.ChannelOverrides
-					if a.serverManagementState.SelectedOverride >= len(payload.ChannelOverrides) {
-						a.serverManagementState.SelectedOverride = len(payload.ChannelOverrides) - 1
-					}
-					if a.serverManagementState.SelectedOverride < 0 {
-						a.serverManagementState.SelectedOverride = 0
-					}
+				// Always apply the full override list -- including an empty
+				// one. ChannelOverrides carries `json:"...,omitempty"`, so
+				// when the last override is deleted the server's freshly
+				// queried nil slice is omitted from the wire entirely and
+				// unmarshals back to nil here too; a `!= nil` guard would
+				// then skip applying exactly the "zero overrides remain"
+				// update, leaving the stale pre-deletion list on screen
+				// until the view was fully re-entered.
+				a.serverManagementState.ChannelOverrides = payload.ChannelOverrides
+				if a.serverManagementState.SelectedOverride >= len(payload.ChannelOverrides) {
+					a.serverManagementState.SelectedOverride = len(payload.ChannelOverrides) - 1
+				}
+				if a.serverManagementState.SelectedOverride < 0 {
+					a.serverManagementState.SelectedOverride = 0
 				}
 				a.statusMessage = "Retention policy updated"
 			}

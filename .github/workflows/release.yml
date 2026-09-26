@@ -48,9 +48,15 @@ jobs:
       # compiler-crash bug that motivated this) plus the opus/opusfile
       # packages, which also provide the static archives the client link
       # step below needs.
+      # release: false reuses the runner's preinstalled C:\msys64 (the
+      # Makefile's build-windows hardcodes /c/msys64 paths); path-type:
+      # inherit keeps setup-go's `go` visible inside the msys2 shell, which
+      # the default "minimal" path type would hide.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          release: false
+          path-type: inherit
           update: true
           install: >-
             mingw-w64-x86_64-clang
@@ -137,8 +143,10 @@ jobs:
       # but genuinely verify against a real CI run rather than trusting
       # that reading alone; add an ALSA/Pulse -dev package here if this
       # step ever fails on a missing audio header.
-      - name: Install voice dependencies
-        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev pkg-config
+      # libgtk-3-dev: sqweek/dialog's Linux backend (the /download Save As
+      # picker) is cgo against gtk+-3.0 and X11.
+      - name: Install voice and dialog dependencies
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libgtk-3-dev pkg-config
 
       - name: Build server, client (voice), hub
         env:

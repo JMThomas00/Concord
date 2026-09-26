@@ -153,6 +153,16 @@ func New(config *Config) (*Server, error) {
 		handlers.handleVoiceLeave(userID, serverID, channelID)
 	})
 
+	// Persist a disconnecting user's offline status to the database -- see
+	// unregisterClient's own doc comment (hub.go) for the real bug this
+	// closes (a user's status previously stuck at "online" forever once no
+	// currently-connected client remained to receive the live broadcast).
+	hub.SetUserDisconnectCallback(func(user *models.User) {
+		if err := handlers.UpdateUserStatus(user); err != nil {
+			DBLog.Error("Failed to persist offline status on disconnect", "user_id", user.ID, "error", err)
+		}
+	})
+
 	// Create server
 	s := &Server{
 		config:          config,
