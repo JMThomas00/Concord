@@ -94,7 +94,7 @@ func TestHandlePluginInstallEndToEnd(t *testing.T) {
 
 // TestHandlePluginInstallRequiresPermission confirms a non-admin member is
 // rejected before any download is even attempted -- OpPluginInstall must
-// gate behind PermissionManageServer exactly like OpPluginConfigGet/Set.
+// gate behind PermissionManagePlugins exactly like OpPluginConfigGet/Set.
 func TestHandlePluginInstallRequiresPermission(t *testing.T) {
 	srv, wsURL := startPlainTestServer(t)
 

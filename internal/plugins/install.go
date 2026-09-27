@@ -7,10 +7,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -58,6 +61,9 @@ func InstallFromURL(ctx context.Context, pluginsDir string, req InstallRequest) 
 	if req.SHA256 == "" {
 		return fmt.Errorf("a SHA256 checksum is required")
 	}
+	if err := validateSourceURL(req.SourceURL); err != nil {
+		return err
+	}
 
 	destDir := filepath.Join(pluginsDir, req.PluginID)
 	if _, err := os.Stat(destDir); err == nil {
@@ -90,7 +96,63 @@ func InstallFromURL(ctx context.Context, pluginsDir string, req InstallRequest) 
 		_ = os.RemoveAll(destDir)
 		return fmt.Errorf("archive's plugin.toml declares id %q, which does not match the requested plugin id %q", manifest.Plugin.ID, req.PluginID)
 	}
+	if err := ensureEntrypointExecutable(manifest); err != nil {
+		_ = os.RemoveAll(destDir)
+		return err
+	}
 
+	return nil
+}
+
+// validateSourceURL requires https, so the archive (and, in effect, the
+// code the server is about to run) can't be swapped in transit. Plain http
+// is allowed only to a loopback host, for testing a plugin build served
+// from the same machine.
+func validateSourceURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid source URL %q", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("source URL must use https (plain http is only allowed from localhost)")
+	default:
+		return fmt.Errorf("source URL must use https, not %q", u.Scheme)
+	}
+}
+
+// ensureEntrypointExecutable marks this OS's entrypoint binary executable.
+// Zip archives built on Windows carry no Unix permission bits, so without
+// this the extracted binary is 0600 and the plugin can never start on a
+// Linux or macOS server (including the Docker image).
+func ensureEntrypointExecutable(m *Manifest) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	ep, err := m.Entrypoint()
+	if err != nil {
+		return err
+	}
+	binPath := ep.Bin
+	if !filepath.IsAbs(binPath) {
+		binPath = filepath.Join(m.Dir, binPath)
+	}
+	info, err := os.Stat(binPath)
+	if err != nil {
+		return fmt.Errorf("archive has no entrypoint binary at %q: %w", ep.Bin, err)
+	}
+	if err := os.Chmod(binPath, info.Mode().Perm()|0o755); err != nil {
+		return fmt.Errorf("failed to make %q executable: %w", ep.Bin, err)
+	}
 	return nil
 }
 

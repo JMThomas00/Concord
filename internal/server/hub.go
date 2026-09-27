@@ -147,8 +147,21 @@ func (h *Hub) registerClient(client *Client) {
 func (h *Hub) unregisterClient(client *Client) {
 	h.mu.Lock()
 
-	if _, ok := h.clients[client.UserID]; !ok {
+	current, ok := h.clients[client.UserID]
+	if !ok {
 		h.mu.Unlock()
+		return
+	}
+	if current != client {
+		// A newer connection for the same user registered before this one's
+		// cleanup ran (a plugin restarting, or a client reconnecting after a
+		// network drop). Every map entry for this user now points at that
+		// newer connection, so tearing them down -- or announcing the user
+		// offline -- would silently cut off the live session. Only this
+		// stale connection's own send channel is ours to close.
+		h.mu.Unlock()
+		close(client.send)
+		HubLog.Info("Superseded client unregistered", "user_id", client.UserID)
 		return
 	}
 
@@ -292,6 +305,19 @@ func (h *Hub) GetClient(userID uuid.UUID) *Client {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.clients[userID]
+}
+
+// DisconnectUser closes the live WebSocket connection for userID, if any.
+// The connection's own ReadPump then fails and unregisters it through the
+// normal path. Used when a plugin is stopped or its token rotated, so a
+// process that authenticated with the old token can't keep acting.
+func (h *Hub) DisconnectUser(userID uuid.UUID) {
+	h.mu.RLock()
+	client := h.clients[userID]
+	h.mu.RUnlock()
+	if client != nil && client.conn != nil {
+		client.conn.Close()
+	}
 }
 
 // GetOnlineUsers returns a list of online user IDs for a server

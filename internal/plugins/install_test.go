@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -218,5 +219,46 @@ func TestInstallFromURL_RejectsUnsafePluginID(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected an error for unsafe plugin id %q", badID)
 		}
+	}
+}
+
+func TestValidateSourceURL(t *testing.T) {
+	for raw, ok := range map[string]bool{
+		"https://github.com/x/y/releases/download/v1/p.zip": true,
+		"http://127.0.0.1:8123/p.zip":                        true,
+		"http://localhost/p.zip":                             true,
+		"http://[::1]:9000/p.zip":                            true,
+		"http://example.com/p.zip":                           false,
+		"http://192.168.1.66/p.zip":                          false,
+		"ftp://example.com/p.zip":                            false,
+		"file:///etc/passwd":                                 false,
+		"not a url":                                          false,
+	} {
+		if err := validateSourceURL(raw); (err == nil) != ok {
+			t.Errorf("validateSourceURL(%q) = %v, want ok=%v", raw, err, ok)
+		}
+	}
+}
+
+// Zips made on Windows (or by zip.Writer.Create, as here) carry no Unix
+// permission bits; the installed entrypoint must still be executable.
+func TestInstallFromURL_MakesEntrypointExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	data, sum := buildTestPluginZip(t, "execplug")
+	srv := servePluginZip(t, data)
+	defer srv.Close()
+
+	pluginsDir := t.TempDir()
+	if err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{PluginID: "execplug", SourceURL: srv.URL, SHA256: sum}); err != nil {
+		t.Fatalf("InstallFromURL failed: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(pluginsDir, "execplug", "test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("entrypoint installed with mode %v, want it executable", info.Mode().Perm())
 	}
 }

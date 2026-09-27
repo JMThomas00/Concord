@@ -143,7 +143,7 @@ func (s *Supervisor) runOnce() error {
 	}
 	cmd.Dir = workDir
 
-	cmd.Env = os.Environ()
+	cmd.Env = pluginBaseEnv(os.Environ())
 	for k, v := range s.manifest.Process.Env {
 		cmd.Env = append(cmd.Env, k+"="+expandEnv(v, s.env))
 	}

@@ -268,7 +268,7 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 				if msg.String() == "up" || msg.String() == "left" {
 					dir = -1
 				}
-				state.Values[state.FocusField] = cyclePluginFieldValue(f, state.Values[state.FocusField], dir, a.textChannelNames())
+				state.Values[state.FocusField] = cyclePluginFieldValue(f, state.Values[state.FocusField], dir, a.textChannelIDs())
 			}
 		}
 		return nil

@@ -15,8 +15,9 @@ import (
 // from the plugin's own Bubble Tea View().
 type PluginPaneState struct {
 	ChannelID uuid.UUID
-	Frame     string
+	Frame     string // already passed through sanitizePaneFrame
 	LastSeq   int64
+	Epoch     int64 // the plugin connection LastSeq belongs to
 }
 
 // enterPluginPane switches the active pane to a plugin channel: it skips the
@@ -94,11 +95,15 @@ func (a *App) applyPluginPaneFrame(payload protocol.PluginPaneFramePayload) {
 	if a.pluginPane == nil || a.pluginPane.ChannelID != payload.ChannelID {
 		return
 	}
-	if a.pluginPane.LastSeq != 0 && payload.Seq <= a.pluginPane.LastSeq {
+	// A different epoch means the plugin reconnected (crash + restart) and
+	// its Seq counter started over, so the new stream wins regardless of Seq.
+	sameStream := payload.Epoch == a.pluginPane.Epoch
+	if sameStream && a.pluginPane.LastSeq != 0 && payload.Seq <= a.pluginPane.LastSeq {
 		return
 	}
-	a.pluginPane.Frame = payload.Frame
+	a.pluginPane.Frame = sanitizePaneFrame(payload.Frame)
 	a.pluginPane.LastSeq = payload.Seq
+	a.pluginPane.Epoch = payload.Epoch
 }
 
 // renderPluginPaneFrame fits the plugin's last-pushed frame into the chat

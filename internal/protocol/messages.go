@@ -703,6 +703,10 @@ type PluginPaneFramePayload struct {
 	ViewerID  uuid.UUID `json:"viewer_id"`
 	Frame     string    `json:"frame"`
 	Seq       int64     `json:"seq"` // Monotonic per viewer; client drops frames with Seq <= last-applied
+	// Epoch is stamped by the server (ignored if a plugin sets it) and
+	// changes whenever the plugin reconnects, so the client knows a lower
+	// Seq means a fresh stream rather than a stale frame.
+	Epoch int64 `json:"epoch,omitempty"`
 }
 
 // PluginEventPayload is the generic, opaque envelope for anything that isn't

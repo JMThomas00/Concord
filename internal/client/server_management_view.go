@@ -318,6 +318,7 @@ func getPermissionList() []permissionItem {
 		{Name: "Ban Members", Bit: models.PermissionBanMembers, Category: "General"},
 		{Name: "Change Nickname", Bit: models.PermissionChangeNickname, Category: "General"},
 		{Name: "Manage Titles", Bit: models.PermissionManageNicknames, Category: "General"},
+		{Name: "Manage Plugins", Bit: models.PermissionManagePlugins, Category: "General"},
 
 		// Text Channel Permissions
 		{Name: "Send Messages", Bit: models.PermissionSendMessages, Category: "Text Channels"},
@@ -1714,7 +1715,7 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 			idx := state.FocusField - layout.pluginStart
 			field := state.PluginFields[idx]
 			if field.Type != "text" && field.Type != "number" {
-				state.PluginValues[idx] = cyclePluginFieldValue(field, state.PluginValues[idx], dir, a.textChannelNames())
+				state.PluginValues[idx] = cyclePluginFieldValue(field, state.PluginValues[idx], dir, a.textChannelIDs())
 			}
 		}
 		return nil
@@ -4258,7 +4259,7 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 			if focused {
 				valStyle = valStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
 			}
-			val := state.Values[i]
+			val := a.pluginFieldValueLabel(f, state.Values[i])
 			if val == "" {
 				val = "(none)"
 			}
@@ -5347,7 +5348,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 				if focused {
 					valStyle = valStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
 				}
-				val := state.PluginValues[i]
+				val := a.pluginFieldValueLabel(f, state.PluginValues[i])
 				if val == "" {
 					val = "(none)"
 				}

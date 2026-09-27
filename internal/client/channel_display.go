@@ -3,6 +3,7 @@ package client
 import (
 	"sort"
 
+	"github.com/google/uuid"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
 )
@@ -83,15 +84,37 @@ func (a *App) isRemotePaneChannel(ch *models.Channel) bool {
 	return ok && info.RemotePane
 }
 
-// textChannelNames returns the current server's text channel names, used to
-// populate "channel_select" plugin config fields (e.g. an activity
-// notification channel picker) without hardcoding any plugin's field semantics.
-func (a *App) textChannelNames() []string {
-	var names []string
+// textChannelIDs returns the current server's text channel IDs, the option
+// list for "channel_select" plugin config fields (e.g. an activity
+// notification channel picker). The stored value is the channel's ID -- what
+// the server and plugins resolve it by, and stable across renames -- while
+// pluginFieldValueLabel shows the name.
+func (a *App) textChannelIDs() []string {
+	var ids []string
 	for _, ch := range a.getCurrentChannels() {
 		if ch.Type == models.ChannelTypeText {
-			names = append(names, ch.Name)
+			ids = append(ids, ch.ID.String())
 		}
 	}
-	return names
+	return ids
+}
+
+// pluginFieldValueLabel is how a boolean/select/channel_select plugin field
+// value is shown in a form: channel IDs become "#name", and a value that
+// doesn't resolve to a current channel is shown as-is.
+func (a *App) pluginFieldValueLabel(f protocol.PluginField, val string) string {
+	if val == "" {
+		return "(none)"
+	}
+	if f.Type == "channel_select" {
+		if id, err := uuid.Parse(val); err == nil {
+			for _, ch := range a.getCurrentChannels() {
+				if ch.ID == id {
+					return "#" + ch.Name
+				}
+			}
+			return "(deleted channel)"
+		}
+	}
+	return val
 }

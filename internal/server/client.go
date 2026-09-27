@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,15 +67,26 @@ type Client struct {
 
 	// Handlers for processing messages
 	handlers *Handlers
+
+	// connEpoch uniquely identifies this connection (see
+	// PluginPaneFramePayload.Epoch).
+	connEpoch int64
 }
+
+// nextConnEpoch hands out connEpoch values; starting from the process start
+// time keeps them distinct across a server restart too.
+var nextConnEpoch atomic.Int64
+
+func init() { nextConnEpoch.Store(time.Now().UnixNano()) }
 
 // NewClient creates a new client instance
 func NewClient(conn *websocket.Conn, hub *Hub, handlers *Handlers) *Client {
 	return &Client{
-		conn:     conn,
-		hub:      hub,
-		send:     make(chan *protocol.Message, sendBufferSize),
-		handlers: handlers,
+		conn:      conn,
+		hub:       hub,
+		send:      make(chan *protocol.Message, sendBufferSize),
+		handlers:  handlers,
+		connEpoch: nextConnEpoch.Add(1),
 	}
 }
 
@@ -605,7 +617,7 @@ func (c *Client) identifyAsPlugin(token string) {
 
 	// A plugin has no other way to learn its own server_config_field values
 	// at cold start (or after a crash-restart): OpPluginConfigGet is gated
-	// behind PermissionManageServer for a human client, and HandleSetPluginConfig's
+	// behind PermissionManagePlugins for a human client, and HandleSetPluginConfig's
 	// own targeted push only fires when an admin actually changes something —
 	// silent after every process restart otherwise. Push it once here too, right
 	// alongside Ready, so a plugin's config-dependent behavior (e.g. an AI

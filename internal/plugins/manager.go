@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	charmlog "github.com/charmbracelet/log"
@@ -20,6 +22,11 @@ type Manager struct {
 	registry *Registry
 	wsURL    string
 	log      *charmlog.Logger
+
+	// dataRoot holds each plugin's private data folder (<dataRoot>/<id>),
+	// a sibling of the plugins folder so updating or reinstalling a plugin
+	// never touches its saved state. Set by LoadAll.
+	dataRoot string
 
 	supervisors map[string]*Supervisor // by plugin id
 }
@@ -48,6 +55,10 @@ func (m *Manager) Registry() *Registry {
 func (m *Manager) LoadAll(pluginsDir string) error {
 	reg, errs := Discover(pluginsDir)
 	m.registry = reg
+	if abs, err := filepath.Abs(pluginsDir); err == nil {
+		pluginsDir = abs
+	}
+	m.dataRoot = filepath.Join(filepath.Dir(pluginsDir), "PluginData")
 
 	for folder, err := range errs {
 		m.log.Warn("skipping invalid plugin", "folder", folder, "error", err)
@@ -168,6 +179,14 @@ func (m *Manager) start(manifest *Manifest, installed *provisionedPlugin) error 
 		"CONCORD_WS_URL":      m.wsURL,
 		"CONCORD_PLUGIN_ID":   pluginID,
 		"CONCORD_PLUGIN_TOKEN": installed.plainToken,
+	}
+	if m.dataRoot != "" {
+		dataDir := filepath.Join(m.dataRoot, pluginID)
+		if err := os.MkdirAll(dataDir, 0o700); err != nil {
+			m.log.Warn("could not create plugin data folder", "plugin", pluginID, "path", dataDir, "error", err)
+		} else {
+			env["CONCORD_PLUGIN_DATA_DIR"] = dataDir
+		}
 	}
 
 	sup := NewSupervisor(pluginID, manifest, env, m.log, func(status, lastError string) {

@@ -186,6 +186,10 @@ func New(config *Config) (*Server, error) {
 		pluginsDir = "Plugins"
 	}
 	handlers.SetPluginsDir(pluginsDir)
+	// Before any plugin starts, so none is ever handed a pre-migration value.
+	if reg, _ := plugins.Discover(pluginsDir); reg != nil {
+		migrateChannelSelectNames(db, reg)
+	}
 	if err := pluginManager.LoadAll(pluginsDir); err != nil {
 		DBLog.Warn("plugin platform failed to load", "error", err)
 	}

@@ -130,6 +130,55 @@ func TestHubUnregisterClient(t *testing.T) {
 	}
 }
 
+// A reconnect (plugin restart, network blip) registers the new connection
+// before the old socket's ReadPump notices it's dead. The old connection's
+// late unregister must not tear down the new one's map entries -- a real
+// bug that left a restarted plugin unreachable ("Plugin is not currently
+// running") until it reconnected again.
+func TestHubStaleUnregisterKeepsNewerConnection(t *testing.T) {
+	hub := NewHub()
+	userID := uuid.New()
+	serverID := uuid.New()
+	channelID := uuid.New()
+	user := &models.User{ID: userID, Username: "plugin"}
+
+	old := &Client{UserID: userID, ServerIDs: []uuid.UUID{serverID}, User: user, send: make(chan *protocol.Message, 10)}
+	hub.registerClient(old)
+	fresh := &Client{UserID: userID, ServerIDs: []uuid.UUID{serverID}, User: user, send: make(chan *protocol.Message, 10)}
+	hub.registerClient(fresh)
+	hub.JoinChannel(userID, channelID)
+
+	hub.unregisterClient(old)
+
+	if got := hub.GetClient(userID); got != fresh {
+		t.Fatalf("clients[%s] = %p after the stale unregister, want the fresh connection %p", userID, got, fresh)
+	}
+	hub.mu.RLock()
+	if hub.serverClients[serverID][userID] != fresh {
+		t.Error("stale unregister removed the fresh connection from its server's broadcast list")
+	}
+	if hub.channelClients[channelID][userID] != fresh {
+		t.Error("stale unregister removed the fresh connection from its channel list")
+	}
+	hub.mu.RUnlock()
+
+	if _, ok := <-old.send; ok {
+		t.Error("the stale connection's send channel should be closed")
+	}
+	select {
+	case _, ok := <-fresh.send:
+		if !ok {
+			t.Error("the fresh connection's send channel was closed")
+		}
+	default:
+	}
+	select {
+	case msg := <-hub.broadcast:
+		t.Errorf("stale unregister broadcast %v; the user is still online", msg.Message.Type)
+	default:
+	}
+}
+
 func TestHubBroadcastToUser(t *testing.T) {
 	hub := NewHub()
 	userID := uuid.New()

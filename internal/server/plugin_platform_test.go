@@ -260,6 +260,56 @@ func createTestUserAndToken(t *testing.T, srv *Server, username string) (*models
 	return user, token
 }
 
+// joinWithEveryoneRole makes userID a member of serverID holding that
+// server's @everyone role -- what joining a server does for a real user.
+func joinWithEveryoneRole(t *testing.T, srv *Server, serverID, userID uuid.UUID) {
+	t.Helper()
+	if err := srv.db.AddServerMember(models.NewServerMember(userID, serverID)); err != nil {
+		t.Fatalf("failed to add member: %v", err)
+	}
+	roles, err := srv.db.GetServerRoles(serverID)
+	if err != nil {
+		t.Fatalf("failed to load roles: %v", err)
+	}
+	for _, r := range roles {
+		if r.IsDefault {
+			if err := srv.db.AddMemberRole(userID, serverID, r.ID); err != nil {
+				t.Fatalf("failed to assign @everyone: %v", err)
+			}
+			return
+		}
+	}
+	t.Fatalf("server %s has no @everyone role", serverID)
+}
+
+// A user who can't see a plugin channel (here: not even a member of its
+// server) must not be able to open, drive or watch its pane just by
+// knowing the channel ID.
+func TestPluginPaneRejectsViewerWithoutAccess(t *testing.T) {
+	srv, defaultServer, wsURL := startTestPluginServer(t)
+	channel := models.NewPluginChannel(defaultServer.ID, "hello-counter", "HelloPlugin", "counter")
+	if err := srv.db.CreateChannel(channel); err != nil {
+		t.Fatalf("failed to create plugin channel: %v", err)
+	}
+
+	_, token := createTestUserAndToken(t, srv, "outsider")
+	client := newTestWSClient(t, wsURL)
+	client.identify(token)
+
+	client.send(protocol.OpPluginPaneEnter, protocol.PluginPaneEnterPayload{ChannelID: channel.ID, Width: 80, Height: 24})
+	got := client.readUntil(5*time.Second, func(m *protocol.Message) bool {
+		// Errors arrive as a dispatch with no event type.
+		return (m.Op == protocol.OpDispatch && m.Type == "") || m.Type == protocol.EventPluginPaneFrame
+	})
+	if got.Type == protocol.EventPluginPaneFrame {
+		t.Fatal("a non-member received the plugin's frame")
+	}
+	var perr protocol.ErrorPayload
+	if err := json.Unmarshal(got.Data, &perr); err != nil || perr.Code != protocol.ErrorCodeForbidden {
+		t.Fatalf("want a Forbidden error, got %s", got.Data)
+	}
+}
+
 // TestPluginPaneRoundTrip drives the exact wire protocol Concord's real
 // client (internal/client/plugin_pane.go) uses for a remote-pane channel: a
 // real "human" WebSocket connection identifies, opens a plugin channel
@@ -280,7 +330,8 @@ func TestPluginPaneRoundTrip(t *testing.T) {
 		t.Fatalf("failed to create plugin channel: %v", err)
 	}
 
-	_, token := createTestUserAndToken(t, srv, "tester")
+	viewer, token := createTestUserAndToken(t, srv, "tester")
+	joinWithEveryoneRole(t, srv, defaultServer.ID, viewer.ID)
 	client := newTestWSClient(t, wsURL)
 	client.identify(token)
 
@@ -322,7 +373,7 @@ func TestPluginEnableDisableToggle(t *testing.T) {
 	srv, defaultServer, wsURL := startTestPluginServer(t)
 
 	// Make the test user the server owner so checkPermission's
-	// PermissionManageServer gate (required for OpPluginConfigSet) passes.
+	// PermissionManagePlugins gate (required for OpPluginConfigSet) passes.
 	admin, token := createTestUserAndToken(t, srv, "admin")
 	if err := srv.db.UpdateServerOwner(defaultServer.ID, admin.ID); err != nil {
 		t.Fatalf("failed to make test user server owner: %v", err)
@@ -402,4 +453,65 @@ func findChannelByName(srv *Server, serverID uuid.UUID, name string) (*models.Ch
 		}
 	}
 	return nil, fmt.Errorf("channel %q not found", name)
+}
+
+// Deleting a plugin channel (directly, or via its parent category) must
+// reach the plugin that owns it. Plugin connections aren't in the
+// server-wide broadcast lists, so before this was fixed a plugin kept state
+// for deleted channels forever and never learned they were gone.
+func TestChannelDeleteReachesOwningPlugin(t *testing.T) {
+	srv, defaultServer, wsURL := startTestPluginServer(t)
+
+	category := models.NewCategory(defaultServer.ID, "games")
+	if err := srv.db.CreateChannel(category); err != nil {
+		t.Fatalf("failed to create category: %v", err)
+	}
+	direct := models.NewPluginChannel(defaultServer.ID, "counter-a", "HelloPlugin", "counter")
+	nested := models.NewPluginChannel(defaultServer.ID, "counter-b", "HelloPlugin", "counter")
+	nested.CategoryID = category.ID
+	for _, ch := range []*models.Channel{direct, nested} {
+		if err := srv.db.CreateChannel(ch); err != nil {
+			t.Fatalf("failed to create plugin channel: %v", err)
+		}
+	}
+
+	// Stand in for the plugin's connection so the test can see exactly what
+	// the plugin would receive.
+	serviceUserID, err := srv.plugins.ServiceUserIDFor("HelloPlugin")
+	if err != nil {
+		t.Fatalf("no service account for HelloPlugin: %v", err)
+	}
+	fakePlugin := &Client{UserID: serviceUserID, IsPlugin: true, PluginID: "HelloPlugin", send: make(chan *protocol.Message, 64)}
+	srv.hub.register <- fakePlugin
+
+	admin, token := createTestUserAndToken(t, srv, "admin")
+	if err := srv.db.UpdateServerOwner(defaultServer.ID, admin.ID); err != nil {
+		t.Fatalf("failed to make test user server owner: %v", err)
+	}
+	client := newTestWSClient(t, wsURL)
+	client.identify(token)
+
+	client.send(protocol.OpChannelDelete, protocol.ChannelDeleteRequest{ServerID: defaultServer.ID, ChannelID: direct.ID})
+	client.send(protocol.OpChannelDelete, protocol.ChannelDeleteRequest{ServerID: defaultServer.ID, ChannelID: category.ID})
+
+	want := map[uuid.UUID]bool{direct.ID: true, nested.ID: true}
+	deadline := time.After(5 * time.Second)
+	for len(want) > 0 {
+		select {
+		case m := <-fakePlugin.send:
+			if m.Type != protocol.EventChannelDelete {
+				continue
+			}
+			var p protocol.ChannelDeletePayload
+			if err := json.Unmarshal(m.Data, &p); err != nil {
+				t.Fatalf("bad delete payload: %v", err)
+			}
+			if p.Type != models.ChannelTypePlugin {
+				t.Errorf("delete for %s reported type %q, want plugin", p.ChannelID, p.Type)
+			}
+			delete(want, p.ChannelID)
+		case <-deadline:
+			t.Fatalf("plugin never heard about deleting %d of its channels", len(want))
+		}
+	}
 }
