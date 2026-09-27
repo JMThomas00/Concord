@@ -1662,14 +1662,22 @@ func (a *App) renderAboutContent(width, height int) string {
 	// ── MIDDLE ──
 	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
 
-	writeRow := func(label, value string) {
-		middle.writeLine(labelStyle.Render(label))
-		middle.writeLine(normalStyle.Render("    " + value))
-		middle.writeBlank()
+	// Build info goes in a left column; the shaded grape logo sits to its
+	// right when the page is wide and tall enough to show it whole.
+	const infoWidth, grapeGap = 40, 4
+	grapeRows := grapeLogos[grapeLogoSize].rows
+	withGrape := layout.interiorWidth >= infoWidth+grapeGap+grapeLogoSize && layout.middleLines >= grapeRows
+	sepWidth := layout.interiorWidth
+	if withGrape {
+		sepWidth = infoWidth
 	}
 
-	middle.writeLine(labelStyle.Render("Concord Client"))
-	middle.writeBlank()
+	var info []string
+	writeRow := func(label, value string) {
+		info = append(info, labelStyle.Render(label), normalStyle.Render("    "+value), "")
+	}
+
+	info = append(info, labelStyle.Render("Concord Client"), "")
 	writeRow("Version", a.clientVersion)
 	writeRow("Git Commit", a.clientGitCommit)
 	writeRow("Build Time", a.clientBuildTime)
@@ -1681,13 +1689,18 @@ func (a *App) renderAboutContent(width, height int) string {
 		serverBuildTime := a.activeConn.ServerBuildTime
 		a.activeConn.mu.RUnlock()
 
-		middle.writeLine(a.renderSeparator(layout.interiorWidth))
-		middle.writeBlank()
-		middle.writeLine(labelStyle.Render("Connected Server"))
-		middle.writeBlank()
+		info = append(info, a.renderSeparator(sepWidth), "", labelStyle.Render("Connected Server"), "")
 		writeRow("Version", serverVersion)
 		writeRow("Git Commit", serverGitCommit)
 		writeRow("Build Time", serverBuildTime)
+	}
+
+	if withGrape {
+		left := lipgloss.NewStyle().Width(infoWidth).Render(strings.Join(info, "\n"))
+		info = strings.Split(lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", grapeGap), a.renderGrapeLogo()), "\n")
+	}
+	for _, line := range info {
+		middle.writeLine(line)
 	}
 
 	middle.pad()

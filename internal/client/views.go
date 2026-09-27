@@ -3,7 +3,6 @@ package client
 import (
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -105,7 +104,33 @@ const bannerFormGap = 2 // blank rows between the logo slot and the form
 // without transient lines (an error message), so an error appearing doesn't
 // move the form either; it only grows downward. The slot shrinks, clipping
 // the logo's top rows, only when the terminal is too short for it.
-func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
+const (
+	bannerBoxMaxWidth = 100 // fits 318 of the 327 banners; wider ones are skipped
+	bannerBoxMinWidth = 60  // below this, the grapes give way so more banners fit
+	grapeLockupGap    = 4
+)
+
+// bannerDims holds each banner's trimmed width and height, for fit checks.
+var bannerDims = func() [][2]int {
+	dims := make([][2]int, len(banners))
+	for i, b := range banners {
+		art := trimBannerArt(b.Art)
+		dims[i] = [2]int{lipgloss.Width(art), strings.Count(art, "\n") + 1}
+	}
+	return dims
+}()
+
+// logoLockup is the login/register logo area: the grapes (when they fit)
+// then a fixed-size banner box. It depends only on the terminal size and
+// the form below it, never on which banner is showing, so the grapes and
+// the box's left edge stay put across shuffles.
+type logoLockup struct {
+	slot   int // rows
+	boxW   int // banner box columns
+	grapes bool
+}
+
+func (a *App) logoLockupFor(stableBelow int) logoLockup {
 	slot := maxBannerHeight
 	if room := a.height - bannerFormGap - stableBelow; slot > room {
 		slot = room
@@ -113,9 +138,52 @@ func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
 	if slot < 1 {
 		slot = 1
 	}
+	avail := a.width - 4
+	grapes := slot >= grapeLogos[grapeLogoSize].rows && avail >= grapeLogoSize+grapeLockupGap+bannerBoxMinWidth
+	boxW := avail
+	if grapes {
+		boxW -= grapeLogoSize + grapeLockupGap
+	}
+	boxW = max(1, min(boxW, bannerBoxMaxWidth))
+	return logoLockup{slot: slot, boxW: boxW, grapes: grapes}
+}
+
+func (g logoLockup) fits(i int) bool {
+	return i >= 0 && i < len(bannerDims) && bannerDims[i][0] <= g.boxW && bannerDims[i][1] <= g.slot
+}
+
+// currentLockup is the lockup geometry for the screen being shown, if it
+// has one (login or register).
+func (a *App) currentLockup() (logoLockup, bool) {
+	var stable int
+	switch a.view {
+	case ViewLogin:
+		_, stable = a.loginFormBlock()
+	case ViewRegister:
+		_, stable = a.registerFormBlock()
+	default:
+		return logoLockup{}, false
+	}
+	return a.logoLockupFor(stable), true
+}
+
+func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
+	g := a.logoLockupFor(stableBelow)
+	slot := g.slot
+
+	// Banners anchor to the box's left edge and bottom, so each one starts
+	// on the same column and baseline. One too big for the box (only
+	// possible until a fitting banner is picked, e.g. mid-resize) is clipped.
 	bannerLines := strings.Split(banner, "\n")
 	if len(bannerLines) > slot {
 		bannerLines = bannerLines[len(bannerLines)-slot:]
+	}
+	for i, l := range bannerLines {
+		bannerLines[i] = ansi.Truncate(l, g.boxW, "")
+	}
+	lockup := lipgloss.Place(g.boxW, slot, lipgloss.Left, lipgloss.Bottom, strings.Join(bannerLines, "\n"))
+	if g.grapes {
+		lockup = lipgloss.JoinHorizontal(lipgloss.Bottom, a.renderGrapeLogo(), strings.Repeat(" ", grapeLockupGap), lockup)
 	}
 
 	topPad := (a.height - slot - bannerFormGap - stableBelow) / 2
@@ -126,10 +194,10 @@ func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
 		topPad = 0
 	}
 
-	// Each piece is centered across the full width on its own, so a wider or
-	// narrower logo can't nudge the form sideways by a column either.
+	// The lockup's width is fixed for a given terminal size, and the form is
+	// centered on its own, so neither shifts when the banner changes.
 	parts := []string{
-		lipgloss.Place(a.width, slot, lipgloss.Center, lipgloss.Bottom, strings.Join(bannerLines, "\n")),
+		lipgloss.Place(a.width, slot, lipgloss.Center, lipgloss.Bottom, lockup),
 		strings.Repeat("\n", bannerFormGap-1),
 		lipgloss.PlaceHorizontal(a.width, lipgloss.Center, below),
 	}
@@ -146,12 +214,15 @@ func formErrorLines(err string, formWidth int) int {
 	return lipgloss.Height(lipgloss.NewStyle().Width(formWidth-4).Render("⚠ "+err)) + 1
 }
 
-// renderLoginView renders the login screen
+// renderLoginView renders the login screen: the logo lockup above the form.
 func (a *App) renderLoginView() string {
-	// renderBanner trims each line's trailing whitespace so lipgloss measures
-	// the true visual width when centering, and plays the intro animation.
-	banner := a.renderBanner()
+	below, stable := a.loginFormBlock()
+	return a.layoutBannerScreen(a.renderBanner(), below, stable)
+}
 
+// loginFormBlock renders the login form plus shortcut hints, and the block's
+// height without transient lines (an error message).
+func (a *App) loginFormBlock() (string, int) {
 	// Render login form with fixed width
 	formWidth := 50
 	var b strings.Builder
@@ -263,12 +334,17 @@ func (a *App) renderLoginView() string {
 	// Hints sit below the form, not inside its fixed 50-column box, so they
 	// stay on one row.
 	below := lipgloss.JoinVertical(lipgloss.Center, loginForm, a.renderKeyHints(hints, a.width-4))
-	return a.layoutBannerScreen(banner, below, lipgloss.Height(below)-formErrorLines(a.loginError, formWidth))
+	return below, lipgloss.Height(below) - formErrorLines(a.loginError, formWidth)
 }
 
 // renderRegisterView renders the registration screen
 func (a *App) renderRegisterView() string {
-	banner := a.renderBanner()
+	below, stable := a.registerFormBlock()
+	return a.layoutBannerScreen(a.renderBanner(), below, stable)
+}
+
+// registerFormBlock is loginFormBlock's counterpart for the register screen.
+func (a *App) registerFormBlock() (string, int) {
 
 	// Render registration form with fixed width
 	formWidth := 50
@@ -356,7 +432,7 @@ func (a *App) renderRegisterView() string {
 
 	hints := []keyHint{{"Tab", "Switch fields"}, {"Enter", "Create account"}, {"Esc", "Back"}, {"Ctrl+Q", "Quit"}}
 	below := lipgloss.JoinVertical(lipgloss.Center, registerForm, a.renderKeyHints(hints, a.width-4))
-	return a.layoutBannerScreen(banner, below, lipgloss.Height(below)-formErrorLines(a.loginError, formWidth))
+	return below, lipgloss.Height(below) - formErrorLines(a.loginError, formWidth)
 }
 
 // updateLoginForm handles login form input
@@ -1079,15 +1155,30 @@ func (a *App) renderChannelList(width, height int) string {
 	// it exactly like arrow-navigating onto it (collapse/expand still needs
 	// left/right or 'h', unchanged).
 	if a.channelTree != nil && len(a.channelTree.FlatList) > 0 {
-		for _, node := range a.channelTree.FlatList {
+		// Only the tree scrolls; the server name above stays put. When it
+		// overflows, rows are laid out one column narrower to leave room for
+		// the scrollbar (so right-aligned badges aren't clipped).
+		visible := height - 2 - 2 // borders, server name + blank line
+		rowWidth := width
+		if len(a.channelTree.FlatList) > visible {
+			rowWidth--
+		}
+		rows := make([]string, 0, len(a.channelTree.FlatList))
+		sel, selKey := -1, ""
+		for i, node := range a.channelTree.FlatList {
 			zoneID := "channel-row:" + node.Channel.ID.String()
 			if node.IsCategory {
-				b.WriteString(zone.Mark(zoneID, a.renderCategoryRow(node, width)))
+				rows = append(rows, zone.Mark(zoneID, a.renderCategoryRow(node, rowWidth)))
 			} else {
-				b.WriteString(zone.Mark(zoneID, a.renderChannelRow(node, width)))
+				rows = append(rows, zone.Mark(zoneID, a.renderChannelRow(node, rowWidth)))
 			}
-			b.WriteString("\n")
+			if a.currentChannel != nil && node.Channel.ID == a.currentChannel.ID {
+				sel, selKey = i, node.Channel.ID.String()
+			}
 		}
+		// No trailing newline: when the list fills the panel, one would make
+		// the box a line taller than its height.
+		b.WriteString(a.scrollPanel(&a.channelScroll, rows, width-2, visible, sel, sel+1, selKey))
 	} else {
 		// Placeholder if no channels
 		placeholderStyle := lipgloss.NewStyle().
@@ -1610,6 +1701,8 @@ func (a *App) renderUserListCollapsed(width, height int) string {
 		a.activeConn.mu.RUnlock()
 	}
 
+	var rows []string
+	sel, selKey := -1, ""
 	for i, m := range flatMembers {
 		if m.User == nil {
 			continue
@@ -1637,8 +1730,12 @@ func (a *App) renderUserListCollapsed(width, height int) string {
 		} else {
 			line = voicePrefix + a.renderMemberAvatar(m.GetDisplayName(), m.AvatarColor) + dotStr
 		}
-		b.WriteString(zone.Mark("member-row:"+m.User.ID.String(), line) + "\n")
+		if isSelected {
+			sel, selKey = len(rows), m.User.ID.String()
+		}
+		rows = append(rows, zone.Mark("member-row:"+m.User.ID.String(), line))
 	}
+	b.WriteString(a.scrollPanel(&a.memberScroll, rows, width-2, height-2, sel, sel+1, selKey))
 
 	boxStyle := lipgloss.NewStyle().
 		// Border() adds 2 lines on top of Height(N) -- see the matching
@@ -1657,10 +1754,34 @@ func (a *App) renderUserList(width, height int) string {
 		return a.renderUserListCollapsed(width, height)
 	}
 
-	var b strings.Builder
+	visible := height - 2 // inside the borders
+	lines, selStart, selEnd, selKey := a.memberListLines(width - 2)
+	if len(lines) > visible {
+		// Overflows: lay out one column narrower to leave room for the
+		// scrollbar, so names and role labels aren't clipped by it.
+		lines, selStart, selEnd, selKey = a.memberListLines(width - 3)
+	}
+	content := a.scrollPanel(&a.memberScroll, lines, width-2, visible, selStart, selEnd, selKey)
 
-	// Inner width available for text (subtract border chars used by lipgloss border)
-	innerWidth := width - 2
+	userListStyle := lipgloss.NewStyle().
+		Width(width - 2).
+		// Border() adds 2 lines on top of Height(N) -- see the matching
+		// comment in renderServerIconsCollapsed for the full explanation.
+		Height(height - 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection))
+	if a.focus == FocusUserList {
+		userListStyle = userListStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
+	}
+	return a.labelPanelBorder(userListStyle.Render(content), "MEMBERS", a.focus == FocusUserList)
+}
+
+// memberListLines builds the members panel's content at a given interior
+// width, as lines, plus the selected member's line range and a key that
+// changes when the selection does (see scrollPanel).
+func (a *App) memberListLines(innerWidth int) ([]string, int, int, string) {
+	var b strings.Builder
+	selStart, selEnd, selKey := -1, -1, ""
 
 	// Collect members
 	var members []*MemberDisplay
@@ -1677,112 +1798,17 @@ func (a *App) renderUserList(width, height int) string {
 		b.WriteString(placeholderStyle.Render("No members"))
 		b.WriteString("\n")
 	} else {
-		// Build flat member list for selection highlighting (must match rendering order below).
+		// Selection highlighting walks the same order memberSections yields.
 		var flatMembers []*MemberDisplay
 		if a.focus == FocusUserList {
 			flatMembers = a.buildFlatMemberList()
 		}
 
-		// ── Snapshot voice state (one lock acquisition) ───────────────────────
-		type voiceChannelGroup struct {
-			id       uuid.UUID
-			name     string
-			position int
-			members  []*MemberDisplay
-		}
-		var voiceGroups []voiceChannelGroup
-		voiceUserSet := make(map[uuid.UUID]struct{})  // who's in any voice channel
-		voiceChannelOf := make(map[uuid.UUID]uuid.UUID) // userID → channelID
-
-		if a.activeConn != nil {
-			a.activeConn.mu.RLock()
-			groupMap := make(map[uuid.UUID]*voiceChannelGroup)
-			for userID, vs := range a.activeConn.VoiceStates {
-				voiceUserSet[userID] = struct{}{}
-				voiceChannelOf[userID] = vs.ChannelID
-				if _, exists := groupMap[vs.ChannelID]; !exists {
-					name := vs.ChannelID.String()[:8] // fallback
-					pos := 0
-					for _, chList := range a.activeConn.Channels {
-						for _, ch := range chList {
-							if ch.ID == vs.ChannelID {
-								name = ch.Name
-								pos = ch.Position
-								break
-							}
-						}
-					}
-					groupMap[vs.ChannelID] = &voiceChannelGroup{id: vs.ChannelID, name: name, position: pos}
-				}
-			}
-			a.activeConn.mu.RUnlock()
-
-			// Assign member pointers to their voice group.
-			for _, m := range members {
-				if chID, ok := voiceChannelOf[m.User.ID]; ok {
-					if grp, ok := groupMap[chID]; ok {
-						grp.members = append(grp.members, m)
-					}
-				}
-			}
-			for _, g := range groupMap {
-				sort.Slice(g.members, func(i, j int) bool {
-					return g.members[i].User.Username < g.members[j].User.Username
-				})
-				voiceGroups = append(voiceGroups, *g)
-			}
-			sort.Slice(voiceGroups, func(i, j int) bool {
-				if voiceGroups[i].position != voiceGroups[j].position {
-					return voiceGroups[i].position < voiceGroups[j].position
-				}
-				return voiceGroups[i].name < voiceGroups[j].name
-			})
-		}
-
-		// ── Role sections (exclude voice users) ───────────────────────────────
-		type roleSection struct {
-			role    *models.Role
-			members []*MemberDisplay
-		}
-		roleSectionMap := make(map[uuid.UUID]*roleSection)
-		var roleSectionOrder []uuid.UUID
-		var regularMembers []*MemberDisplay
-
-		for _, m := range members {
-			if _, inVoice := voiceUserSet[m.User.ID]; inVoice {
-				continue // shown in voice groups above
-			}
-			if m.HighestRole != nil {
-				rs, exists := roleSectionMap[m.HighestRole.ID]
-				if !exists {
-					rs = &roleSection{role: m.HighestRole}
-					roleSectionMap[m.HighestRole.ID] = rs
-					roleSectionOrder = append(roleSectionOrder, m.HighestRole.ID)
-				}
-				rs.members = append(rs.members, m)
-			} else {
-				regularMembers = append(regularMembers, m)
-			}
-		}
-
-		// Sort roleSectionOrder by DisplayOrder ASC, secondary: role name ASC.
-		for i := 1; i < len(roleSectionOrder); i++ {
-			for j := i; j > 0; j-- {
-				curr := roleSectionMap[roleSectionOrder[j]]
-				prev := roleSectionMap[roleSectionOrder[j-1]]
-				currOrder := curr.role.DisplayOrder
-				prevOrder := prev.role.DisplayOrder
-				shouldSwap := false
-				if currOrder < prevOrder {
-					shouldSwap = true
-				} else if currOrder == prevOrder {
-					shouldSwap = curr.role.Name < prev.role.Name
-				}
-				if shouldSwap {
-					roleSectionOrder[j], roleSectionOrder[j-1] = roleSectionOrder[j-1], roleSectionOrder[j]
-				} else {
-					break
-				}
+		voiceGroups, onlineMembers, offlineMembers := a.memberSections()
+		voiceUserSet := make(map[uuid.UUID]struct{})
+		for _, g := range voiceGroups {
+			for _, m := range g.members {
+				voiceUserSet[m.User.ID] = struct{}{}
 			}
 		}
 
@@ -1822,9 +1848,16 @@ func (a *App) renderUserList(width, height int) string {
 
 			dot, dotColor := presenceDot(m.User.Status, a.theme)
 			dotStr := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render(dot)
-			avatar := a.renderMemberAvatar(m.GetDisplayName(), m.AvatarColor)
-
 			_, inVoice := voiceUserSet[m.User.ID]
+
+			// Offline members are dimmed throughout.
+			offline := !inVoice && !isOnlineStatus(m.User.Status)
+			avatarColor := m.AvatarColor
+			if offline {
+				avatarColor = a.theme.Colors.Comment
+				baseStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+			}
+			avatar := a.renderMemberAvatar(m.GetDisplayName(), avatarColor)
 
 			hideVU := a.uiConfig != nil && a.uiConfig.Display.MembersHideVUMeter
 			hideQuality := a.uiConfig != nil && a.uiConfig.Display.MembersHideQuality
@@ -1893,6 +1926,24 @@ func (a *App) renderUserList(width, height int) string {
 				qualStr = " " + lipgloss.NewStyle().Foreground(lipgloss.Color(qColor)).Render(qText)
 				nameMaxLen -= len([]rune(qText)) + 1
 			}
+			// Role label after the name ("ash  admin"), in the role's own
+			// color, now that members are grouped by presence instead of role.
+			// Dropped when it would squeeze the name below 6 characters.
+			roleLabel := ""
+			if r := m.HighestRole; r != nil {
+				roleName := r.Name
+				if len([]rune(roleName)) > 10 {
+					roleName = string([]rune(roleName)[:9]) + "…"
+				}
+				if nameMaxLen-len([]rune(roleName))-2 >= 6 {
+					roleColor := a.theme.Colors.Comment
+					if r.Color != 0 && !offline {
+						roleColor = r.GetColorHex()
+					}
+					roleLabel = "  " + lipgloss.NewStyle().Foreground(lipgloss.Color(roleColor)).Render(roleName)
+					nameMaxLen -= len([]rune(roleName)) + 2
+				}
+			}
 			if nameMaxLen < 4 {
 				nameMaxLen = 4
 			}
@@ -1903,12 +1954,16 @@ func (a *App) renderUserList(width, height int) string {
 			}
 			nameStr := baseStyle.Render(name)
 
-			mb.WriteString(prefix + avatar + " " + dotStr + " " + nameStr + qualStr + "\n")
+			mb.WriteString(prefix + avatar + " " + dotStr + " " + nameStr + roleLabel + qualStr + "\n")
 
 			// ── Rows 3 & 4 (optional): title, status ──────────────────────────
 			if m.Member != nil && m.Member.CustomTitle != "" {
+				titleColor := a.theme.Colors.Yellow
+				if offline {
+					titleColor = a.theme.Colors.Comment
+				}
 				titleStyle := lipgloss.NewStyle().
-					Foreground(lipgloss.Color(a.theme.Colors.Yellow)).
+					Foreground(lipgloss.Color(titleColor)).
 					Bold(true)
 				titleText := m.Member.CustomTitle
 				titleMaxLen := innerWidth - 10
@@ -1938,64 +1993,58 @@ func (a *App) renderUserList(width, height int) string {
 				mb.WriteString("    " + statusStyle.Render(statusText) + "\n")
 			}
 
+			if isSelected {
+				selStart = strings.Count(b.String(), "\n")
+				selEnd = selStart + strings.Count(mb.String(), "\n")
+				selKey = m.User.ID.String()
+			}
 			b.WriteString(zone.Mark("member-row:"+m.User.ID.String(), mb.String()))
 			flatIndex++
 		}
 
+		// A blank line closes each group, so voice/online/offline read as
+		// separate blocks.
+		sections := 0
+		startSection := func(header string) {
+			if sections > 0 {
+				b.WriteString("\n")
+			}
+			sections++
+			b.WriteString(header)
+			b.WriteString("\n")
+		}
+
 		// ── 1. Voice channel groups (top of panel) ────────────────────────────
 		for _, g := range voiceGroups {
-			header := fmt.Sprintf("── ♪ %s (%d) ──", strings.ToUpper(g.name), len(g.members))
-			b.WriteString(voiceHeaderStyle.Render(header))
-			b.WriteString("\n")
+			startSection(voiceHeaderStyle.Render(fmt.Sprintf("── ♪ %s (%d) ──", strings.ToUpper(g.name), len(g.members))))
 			for _, m := range g.members {
 				renderMember(m)
 			}
 		}
 
-		// ── 2. Hoisted role sections ──────────────────────────────────────────
-		for _, roleID := range roleSectionOrder {
-			rs := roleSectionMap[roleID]
-			sort.Slice(rs.members, func(i, j int) bool {
-				return rs.members[i].User.Username < rs.members[j].User.Username
-			})
-			roleName := strings.ToUpper(rs.role.Name)
-			header := fmt.Sprintf("── %s (%d) ──", roleName, len(rs.members))
-			b.WriteString(sectionHeaderStyle.Render(header))
-			b.WriteString("\n")
-			for _, m := range rs.members {
-				renderMember(m)
+		// ── 2. Online, then offline (role shown beside each name) ─────────────
+		for _, sec := range []struct {
+			label   string
+			members []*MemberDisplay
+		}{{"ONLINE", onlineMembers}, {"OFFLINE", offlineMembers}} {
+			if len(sec.members) == 0 {
+				continue
 			}
-		}
-
-		// ── 3. Regular members ────────────────────────────────────────────────
-		if len(regularMembers) > 0 {
-			sort.Slice(regularMembers, func(i, j int) bool {
-				return regularMembers[i].User.Username < regularMembers[j].User.Username
-			})
-			header := fmt.Sprintf("── MEMBERS (%d) ──", len(regularMembers))
-			b.WriteString(sectionHeaderStyle.Render(header))
-			b.WriteString("\n")
-			for _, m := range regularMembers {
+			startSection(sectionHeaderStyle.Render(fmt.Sprintf("── %s (%d) ──", sec.label, len(sec.members))))
+			for _, m := range sec.members {
 				renderMember(m)
 			}
 		}
 	}
 
-	// Removed "Manage Members" button - now accessible via Ctrl+B
-
-	userListStyle := lipgloss.NewStyle().
-		Width(width - 2).
-		// Border() adds 2 lines on top of Height(N) -- see the matching
-		// comment in renderServerIconsCollapsed for the full explanation.
-		Height(height - 2).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Selection))
-
-	if a.focus == FocusUserList {
-		userListStyle = userListStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
+	// The last member's zone end marker lands after the final newline; fold
+	// it back into the previous line so it doesn't count as an extra row.
+	lines := strings.Split(b.String(), "\n")
+	if n := len(lines); n > 1 && lipgloss.Width(lines[n-1]) == 0 {
+		lines[n-2] += lines[n-1]
+		lines = lines[:n-1]
 	}
-
-	return a.labelPanelBorder(userListStyle.Render(b.String()), "MEMBERS", a.focus == FocusUserList)
+	return lines, selStart, selEnd, selKey
 }
 
 // renderStatusBar renders the bottom status bar

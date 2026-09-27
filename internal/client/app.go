@@ -80,6 +80,16 @@ type App struct {
 	bannerAnimGen       int
 	lastBannerAnimStyle int
 
+	// Shaded grape logo light (see grape_logo.go); nil while the logo isn't
+	// on screen or animations are disabled.
+	grapeLight *grapeLightState
+	grapeGen   int
+
+	// Scroll positions for the channel list and members panels (see
+	// panel_scroll.go).
+	channelScroll panelScroll
+	memberScroll  panelScroll
+
 	// Local identity (single identity across all servers)
 	localIdentity *LocalIdentity
 
@@ -1137,8 +1147,27 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 	}
 }
 
-// Update implements tea.Model
+// Update implements tea.Model. The grape logo's light (grape_logo.go) is
+// started and stopped here, after every message, so no individual
+// navigation path has to remember to do it.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch m := msg.(type) {
+	case grapeTickMsg:
+		return a, a.handleGrapeTick(m)
+	case tea.MouseMsg:
+		a.steerGrapeLight(m)
+	}
+	model, cmd := a.update(msg)
+	if start := a.syncGrapeLight(); start != nil {
+		cmd = tea.Batch(cmd, start)
+	}
+	if swap := a.ensureBannerFits(); swap != nil {
+		cmd = tea.Batch(cmd, swap)
+	}
+	return model, cmd
+}
+
+func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	// Captured during the tea.KeyMsg case below (before a.input's own
@@ -1415,10 +1444,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// renderMainView) instead of the old hand-derived isCursorOverChatViewport
 		// -- same behavior, no more duplicated layout math.
 		if a.view == ViewMain && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
+			up := msg.Type == tea.MouseWheelUp
 			if z := zone.Get("chat-panel"); z != nil && z.InBounds(msg) {
 				var cmd tea.Cmd
 				a.chatViewport, cmd = a.chatViewport.Update(msg)
 				cmds = append(cmds, cmd)
+			} else if z := zone.Get("channel-list"); z != nil && z.InBounds(msg) {
+				a.channelScroll.wheel(up)
+			} else if z := zone.Get("user-list"); z != nil && z.InBounds(msg) {
+				a.memberScroll.wheel(up)
 			}
 		}
 		// Help & Guide page mouse wheel scrolling (works regardless of FocusOnForm)
@@ -3099,130 +3133,106 @@ func (a *App) copyMessageToClipboard() tea.Cmd {
 // renderUserList: voice channel groups first, then role sections, then regular members.
 // This guarantees selectedMemberIndex always matches the highlighted row.
 func (a *App) buildFlatMemberList() []*MemberDisplay {
-	if a.activeConn == nil {
-		return nil
+	voice, online, offline := a.memberSections()
+	var flatList []*MemberDisplay
+	for _, g := range voice {
+		flatList = append(flatList, g.members...)
 	}
+	flatList = append(flatList, online...)
+	return append(flatList, offline...)
+}
 
+// memberVoiceGroup is one voice channel's members, listed at the top of the
+// members panel.
+type memberVoiceGroup struct {
+	name     string
+	position int
+	members  []*MemberDisplay
+}
+
+// isOnlineStatus reports whether a presence status counts as online (the
+// ONLINE group) rather than offline or invisible (the OFFLINE group).
+func isOnlineStatus(s models.UserStatus) bool {
+	return s == models.StatusOnline || s == models.StatusIdle || s == models.StatusDND
+}
+
+// memberSections splits the members into the panel's sections, in display
+// order: voice channels (by channel position), then ONLINE, then OFFLINE.
+// Within online/offline, members sort by their highest hoisted role (role
+// DisplayOrder, then role name; no role last), then username. Both
+// renderUserList and buildFlatMemberList (keyboard selection) use this, so
+// the two can't disagree about order.
+func (a *App) memberSections() (voice []memberVoiceGroup, online, offline []*MemberDisplay) {
+	if a.activeConn == nil {
+		return nil, nil, nil
+	}
 	a.activeConn.mu.RLock()
 	members := a.activeConn.Members
 	voiceStates := a.activeConn.VoiceStates
 	channels := a.activeConn.Channels
 	a.activeConn.mu.RUnlock()
 
-	var flatList []*MemberDisplay
-
-	// ── 1. Voice channel groups (rendered first) ──────────────────────────────
-	type voiceGroup struct {
-		channelID uuid.UUID
-		position  int
-		name      string
-		members   []*MemberDisplay
-	}
-	voiceUserSet := make(map[uuid.UUID]struct{})
-	groupMap := make(map[uuid.UUID]*voiceGroup)
-
-	for userID, vs := range voiceStates {
-		voiceUserSet[userID] = struct{}{}
-		if _, exists := groupMap[vs.ChannelID]; !exists {
-			name := vs.ChannelID.String()[:8] // fallback if channel not found
-			pos := 0
-			for _, chList := range channels {
-				for _, ch := range chList {
-					if ch.ID == vs.ChannelID {
-						name = ch.Name
-						pos = ch.Position
-						break
-					}
+	groups := make(map[uuid.UUID]*memberVoiceGroup)
+	for _, vs := range voiceStates {
+		if _, ok := groups[vs.ChannelID]; ok {
+			continue
+		}
+		g := &memberVoiceGroup{name: vs.ChannelID.String()[:8]} // fallback if the channel isn't known
+		for _, chList := range channels {
+			for _, ch := range chList {
+				if ch.ID == vs.ChannelID {
+					g.name, g.position = ch.Name, ch.Position
 				}
 			}
-			groupMap[vs.ChannelID] = &voiceGroup{channelID: vs.ChannelID, position: pos, name: name}
 		}
+		groups[vs.ChannelID] = g
 	}
+
 	for _, m := range members {
 		if vs, ok := voiceStates[m.User.ID]; ok {
-			if grp, ok := groupMap[vs.ChannelID]; ok {
-				grp.members = append(grp.members, m)
+			if g, ok := groups[vs.ChannelID]; ok {
+				g.members = append(g.members, m)
+				continue
 			}
 		}
-	}
-	var voiceGroups []voiceGroup
-	for _, g := range groupMap {
-		voiceGroups = append(voiceGroups, *g)
-	}
-	sort.Slice(voiceGroups, func(i, j int) bool {
-		if voiceGroups[i].position != voiceGroups[j].position {
-			return voiceGroups[i].position < voiceGroups[j].position
-		}
-		return voiceGroups[i].name < voiceGroups[j].name
-	})
-	for i := range voiceGroups {
-		sort.Slice(voiceGroups[i].members, func(a, b int) bool {
-			return voiceGroups[i].members[a].User.Username < voiceGroups[i].members[b].User.Username
-		})
-		flatList = append(flatList, voiceGroups[i].members...)
-	}
-
-	// ── 2. Role sections (same insertion-sort as renderUserList) ──────────────
-	type roleSect struct {
-		role    *models.Role
-		members []*MemberDisplay
-	}
-	roleSectionMap := make(map[uuid.UUID]*roleSect)
-	var roleSectionOrder []uuid.UUID
-	var regularMembers []*MemberDisplay
-
-	for _, m := range members {
-		if _, inVoice := voiceUserSet[m.User.ID]; inVoice {
-			continue // already added in voice groups above
-		}
-		if m.HighestRole != nil {
-			rs, exists := roleSectionMap[m.HighestRole.ID]
-			if !exists {
-				rs = &roleSect{role: m.HighestRole}
-				roleSectionMap[m.HighestRole.ID] = rs
-				roleSectionOrder = append(roleSectionOrder, m.HighestRole.ID)
-			}
-			rs.members = append(rs.members, m)
+		if isOnlineStatus(m.User.Status) {
+			online = append(online, m)
 		} else {
-			regularMembers = append(regularMembers, m)
+			offline = append(offline, m)
 		}
 	}
 
-	// Insertion sort matching renderUserList: DisplayOrder ASC, secondary role name ASC.
-	for i := 1; i < len(roleSectionOrder); i++ {
-		for j := i; j > 0; j-- {
-			curr := roleSectionMap[roleSectionOrder[j]]
-			prev := roleSectionMap[roleSectionOrder[j-1]]
-			currOrder := curr.role.DisplayOrder
-			prevOrder := prev.role.DisplayOrder
-			shouldSwap := false
-			if currOrder < prevOrder {
-				shouldSwap = true
-			} else if currOrder == prevOrder {
-				shouldSwap = curr.role.Name < prev.role.Name
-			}
-			if shouldSwap {
-				roleSectionOrder[j], roleSectionOrder[j-1] = roleSectionOrder[j-1], roleSectionOrder[j]
-			} else {
-				break
-			}
+	for _, g := range groups {
+		sort.Slice(g.members, func(i, j int) bool { return g.members[i].User.Username < g.members[j].User.Username })
+		voice = append(voice, *g)
+	}
+	sort.Slice(voice, func(i, j int) bool {
+		if voice[i].position != voice[j].position {
+			return voice[i].position < voice[j].position
 		}
-	}
-	for _, roleID := range roleSectionOrder {
-		rs := roleSectionMap[roleID]
-		sort.Slice(rs.members, func(i, j int) bool {
-			return rs.members[i].User.Username < rs.members[j].User.Username
-		})
-		flatList = append(flatList, rs.members...)
-	}
-
-	// ── 3. Regular members (no role, not in voice) ────────────────────────────
-	sort.Slice(regularMembers, func(i, j int) bool {
-		return regularMembers[i].User.Username < regularMembers[j].User.Username
+		return voice[i].name < voice[j].name
 	})
-	flatList = append(flatList, regularMembers...)
 
-	return flatList
+	byRoleThenName := func(list []*MemberDisplay) {
+		sort.SliceStable(list, func(i, j int) bool {
+			ri, rj := list[i].HighestRole, list[j].HighestRole
+			switch {
+			case ri != nil && rj == nil:
+				return true
+			case ri == nil && rj != nil:
+				return false
+			case ri != nil && rj != nil && ri.ID != rj.ID:
+				if ri.DisplayOrder != rj.DisplayOrder {
+					return ri.DisplayOrder < rj.DisplayOrder
+				}
+				return ri.Name < rj.Name
+			}
+			return list[i].User.Username < list[j].User.Username
+		})
+	}
+	byRoleThenName(online)
+	byRoleThenName(offline)
+	return voice, online, offline
 }
 
 // navigateMemberList navigates through the member list

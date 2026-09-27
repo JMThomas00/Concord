@@ -78,17 +78,63 @@ func (a *App) startBannerAnim() tea.Cmd {
 	return bannerAnimTick(a.bannerAnimGen)
 }
 
-// shuffleBanner is the login-screen easter egg (Ctrl+R): a different banner
-// than the one on screen, animated in.
-func (a *App) shuffleBanner() tea.Cmd {
-	banner, idx := GetRandomBanner(a.bannerIndex)
-	a.banner, a.bannerIndex = banner, idx
+// pickFittingBanner chooses a random banner other than last among those
+// fits accepts; ok is false when there's no such banner.
+func pickFittingBanner(last int, fits func(int) bool) (int, bool) {
+	var candidates []int
+	for i := range banners {
+		if i != last && fits(i) {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		return last, false
+	}
+	return candidates[rng.Intn(len(candidates))], true
+}
+
+// setBanner switches to banner idx, remembering it so the next launch
+// won't open on the same one.
+func (a *App) setBanner(idx int) {
+	a.banner, a.bannerIndex = banners[idx], idx
 	if a.configMgr != nil {
 		if cfg, err := a.configMgr.LoadAppConfig(); err == nil && cfg != nil {
 			cfg.UI.LastBannerIndex = idx
 			_ = a.configMgr.SaveAppConfig(cfg)
 		}
 	}
+}
+
+// shuffleBanner is the login-screen easter egg (Ctrl+R): a different banner
+// that fits the logo box at the current terminal size, animated in.
+func (a *App) shuffleBanner() tea.Cmd {
+	fits := func(int) bool { return true }
+	if g, ok := a.currentLockup(); ok {
+		fits = g.fits
+	}
+	if idx, ok := pickFittingBanner(a.bannerIndex, fits); ok {
+		a.setBanner(idx)
+	}
+	return a.startBannerAnim()
+}
+
+// ensureBannerFits swaps in a fitting banner when the current one doesn't
+// fit the logo box -- at startup (the banner is chosen before the terminal
+// size is known), after a resize, or on arriving at login/register. Called
+// after every Update.
+func (a *App) ensureBannerFits() tea.Cmd {
+	if a.width <= 0 || a.height <= 0 {
+		return nil
+	}
+	g, ok := a.currentLockup()
+	if !ok || g.fits(a.bannerIndex) {
+		return nil
+	}
+	idx, found := pickFittingBanner(a.bannerIndex, g.fits)
+	if !found {
+		return nil // nothing fits a screen this small; the layout clips instead
+	}
+	a.setBanner(idx)
 	return a.startBannerAnim()
 }
 
