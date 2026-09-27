@@ -92,9 +92,26 @@ func TestLogoLockupPinsGrapesAndBannerEdge(t *testing.T) {
 			t.Fatalf("banner %q moved the grapes to row %d col %d, want row %d col %d", b.Name, row, col, grapeRow, grapeCol)
 		}
 
-		// Box starts right after the 35-column grapes (";##:" is 10 columns in).
-		boxStart := grapeCol - 10 + grapeLogoSize + grapeLockupGap
-		baseline := grapeRow + grapeLogos[grapeLogoSize].rows - 1
+		// The grapes' bottom row is level with the password box's bottom.
+		grapeBottom := grapeRow + grapeLogos[grapeLogoSize].rows - 1
+		if !strings.Contains(lines[grapeBottom], "╰") {
+			t.Fatalf("banner %q: grapes end on row %d, not level with the password box bottom:\n%q", b.Name, grapeBottom, lines[grapeBottom])
+		}
+
+		// Box starts right after the 35-column grapes (";##:" is 10 columns
+		// in); its bottom row sits just above the gap before the form (the
+		// form's first row is padding, then "Welcome back").
+		boxStart := grapeCol - 10 + grapeLogoSize + grapeLockupGap + formTextIndent
+		welcomeRow, welcomeCol, _ := position(t, strings.Join(lines, "\n"), "Welcome back")
+		baseline := welcomeRow - 2 - bannerFormGap
+
+		// Banner, form text, and shortcut hints share one left edge.
+		if welcomeCol != boxStart {
+			t.Fatalf("banner %q: form text starts at column %d, banner box at %d", b.Name, welcomeCol, boxStart)
+		}
+		if _, enterCol, _ := position(t, strings.Join(lines, "\n"), "Enter  Unlock"); enterCol != boxStart+1 {
+			t.Fatalf("banner %q: hints' first chip text at column %d, want %d (chip edge on the shared left edge)", b.Name, enterCol, boxStart+1)
+		}
 		art := strings.Split(trimBannerArt(b.Art), "\n")
 		last := len(art) - 1
 		for last > 0 && strings.TrimSpace(art[last]) == "" {

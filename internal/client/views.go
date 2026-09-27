@@ -99,6 +99,13 @@ var maxBannerHeight = func() int {
 
 const bannerFormGap = 2 // blank rows between the logo slot and the form
 
+// formTextIndent is where login/register form text starts: the form box's
+// left padding. The banner and the shortcut hints are indented the same
+// amount so all three share one left edge.
+const formTextIndent = 2
+
+var formHintsIndent = lipgloss.NewStyle().PaddingLeft(formTextIndent)
+
 // layoutBannerScreen places the logo bottom-aligned in a fixed-height slot
 // with the form block below it. stableBelow is the form block's height
 // without transient lines (an error message), so an error appearing doesn't
@@ -181,27 +188,56 @@ func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
 	for i, l := range bannerLines {
 		bannerLines[i] = ansi.Truncate(l, g.boxW, "")
 	}
-	lockup := lipgloss.Place(g.boxW, slot, lipgloss.Left, lipgloss.Bottom, strings.Join(bannerLines, "\n"))
+	box := lipgloss.Place(g.boxW, slot, lipgloss.Left, lipgloss.Bottom, strings.Join(bannerLines, "\n"))
+
+	// Right column: the banner box, then the form and hints beneath it, all
+	// sharing one left edge (formTextIndent in, where the form's text
+	// starts). Its width depends only on the terminal size.
+	box = lipgloss.NewStyle().PaddingLeft(formTextIndent).Render(box)
+	colW := max(lipgloss.Width(box), lipgloss.Width(below))
+	column := strings.Join([]string{
+		lipgloss.PlaceHorizontal(colW, lipgloss.Left, box),
+		strings.Repeat("\n", bannerFormGap-1),
+		lipgloss.PlaceHorizontal(colW, lipgloss.Left, below),
+	}, "\n")
+
+	group := column
+	// visibleTop is the first row of what normally shows: most banners are
+	// short, so the top of the 21-row slot is usually empty.
+	visibleTop := max(0, slot-10)
+	visibleW := lipgloss.Width(below)
 	if g.grapes {
-		lockup = lipgloss.JoinHorizontal(lipgloss.Bottom, a.renderGrapeLogo(), strings.Repeat(" ", grapeLockupGap), lockup)
+		// The grapes sit left of the column with their bottom row level with
+		// the form's last row (the password box on the login screen). That
+		// row is 3 up from the bottom of the stable form block (form bottom
+		// padding, then the hints row), and error messages appear below it,
+		// so the grapes stay put along with the form.
+		grapeRows := grapeLogos[grapeLogoSize].rows
+		formLastRow := slot + bannerFormGap + stableBelow - 3
+		grapeTop := max(0, formLastRow-(grapeRows-1))
+		grapes := strings.Repeat("\n", grapeTop) + a.renderGrapeLogo()
+		group = lipgloss.JoinHorizontal(lipgloss.Top, grapes, strings.Repeat(" ", grapeLockupGap), column)
+		visibleTop = grapeTop
+		visibleW += grapeLogoSize + grapeLockupGap
 	}
 
-	topPad := (a.height - slot - bannerFormGap - stableBelow) / 2
+	// Center what normally shows (grapes top to hints; grapes left edge to
+	// the end of the hints row) rather than the whole reserved area, so the
+	// empty room kept for rare tall or wide banners doesn't push everything
+	// down and to the left. Both depend only on the terminal size and the
+	// stable form height, never on the banner, so nothing shifts on a
+	// shuffle. Clamped so the full group always stays on screen.
+	fullH := slot + bannerFormGap + stableBelow
+	topPad := (a.height-(fullH-visibleTop))/2 - visibleTop
 	if overflow := topPad + slot + bannerFormGap + lipgloss.Height(below) - a.height; overflow > 0 {
 		topPad -= overflow
 	}
-	if topPad < 0 {
-		topPad = 0
-	}
+	topPad = max(0, topPad)
 
-	// The lockup's width is fixed for a given terminal size, and the form is
-	// centered on its own, so neither shifts when the banner changes.
-	parts := []string{
-		lipgloss.Place(a.width, slot, lipgloss.Center, lipgloss.Bottom, lockup),
-		strings.Repeat("\n", bannerFormGap-1),
-		lipgloss.PlaceHorizontal(a.width, lipgloss.Center, below),
-	}
-	content := strings.Repeat("\n", topPad) + strings.Join(parts, "\n")
+	groupW := lipgloss.Width(group)
+	leftPad := max(0, min((a.width-visibleW)/2, a.width-groupW))
+
+	content := strings.Repeat("\n", topPad) + lipgloss.NewStyle().PaddingLeft(leftPad).Render(group)
 	return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, content, lipgloss.WithWhitespaceChars(" "))
 }
 
@@ -333,7 +369,7 @@ func (a *App) loginFormBlock() (string, int) {
 
 	// Hints sit below the form, not inside its fixed 50-column box, so they
 	// stay on one row.
-	below := lipgloss.JoinVertical(lipgloss.Center, loginForm, a.renderKeyHints(hints, a.width-4))
+	below := lipgloss.JoinVertical(lipgloss.Left, loginForm, formHintsIndent.Render(a.renderKeyHints(hints, a.width-4)))
 	return below, lipgloss.Height(below) - formErrorLines(a.loginError, formWidth)
 }
 
@@ -431,7 +467,7 @@ func (a *App) registerFormBlock() (string, int) {
 	registerForm := formStyle.Render(b.String())
 
 	hints := []keyHint{{"Tab", "Switch fields"}, {"Enter", "Create account"}, {"Esc", "Back"}, {"Ctrl+Q", "Quit"}}
-	below := lipgloss.JoinVertical(lipgloss.Center, registerForm, a.renderKeyHints(hints, a.width-4))
+	below := lipgloss.JoinVertical(lipgloss.Left, registerForm, formHintsIndent.Render(a.renderKeyHints(hints, a.width-4)))
 	return below, lipgloss.Height(below) - formErrorLines(a.loginError, formWidth)
 }
 
