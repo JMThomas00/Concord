@@ -662,32 +662,58 @@ type ReactionPayload struct {
 // activity notifications; reusable for anything else a plugin needs later
 // without a protocol change).
 
+// PaneTheme is the viewer's current Concord theme, sent with Enter/Resize so
+// a plugin can render in matching colors. Palette keys are the theme's base
+// color names (background, foreground, comment, selection, current_line,
+// red, orange, yellow, green, cyan, purple, pink); values are "#rrggbb" or
+// ANSI palette indexes ("0"-"15"), or "" for the terminal's own default.
+// ColorProfile is the viewer terminal's capability: "truecolor", "ansi256",
+// "ansi" or "ascii" -- render no richer than this.
+type PaneTheme struct {
+	Name         string            `json:"name,omitempty"`
+	Palette      map[string]string `json:"palette,omitempty"`
+	ColorProfile string            `json:"color_profile,omitempty"`
+}
+
 // PluginPaneEnterPayload is sent when a client opens a remote-pane plugin channel.
+// The server re-sends it to a plugin for every current viewer when the
+// plugin (re)connects, so a restarted plugin repaints everyone.
 type PluginPaneEnterPayload struct {
 	ChannelID uuid.UUID `json:"channel_id"`
 	ViewerID  uuid.UUID `json:"viewer_id,omitempty"` // Server-stamped on relay; ignored if client-supplied
 	Width     int       `json:"width"`
 	Height    int       `json:"height"`
+	// Server-stamped: the viewer's username and how they appear in this
+	// server (nickname, else display name, else username).
+	ViewerName        string     `json:"viewer_name,omitempty"`
+	ViewerDisplayName string     `json:"viewer_display_name,omitempty"`
+	Theme             *PaneTheme `json:"theme,omitempty"`
 }
 
-// PluginPaneResizePayload reports a viewport size change for an active pane.
+// PluginPaneResizePayload reports a viewport size (or theme) change for an active pane.
 type PluginPaneResizePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
+	ChannelID         uuid.UUID  `json:"channel_id"`
+	ViewerID          uuid.UUID  `json:"viewer_id,omitempty"`
+	Width             int        `json:"width"`
+	Height            int        `json:"height"`
+	ViewerName        string     `json:"viewer_name,omitempty"`
+	ViewerDisplayName string     `json:"viewer_display_name,omitempty"`
+	Theme             *PaneTheme `json:"theme,omitempty"`
 }
 
 // PluginPaneInputPayload forwards one keypress from a viewer to the plugin
-// owning the channel. Runes/KeyType let a bubbletea-based plugin reconstruct
-// a real tea.KeyMsg; KeyString is provided for non-bubbletea plugins.
+// owning the channel. KeyString is the canonical encoding (Bubble Tea's
+// KeyMsg.String(): "a", "enter", "ctrl+c", "alt+left", ...); KeyType/Runes/
+// Alt are kept for existing Bubble Tea v1 plugins that rebuild a tea.KeyMsg.
 type PluginPaneInputPayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
-	KeyType   int       `json:"key_type"`
-	Runes     []rune    `json:"runes,omitempty"`
-	Alt       bool      `json:"alt,omitempty"`
-	KeyString string    `json:"key_string"`
+	ChannelID         uuid.UUID `json:"channel_id"`
+	ViewerID          uuid.UUID `json:"viewer_id,omitempty"`
+	KeyType           int       `json:"key_type"`
+	Runes             []rune    `json:"runes,omitempty"`
+	Alt               bool      `json:"alt,omitempty"`
+	KeyString         string    `json:"key_string"`
+	ViewerName        string    `json:"viewer_name,omitempty"`
+	ViewerDisplayName string    `json:"viewer_display_name,omitempty"`
 }
 
 // PluginPaneLeavePayload is sent when a client navigates away from a plugin channel.
@@ -697,10 +723,13 @@ type PluginPaneLeavePayload struct {
 }
 
 // PluginPaneFramePayload is pushed by a plugin process (as its service-account
-// client) with the rendered View() for one specific viewer.
+// client) with the rendered View() for one specific viewer -- or, with
+// ViewerID left empty, for every current viewer of ChannelID (a shared view
+// such as a passthrough terminal). The server only delivers frames for the
+// plugin's own channels, to users actually viewing them.
 type PluginPaneFramePayload struct {
 	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id"`
+	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
 	Frame     string    `json:"frame"`
 	Seq       int64     `json:"seq"` // Monotonic per viewer; client drops frames with Seq <= last-applied
 	// Epoch is stamped by the server (ignored if a plugin sets it) and
@@ -736,6 +765,67 @@ type PluginNotifyEventPayload struct {
 // instead of being interpreted by the plugin.
 type PluginPaneClosePayload struct {
 	ChannelID uuid.UUID `json:"channel_id"`
+}
+
+// PluginEventPayload.Kind values Concord itself understands. Any other kind
+// sent with ViewerID set is relayed unchanged to that viewer's client.
+const (
+	// Plugin → Concord: post Payload (PluginNotifyEventPayload) as a system
+	// message in the plugin's configured activity channel.
+	PluginEventNotify = "notify"
+	// Plugin → one viewer: stop capturing keys for Payload's
+	// (PluginPaneClosePayload) channel and hand focus back to Concord's own
+	// navigation. The pane stays open and keeps receiving frames.
+	PluginEventLeavePane = "leave_pane"
+	// Plugin → one member (PluginNotifyUserPayload): a toast plus an unread
+	// badge on the plugin's channel -- e.g. "Alex challenged you to chess".
+	// Only delivered to members who can view that channel.
+	PluginEventNotifyUser = "notify_user"
+	// Plugin → Concord request (PluginMembersRequest), answered with the
+	// same kind (PluginMembersResponse): who can see a channel and who's
+	// online, e.g. for a challenge lobby.
+	PluginEventMembers = "members"
+	// Plugin → viewer(s) (PluginPaneTitlePayload): the text shown in the
+	// pane's border title in place of the channel name, e.g.
+	// "Chess — Jordan vs Alex". ViewerID empty = every viewer.
+	PluginEventPaneTitle = "pane_title"
+)
+
+// PluginNotifyUserPayload is the Payload for Kind "notify_user".
+type PluginNotifyUserPayload struct {
+	UserID    uuid.UUID `json:"user_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	Content   string    `json:"content"`
+}
+
+// PluginMembersRequest is the Payload a plugin sends with Kind "members".
+// RequestID is echoed back so a plugin can match the reply.
+type PluginMembersRequest struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	RequestID string    `json:"request_id,omitempty"`
+}
+
+// PluginMembersResponse is the Payload of the "members" reply.
+type PluginMembersResponse struct {
+	ChannelID uuid.UUID      `json:"channel_id"`
+	RequestID string         `json:"request_id,omitempty"`
+	Members   []PluginMember `json:"members"`
+}
+
+// PluginMember is one member who can view the requested channel.
+type PluginMember struct {
+	UserID      uuid.UUID `json:"user_id"`
+	Username    string    `json:"username"`
+	DisplayName string    `json:"display_name"`
+	Online      bool      `json:"online"`
+	Viewing     bool      `json:"viewing"` // has this channel's pane open right now
+}
+
+// PluginPaneTitlePayload is the Payload for Kind "pane_title". An empty
+// Title restores the channel's own name.
+type PluginPaneTitlePayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Title     string    `json:"title"`
 }
 
 // PluginInfo describes one installed plugin for the Settings > Plugins UI.

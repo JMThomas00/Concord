@@ -26,6 +26,9 @@ type Handlers struct {
 	stats         *StatsTracker
 	plugins       *plugins.Manager
 
+	// paneViewers tracks who has which plugin pane open -- see pane_viewers.go.
+	paneViewers *PaneViewers
+
 	// pluginsDir is the resolved plugins directory (config.PluginsDir,
 	// defaulting to "Plugins" -- see server.go), set once at startup via
 	// SetPluginsDir. Needed by HandlePluginInstall to know where to place a
@@ -57,12 +60,23 @@ func (h *Handlers) SetBuildInfo(version, gitCommit, buildTime string) {
 // NewHandlers creates a new Handlers instance
 func NewHandlers(db *database.DB, hub *Hub, stats *StatsTracker, pluginManager *plugins.Manager) *Handlers {
 	h := &Handlers{
-		db:      db,
-		hub:     hub,
-		stats:   stats,
-		plugins: pluginManager,
+		db:          db,
+		hub:         hub,
+		stats:       stats,
+		plugins:     pluginManager,
+		paneViewers: NewPaneViewers(),
 	}
 	h.typingManager = NewTypingManager(hub)
+	// A viewer whose connection closes can't send a Leave; tell the plugin
+	// ourselves so its seat/board state doesn't hold a ghost viewer.
+	hub.SetClientGoneCallback(func(c *Client) {
+		if c.IsPlugin {
+			return // its viewers stay registered and are replayed on reconnect
+		}
+		if v := h.paneViewers.LeaveAll(c.UserID); v != nil {
+			h.sendPaneLeaveToPlugin(v.pluginID, v.enter.ChannelID, c.UserID)
+		}
+	})
 	return h
 }
 
@@ -918,6 +932,7 @@ func (h *Handlers) HandleDeleteChannel(c *Client, msg *protocol.Message) {
 		h.hub.BroadcastToServer(req.ServerID, protocol.EventChannelDelete, payload, nil)
 		if ch.Type == models.ChannelTypePlugin {
 			h.notifyOwningPlugin(ch, protocol.EventChannelDelete, payload)
+			h.paneViewers.DropChannel(ch.ID)
 		}
 	}
 }
@@ -2609,196 +2624,6 @@ func (h *Handlers) handleVoiceLeave(userID, serverID, channelID uuid.UUID) {
 	}
 	_ = h.hub.BroadcastToServer(serverID, protocol.EventVoiceStateUpdate, leavePayload, nil)
 	Logger.Info("Voice state cleared on disconnect", "user_id", userID, "channel_id", channelID)
-}
-
-// ── Plugin Platform Handlers ────────────────────────────────────────────────
-//
-// The Hub relays every plugin pane/event message without parsing it: a human
-// client's Enter/Input/Resize/Leave gets routed to the owning plugin's
-// service-account connection, and a plugin's Frame push gets routed to the
-// one viewer it named. Concord never understands what's inside a frame.
-
-// pluginServiceClient resolves the connected Client for the plugin that owns
-// a channel, or sends an error and returns nil if the channel isn't a plugin
-// channel or that plugin isn't currently connected.
-//
-// requireView gates Enter/Resize/Input on the viewer's View Channels
-// permission (overwrite-aware), so a member a channel is hidden from can't
-// drive or watch its plugin just by knowing the channel ID. Leave skips the
-// check: telling a plugin someone is gone is always safe, and a viewer who
-// just lost access still needs to be released.
-func (h *Handlers) pluginServiceClient(c *Client, channelID uuid.UUID, requireView bool) *Client {
-	channel, err := h.db.GetChannelByID(channelID)
-	if err != nil || channel.Type != models.ChannelTypePlugin {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Not a plugin channel")
-		return nil
-	}
-	if requireView {
-		if err := h.hasChannelPermission(c.UserID, channel, models.PermissionViewChannels); err != nil {
-			c.sendError(protocol.ErrorCodeForbidden, "You don't have access to this channel")
-			return nil
-		}
-	}
-	serviceUserID, err := h.plugins.ServiceUserIDFor(channel.PluginID)
-	if err != nil {
-		c.sendError(protocol.ErrorCodeServerError, "Plugin not installed")
-		return nil
-	}
-	target := h.hub.GetClient(serviceUserID)
-	if target == nil {
-		c.sendError(protocol.ErrorCodeServerError, "Plugin is not currently running")
-		return nil
-	}
-	return target
-}
-
-// HandlePluginPaneEnter relays a viewer opening a plugin channel to that
-// plugin's process, stamping ViewerID server-side (never trust the client).
-func (h *Handlers) HandlePluginPaneEnter(c *Client, msg *protocol.Message) {
-	var req protocol.PluginPaneEnterPayload
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	req.ViewerID = c.UserID
-	target := h.pluginServiceClient(c, req.ChannelID, true)
-	if target == nil {
-		return
-	}
-	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneEnter, req); err != nil {
-		MsgLog.Error("Failed to relay plugin pane enter", "channel_id", req.ChannelID, "error", err)
-	}
-}
-
-// HandlePluginPaneResize relays a viewport size change.
-func (h *Handlers) HandlePluginPaneResize(c *Client, msg *protocol.Message) {
-	var req protocol.PluginPaneResizePayload
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	req.ViewerID = c.UserID
-	target := h.pluginServiceClient(c, req.ChannelID, true)
-	if target == nil {
-		return
-	}
-	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneResize, req); err != nil {
-		MsgLog.Error("Failed to relay plugin pane resize", "channel_id", req.ChannelID, "error", err)
-	}
-}
-
-// HandlePluginPaneInput relays one forwarded keypress to the owning plugin.
-func (h *Handlers) HandlePluginPaneInput(c *Client, msg *protocol.Message) {
-	var req protocol.PluginPaneInputPayload
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	req.ViewerID = c.UserID
-	target := h.pluginServiceClient(c, req.ChannelID, true)
-	if target == nil {
-		return
-	}
-	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneInput, req); err != nil {
-		MsgLog.Error("Failed to relay plugin pane input", "channel_id", req.ChannelID, "error", err)
-	}
-}
-
-// HandlePluginPaneLeave relays a viewer navigating away from a plugin channel.
-func (h *Handlers) HandlePluginPaneLeave(c *Client, msg *protocol.Message) {
-	var req protocol.PluginPaneLeavePayload
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	req.ViewerID = c.UserID
-	target := h.pluginServiceClient(c, req.ChannelID, false)
-	if target == nil {
-		return
-	}
-	if err := h.hub.SendToUser(target.UserID, protocol.EventPluginPaneLeave, req); err != nil {
-		MsgLog.Error("Failed to relay plugin pane leave", "channel_id", req.ChannelID, "error", err)
-	}
-}
-
-// HandlePluginPaneFrame relays a plugin's rendered frame to the one viewer it
-// named. Only a connection that identified as that plugin may push frames.
-func (h *Handlers) HandlePluginPaneFrame(c *Client, msg *protocol.Message) {
-	if !c.IsPlugin {
-		c.sendError(protocol.ErrorCodeForbidden, "Only plugin connections may push frames")
-		return
-	}
-	var req protocol.PluginPaneFramePayload
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	channel, err := h.db.GetChannelByID(req.ChannelID)
-	if err != nil || channel.Type != models.ChannelTypePlugin || channel.PluginID != c.PluginID {
-		MsgLog.Warn("Rejected plugin frame for a channel the plugin doesn't own", "plugin_id", c.PluginID, "channel_id", req.ChannelID)
-		c.sendError(protocol.ErrorCodeForbidden, "Frames may only target your own plugin's channels")
-		return
-	}
-	// Stamped per plugin connection: a restarted plugin starts its Seq
-	// counter over, and the client uses a changed Epoch to accept that new
-	// stream instead of dropping every frame until Seq catches back up.
-	req.Epoch = c.connEpoch
-	if err := h.hub.SendToUser(req.ViewerID, protocol.EventPluginPaneFrame, req); err != nil {
-		MsgLog.Error("Failed to relay plugin pane frame", "channel_id", req.ChannelID, "viewer_id", req.ViewerID, "error", err)
-	}
-}
-
-// HandlePluginEvent handles the generic {plugin_id, kind, payload} envelope.
-// Kind == "notify" posts a system message into the plugin's server-admin-
-// configured activity channel, reusing sendSystemMessage verbatim — the
-// exact function moderation actions already use. Any Kind sent with
-// ViewerID set is relayed unchanged to that specific viewer's own client
-// via EventPluginEvent — e.g. a plugin telling one viewer's pane to close
-// (Kind "leave_pane") — letting a plugin add new viewer-directed signals
-// without a protocol change. Anything else is logged and dropped.
-func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
-	if !c.IsPlugin {
-		c.sendError(protocol.ErrorCodeForbidden, "Only plugin connections may send plugin events")
-		return
-	}
-	var req protocol.PluginEventPayload
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	req.PluginID = c.PluginID // never trust a client-claimed plugin id
-
-	if req.Kind != "notify" {
-		if req.ViewerID != uuid.Nil {
-			if err := h.hub.SendToUser(req.ViewerID, protocol.EventPluginEvent, req); err != nil {
-				MsgLog.Error("Failed to relay plugin event to viewer", "plugin_id", req.PluginID, "viewer_id", req.ViewerID, "kind", req.Kind, "error", err)
-			}
-			return
-		}
-		MsgLog.Warn("Unhandled plugin event kind", "plugin_id", req.PluginID, "kind", req.Kind)
-		return
-	}
-
-	var notify protocol.PluginNotifyEventPayload
-	if err := json.Unmarshal(req.Payload, &notify); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid notify payload")
-		return
-	}
-
-	config, err := h.db.GetPluginServerConfig(req.PluginID)
-	if err != nil {
-		MsgLog.Error("Failed to load plugin server config", "plugin_id", req.PluginID, "error", err)
-		return
-	}
-	channelIDStr := config["activity_notify_channel"]
-	if channelIDStr == "" {
-		return // Admin hasn't configured a notification channel — silently drop
-	}
-	channelID, err := uuid.Parse(channelIDStr)
-	if err != nil {
-		return
-	}
-	h.sendSystemMessage(channelID, notify.Content)
 }
 
 // HandleGetPluginConfig answers the Settings > Plugins list/config request.

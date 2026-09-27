@@ -1154,10 +1154,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case grapeTickMsg:
 		return a, a.handleGrapeTick(m)
+	case paneCheckMsg:
+		return a, a.syncPluginPane()
 	case tea.MouseMsg:
 		a.steerGrapeLight(m)
 	}
 	model, cmd := a.update(msg)
+	if check := a.schedulePaneCheck(); check != nil {
+		cmd = tea.Batch(cmd, check)
+	}
 	if start := a.syncGrapeLight(); start != nil {
 		cmd = tea.Batch(cmd, start)
 	}
@@ -1408,7 +1413,6 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.updateChatContent()
 			a.scrollToBottom()
 		}
-		a.resizePluginPane()
 
 		// Debounce Help & Guide's expensive full-document re-render across a
 		// live drag-resize -- see helpResizing's doc comment. renderHelpContent
@@ -1737,7 +1741,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := a.updateAddServerForm(msg)
 		cmds = append(cmds, cmd)
 	case ViewMain:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && a.focus == FocusChat && a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && a.paneFocused() {
 			// A remote-pane plugin channel replaces both the chat viewport and
 			// the message entry field — every key not already claimed by a
 			// global keybind above forwards to the owning plugin process.
@@ -1941,11 +1945,12 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// keypress the pane also receives via forwardPluginPaneInput later in
 	// Update(), corrupting both at once: e.g. tab simultaneously cycling
 	// Concord's own focus AND advancing a field inside the plugin's form.
-	// There's no client-side escape key reserved for leaving the pane —
-	// the plugin itself decides when that's safe (e.g. only from its own
-	// main view, not mid-form) and asks Concord to leave via
-	// EventPluginEvent{Kind: "leave_pane"} (see the EventPluginEvent case
-	// in the connection-event dispatch switch, not this function).
+	// The one exception is paneLeaveKey (Ctrl+]), reserved by Concord and
+	// never forwarded, so a viewer can always get out of any plugin -- even
+	// one that's hung or never sends leave_pane. A plugin can also hand
+	// focus back itself (e.g. on 'q' from its main view) via
+	// EventPluginEvent{Kind: "leave_pane"}. Either way the pane stays open
+	// and keeps updating; only key capture ends.
 	//
 	// Gated on a.focus == FocusChat, not just a.pluginPane being set:
 	// navigateChannelList calls selectChannel — and therefore
@@ -1957,7 +1962,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// it. Tab into FocusChat (the same deliberate step needed to scroll an
 	// ordinary channel's messages) before the pane starts capturing
 	// everything.
-	if a.view == ViewMain && a.focus == FocusChat && a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID {
+	if a.paneFocused() {
+		if msg.String() == paneLeaveKey {
+			a.releasePaneFocus()
+		}
 		return nil
 	}
 
@@ -5831,9 +5839,13 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 		// in ServerScopedMsg before dispatch, so that case could never
 		// actually fire; moved here where DisconnectedMsg is genuinely
 		// handled, found while removing that dead code.)
-		if a.pluginPane != nil {
-			a.leavePluginPane()
-			a.focus = FocusChannelList
+		// The pane itself stays on screen and re-enters on reconnect (see
+		// syncPluginPane); only key capture is released.
+		if a.pluginPane != nil && a.pluginPane.conn != nil && a.pluginPane.conn.ServerID == serverID {
+			if a.focus == FocusChat {
+				a.releasePaneFocus()
+			}
+			a.paneDisconnected()
 		}
 		if hasToken {
 			return a.scheduleReconnect(serverID)
@@ -6622,19 +6634,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("Failed to parse PLUGIN_EVENT payload: %v", err)
 			return nil
 		}
-		if payload.Kind == "leave_pane" {
-			var closePayload protocol.PluginPaneClosePayload
-			if err := json.Unmarshal(payload.Payload, &closePayload); err != nil {
-				return nil
-			}
-			// Only act if this is still the pane currently showing — the
-			// plugin's signal could in principle arrive after the viewer
-			// already navigated elsewhere on their own.
-			if a.pluginPane != nil && a.pluginPane.ChannelID == closePayload.ChannelID {
-				a.leavePluginPane()
-				a.focus = FocusChannelList
-			}
-		}
+		a.handlePluginEvent(serverID, sc, payload)
 
 	case protocol.EventTypingStart:
 		var typingPayload protocol.TypingStartEventPayload

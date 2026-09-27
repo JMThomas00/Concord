@@ -320,7 +320,12 @@ func (s *Server) handleShutdown() {
 
 	<-sigChan
 	Logger.Warn("Shutting down server...")
+	s.Shutdown()
+}
 
+// Shutdown stops the server: deregisters from Grapevine, stops plugin
+// processes, closes the HTTP listener and the database.
+func (s *Server) Shutdown() {
 	// Deregister from Grapevine hub before closing
 	if s.grapevine != nil {
 		s.grapevine.Stop()
@@ -337,10 +342,11 @@ func (s *Server) handleShutdown() {
 	defer cancel()
 
 	// Shutdown HTTP server
-	if err := s.httpServer.Shutdown(ctx); err != nil {
-		Logger.Error("HTTP server shutdown error", "error", err)
+	if s.httpServer != nil {
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			Logger.Error("HTTP server shutdown error", "error", err)
+		}
 	}
-
 	// Close database
 	if err := s.db.Close(); err != nil {
 		DBLog.Error("Database close error", "error", err)

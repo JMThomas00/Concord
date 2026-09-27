@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,9 +343,11 @@ func TestPluginPaneRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(firstFrame.Data, &framePayload); err != nil {
 		t.Fatalf("failed to parse first frame: %v", err)
 	}
-	if framePayload.Seq != 0 {
-		t.Fatalf("expected initial frame Seq=0, got %d", framePayload.Seq)
+	// The plugin knows who's looking (server-stamped identity on Enter).
+	if !strings.Contains(framePayload.Frame, "Hello, tester!") || !strings.Contains(framePayload.Frame, "seen: 0") {
+		t.Fatalf("unexpected first frame %q", framePayload.Frame)
 	}
+	firstSeq := framePayload.Seq
 
 	client.send(protocol.OpPluginPaneInput, protocol.PluginPaneInputPayload{ChannelID: channel.ID, KeyString: "x"})
 
@@ -353,13 +356,13 @@ func TestPluginPaneRoundTrip(t *testing.T) {
 			return false
 		}
 		var p protocol.PluginPaneFramePayload
-		return json.Unmarshal(m.Data, &p) == nil && p.Seq == 1
+		return json.Unmarshal(m.Data, &p) == nil && p.Seq > firstSeq
 	})
 	if err := json.Unmarshal(secondFrame.Data, &framePayload); err != nil {
 		t.Fatalf("failed to parse second frame: %v", err)
 	}
-	if framePayload.Seq != 1 {
-		t.Fatalf("expected frame after input to have Seq=1 (counter incremented), got %d", framePayload.Seq)
+	if !strings.Contains(framePayload.Frame, "seen: 1") {
+		t.Fatalf("expected the frame after input to show the counter incremented, got %q", framePayload.Frame)
 	}
 
 	client.send(protocol.OpPluginPaneLeave, protocol.PluginPaneLeavePayload{ChannelID: channel.ID})

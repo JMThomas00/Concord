@@ -1315,7 +1315,9 @@ func (a *App) renderChatPanel(width, height int) string {
 	channelTitle := titleStyle.Render("Select a channel")
 	if a.currentChannel != nil {
 		channelTitle = titleStyle.Render("# " + a.currentChannel.Name)
-		if a.currentChannel.Topic != "" {
+		if a.pluginPane != nil && a.pluginPane.ChannelID == a.currentChannel.ID && a.pluginPane.Title != "" {
+			channelTitle = titleStyle.Render(a.pluginPane.Title) // set by the plugin (pane_title)
+		} else if a.currentChannel.Topic != "" {
 			channelTitle += topicStyle.Render(" — " + a.currentChannel.Topic)
 		}
 	}
@@ -1504,7 +1506,11 @@ func (a *App) renderChatPanel(width, height int) string {
 		hintStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 			Italic(true)
-		inputContent = hintStyle.Render("Keys are forwarded to " + a.channelTypeLabel(a.currentChannel) + " — no text entry here")
+		hint := "Tab into the pane to use " + a.channelTypeLabel(a.currentChannel) + " — Ctrl+] hands keys back to Concord"
+		if a.paneFocused() {
+			hint = "Keys are going to " + a.channelTypeLabel(a.currentChannel) + " — Ctrl+] to leave"
+		}
+		inputContent = hintStyle.Render(hint)
 	}
 	if a.replyTarget != nil {
 		// Show reply quote above input (styled, dimmed, italic)

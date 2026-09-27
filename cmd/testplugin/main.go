@@ -35,7 +35,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	p := &plugin{conn: conn, pluginID: pluginID, counters: make(map[uuid.UUID]int)}
+	p := &plugin{conn: conn, pluginID: pluginID, viewers: make(map[uuid.UUID]*viewer)}
 
 	identify := protocol.IdentifyPayload{Token: token, ClientType: "plugin"}
 	if err := p.send(protocol.OpIdentify, identify); err != nil {
@@ -60,7 +60,16 @@ type plugin struct {
 	conn     *websocket.Conn
 	pluginID string
 	mu       sync.Mutex
-	counters map[uuid.UUID]int
+	viewers  map[uuid.UUID]*viewer
+}
+
+// viewer is one person with the pane open. seq numbers every frame sent to
+// them -- it must increase on every frame, not just when count changes, or
+// the client drops a re-render (e.g. after a resize) as stale.
+type viewer struct {
+	name  string
+	count int
+	seq   int64
 }
 
 func (p *plugin) send(op protocol.OpCode, data interface{}) error {
@@ -92,7 +101,7 @@ func (p *plugin) handle(msg *protocol.Message) {
 		var payload protocol.PluginPaneEnterPayload
 		if json.Unmarshal(msg.Data, &payload) == nil {
 			p.mu.Lock()
-			p.counters[payload.ViewerID] = 0
+			p.viewers[payload.ViewerID] = &viewer{name: payload.ViewerDisplayName}
 			p.mu.Unlock()
 			p.renderFrame(payload.ChannelID, payload.ViewerID)
 		}
@@ -100,8 +109,14 @@ func (p *plugin) handle(msg *protocol.Message) {
 	case protocol.EventPluginPaneInput:
 		var payload protocol.PluginPaneInputPayload
 		if json.Unmarshal(msg.Data, &payload) == nil {
+			if payload.KeyString == "q" {
+				p.leavePane(payload.ChannelID, payload.ViewerID)
+				return
+			}
 			p.mu.Lock()
-			p.counters[payload.ViewerID]++
+			if v := p.viewers[payload.ViewerID]; v != nil {
+				v.count++
+			}
 			p.mu.Unlock()
 			p.renderFrame(payload.ChannelID, payload.ViewerID)
 		}
@@ -116,7 +131,7 @@ func (p *plugin) handle(msg *protocol.Message) {
 		var payload protocol.PluginPaneLeavePayload
 		if json.Unmarshal(msg.Data, &payload) == nil {
 			p.mu.Lock()
-			delete(p.counters, payload.ViewerID)
+			delete(p.viewers, payload.ViewerID)
 			p.mu.Unlock()
 		}
 	}
@@ -124,22 +139,37 @@ func (p *plugin) handle(msg *protocol.Message) {
 
 func (p *plugin) renderFrame(channelID, viewerID uuid.UUID) {
 	p.mu.Lock()
-	count := p.counters[viewerID]
+	v := p.viewers[viewerID]
+	if v == nil {
+		p.mu.Unlock()
+		return
+	}
+	v.seq++
+	name, count, seq := v.name, v.count, v.seq
 	p.mu.Unlock()
 
 	frame := protocol.PluginPaneFramePayload{
 		ChannelID: channelID,
 		ViewerID:  viewerID,
-		Frame:     renderCounter(count),
-		Seq:       int64(count),
+		Frame:     renderCounter(name, count),
+		Seq:       seq,
 	}
 	if err := p.send(protocol.OpPluginPaneFrame, frame); err != nil {
 		log.Printf("failed to push frame: %v", err)
 	}
 }
 
-func renderCounter(count int) string {
-	return "Hello Plugin — keypresses seen: " + strconv.Itoa(count) + "\n(press any key)"
+func renderCounter(name string, count int) string {
+	return "Hello, " + name + "! Keypresses seen: " + strconv.Itoa(count) + "\n(press any key; q hands keys back to Concord)"
+}
+
+// leavePane asks Concord to stop sending this viewer's keys here.
+func (p *plugin) leavePane(channelID, viewerID uuid.UUID) {
+	raw, _ := json.Marshal(protocol.PluginPaneClosePayload{ChannelID: channelID})
+	event := protocol.PluginEventPayload{PluginID: p.pluginID, Kind: protocol.PluginEventLeavePane, Payload: raw, ViewerID: viewerID}
+	if err := p.send(protocol.OpPluginEvent, event); err != nil {
+		log.Printf("failed to send leave_pane: %v", err)
+	}
 }
 
 func (p *plugin) notify(content string) {

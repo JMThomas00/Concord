@@ -58,6 +58,12 @@ type Hub struct {
 	// Handlers.go sets this to persist the offline status to the database --
 	// see unregisterClient's own doc comment for the real bug this closes.
 	onUserDisconnect func(user *models.User)
+
+	// onClientGone is invoked (in a goroutine) for every connection that
+	// unregisters while still being its user's current connection --
+	// including plugin connections and users in no server. Not called for a
+	// superseded connection (the user is still connected).
+	onClientGone func(c *Client)
 }
 
 // BroadcastMessage represents a message to be sent to multiple clients
@@ -106,6 +112,14 @@ func (h *Hub) SetUserDisconnectCallback(fn func(user *models.User)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onUserDisconnect = fn
+}
+
+// SetClientGoneCallback registers the callback invoked when a user's
+// current connection unregisters; see Hub.onClientGone.
+func (h *Hub) SetClientGoneCallback(fn func(c *Client)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onClientGone = fn
 }
 
 // Run starts the hub's main loop
@@ -208,8 +222,13 @@ func (h *Hub) unregisterClient(client *Client) {
 
 	cb := h.onVoiceLeave
 	disconnectCb := h.onUserDisconnect
+	goneCb := h.onClientGone
 
 	h.mu.Unlock()
+
+	if goneCb != nil {
+		go goneCb(client)
+	}
 
 	HubLog.Info("Client unregistered", "user_id", client.UserID)
 

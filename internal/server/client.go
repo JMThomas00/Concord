@@ -650,6 +650,11 @@ func (c *Client) identifyAsPlugin(token string) {
 		PluginLog.Warn("failed to load plugin's channels for identify-time sync", "plugin_id", pluginID, "error", err)
 	}
 
+	// Anyone already looking at one of this plugin's panes (it crashed and
+	// restarted, or started after they opened it) gets repainted now --
+	// after the channel sync above, so the plugin knows the channel first.
+	c.handlers.replayPaneEnters(c, pluginID)
+
 	AuthLog.Info("Plugin authenticated successfully", "plugin_id", pluginID, "service_user_id", user.ID)
 }
 
