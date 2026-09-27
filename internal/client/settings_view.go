@@ -2313,7 +2313,7 @@ func (a *App) renderDisplayContent(width, height int) string {
 		"pulse":     "█▓▒░",
 		"points":    "∙∙∙ ●∙∙ ∙●∙ ∙∙●",
 		"meter":     "▱▱▱ ▰▱▱ ▰▰▱ ▰▰▰",
-		"hamburger": "☱☲☴☲",
+		"hamburger": "▬▬▬ ▭▬▬ ▬▭▬ ▬▬▭",
 		"ellipsis":  ". .. ...",
 	}
 	typingAnimVal := fmt.Sprintf("%-10s  %s  ◀▶", typingAnim, typingAnimPreviews[typingAnim])

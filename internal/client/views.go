@@ -34,7 +34,18 @@ func typingAnimFrames(name string) []string {
 	case "meter":
 		return []string{"▱▱▱", "▰▱▱", "▰▰▱", "▰▰▰", "▰▰▱", "▰▱▱", "▱▱▱"}
 	case "hamburger":
-		return []string{"☱", "☲", "☴", "☲"}
+		// Was ☱☲☴ (U+2631/2632/2634, Yijing trigrams) — Unicode classifies those
+		// as East-Asian-Width "Wide" (2 terminal columns), but go-runewidth v0.0.16
+		// measures them as 1 column. That 1-cell-per-frame undercount, repeated
+		// every animation tick, drifts Bubbletea's cursor-up redraw math by a row
+		// each time — the previous "X is typing..." line never gets fully
+		// overwritten, so a fresh copy prints below it and stacks indefinitely
+		// (confirmed live: reproduces only with this style, not braille/dot/etc,
+		// and only while someone else is actively typing since your own typing
+		// indicator is suppressed). ▬▭ (U+25AC/25AD, BLACK/WHITE RECTANGLE) are
+		// East-Asian-Width "Neutral" — unambiguously 1 column everywhere — so
+		// go-runewidth and every real terminal agree.
+		return []string{"▬▬▬", "▭▬▬", "▬▭▬", "▬▬▭"}
 	case "ellipsis":
 		return []string{"   ", ".  ", ".. ", "..."}
 	default: // "braille" or ""
