@@ -16,6 +16,24 @@ func TestDiscover_NoPluginsDir(t *testing.T) {
 	}
 }
 
+// process.go joins manifest.Dir with the entrypoint and ALSO sets cmd.Dir to
+// the plugin folder; a relative Dir is then resolved a second time from
+// inside that folder, so every plugin failed to launch whenever plugins_dir
+// was relative (the default "Plugins"). Found live 2026-09-26.
+func TestDiscover_RelativePluginsDirYieldsAbsoluteManifestDir(t *testing.T) {
+	reg, errs := Discover("testdata")
+	if len(errs) != 0 {
+		t.Fatalf("unexpected discovery errors: %v", errs)
+	}
+	m, ok := reg.Manifest("HelloPlugin")
+	if !ok {
+		t.Fatal("expected HelloPlugin to be discovered")
+	}
+	if !filepath.IsAbs(m.Dir) {
+		t.Errorf("manifest.Dir = %q, want an absolute path so the plugin binary resolves independently of the process's working directory", m.Dir)
+	}
+}
+
 func TestDiscover_HelloPluginFixture(t *testing.T) {
 	reg, errs := Discover("testdata")
 	if len(errs) != 0 {

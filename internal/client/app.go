@@ -71,7 +71,14 @@ type App struct {
 	// Theme
 	theme  *themes.Theme
 	styles *themes.Styles
-	banner Banner // Static banner chosen at startup
+	banner      Banner // chosen at startup; Ctrl+R on login/register shuffles it
+	bannerIndex int    // index of banner in banners, for no-repeat shuffling
+
+	// Login/register banner intro animation (see banner_anim.go). nil when
+	// no animation is running; bannerAnimGen invalidates stale ticks.
+	bannerAnim          *bannerAnimState
+	bannerAnimGen       int
+	lastBannerAnimStyle int
 
 	// Local identity (single identity across all servers)
 	localIdentity *LocalIdentity
@@ -861,6 +868,8 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 		theme:                   theme,
 		styles:                  styles,
 		banner:                  banner,
+		bannerIndex:             newBannerIndex,
+		lastBannerAnimStyle:     -1,
 		connMgr:                 connMgr,
 		connEvents:              connEvents,
 		localIdentity:           identity,
@@ -964,6 +973,11 @@ func (a *App) Init() tea.Cmd {
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
 		tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }),
+	}
+	if a.view == ViewLogin || a.view == ViewRegister {
+		if cmd := a.startBannerAnim(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 	// Auto-connect all known servers when identity is configured
 	if a.localIdentity != nil {
@@ -1236,6 +1250,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// that later resize's own timer will be the one that actually lands.
 		if msg.gen == a.helpResizeGen {
 			a.helpResizing = false
+		}
+
+	case bannerAnimTickMsg:
+		if cmd := a.handleBannerAnimTick(msg); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 
 	case pasteBurstSettledMsg:
@@ -2004,6 +2023,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "ctrl+r":
+		// Login/register easter egg: a different Concord banner, animated in.
+		// (Ctrl, not a bare "r" -- the password field has focus here.)
+		if a.view == ViewLogin || a.view == ViewRegister {
+			return a.shuffleBanner()
+		}
 		// Manual "retry now" for a server stuck in StateError -- bypasses
 		// whatever's left of the automatic reconnect's backoff delay.
 		// No-op (falls through, returns nil below) if the active server
@@ -5266,13 +5290,13 @@ func (a *App) updateViewportSize() {
 	a.input.SetWidth(interiorWidth - 2)
 	a.input.SetHeight(4)
 
-	// Set viewport dimensions — matches renderChatPanel lines 922-924
-	// panelHeight = a.height - 2 (status bar + top padding)
-	// inputHeight = 6, headerHeight = 2
+	// Set viewport dimensions — must match renderChatPanel's chatHeight math
+	// (input box, then the always-present typing-indicator row; the channel
+	// title lives in the chat box's own top border, not a separate row).
 	panelHeight := a.height - 2
 	inputHeight := 6
-	headerHeight := 2
-	chatHeight := panelHeight - inputHeight - headerHeight
+	typingHeight := 1
+	chatHeight := panelHeight - inputHeight - typingHeight
 	if interiorWidth > 0 {
 		a.chatViewport.Width = interiorWidth
 	}

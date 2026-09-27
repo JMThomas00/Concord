@@ -6,6 +6,10 @@
 # ONE-TIME SETUP (do this before `docker compose up`):
 #
 #   1. Build the image:                docker build -t concord .
+#   1b. Create the data dirs owned by the container's user (uid 10001) --
+#       without this, both services crash-loop with SQLite's misleading
+#       "unable to open database file: out of memory (14)":
+#         mkdir -p server-data hub-data && sudo chown 10001:10001 server-data hub-data
 #   2. Generate the server's config:   docker run -it --rm -v "$(pwd)/server-data:/app/data" concord concord-server
 #        Walk through the first-run wizard (ToS, server name, host/port,
 #        etc.) -- set host to 0.0.0.0 so it's reachable from outside the
@@ -21,6 +25,14 @@
 # Both binaries already skip their setup wizard whenever a config file is
 # present (see Dockerfile's own comment) -- this is that behavior, not
 # anything new built for Docker specifically.
+#
+# Host port already taken (e.g. 8080)? Don't edit this file -- add a
+# docker-compose.override.yml next to it (compose picks it up automatically):
+#   services:
+#     server:
+#       ports: !override
+#         - "8090:8080"
+# (`!override` replaces the list; without it compose appends and still binds 8080.)
 #
 # Neither service does TLS in-process. Put a reverse proxy (Caddy, nginx,
 # or a Cloudflare Tunnel -- see "Concord - Cloudflare Tunnel Setup" in the

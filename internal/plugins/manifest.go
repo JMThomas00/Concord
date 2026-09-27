@@ -105,6 +105,11 @@ func LoadManifest(path string) (*Manifest, error) {
 	if err := toml.Unmarshal(data, m); err != nil {
 		return nil, fmt.Errorf("failed to parse manifest: %w", err)
 	}
+	// Absolute, so process.go's join of Dir+entrypoint isn't re-resolved
+	// relative to cmd.Dir (which is also the plugin folder).
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	m.Dir = filepath.Dir(path)
 	return m, nil
 }

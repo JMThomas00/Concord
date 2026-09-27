@@ -49,6 +49,12 @@ func GetRandomBanner(lastBannerIndex int) (Banner, int) {
 	// Choose from [0, n-2], then shift up by 1 if it lands on lastBannerIndex.
 	// This guarantees termination in one step and a perfectly uniform distribution.
 	n := len(banners)
+	if lastBannerIndex < 0 || lastBannerIndex >= n {
+		// No previous banner (or a stale index): any of them. Without this,
+		// the shift below meant banner 0 could never be picked.
+		newIndex := rng.Intn(n)
+		return banners[newIndex], newIndex
+	}
 	newIndex := rng.Intn(n - 1)
 	if newIndex >= lastBannerIndex {
 		newIndex++

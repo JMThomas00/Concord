@@ -129,8 +129,6 @@ func main() {
 	// Print beautiful startup banner and information (only in normal mode)
 	if !*hybridMode && !*dashboardOnlyMode {
 		server.PrintBanner()
-		addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
-		server.PrintStartupInfo(addr, config.DatabasePath)
 	}
 
 	// Handle --admin-email: open DB, grant role, close, then start normally
@@ -186,6 +184,13 @@ func main() {
 	srv, err := server.New(config)
 	if err != nil {
 		server.Logger.Fatal("Failed to create server", "error", err)
+	}
+
+	// Only after server.New has actually opened the database -- printed
+	// earlier, this claimed "Database ✅ Connected" / "ready to accept
+	// connections" right before a fatal DB-open failure.
+	if !*hybridMode && !*dashboardOnlyMode {
+		server.PrintStartupInfo(fmt.Sprintf("%s:%d", config.Host, config.Port), config.DatabasePath)
 	}
 
 	// Tell the server where its config lives so Grapevine can persist credentials.

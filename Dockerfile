@@ -44,8 +44,14 @@ RUN go build -ldflags "-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT
 # other hubs, and a scratch image has no CA trust store for the https:// case.
 FROM alpine:3.20
 
+# /app/data is created owned by the runtime user so a named volume mounted
+# there inherits writable ownership. A host bind mount does NOT -- the host
+# directory must be chowned to 10001 first (see docker-compose.yml), or SQLite
+# fails with "unable to open database file: out of memory (14)" (code 14 is
+# SQLITE_CANTOPEN; the "out of memory" text is misleading).
 RUN apk add --no-cache ca-certificates && \
-    adduser -D -u 10001 concord
+    adduser -D -u 10001 concord && \
+    mkdir -p /app/data && chown concord:concord /app/data
 
 COPY --from=build /out/concord-server /out/concord-hub /usr/local/bin/
 

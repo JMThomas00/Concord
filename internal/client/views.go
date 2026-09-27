@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 	runewidth "github.com/mattn/go-runewidth"
 	zone "github.com/lrstanley/bubblezone"
@@ -42,17 +43,114 @@ func typingAnimFrames(name string) []string {
 	}
 }
 
+type keyHint struct{ key, desc string }
+
+// renderKeyHints draws a row of shortcut hints as key chips plus a readable
+// description. Stays on one row unless that row is wider than maxWidth, then
+// splits whole hints into the fewest evenly-filled centered rows that fit.
+func (a *App) renderKeyHints(hints []keyHint, maxWidth int) string {
+	keyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Background(lipgloss.Color(a.theme.Colors.Selection)).
+		Bold(true).
+		Padding(0, 1)
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+
+	parts := make([]string, len(hints))
+	for i, h := range hints {
+		parts[i] = keyStyle.Render(h.key) + " " + descStyle.Render(h.desc)
+	}
+	const gap = "   "
+	row := strings.Join(parts, gap)
+	if maxWidth <= 0 || lipgloss.Width(row) <= maxWidth {
+		return row
+	}
+
+	var rows []string
+	for n := 2; n <= len(parts); n++ {
+		per := (len(parts) + n - 1) / n
+		rows = rows[:0]
+		fits := true
+		for i := 0; i < len(parts); i += per {
+			r := strings.Join(parts[i:min(i+per, len(parts))], gap)
+			if lipgloss.Width(r) > maxWidth {
+				fits = false
+			}
+			rows = append(rows, r)
+		}
+		if fits {
+			break
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Center, rows...)
+}
+
+// maxBannerHeight is the tallest banner's line count. The login/register
+// logo slot is always this tall so the form below it never moves when a
+// different logo (1 to 21 lines) is shown.
+var maxBannerHeight = func() int {
+	h := 1
+	for _, b := range banners {
+		if n := strings.Count(trimBannerArt(b.Art), "\n") + 1; n > h {
+			h = n
+		}
+	}
+	return h
+}()
+
+const bannerFormGap = 2 // blank rows between the logo slot and the form
+
+// layoutBannerScreen places the logo bottom-aligned in a fixed-height slot
+// with the form block below it. stableBelow is the form block's height
+// without transient lines (an error message), so an error appearing doesn't
+// move the form either; it only grows downward. The slot shrinks, clipping
+// the logo's top rows, only when the terminal is too short for it.
+func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
+	slot := maxBannerHeight
+	if room := a.height - bannerFormGap - stableBelow; slot > room {
+		slot = room
+	}
+	if slot < 1 {
+		slot = 1
+	}
+	bannerLines := strings.Split(banner, "\n")
+	if len(bannerLines) > slot {
+		bannerLines = bannerLines[len(bannerLines)-slot:]
+	}
+
+	topPad := (a.height - slot - bannerFormGap - stableBelow) / 2
+	if overflow := topPad + slot + bannerFormGap + lipgloss.Height(below) - a.height; overflow > 0 {
+		topPad -= overflow
+	}
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	// Each piece is centered across the full width on its own, so a wider or
+	// narrower logo can't nudge the form sideways by a column either.
+	parts := []string{
+		lipgloss.Place(a.width, slot, lipgloss.Center, lipgloss.Bottom, strings.Join(bannerLines, "\n")),
+		strings.Repeat("\n", bannerFormGap-1),
+		lipgloss.PlaceHorizontal(a.width, lipgloss.Center, below),
+	}
+	content := strings.Repeat("\n", topPad) + strings.Join(parts, "\n")
+	return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, content, lipgloss.WithWhitespaceChars(" "))
+}
+
+// formErrorLines is how many rows an error message adds inside a login or
+// register form (its wrapped text plus the blank line after it).
+func formErrorLines(err string, formWidth int) int {
+	if err == "" {
+		return 0
+	}
+	return lipgloss.Height(lipgloss.NewStyle().Width(formWidth-4).Render("⚠ "+err)) + 1
+}
+
 // renderLoginView renders the login screen
 func (a *App) renderLoginView() string {
-	// Render ASCII art banner. Trim trailing whitespace from each line so lipgloss
-	// measures the true visual width. Many banner strings have trailing spaces that
-	// inflate the block width, causing lipgloss.Place to add too little left padding
-	// and making the art appear left-shifted on screen.
-	bannerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true)
-
-	banner := bannerStyle.Render(trimBannerArt(a.banner.Art))
+	// renderBanner trims each line's trailing whitespace so lipgloss measures
+	// the true visual width when centering, and plays the intro animation.
+	banner := a.renderBanner()
 
 	// Render login form with fixed width
 	formWidth := 50
@@ -77,9 +175,7 @@ func (a *App) renderLoginView() string {
 	focusedInputStyle := inputStyle.
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
 
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Faint(true)
+	var hints []keyHint
 
 	if a.localIdentity != nil {
 		// Local identity mode: show welcome + password only
@@ -107,7 +203,7 @@ func (a *App) renderLoginView() string {
 			b.WriteString("\n\n")
 		}
 
-		b.WriteString(helpStyle.Render("Enter: Unlock  •  Ctrl+S: Settings  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
+		hints = []keyHint{{"Enter", "Unlock"}, {"Ctrl+S", "Settings"}, {"Ctrl+T", "Themes"}, {"Ctrl+Q", "Quit"}}
 	} else {
 		// Standard login mode: email + password + register link
 		b.WriteString(subtitleStyle.Render("Terminal Chat - Login to continue"))
@@ -154,7 +250,7 @@ func (a *App) renderLoginView() string {
 		}
 		b.WriteString("\n\n")
 
-		b.WriteString(helpStyle.Render("Tab: Switch fields  •  Enter: Login/Register  •  Ctrl+G: Discover Servers  •  Ctrl+S: Settings  •  Ctrl+T: Themes  •  Ctrl+Q: Quit"))
+		hints = []keyHint{{"Tab", "Switch fields"}, {"Enter", "Login/Register"}, {"Ctrl+G", "Discover servers"}, {"Ctrl+S", "Settings"}, {"Ctrl+T", "Themes"}, {"Ctrl+Q", "Quit"}}
 	}
 
 	// Create the form box with padding and fixed width
@@ -162,35 +258,17 @@ func (a *App) renderLoginView() string {
 		Padding(1, 2).
 		Width(formWidth)
 
-	loginForm := formStyle.Render(b.String())
+	loginForm := formStyle.Render(strings.TrimRight(b.String(), "\n"))
 
-	// Stack banner and form vertically, both centered
-	combined := lipgloss.JoinVertical(
-		lipgloss.Center,
-		banner,
-		"\n", // Spacing between banner and form
-		loginForm,
-	)
-
-	// Center everything on screen
-	return lipgloss.Place(
-		a.width,
-		a.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		combined,
-		lipgloss.WithWhitespaceChars(" "),
-	)
+	// Hints sit below the form, not inside its fixed 50-column box, so they
+	// stay on one row.
+	below := lipgloss.JoinVertical(lipgloss.Center, loginForm, a.renderKeyHints(hints, a.width-4))
+	return a.layoutBannerScreen(banner, below, lipgloss.Height(below)-formErrorLines(a.loginError, formWidth))
 }
 
 // renderRegisterView renders the registration screen
 func (a *App) renderRegisterView() string {
-	// Render ASCII art banner — trim trailing whitespace for correct centering.
-	bannerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true)
-
-	banner := bannerStyle.Render(trimBannerArt(a.banner.Art))
+	banner := a.renderBanner()
 
 	// Render registration form with fixed width
 	formWidth := 50
@@ -268,15 +346,6 @@ func (a *App) renderRegisterView() string {
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 
 	b.WriteString(linkStyle.Render("  Esc: Back to Login"))
-	b.WriteString("\n\n")
-
-	// Help text
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Faint(true)
-
-	helpText := "Tab: Switch fields  •  Enter: Create Account  •  Ctrl+Q: Quit"
-	b.WriteString(helpStyle.Render(helpText))
 
 	// Create the form box with padding and fixed width
 	formStyle := lipgloss.NewStyle().
@@ -285,23 +354,9 @@ func (a *App) renderRegisterView() string {
 
 	registerForm := formStyle.Render(b.String())
 
-	// Stack banner and form vertically, both centered
-	combined := lipgloss.JoinVertical(
-		lipgloss.Center,
-		banner,
-		"\n", // Spacing between banner and form
-		registerForm,
-	)
-
-	// Center everything on screen
-	return lipgloss.Place(
-		a.width,
-		a.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		combined,
-		lipgloss.WithWhitespaceChars(" "),
-	)
+	hints := []keyHint{{"Tab", "Switch fields"}, {"Enter", "Create account"}, {"Esc", "Back"}, {"Ctrl+Q", "Quit"}}
+	below := lipgloss.JoinVertical(lipgloss.Center, registerForm, a.renderKeyHints(hints, a.width-4))
+	return a.layoutBannerScreen(banner, below, lipgloss.Height(below)-formErrorLines(a.loginError, formWidth))
 }
 
 // updateLoginForm handles login form input
@@ -545,7 +600,7 @@ func (a *App) renderServerIconsCollapsed(width, height int) string {
 	if a.focus == FocusServerIcons {
 		boxStyle = boxStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
 	}
-	return boxStyle.Render(b.String())
+	return a.labelPanelBorder(boxStyle.Render(b.String()), "SERVERS", a.focus == FocusServerIcons)
 }
 
 // renderServerIcons renders the server icons column (leftmost column)
@@ -654,7 +709,7 @@ func (a *App) renderServerIcons(width, height int) string {
 		boxStyle = boxStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
 	}
 
-	return boxStyle.Render(b.String())
+	return a.labelPanelBorder(boxStyle.Render(b.String()), "SERVERS", a.focus == FocusServerIcons)
 }
 
 // renderMainView renders the main chat interface with 4-column layout
@@ -999,17 +1054,9 @@ func (a *App) renderChannelRow(node *ChannelTreeNode, width int) string {
 func (a *App) renderChannelList(width, height int) string {
 	var b strings.Builder
 
-	// Top border separator
-	topBorderStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Selection)).
-		Width(width - 2)
-	b.WriteString(topBorderStyle.Render(strings.Repeat("─", width-2)))
-	b.WriteString("\n")
-
 	// Server name header
 	serverNameStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-		Background(lipgloss.Color(a.theme.Colors.Selection)).
 		Bold(true).
 		Width(width - 2).
 		Padding(0, 1)
@@ -1024,14 +1071,6 @@ func (a *App) renderChannelList(width, height int) string {
 	}
 	b.WriteString(serverNameStyle.Render(serverName))
 	b.WriteString("\n\n")
-
-	// Channels header
-	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Bold(true).
-		PaddingLeft(1)
-	b.WriteString(headerStyle.Render("CHANNELS"))
-	b.WriteString("\n")
 
 	// Render hierarchical channel tree. Each row is marked with a zone keyed
 	// by the channel/category's own ID so a click can call selectChannelByID
@@ -1082,7 +1121,7 @@ func (a *App) renderChannelList(width, height int) string {
 		boxStyle = boxStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
 	}
 
-	return boxStyle.Render(b.String())
+	return a.labelPanelBorder(boxStyle.Render(b.String()), "CHANNELS", a.focus == FocusChannelList)
 }
 
 // renderSidebar renders the sidebar with split panes (server list + channel list)
@@ -1123,29 +1162,25 @@ func (a *App) renderChatPanel(width, height int) string {
 	// Interior width (account for borders)
 	interiorWidth := width - 2
 
-	// Calculate heights: textarea has 5 lines + 1 border (bottom only, no top) + 1 for header + 1 for spacer
-	// The input box shares its top visual border with the chat viewport's bottom border (1 row total, not 2)
-	inputHeight := 6 // 5 lines of text + 1 bottom border (top border removed to avoid double-border gap)
-	headerHeight := 2 // header line + spacer line below it
-	chatHeight := height - inputHeight - headerHeight
+	// The channel name sits in the chat box's own top border (see
+	// embedBorderTitle), so the box starts on the same row as the other
+	// panels' borders -- no separate header/spacer rows.
+	inputHeight := 6 // 4 textarea lines + top and bottom border
+	chatHeight := height - inputHeight
 	chatHeight -= 1 // Reserve space for typing indicator (always present, blank when inactive)
 
-	// Channel header
-	headerStyle := lipgloss.NewStyle().
+	titleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-		Background(lipgloss.Color(a.theme.Colors.Selection)).
-		Bold(true).
-		Width(width).
-		Padding(0, 1)
-
-	channelHeader := "Select a channel"
+		Bold(true)
+	topicStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	channelTitle := titleStyle.Render("Select a channel")
 	if a.currentChannel != nil {
-		channelHeader = "# " + a.currentChannel.Name
+		channelTitle = titleStyle.Render("# " + a.currentChannel.Name)
 		if a.currentChannel.Topic != "" {
-			channelHeader += " - " + a.currentChannel.Topic
+			channelTitle += topicStyle.Render(" — " + a.currentChannel.Topic)
 		}
 	}
-	header := headerStyle.Render(channelHeader)
 
 	// Pinned messages header — shown above the chat viewport when pins exist
 	pinnedHeader := ""
@@ -1212,15 +1247,15 @@ func (a *App) renderChatPanel(width, height int) string {
 	// renderServerIconsCollapsed. viewportHeight below already correctly
 	// assumed a chatHeight-2 content area; only this box's own Height() call
 	// was still off by 2.
+	chatBorderColor := lipgloss.Color(a.theme.Colors.Selection)
+	if a.focus == FocusChat {
+		chatBorderColor = lipgloss.Color(a.theme.Colors.Purple)
+	}
 	chatStyle := lipgloss.NewStyle().
 		Width(width - 2).
 		Height(chatHeight - 2).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Selection))
-
-	if a.focus == FocusChat {
-		chatStyle = chatStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
-	}
+		BorderForeground(chatBorderColor)
 
 	// Keep textarea width in sync with panel interior
 	a.input.SetWidth(interiorWidth - 2)
@@ -1271,7 +1306,7 @@ func (a *App) renderChatPanel(width, height int) string {
 		chatContent = pinnedHeader + "\n" + chatContent
 	}
 
-	chat := chatStyle.Render(chatContent)
+	chat := embedBorderTitle(chatStyle.Render(chatContent), channelTitle, lipgloss.NewStyle().Foreground(chatBorderColor))
 
 	// Typing indicator — always reserve space (render blank when inactive to prevent layout shift).
 	// The animation style and tick rate are set via Settings > Display > Typing Animation.
@@ -1343,13 +1378,48 @@ func (a *App) renderChatPanel(width, height int) string {
 	}
 	input := zone.Mark("chat-input", inputStyle.Render(inputContent))
 
-	// Spacer between header and chat viewport (aligns viewport border with panel borders)
-	spacer := lipgloss.NewStyle().Width(width).Height(1).Render("")
-
 	// Combine vertically — always include typing row (blank when inactive) to prevent border shift
 	// Note: pinnedHeader is now rendered INSIDE the chat border, not as a separate element
-	parts := []string{header, spacer, chat, typing, input}
+	parts := []string{chat, typing, input}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// labelPanelBorder puts a panel's name (SERVERS, CHANNELS, MEMBERS) in its
+// top border, styled like the chat panel's channel title. Panels too narrow
+// to show the whole label (the collapsed columns) keep a plain border.
+func (a *App) labelPanelBorder(box, label string, focused bool) string {
+	borderColor := lipgloss.Color(a.theme.Colors.Selection)
+	if focused {
+		borderColor = lipgloss.Color(a.theme.Colors.Purple)
+	}
+	top := strings.SplitN(box, "\n", 2)[0]
+	if lipgloss.Width(label)+5 > lipgloss.Width(top) {
+		return box
+	}
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground)).Bold(true).Render(label)
+	return embedBorderTitle(box, title, lipgloss.NewStyle().Foreground(borderColor))
+}
+
+// embedBorderTitle replaces a rounded-border box's top edge with
+// "╭─ <title> ───╮", truncating the title with an ellipsis when it doesn't
+// fit. The title may carry its own styling; the border runs are drawn in
+// borderStyle so they match the rest of the box.
+func embedBorderTitle(box, title string, borderStyle lipgloss.Style) string {
+	lines := strings.SplitN(box, "\n", 2)
+	width := lipgloss.Width(lines[0])
+	const chrome = 5 // "╭─ " + " " + "╮"
+	if width < chrome+2 {
+		return box
+	}
+	if maxTitle := width - chrome - 1; lipgloss.Width(title) > maxTitle {
+		title = ansi.Truncate(title, maxTitle, "…")
+	}
+	fill := width - chrome - lipgloss.Width(title)
+	top := borderStyle.Render("╭─ ") + title + borderStyle.Render(" "+strings.Repeat("─", fill)+"╮")
+	if len(lines) == 1 {
+		return top
+	}
+	return top + "\n" + lines[1]
 }
 
 // injectMentionGhost post-processes the textarea View() output to show the
@@ -1579,7 +1649,7 @@ func (a *App) renderUserListCollapsed(width, height int) string {
 	if a.focus == FocusUserList {
 		boxStyle = boxStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
 	}
-	return boxStyle.Render(b.String())
+	return a.labelPanelBorder(boxStyle.Render(b.String()), "MEMBERS", a.focus == FocusUserList)
 }
 
 func (a *App) renderUserList(width, height int) string {
@@ -1591,21 +1661,6 @@ func (a *App) renderUserList(width, height int) string {
 
 	// Inner width available for text (subtract border chars used by lipgloss border)
 	innerWidth := width - 2
-
-	// Top border separator (for symmetry with channels panel)
-	topBorderStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Selection)).
-		Width(innerWidth)
-	b.WriteString(topBorderStyle.Render(strings.Repeat("─", innerWidth)))
-	b.WriteString("\n")
-
-	// Header
-	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Bold(true).
-		Width(innerWidth)
-	b.WriteString(headerStyle.Render("MEMBERS"))
-	b.WriteString("\n")
 
 	// Collect members
 	var members []*MemberDisplay
@@ -1940,7 +1995,7 @@ func (a *App) renderUserList(width, height int) string {
 		userListStyle = userListStyle.BorderForeground(lipgloss.Color(a.theme.Colors.Purple))
 	}
 
-	return userListStyle.Render(b.String())
+	return a.labelPanelBorder(userListStyle.Render(b.String()), "MEMBERS", a.focus == FocusUserList)
 }
 
 // renderStatusBar renders the bottom status bar
