@@ -189,13 +189,10 @@ Voice members appear at the top of the Members panel grouped by channel, separat
 
 - ` + "`Ctrl+M`" + ` — Toggle self-mute
 - ` + "`Ctrl+D`" + ` — Toggle self-deafen
-- ` + "`Ctrl+Space`" + ` (default) — Push-to-Talk (hold to transmit in PTT mode)
 
-### Voice Activity Detection vs Push-to-Talk
+### Voice Activity Detection
 
-**VAD** (Voice Activity Detection) transmits automatically when your microphone level exceeds the configured threshold. Because keyboard typing can trigger VAD false positives in a terminal, **Push-to-Talk is recommended** for most users.
-
-Switch between modes in **Settings → Audio → PTT Mode**. The PTT key is configurable (default: ` + "`Ctrl+Space`" + `).
+**VAD** (Voice Activity Detection) transmits automatically when your microphone level exceeds a configured threshold, so you don't have to hold anything down to talk. Toggle it and tune its sensitivity in **Settings → Audio → Voice Activity Detection**.
 
 ### Audio Quality (Codec Presets)
 
@@ -438,12 +435,10 @@ A popup never appears for a channel you're already viewing — only for messages
 - **Input Gain** — Microphone amplification (0.0–2.0, default 1.0)
 - **Output Volume** — Playback volume (0.0–1.0, default 1.0)
 - **Voice Activity Detection** — Auto-transmit when mic exceeds the threshold
-- **VAD Threshold** — Sensitivity for VAD (0.0–1.0)
-- **Push-to-Talk** — Transmit only while PTT key is held
-- **PTT Key** — Configurable key combination (default: Ctrl+Space)
-- **Noise Suppression** — Reduce background noise
-- **Echo Cancellation** — Reduce microphone echo
-- **Codec Preset** — Opus quality preset (Low / Medium / High / Ultra)
+- **VAD Sensitivity** — How easily VAD triggers on quieter speech
+- **Noise Suppression** — Reduce background noise, with an adjustable strength
+- **Echo Cancellation** — Reduce your own playback echoing back to peers, with an adjustable strength
+- **Codec Preset** — Opus quality preset (Low / Medium / High / Ultra); changing this while in a voice channel needs a leave+rejoin to fully apply
 
 ---
 

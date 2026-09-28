@@ -58,9 +58,6 @@ func (e *VoiceEngine) SetUserVolume(_ uuid.UUID, _ float64) {}
 // UpdateConfig is a no-op in the stub build.
 func (e *VoiceEngine) UpdateConfig(_ AudioConfig) {}
 
-// TogglePTT is a no-op in the stub build.
-func (e *VoiceEngine) TogglePTT() {}
-
 // ListDevices delegates to GetAudioDevices so the settings picker shows real
 // devices even without the voice build tag. GetAudioDevices is defined in
 // wasapi_devices_windows.go (Windows) or wasapi_devices_other.go (other OS).

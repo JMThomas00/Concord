@@ -59,9 +59,9 @@ type SettingsState struct {
 
 	// Audio category state
 	AudioFocusField int // 0=input device, 1=output device, 2=input gain, 3=output volume,
-	                    // 4=VAD toggle, 5=VAD sensitivity, 6=PTT toggle, 7=PTT key,
-	                    // 8=noise suppress, 9=noise suppress strength, 10=echo cancel,
-	                    // 11=echo cancel strength, 12=codec preset
+	                    // 4=VAD toggle, 5=VAD sensitivity, 6=noise suppress,
+	                    // 7=noise suppress strength, 8=echo cancel, 9=echo cancel strength,
+	                    // 10=codec preset
 
 	// AudioSliderActive is true when a continuous-adjust field (gain, volume,
 	// VAD threshold) has been activated with Enter; ←/→ then fine-tune the value.

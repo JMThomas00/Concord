@@ -223,7 +223,7 @@ func (a *App) handleAudioCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 
-	for field := 0; field <= 12; field++ {
+	for field := 0; field <= 10; field++ {
 		if !zoneInBounds(fmt.Sprintf("audio-field:%d", field), msg) {
 			continue
 		}

@@ -310,7 +310,7 @@ flowchart LR
 
 - Completely separate from text pipeline — independent failure domain
 - UDP where possible; TCP fallback for restrictive NATs
-- Push-to-talk handled client-side (no server processing until PTT active)
+- Voice Activity Detection gating handled client-side (no server processing until the gate opens)
 - Speaking indicators via lightweight heartbeat to text server (not voice path)
 
 ---

@@ -11,7 +11,7 @@ import (
 // renderAudioContent renders the Audio settings panel.
 func (a *App) renderAudioContent(width, height int) string {
 	s := a.settingsState
-	layout := calculateSettingsLayout(width, height, 2, 0)
+	layout := calculateSettingsLayout(width, height, 3, 0)
 
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
@@ -36,6 +36,7 @@ func (a *App) renderAudioContent(width, height int) string {
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
 		Render("Audio Settings"))
 	top.writeLine(dimStyle.Render("Voice channel audio devices, volume, and codec options"))
+	top.writeLine(dimStyle.Render("Note: changing Input/Output Device or Codec Quality while in a voice channel needs a leave+rejoin to fully apply"))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
@@ -151,29 +152,19 @@ func (a *App) renderAudioContent(width, height int) string {
 	// see vadSensitivityFromThreshold for why)
 	writeField(5, "VAD Sensitivity", progressBar(5, vadSensitivityFromThreshold(cfg.VADThreshold), 1.0, 20))
 
-	// Field 6: Push-to-Talk
-	writeToggle(6, "Push-to-Talk (PTT)", cfg.PTTEnabled)
+	// Field 6: Noise Suppression
+	writeToggle(6, "Noise Suppression", cfg.NoiseSuppress)
 
-	// Field 7: PTT Key
-	pttKey := cfg.PTTKey
-	if pttKey == "" {
-		pttKey = "ctrl+space"
-	}
-	writeField(7, "PTT Key", pttKey)
+	// Field 7: Noise Suppression Strength
+	writeField(7, "Noise Suppression Strength", progressBar(7, cfg.NoiseSuppressStrength, 1.0, 20))
 
-	// Field 8: Noise Suppression
-	writeToggle(8, "Noise Suppression", cfg.NoiseSuppress)
+	// Field 8: Echo Cancellation
+	writeToggle(8, "Echo Cancellation", cfg.EchoCancellation)
 
-	// Field 9: Noise Suppression Strength
-	writeField(9, "Noise Suppression Strength", progressBar(9, cfg.NoiseSuppressStrength, 1.0, 20))
+	// Field 9: Echo Cancellation Strength
+	writeField(9, "Echo Cancellation Strength", progressBar(9, cfg.EchoCancellationStrength, 1.0, 20))
 
-	// Field 10: Echo Cancellation
-	writeToggle(10, "Echo Cancellation", cfg.EchoCancellation)
-
-	// Field 11: Echo Cancellation Strength
-	writeField(11, "Echo Cancellation Strength", progressBar(11, cfg.EchoCancellationStrength, 1.0, 20))
-
-	// Field 12: Codec Preset
+	// Field 10: Codec Preset
 	codec := cfg.CodecPreset
 	if codec == "" {
 		codec = "medium"
@@ -187,7 +178,7 @@ func (a *App) renderAudioContent(width, height int) string {
 	if codecDesc == "" {
 		codecDesc = codec
 	}
-	writeField(12, "Codec Quality", codecDesc+" ◀▶")
+	writeField(10, "Codec Quality", codecDesc+" ◀▶")
 
 	middle.pad()
 
@@ -247,7 +238,7 @@ func vadThresholdFromSensitivity(sens float64) float64 {
 // isAudioSliderField reports whether field idx is a continuous-value field
 // that uses the ←/→ slider mode (as opposed to a toggle or device picker).
 func isAudioSliderField(idx int) bool {
-	return idx == 2 || idx == 3 || idx == 5 || idx == 9 || idx == 11 // Input Gain, Output Volume, VAD Sensitivity, Noise Suppression Strength, Echo Cancellation Strength
+	return idx == 2 || idx == 3 || idx == 5 || idx == 7 || idx == 9 // Input Gain, Output Volume, VAD Sensitivity, Noise Suppression Strength, Echo Cancellation Strength
 }
 
 // adjustAudioSlider nudges the value for the currently-active slider field.
@@ -267,9 +258,9 @@ func (a *App) adjustAudioSlider(s *SettingsState, delta int) {
 	case 5: // VAD Sensitivity -- higher % = more sensitive = LOWER RMS threshold
 		sens := clampF(vadSensitivityFromThreshold(cfg.VADThreshold)+d, 0.0, 1.0)
 		cfg.VADThreshold = vadThresholdFromSensitivity(sens)
-	case 9: // Noise Suppression Strength  0.0–1.0
+	case 7: // Noise Suppression Strength  0.0–1.0
 		cfg.NoiseSuppressStrength = clampF(cfg.NoiseSuppressStrength+d, 0.0, 1.0)
-	case 11: // Echo Cancellation Strength  0.0–1.0
+	case 9: // Echo Cancellation Strength  0.0–1.0
 		cfg.EchoCancellationStrength = clampF(cfg.EchoCancellationStrength+d, 0.0, 1.0)
 	}
 	a.saveAudioConfig()
@@ -307,9 +298,6 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 		return
 	case 4: // VAD toggle
 		cfg.VADEnabled = !cfg.VADEnabled
-		if cfg.VADEnabled {
-			cfg.PTTEnabled = false // VAD and PTT are mutually exclusive
-		}
 	case 5: // VAD Sensitivity: cycle 25% → 50% → 75% → 100% → 25%
 		sens := vadSensitivityFromThreshold(cfg.VADThreshold)
 		switch {
@@ -324,27 +312,11 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 		default:
 			cfg.VADThreshold = vadThresholdFromSensitivity(0.25)
 		}
-	case 6: // PTT toggle
-		cfg.PTTEnabled = !cfg.PTTEnabled
-		if cfg.PTTEnabled {
-			cfg.VADEnabled = false // VAD and PTT are mutually exclusive
-		}
-	case 7: // PTT Key — cycle through common options
-		keys := []string{"ctrl+space", "ctrl+alt+m", "alt+v"}
-		cur := cfg.PTTKey
-		next := keys[0]
-		for i, k := range keys {
-			if k == cur && i+1 < len(keys) {
-				next = keys[i+1]
-				break
-			}
-		}
-		cfg.PTTKey = next
-	case 8: // Noise Suppression toggle
+	case 6: // Noise Suppression toggle
 		cfg.NoiseSuppress = !cfg.NoiseSuppress
-	case 10: // Echo Cancellation toggle
+	case 8: // Echo Cancellation toggle
 		cfg.EchoCancellation = !cfg.EchoCancellation
-	case 12: // Codec Preset: cycle low → medium → high → ultra → low
+	case 10: // Codec Preset: cycle low → medium → high → ultra → low
 		switch cfg.CodecPreset {
 		case "low":
 			cfg.CodecPreset = "medium"
@@ -358,6 +330,23 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 	}
 
 	a.saveAudioConfig()
+	// Without this, none of the toggle/cycle fields above (VAD, Noise
+	// Suppression, Echo Cancellation, Codec Preset) took effect on an
+	// already-running VoiceEngine -- only the slider fields did (see
+	// adjustAudioSlider). This used to strand a running call with a stale
+	// config it could never recover from without leaving and rejoining --
+	// e.g. toggling a gate-style setting on then back off left the engine's
+	// own cfg copy permanently stuck on "on" (it was never told about either
+	// change), which looked exactly like a dead mic.
+	//
+	// Codec Preset is the one still-partial exception: this hot-reloads its
+	// Opus bitrate (see UpdateConfig), but the sample rate is fixed for the
+	// life of the malgo devices opened in Start(), so a genuine quality-tier
+	// change still needs a voice reconnect to fully take effect (see the note
+	// at the top of this page).
+	if a.voiceEngine != nil {
+		a.voiceEngine.UpdateConfig(*cfg)
+	}
 }
 
 // openAudioDevicePicker loads the device list and opens the inline picker for the given

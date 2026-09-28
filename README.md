@@ -25,7 +25,7 @@ A terminal-based chat application inspired by Discord, built in Go with a beauti
 - **Server discovery** — optional Grapevine hub network for finding public servers
 - **Multi-server** — connect to as many servers as you want simultaneously
 - **Real-time messaging** — WebSocket-based chat with typing indicators, replies, edits, and soft-deletes
-- **Voice channels** — WebRTC P2P audio with Opus encoding; VAD and PTT modes
+- **Voice channels** — WebRTC P2P audio with Opus encoding; Voice Activity Detection with adjustable sensitivity
 - **Hierarchical channels** — collapsible categories, folder-explorer style
 - **Role-based permissions** — Admin, Moderator, and custom roles with fine-grained bit flags
 - **Moderation tools** — kick, ban, timeout, mute, title, force-move voice

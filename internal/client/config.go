@@ -71,9 +71,6 @@ func defaultAudioConfig(c AudioConfig) AudioConfig {
 	if c.EchoCancellationStrength == 0 {
 		c.EchoCancellationStrength = 0.5
 	}
-	if c.PTTKey == "" {
-		c.PTTKey = "ctrl+space"
-	}
 	if c.CodecPreset == "" {
 		c.CodecPreset = "medium"
 	}
@@ -93,8 +90,6 @@ type AudioConfig struct {
 	OutputVolume             float64            `json:"output_volume"`              // 0.0–1.0, default 1.0
 	VADEnabled               bool               `json:"vad_enabled"`                // Voice Activity Detection
 	VADThreshold             float64            `json:"vad_threshold"`              // raw RMS gate, default 0.08 -- see vadThresholdMin/Max in audio_settings_view.go for the realistic range the UI exposes as "Sensitivity"
-	PTTEnabled               bool               `json:"ptt_enabled"`                // Push-to-Talk mode
-	PTTKey                   string             `json:"ptt_key"`                    // default "ctrl+space"
 	NoiseSuppress            bool               `json:"noise_suppress"`             // Noise suppression (adaptive noise gate, see VoiceEngine.sendFrame)
 	NoiseSuppressStrength    float64            `json:"noise_suppress_strength"`    // 0.0–1.0, default 0.5 -- how aggressively below-floor audio is attenuated
 	EchoCancellation         bool               `json:"echo_cancellation"`          // Echo cancellation (adaptive NLMS filter, see VoiceEngine.aecFilt / voice_aec.go)

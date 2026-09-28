@@ -133,7 +133,7 @@ Parsed and handled in `internal/client/commands.go`.
 - **Signaling:** Server relays SDP offer/answer and ICE candidates via `OpVoiceSignal` (op 45)
 - **Collision resolution:** Peer with lexicographically lower UUID string sends the Offer
 - **Audio I/O:** `gen2brain/malgo` (miniaudio) with WASAPI on Windows
-- **VAD:** Voice Activity Detection with 300ms hold duration; PTT mode also supported
+- **VAD:** Voice Activity Detection with 300ms hold duration and adjustable sensitivity (no push-to-talk mode -- removed 2026-09-28, see git history)
 - **Build:** Default build includes voice (`!novoice` tag). Use `-tags novoice` for CGO-free build.
 
 ---
@@ -221,7 +221,7 @@ Because there's no server storage, **the sender must stay online for anyone to d
 | Theme Browser | Settings > Theme | ✅ Full |
 | Display Settings | Settings > Display | ✅ Full (live preview) |
 | Notification Settings | Settings > Notifications | ✅ Full — two sections: **Desktop Notifications** (OS-native popup mode off/mentions/all, scope all-servers/current-server — `notifications.go`, `beeep.Notify`) and **Audio Notifications** (sound/bell alerts, per-server overrides) |
-| Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, PTT, codec) |
+| Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, noise suppression, echo cancellation, codec) |
 | Help & Guide | Settings > Help | ✅ Full (glamour markdown, theme-derived style — `buildThemedGlamourStyle`) |
 | About | Settings > About | ✅ Full (client build info; server build info once connected; shaded grape logo when there's room) |
 | Server Management | Ctrl+B | ✅ Full (add/edit/remove servers) |

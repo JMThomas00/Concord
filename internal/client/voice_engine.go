@@ -258,10 +258,6 @@ type VoiceEngine struct {
 	aecFarEnd *aecFarEndBuffer
 	aecFilt   *aecFilter
 
-	// PTT state: 1 = active (transmitting), 0 = inactive.
-	// Written by TogglePTT (bubbletea goroutine), read by processCapture goroutine.
-	pttActive int32
-
 	// localLevel holds the RMS amplitude of the most recent captured mic frame,
 	// stored as float32 bits in a uint32 for lock-free atomic access.
 	// Written by processCapture goroutine, read by pollLevels goroutine.
@@ -537,25 +533,6 @@ func (e *VoiceEngine) handleDeviceStopped() {
 	select {
 	case e.eventOut <- VoiceEngineErrorMsg{Err: fmt.Errorf("audio device disconnected unexpectedly")}:
 	default:
-	}
-}
-
-// TogglePTT flips the push-to-talk gate. Called from the bubbletea Update loop
-// when the configured PTT key is pressed; safe to call from any goroutine.
-func (e *VoiceEngine) TogglePTT() {
-	if atomic.CompareAndSwapInt32(&e.pttActive, 0, 1) {
-		// was off → now transmitting
-		select {
-		case e.eventOut <- voiceLocalSpeakingMsg{speaking: true}:
-		default:
-		}
-	} else {
-		atomic.StoreInt32(&e.pttActive, 0)
-		// was on → now silent
-		select {
-		case e.eventOut <- voiceLocalSpeakingMsg{speaking: false}:
-		default:
-		}
 	}
 }
 
@@ -850,15 +827,13 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 		e.noiseGateGain = 1.0 // stay open so re-enabling doesn't start attenuated
 	}
 
-	// Track local mic level for the VU meter — always, regardless of VAD/PTT gate.
+	// Track local mic level for the VU meter — always, regardless of the VAD gate.
 	micRMS := float32(rmsAmplitude(samples))
 	atomic.StoreUint32(&e.localLevel, *(*uint32)(unsafe.Pointer(&micRMS)))
 
 	// VAD / gate decision.
 	var shouldSend bool
 	switch {
-	case e.cfg.PTTEnabled:
-		shouldSend = atomic.LoadInt32(&e.pttActive) != 0
 	case e.cfg.VADEnabled:
 		rms := rmsAmplitude(samples)
 		now := time.Now()

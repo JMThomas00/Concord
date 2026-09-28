@@ -2004,14 +2004,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return a.handleServerManagementKey(msg)
 	}
 
-	// PTT toggle: intercept before view-specific key routing.
-	if a.voiceEngine != nil && a.audioConfig.PTTEnabled && a.audioConfig.PTTKey != "" {
-		if msg.String() == a.audioConfig.PTTKey {
-			a.voiceEngine.TogglePTT()
-			return nil
-		}
-	}
-
 	// Member context menu letter shortcuts: when the action list is visible (not slider mode),
 	// pressing the key shown next to an action directly executes it.
 	if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider == nil {
