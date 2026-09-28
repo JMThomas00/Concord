@@ -439,7 +439,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 					}
 				} else if s.AudioSliderActive {
 					s.AudioSliderActive = false // exit slider before moving
-				} else if s.AudioFocusField < 10 {
+				} else if s.AudioFocusField < 12 {
 					s.AudioFocusField++
 				}
 			case settingsCatManageServers:

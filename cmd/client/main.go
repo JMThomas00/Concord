@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
@@ -24,8 +25,21 @@ var (
 )
 
 func main() {
-	// Set up logging to file for debugging
-	logFile, err := os.OpenFile("concord-client.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	// Set up logging to file for debugging. The log lives in ~/.concord/,
+	// alongside the rest of the client's local state, rather than at a path
+	// relative to the process's cwd -- a relative path silently failed
+	// whenever the client was launched from a directory the user can't write
+	// to (e.g. /usr/local/bin after a system-wide install), and every
+	// log.Printf call then fell through to stderr, corrupting the Bubbletea
+	// alt-screen with raw log text.
+	logPath := "concord-client.log"
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		dir := filepath.Join(home, ".concord")
+		if mkErr := os.MkdirAll(dir, 0o755); mkErr == nil {
+			logPath = filepath.Join(dir, "concord-client.log")
+		}
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
 		log.SetOutput(logFile)
 		defer logFile.Close()

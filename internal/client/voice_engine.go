@@ -218,7 +218,7 @@ type VoiceEngine struct {
 	capDevice  *malgo.Device
 	playDevice *malgo.Device
 
-	captureC chan []byte // capture callback → processCapture goroutine
+	captureC chan []byte    // capture callback → processCapture goroutine
 	procWg   sync.WaitGroup // tracks processCapture goroutine; Wait()ed in Stop()
 
 	// Opus encoder — owned exclusively by the processCapture goroutine after Start().
@@ -243,6 +243,20 @@ type VoiceEngine struct {
 	// VAD state (used in processCapture goroutine only — no lock needed)
 	isSpeaking bool
 	speakUntil time.Time
+
+	// noiseGateGain is the current smoothed attenuation factor (1.0 = fully
+	// open) applied by the noise gate in sendFrame. processCapture goroutine
+	// only — no lock needed, same as the VAD state above.
+	noiseGateGain float32
+
+	// Echo cancellation. aecFarEnd is written by mixPCM (playback callback
+	// goroutine) and read by sendFrame (processCapture goroutine) -- it has
+	// its own internal mutex. aecFilt's taps are owned exclusively by
+	// processCapture, same as enc. Both are always allocated in Start() (not
+	// only when EchoCancellation starts enabled) so toggling it on mid-call
+	// works immediately without lazy-init races -- see UpdateConfig.
+	aecFarEnd *aecFarEndBuffer
+	aecFilt   *aecFilter
 
 	// PTT state: 1 = active (transmitting), 0 = inactive.
 	// Written by TogglePTT (bubbletea goroutine), read by processCapture goroutine.
@@ -275,16 +289,17 @@ func NewVoiceEngine(
 		webrtc.WithMediaEngine(me),
 	)
 	return &VoiceEngine{
-		cfg:         cfg,
-		localUserID: localUID,
-		api:         api,
-		peers:       make(map[uuid.UUID]*peerConn),
-		incoming:    make(map[uuid.UUID]*incomingBuffer),
-		decoders:    make(map[uuid.UUID]*opus.Decoder),
-		captureC:    make(chan []byte, 32),
-		sigOut:      sigOut,
-		eventOut:    eventOut,
-		quit:        make(chan struct{}),
+		cfg:           cfg,
+		localUserID:   localUID,
+		api:           api,
+		peers:         make(map[uuid.UUID]*peerConn),
+		incoming:      make(map[uuid.UUID]*incomingBuffer),
+		decoders:      make(map[uuid.UUID]*opus.Decoder),
+		captureC:      make(chan []byte, 32),
+		sigOut:        sigOut,
+		eventOut:      eventOut,
+		quit:          make(chan struct{}),
+		noiseGateGain: 1.0, // start fully open, not attenuated
 	}
 }
 
@@ -295,9 +310,9 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.serverID  = serverID
+	e.serverID = serverID
 	e.channelID = channelID
-	e.stunURLs  = stunURLs
+	e.stunURLs = stunURLs
 
 	// ── malgo context ────────────────────────────────────────────────────────
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, func(msg string) {
@@ -324,6 +339,13 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 	bitrate := bitrateForPreset(e.cfg.CodecPreset)
 	log.Printf("voice: codec preset=%q → %d Hz / %d bps (Opus)", e.cfg.CodecPreset, sampleRate, bitrate)
 
+	// Pin each capture/playback callback to exactly one Opus frame's worth of
+	// samples. Without an explicit period size, miniaudio/ALSA picks its own
+	// default, which frequently does NOT land on one of Opus's fixed valid
+	// frame durations (2.5/5/10/20/40/60ms) -- Encode() then fails with
+	// "opus: invalid argument" on every single callback.
+	periodFrames := sampleRate * uint32(voiceFrameMs) / 1000
+
 	// ── Opus encoder ─────────────────────────────────────────────────────────
 	enc, err := opus.NewEncoder(int(sampleRate), voiceChannels, opusAppVoIP)
 	if err != nil {
@@ -336,11 +358,21 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 	e.enc = enc
 	e.sampleRate.Store(sampleRate)
 
+	// ── Echo cancellation ────────────────────────────────────────────────────
+	// Always allocated (usage is still gated per-frame on cfg.EchoCancellation)
+	// so toggling it on mid-call doesn't need any lazy re-init. Capacity is the
+	// filter's tap window plus one frame of slack, matching what aecFilter.process
+	// requires as minimum far-end history.
+	numTaps := aecTapsForSampleRate(sampleRate)
+	e.aecFilt = newAECFilter(numTaps)
+	e.aecFarEnd = newAECFarEndBuffer(numTaps + int(periodFrames))
+
 	// ── Capture device (microphone) ──────────────────────────────────────────
 	capCfg := malgo.DefaultDeviceConfig(malgo.Capture)
-	capCfg.Capture.Format   = malgo.FormatS16
+	capCfg.Capture.Format = malgo.FormatS16
 	capCfg.Capture.Channels = voiceChannels
-	capCfg.SampleRate       = sampleRate
+	capCfg.SampleRate = sampleRate
+	capCfg.PeriodSizeInFrames = periodFrames
 	// Select specific input device if configured.
 	if e.cfg.InputDevice != "" {
 		if devs, err := ctx.Devices(malgo.Capture); err == nil {
@@ -366,6 +398,7 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 			default: // drop on overrun
 			}
 		},
+		Stop: e.handleDeviceStopped,
 	})
 	if err != nil {
 		freeCtx()
@@ -374,9 +407,10 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 
 	// ── Playback device (speakers / headphones) ───────────────────────────────
 	playCfg := malgo.DefaultDeviceConfig(malgo.Playback)
-	playCfg.Playback.Format   = malgo.FormatS16
+	playCfg.Playback.Format = malgo.FormatS16
 	playCfg.Playback.Channels = voiceChannels
-	playCfg.SampleRate        = sampleRate
+	playCfg.SampleRate = sampleRate
+	playCfg.PeriodSizeInFrames = periodFrames
 	// Select specific output device if configured.
 	if e.cfg.OutputDevice != "" {
 		if devs, err := ctx.Devices(malgo.Playback); err == nil {
@@ -395,6 +429,7 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 			mixed := e.mixPCM(int(frameCount))
 			copy(pOutput, mixed)
 		},
+		Stop: e.handleDeviceStopped,
 	})
 	if err != nil {
 		capDev.Uninit()
@@ -418,8 +453,8 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 	}
 
 	// All devices started successfully — commit to engine state.
-	e.malgoCtx   = ctx
-	e.capDevice  = capDev
+	e.malgoCtx = ctx
+	e.capDevice = capDev
 	e.playDevice = playDev
 
 	e.procWg.Add(1)
@@ -482,6 +517,27 @@ func (e *VoiceEngine) Stop() {
 	e.decodersMu.Unlock()
 
 	log.Printf("voice: engine stopped")
+}
+
+// handleDeviceStopped is wired as every malgo device's Stop callback. It fires
+// both when Stop() itself calls capDevice.Stop()/playDevice.Stop() during an
+// intentional shutdown, and when the backend fails out from under us (e.g. an
+// "[ALSA] poll() failed." on the underlying PCM device). There is no error
+// return path for the latter case -- without this, capture/playback would go
+// silently dead while the app kept reporting the engine as connected. e.stopped
+// tells the two apart.
+func (e *VoiceEngine) handleDeviceStopped() {
+	e.mu.Lock()
+	intentional := e.stopped
+	e.mu.Unlock()
+	if intentional {
+		return
+	}
+	log.Printf("voice: device stopped unexpectedly")
+	select {
+	case e.eventOut <- VoiceEngineErrorMsg{Err: fmt.Errorf("audio device disconnected unexpectedly")}:
+	default:
+	}
 }
 
 // TogglePTT flips the push-to-talk gate. Called from the bubbletea Update loop
@@ -763,6 +819,13 @@ func (e *VoiceEngine) processCapture() {
 func (e *VoiceEngine) sendFrame(raw []byte) {
 	samples := bytesToInt16(raw)
 
+	// Echo cancellation: subtract our own predicted playback echo before
+	// anything else (gain, noise gate, VAD, VU meter) touches the signal.
+	if e.cfg.EchoCancellation && e.aecFilt != nil && e.aecFarEnd != nil {
+		farHistory := e.aecFarEnd.snapshot(len(samples) + len(e.aecFilt.taps) - 1)
+		samples = e.aecFilt.process(samples, farHistory, aecMuForStrength(e.cfg.EchoCancellationStrength))
+	}
+
 	// Apply input gain.
 	if e.cfg.InputGain != 0 && e.cfg.InputGain != 1.0 {
 		for i, s := range samples {
@@ -775,6 +838,16 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 			samples[i] = int16(v)
 		}
 		raw = int16ToBytes(samples)
+	}
+
+	// Adaptive noise gate: attenuate frames whose RMS falls below a floor
+	// derived from NoiseSuppressStrength. Smoothed with a fast attack / slow
+	// release so it fades rather than clicks, and applied before the VU meter
+	// reads the level so the meter reflects what's actually being sent.
+	if e.cfg.NoiseSuppress {
+		e.applyNoiseGate(samples)
+	} else {
+		e.noiseGateGain = 1.0 // stay open so re-enabling doesn't start attenuated
 	}
 
 	// Track local mic level for the VU meter — always, regardless of VAD/PTT gate.
@@ -849,6 +922,49 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 	}
 }
 
+// noiseGateFloorMax is the RMS floor at NoiseSuppressStrength=1.0, below which
+// a frame is treated as background noise rather than speech. Chosen well
+// under normal speech RMS (see vadThresholdMax in audio_settings_view.go)
+// so suppression targets hiss/hum/room noise without also eating quiet speech.
+const noiseGateFloorMax = 0.12
+
+// noiseGateAttack/Release control how fast the gate opens/closes, expressed
+// as an EMA weight applied once per ~20ms frame. Attack is fast so speech
+// isn't clipped at onset; release is slower so trailing syllables don't get
+// chopped to silence.
+const (
+	noiseGateAttack  = 0.5
+	noiseGateRelease = 0.15
+)
+
+// applyNoiseGate attenuates samples in place when their RMS falls below a
+// floor scaled by NoiseSuppressStrength, smoothing the transition so the gate
+// fades rather than clicks. Called from the processCapture goroutine only.
+func (e *VoiceEngine) applyNoiseGate(samples []int16) {
+	strength := clampF(e.cfg.NoiseSuppressStrength, 0.0, 1.0)
+	floor := noiseGateFloorMax * strength
+
+	target := float32(1.0)
+	if rmsAmplitude(samples) < floor {
+		// At strength=1.0 this fully mutes; lower strengths leave a residual
+		// so suppression eases in gradually rather than snapping to silent.
+		target = float32(1.0 - strength)
+	}
+
+	if target > e.noiseGateGain {
+		e.noiseGateGain += (target - e.noiseGateGain) * noiseGateAttack
+	} else {
+		e.noiseGateGain += (target - e.noiseGateGain) * noiseGateRelease
+	}
+
+	if e.noiseGateGain >= 0.999 {
+		return // fully open -- skip the multiply
+	}
+	for i, s := range samples {
+		samples[i] = int16(float32(s) * e.noiseGateGain)
+	}
+}
+
 // onAudioData is called from pion goroutines when an Opus packet arrives from a peer.
 func (e *VoiceEngine) onAudioData(fromUserID uuid.UUID, data []byte) {
 	e.incomingMu.RLock()
@@ -899,6 +1015,9 @@ func (e *VoiceEngine) mixPCM(frameCount int) []byte {
 			}
 			mixed[i] = int16(v)
 		}
+	}
+	if e.aecFarEnd != nil {
+		e.aecFarEnd.push(mixed)
 	}
 	return int16ToBytes(mixed)
 }

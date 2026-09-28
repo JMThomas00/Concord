@@ -97,7 +97,7 @@ func (a *App) renderAudioContent(width, height int) string {
 		isFieldSelected := focused && focusField == fieldIdx
 		if isFieldSelected && sliderActive {
 			// Green bar + ◄ ► hints — slider is live
-			return greenStyle.Render("◄ "+text+" ►")
+			return greenStyle.Render("◄ " + text + " ►")
 		}
 		// Static hint when field is selected but slider not yet activated
 		if isFieldSelected {
@@ -147,8 +147,9 @@ func (a *App) renderAudioContent(width, height int) string {
 	// Field 4: Voice Activity Detection
 	writeToggle(4, "Voice Activity Detection (VAD)", cfg.VADEnabled)
 
-	// Field 5: VAD Threshold
-	writeField(5, "VAD Sensitivity", progressBar(5, cfg.VADThreshold, 1.0, 20))
+	// Field 5: VAD Sensitivity (displayed inverted from the raw gate threshold --
+	// see vadSensitivityFromThreshold for why)
+	writeField(5, "VAD Sensitivity", progressBar(5, vadSensitivityFromThreshold(cfg.VADThreshold), 1.0, 20))
 
 	// Field 6: Push-to-Talk
 	writeToggle(6, "Push-to-Talk (PTT)", cfg.PTTEnabled)
@@ -163,10 +164,16 @@ func (a *App) renderAudioContent(width, height int) string {
 	// Field 8: Noise Suppression
 	writeToggle(8, "Noise Suppression", cfg.NoiseSuppress)
 
-	// Field 9: Echo Cancellation
-	writeToggle(9, "Echo Cancellation", cfg.EchoCancellation)
+	// Field 9: Noise Suppression Strength
+	writeField(9, "Noise Suppression Strength", progressBar(9, cfg.NoiseSuppressStrength, 1.0, 20))
 
-	// Field 10: Codec Preset
+	// Field 10: Echo Cancellation
+	writeToggle(10, "Echo Cancellation", cfg.EchoCancellation)
+
+	// Field 11: Echo Cancellation Strength
+	writeField(11, "Echo Cancellation Strength", progressBar(11, cfg.EchoCancellationStrength, 1.0, 20))
+
+	// Field 12: Codec Preset
 	codec := cfg.CodecPreset
 	if codec == "" {
 		codec = "medium"
@@ -180,7 +187,7 @@ func (a *App) renderAudioContent(width, height int) string {
 	if codecDesc == "" {
 		codecDesc = codec
 	}
-	writeField(10, "Codec Quality", codecDesc+" ◀▶")
+	writeField(12, "Codec Quality", codecDesc+" ◀▶")
 
 	middle.pad()
 
@@ -199,16 +206,48 @@ func (a *App) renderAudioContent(width, height int) string {
 	// in renderServerIconsCollapsed (views.go). Found again here 2026-09-07
 	// wiring mouse support to the Audio category.
 	return lipgloss.NewStyle().
-		Width(width).Height(height - 2).
+		Width(width).Height(height-2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
 }
 
+// vadThresholdMin/Max bound the realistic RMS range for human speech in this
+// pipeline -- normal talking rarely pushes rmsAmplitude (see voice_engine.go)
+// past ~0.3, so the old 0.0-1.0 raw range left most of the slider dead. The
+// UI-facing "Sensitivity" is the INVERSE of the stored gate threshold (higher
+// sensitivity -> lower threshold -> easier to trigger). Previously the slider
+// mapped sensitivity directly onto the raw threshold with no rescaling, so
+// turning sensitivity up actually made VAD dramatically harder to trigger --
+// once speech dropped below that (very high) threshold it would never engage
+// again, i.e. it appeared to get stuck muted.
+const (
+	vadThresholdMin = 0.02
+	vadThresholdMax = 0.30
+)
+
+// vadSensitivityFromThreshold converts the stored RMS gate threshold to the
+// 0.0-1.0 "Sensitivity" shown in the UI.
+func vadSensitivityFromThreshold(t float64) float64 {
+	if t <= vadThresholdMin {
+		return 1.0
+	}
+	if t >= vadThresholdMax {
+		return 0.0
+	}
+	return 1.0 - (t-vadThresholdMin)/(vadThresholdMax-vadThresholdMin)
+}
+
+// vadThresholdFromSensitivity is the inverse of vadSensitivityFromThreshold.
+func vadThresholdFromSensitivity(sens float64) float64 {
+	sens = clampF(sens, 0.0, 1.0)
+	return vadThresholdMax - sens*(vadThresholdMax-vadThresholdMin)
+}
+
 // isAudioSliderField reports whether field idx is a continuous-value field
 // that uses the ←/→ slider mode (as opposed to a toggle or device picker).
 func isAudioSliderField(idx int) bool {
-	return idx == 2 || idx == 3 || idx == 5 // Input Gain, Output Volume, VAD Threshold
+	return idx == 2 || idx == 3 || idx == 5 || idx == 9 || idx == 11 // Input Gain, Output Volume, VAD Sensitivity, Noise Suppression Strength, Echo Cancellation Strength
 }
 
 // adjustAudioSlider nudges the value for the currently-active slider field.
@@ -225,8 +264,13 @@ func (a *App) adjustAudioSlider(s *SettingsState, delta int) {
 		cfg.InputGain = clampF(cfg.InputGain+d, 0.0, 2.0)
 	case 3: // Output Volume  0.0–1.0
 		cfg.OutputVolume = clampF(cfg.OutputVolume+d, 0.0, 1.0)
-	case 5: // VAD Threshold  0.0–1.0
-		cfg.VADThreshold = clampF(cfg.VADThreshold+d, 0.0, 1.0)
+	case 5: // VAD Sensitivity -- higher % = more sensitive = LOWER RMS threshold
+		sens := clampF(vadSensitivityFromThreshold(cfg.VADThreshold)+d, 0.0, 1.0)
+		cfg.VADThreshold = vadThresholdFromSensitivity(sens)
+	case 9: // Noise Suppression Strength  0.0–1.0
+		cfg.NoiseSuppressStrength = clampF(cfg.NoiseSuppressStrength+d, 0.0, 1.0)
+	case 11: // Echo Cancellation Strength  0.0–1.0
+		cfg.EchoCancellationStrength = clampF(cfg.EchoCancellationStrength+d, 0.0, 1.0)
 	}
 	a.saveAudioConfig()
 	if a.voiceEngine != nil {
@@ -266,18 +310,19 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 		if cfg.VADEnabled {
 			cfg.PTTEnabled = false // VAD and PTT are mutually exclusive
 		}
-	case 5: // VAD Threshold: cycle 0.2 → 0.4 → 0.6 → 0.8 → 0.2
+	case 5: // VAD Sensitivity: cycle 25% → 50% → 75% → 100% → 25%
+		sens := vadSensitivityFromThreshold(cfg.VADThreshold)
 		switch {
-		case cfg.VADThreshold < 0.2:
-			cfg.VADThreshold = 0.2
-		case cfg.VADThreshold < 0.4:
-			cfg.VADThreshold = 0.4
-		case cfg.VADThreshold < 0.6:
-			cfg.VADThreshold = 0.6
-		case cfg.VADThreshold < 0.8:
-			cfg.VADThreshold = 0.8
+		case sens < 0.25:
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.25)
+		case sens < 0.50:
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.50)
+		case sens < 0.75:
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.75)
+		case sens < 1.0:
+			cfg.VADThreshold = vadThresholdFromSensitivity(1.0)
 		default:
-			cfg.VADThreshold = 0.2
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.25)
 		}
 	case 6: // PTT toggle
 		cfg.PTTEnabled = !cfg.PTTEnabled
@@ -297,9 +342,9 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 		cfg.PTTKey = next
 	case 8: // Noise Suppression toggle
 		cfg.NoiseSuppress = !cfg.NoiseSuppress
-	case 9: // Echo Cancellation toggle
+	case 10: // Echo Cancellation toggle
 		cfg.EchoCancellation = !cfg.EchoCancellation
-	case 10: // Codec Preset: cycle low → medium → high → ultra → low
+	case 12: // Codec Preset: cycle low → medium → high → ultra → low
 		switch cfg.CodecPreset {
 		case "low":
 			cfg.CodecPreset = "medium"

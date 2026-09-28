@@ -13,16 +13,16 @@ import (
 
 // ServersConfig represents the top-level configuration structure for ~/.concord/servers.json
 type ServersConfig struct {
-	Version            int                   `json:"version"`
-	Servers            []*ClientServerInfo   `json:"servers"`
-	DefaultPreferences *DefaultPreferences   `json:"default_preferences,omitempty"`
+	Version            int                 `json:"version"`
+	Servers            []*ClientServerInfo `json:"servers"`
+	DefaultPreferences *DefaultPreferences `json:"default_preferences,omitempty"`
 }
 
 // DefaultPreferences stores default user preferences for new server registrations
 type DefaultPreferences struct {
-	Username              string `json:"username,omitempty"`
-	Email                 string `json:"email,omitempty"`
-	AutoConnectOnStartup  bool   `json:"auto_connect_on_startup"`
+	Username             string `json:"username,omitempty"`
+	Email                string `json:"email,omitempty"`
+	AutoConnectOnStartup bool   `json:"auto_connect_on_startup"`
 }
 
 // LocalIdentity stores the user's single identity used across all servers
@@ -42,16 +42,16 @@ type AppConfig struct {
 
 // UIConfig holds UI-related preferences
 type UIConfig struct {
-	Theme               string                       `json:"theme"`
-	ShowMembersList     bool                         `json:"show_members_list"`
-	CollapsedCategories map[string]map[string]bool   `json:"collapsed_categories,omitempty"` // serverID -> categoryID -> collapsed
-	MutedChannels       []string                     `json:"muted_channels,omitempty"`       // channel UUIDs
-	MutedServers        []string                     `json:"muted_servers,omitempty"`        // client server UUIDs
-	LastBannerIndex     int                          `json:"last_banner_index"`              // Index of last displayed banner
-	Notifications       NotificationConfig           `json:"notifications"`
-	Display             DisplayConfig                `json:"display"`
-	Audio               AudioConfig                  `json:"audio"`
-	HubURLs             []string                     `json:"hub_urls,omitempty"` // Grapevine hub URLs; nil = use built-in default
+	Theme               string                     `json:"theme"`
+	ShowMembersList     bool                       `json:"show_members_list"`
+	CollapsedCategories map[string]map[string]bool `json:"collapsed_categories,omitempty"` // serverID -> categoryID -> collapsed
+	MutedChannels       []string                   `json:"muted_channels,omitempty"`       // channel UUIDs
+	MutedServers        []string                   `json:"muted_servers,omitempty"`        // client server UUIDs
+	LastBannerIndex     int                        `json:"last_banner_index"`              // Index of last displayed banner
+	Notifications       NotificationConfig         `json:"notifications"`
+	Display             DisplayConfig              `json:"display"`
+	Audio               AudioConfig                `json:"audio"`
+	HubURLs             []string                   `json:"hub_urls,omitempty"` // Grapevine hub URLs; nil = use built-in default
 }
 
 // defaultAudioConfig fills in zero-value fields with sensible defaults.
@@ -63,7 +63,13 @@ func defaultAudioConfig(c AudioConfig) AudioConfig {
 		c.OutputVolume = 1.0
 	}
 	if c.VADThreshold == 0 {
-		c.VADThreshold = 0.4
+		c.VADThreshold = 0.08
+	}
+	if c.NoiseSuppressStrength == 0 {
+		c.NoiseSuppressStrength = 0.5
+	}
+	if c.EchoCancellationStrength == 0 {
+		c.EchoCancellationStrength = 0.5
 	}
 	if c.PTTKey == "" {
 		c.PTTKey = "ctrl+space"
@@ -79,29 +85,31 @@ func defaultAudioConfig(c AudioConfig) AudioConfig {
 
 // AudioConfig holds audio device and voice preferences
 type AudioConfig struct {
-	InputDevice      string             `json:"input_device"`       // "" = system default
-	InputDeviceName  string             `json:"input_device_name"`  // friendly display name
-	OutputDevice     string             `json:"output_device"`      // "" = system default
-	OutputDeviceName string             `json:"output_device_name"` // friendly display name
-	InputGain        float64            `json:"input_gain"`         // 0.0–2.0, default 1.0
-	OutputVolume     float64            `json:"output_volume"`      // 0.0–1.0, default 1.0
-	VADEnabled       bool               `json:"vad_enabled"`        // Voice Activity Detection
-	VADThreshold     float64            `json:"vad_threshold"`      // 0.0–1.0, default 0.4
-	PTTEnabled       bool               `json:"ptt_enabled"`        // Push-to-Talk mode
-	PTTKey           string             `json:"ptt_key"`            // default "ctrl+space"
-	NoiseSuppress    bool               `json:"noise_suppress"`     // Noise suppression
-	EchoCancellation bool               `json:"echo_cancellation"`  // Echo cancellation
-	CodecPreset      string             `json:"codec_preset"`       // "low" / "medium" / "high"
-	PerUserVolumes   map[string]float64 `json:"per_user_volumes"`   // userID → 0.0–2.0
+	InputDevice              string             `json:"input_device"`               // "" = system default
+	InputDeviceName          string             `json:"input_device_name"`          // friendly display name
+	OutputDevice             string             `json:"output_device"`              // "" = system default
+	OutputDeviceName         string             `json:"output_device_name"`         // friendly display name
+	InputGain                float64            `json:"input_gain"`                 // 0.0–2.0, default 1.0
+	OutputVolume             float64            `json:"output_volume"`              // 0.0–1.0, default 1.0
+	VADEnabled               bool               `json:"vad_enabled"`                // Voice Activity Detection
+	VADThreshold             float64            `json:"vad_threshold"`              // raw RMS gate, default 0.08 -- see vadThresholdMin/Max in audio_settings_view.go for the realistic range the UI exposes as "Sensitivity"
+	PTTEnabled               bool               `json:"ptt_enabled"`                // Push-to-Talk mode
+	PTTKey                   string             `json:"ptt_key"`                    // default "ctrl+space"
+	NoiseSuppress            bool               `json:"noise_suppress"`             // Noise suppression (adaptive noise gate, see VoiceEngine.sendFrame)
+	NoiseSuppressStrength    float64            `json:"noise_suppress_strength"`    // 0.0–1.0, default 0.5 -- how aggressively below-floor audio is attenuated
+	EchoCancellation         bool               `json:"echo_cancellation"`          // Echo cancellation (adaptive NLMS filter, see VoiceEngine.aecFilt / voice_aec.go)
+	EchoCancellationStrength float64            `json:"echo_cancellation_strength"` // 0.0–1.0, default 0.5 -- NLMS adaptation aggressiveness (see aecMuForStrength)
+	CodecPreset              string             `json:"codec_preset"`               // "low" / "medium" / "high"
+	PerUserVolumes           map[string]float64 `json:"per_user_volumes"`           // userID → 0.0–2.0
 }
 
 // NotificationConfig holds notification and sound alert preferences
 type NotificationConfig struct {
-	SoundsMuted  bool   `json:"sounds_muted"`   // Master mute for all notification sounds
-	MentionsOnly bool   `json:"mentions_only"`  // Only play sounds for @mention messages
-	BellOnMention bool  `json:"bell_on_mention"` // Write terminal bell \a on every @mention
-	MentionSound string `json:"mention_sound"`  // Sound name for @mention alerts
-	MessageSound string `json:"message_sound"`  // Sound name for regular message alerts
+	SoundsMuted   bool   `json:"sounds_muted"`    // Master mute for all notification sounds
+	MentionsOnly  bool   `json:"mentions_only"`   // Only play sounds for @mention messages
+	BellOnMention bool   `json:"bell_on_mention"` // Write terminal bell \a on every @mention
+	MentionSound  string `json:"mention_sound"`   // Sound name for @mention alerts
+	MessageSound  string `json:"message_sound"`   // Sound name for regular message alerts
 
 	// Desktop (OS-native) popup notifications -- independent of the sound
 	// settings above. Zero values ("") are deliberately the safe/off
@@ -113,14 +121,14 @@ type NotificationConfig struct {
 
 // DisplayConfig holds display and appearance preferences
 type DisplayConfig struct {
-	TimestampFormat    string `json:"timestamp_format"`     // "12h" or "24h"; empty = "24h"
-	TimestampStyle     string `json:"timestamp_style"`      // "absolute" or "relative"; empty = "absolute"
-	MessageDensity     string `json:"message_density"`      // "compact", "normal", "spacious"; empty = "normal"
-	ShowAvatars        bool   `json:"show_avatars"`         // show colored circle avatars in chat headers
-	ShowDateSeps       bool   `json:"show_date_seps"`       // show date separator lines between days
-	GroupingGapMins    int    `json:"grouping_gap_mins"`    // minutes before new header shown; 0 = default (5)
-	ServerListCollapsed  bool `json:"server_list_collapsed"`  // false = expanded (default), true = collapsed
-	MembersListCollapsed bool `json:"members_list_collapsed"` // false = expanded (default), true = collapsed
+	TimestampFormat      string `json:"timestamp_format"`       // "12h" or "24h"; empty = "24h"
+	TimestampStyle       string `json:"timestamp_style"`        // "absolute" or "relative"; empty = "absolute"
+	MessageDensity       string `json:"message_density"`        // "compact", "normal", "spacious"; empty = "normal"
+	ShowAvatars          bool   `json:"show_avatars"`           // show colored circle avatars in chat headers
+	ShowDateSeps         bool   `json:"show_date_seps"`         // show date separator lines between days
+	GroupingGapMins      int    `json:"grouping_gap_mins"`      // minutes before new header shown; 0 = default (5)
+	ServerListCollapsed  bool   `json:"server_list_collapsed"`  // false = expanded (default), true = collapsed
+	MembersListCollapsed bool   `json:"members_list_collapsed"` // false = expanded (default), true = collapsed
 
 	// Members panel display options (false = show, true = hide — matches Go zero value = show by default)
 	MembersHideVUMeter bool `json:"members_hide_vu_meter"` // hide the voice level bar row
@@ -128,7 +136,7 @@ type DisplayConfig struct {
 
 	// Animation options
 	DisablePanelAnimations bool   `json:"disable_panel_animations"` // skip slide-in/out for settings and server panels
-	TypingAnimation        string `json:"typing_animation"`          // "" = "braille"; see typingAnimNames for valid values
+	TypingAnimation        string `json:"typing_animation"`         // "" = "braille"; see typingAnimNames for valid values
 }
 
 // ServerSoundOverride stores per-server sound settings, overriding global defaults.
@@ -144,8 +152,8 @@ type ServerSoundOverride struct {
 // serving them to downloaders after a restart (the server never stores the
 // bytes, only this client remembers where the original file lives on disk).
 type SharedFilesConfig struct {
-	Version int                          `json:"version"`
-	Files   map[string]SharedFileEntry   `json:"files"` // key: attachment ID
+	Version int                        `json:"version"`
+	Files   map[string]SharedFileEntry `json:"files"` // key: attachment ID
 }
 
 // SharedFileEntry records where a shared attachment's source file lives locally.
