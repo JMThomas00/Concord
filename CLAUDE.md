@@ -214,7 +214,7 @@ External programs attach to a Concord server as privileged clients — bots, int
 
 Plugins are built on the SDK, a **separate Go module** nested in this repo: `github.com/JMThomas00/Concord/sdk`.
 
-- **Releases are git tags.** `sdk/vX.Y.Z` releases the SDK and `sdk/pty/vX.Y.Z` releases the terminal passthrough module. First published 2026-09-28: `sdk/v0.1.0` and `sdk/pty/v0.1.1`.
+- **Releases are git tags.** `sdk/vX.Y.Z` releases the SDK and `sdk/pty/vX.Y.Z` releases the terminal passthrough module. Published: `sdk/v0.1.0` and `sdk/pty/v0.1.1` (2026-09-28), then `sdk/v0.2.0` (network play).
 - **Don't use `sdk/pty/v0.1.0`.** It was tagged before its `go.mod` named a real SDK version, and a published tag is never moved.
 - **Before tagging `sdk/pty`,** make sure its `go.mod` requires an SDK version that's already tagged. Its `replace ../` only applies inside that module, so other repos ignore it. Concord's root `go.mod` uses it through `replace … => ./sdk`, so a change to both sides lands in one commit. The root `./...` does **not** include `sdk/`: test it with `cd sdk && go test ./...`; `make test` and `make fmt` do both. The Dockerfile copies `sdk/go.mod`/`go.sum` before `go mod download`.
 
@@ -235,7 +235,10 @@ Plugins are built on the SDK, a **separate Go module** nested in this repo: `git
   - **Turn notifications:** a "your turn" `notify_user` when the next player isn't watching.
   - **Saving:** JSON under `$CONCORD_PLUGIN_DATA_DIR/tables/`.
   - **Change batching:** changes made during one event are saved and redrawn once, at the end of it (`Kit.flush`).
-  - **Standalone play:** `table.RunLocal(rules, opts)` runs the same board as a terminal game, hotseat or against the computer.
+  - **Standalone play:** `table.RunLocal(rules, opts)` runs the same board as a terminal game: hotseat, against the computer, or **over the network** (`netplay.go`).
+    - One player hosts on TCP port 7412 (or any free port) and is shown their LAN addresses and a 6-character join code; the other joins with `address code`. Moves travel as JSON lines, and the host sits in seat 0.
+    - Both sides validate every move and number it, so drift disconnects rather than diverging.
+    - A board's `tea.Quit` is ignored standalone (`noQuit`); it only means "hand keys back" inside Concord.
 - **`sdk/pty`** is a **separate module** (`github.com/JMThomas00/Concord/sdk/pty`). It runs an unmodified terminal program in a pseudo-terminal behind an `x/vt` emulator and shows it in a channel. One viewer drives (the first; `Options.Shared` lets everyone type), and the pane title says who. It's Linux/macOS only (Windows needs ConPTY). It's its own module because `x/vt` needs newer x/ansi/runewidth/colorprofile, which would otherwise float into the client (see the pinning rule below).
 - **`sdk/cmd/concord-plugin new <name> --template game|pane|bot|pty [--sdk path]`** scaffolds a plugin repo:
   - `main.go`, `plugin.toml`, a README and `.gitignore`;

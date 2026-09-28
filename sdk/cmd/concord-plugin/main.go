@@ -104,7 +104,7 @@ Next:
   cd %s
   go mod tidy
   go run .              # try it in this terminal
-  make release          # zips for every server OS/CPU in dist/
+  go run release.go     # zips for every server OS/CPU in dist/
 
 Publish: push to GitHub and tag a release (git tag v0.1.0 && git push --tags);
 the included workflow attaches the zips. Server admins then install it from
