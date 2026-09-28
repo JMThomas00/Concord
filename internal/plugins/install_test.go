@@ -6,11 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -112,7 +115,7 @@ func TestInstallFromURL_Success(t *testing.T) {
 	defer srv.Close()
 
 	pluginsDir := t.TempDir()
-	err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
+	_, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
 		PluginID:  "testplug",
 		SourceURL: srv.URL,
 		SHA256:    sum,
@@ -145,7 +148,7 @@ func TestInstallFromURL_ChecksumMismatchRejected(t *testing.T) {
 	defer srv.Close()
 
 	pluginsDir := t.TempDir()
-	err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
+	_, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
 		PluginID:  "testplug",
 		SourceURL: srv.URL,
 		SHA256:    "0000000000000000000000000000000000000000000000000000000000000",
@@ -170,7 +173,7 @@ func TestInstallFromURL_ManifestIDMismatchRejected(t *testing.T) {
 	defer srv.Close()
 
 	pluginsDir := t.TempDir()
-	err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
+	_, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
 		PluginID:  "requested-id", // does not match the archive's declared id
 		SourceURL: srv.URL,
 		SHA256:    sum,
@@ -183,42 +186,141 @@ func TestInstallFromURL_ManifestIDMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestInstallFromURL_RefusesExistingFolder confirms this first slice's
-// documented scope: it only supports fresh installs, never silently
-// overwriting an already-installed plugin (that's the explicitly punted
-// hot-swap/update case).
-func TestInstallFromURL_RefusesExistingFolder(t *testing.T) {
+// A fresh install never overwrites an installed plugin -- replacing one is
+// Manager.Update's job, with its rollback.
+func TestInstallFromURL_RefusesExistingPlugin(t *testing.T) {
+	data, sum := buildTestPluginZip(t, "testplug")
+	srv := servePluginZip(t, data)
+	defer srv.Close()
 	pluginsDir := t.TempDir()
-	existing := filepath.Join(pluginsDir, "testplug")
-	if err := os.MkdirAll(existing, 0o755); err != nil {
-		t.Fatalf("failed to pre-create existing plugin folder: %v", err)
+	if err := os.MkdirAll(filepath.Join(pluginsDir, "testplug"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
-		PluginID:  "testplug",
-		SourceURL: "http://example.invalid/should-not-be-fetched.zip",
-		SHA256:    "irrelevant",
-	})
-	if err == nil {
-		t.Fatal("expected an error when the destination folder already exists")
+	_, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{SourceURL: srv.URL, SHA256: sum})
+	if err == nil || !strings.Contains(err.Error(), "already installed") {
+		t.Fatalf("installing over an existing plugin = %v, want an already-installed error", err)
 	}
 }
 
-// TestInstallFromURL_RejectsUnsafePluginID confirms a crafted plugin ID
-// can't be used for path traversal (e.g. "../../etc") -- checked before any
-// network call or filesystem write happens.
+// The plugin ID becomes a folder name, so one that could escape the plugins
+// folder is refused -- whether an admin typed it or the archive declares it.
 func TestInstallFromURL_RejectsUnsafePluginID(t *testing.T) {
 	pluginsDir := t.TempDir()
-
-	for _, badID := range []string{"../evil", "..\\evil", "a/b", "", "a b"} {
-		err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{
-			PluginID:  badID,
-			SourceURL: "http://example.invalid/should-not-be-fetched.zip",
-			SHA256:    "irrelevant",
-		})
-		if err == nil {
+	for _, badID := range []string{"../evil", "..\\evil", "a/b", "a b"} {
+		if _, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{PluginID: badID, SourceURL: "https://example.invalid/p.zip"}); err == nil {
 			t.Errorf("expected an error for unsafe plugin id %q", badID)
 		}
+	}
+
+	data, sum := buildTestPluginZip(t, "../evil")
+	srv := servePluginZip(t, data)
+	defer srv.Close()
+	if _, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{SourceURL: srv.URL, SHA256: sum}); err == nil {
+		t.Fatal("an archive declaring id ../evil was installed")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(pluginsDir), "evil")); err == nil {
+		t.Fatal("something was written outside the plugins folder")
+	}
+}
+
+// With no checksum typed, a plain link is still installed (it's https in
+// real use), and a "<url>.sha256" file next to it is used when present.
+func TestInstallFromURL_ChecksumIsOptionalAndSidecarIsUsed(t *testing.T) {
+	data, sum := buildTestPluginZip(t, "sidecar")
+	var sidecar string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			if sidecar == "" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(sidecar + "  plugin.zip\n"))
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	f, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: srv.URL + "/plugin.zip"})
+	if err != nil || f.ID != "sidecar" || f.Verified != "" {
+		t.Fatalf("no-checksum install = %+v, %v", f, err)
+	}
+
+	sidecar = sum
+	f, err = InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: srv.URL + "/plugin.zip"})
+	if err != nil || f.Verified != "a .sha256 file" {
+		t.Fatalf("sidecar install = %+v, %v", f, err)
+	}
+
+	sidecar = strings.Repeat("0", 64) // tampered
+	if _, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: srv.URL + "/plugin.zip"}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("a download not matching its .sha256 file = %v, want a checksum mismatch", err)
+	}
+}
+
+// "owner/repo" installs the latest release's zip for this OS/CPU, verified
+// against the digest GitHub publishes for it.
+func TestInstallFromGitHubRepoPicksPlatformAssetAndUsesDigest(t *testing.T) {
+	data, sum := buildTestPluginZip(t, "concord-chess")
+	var digest = "sha256:" + sum
+	var files *httptest.Server
+	files = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(data) }))
+	defer files.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/jordan/concord-chess/releases/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		mine := fmt.Sprintf("concord-chess_%s_%s.zip", runtime.GOOS, runtime.GOARCH)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"tag_name": "v1.2.0",
+			"assets": []map[string]string{
+				{"name": "concord-chess_plan9_mips.zip", "browser_download_url": files.URL + "/other.zip"},
+				{"name": mine, "browser_download_url": files.URL + "/" + mine, "digest": digest},
+				{"name": "checksums.txt", "browser_download_url": files.URL + "/checksums.txt"},
+			},
+		})
+	}))
+	defer api.Close()
+	defer func(orig string) { githubAPI = orig }(githubAPI)
+	githubAPI = api.URL
+
+	for _, source := range []string{"jordan/concord-chess", "https://github.com/jordan/concord-chess", "github.com/jordan/concord-chess.git"} {
+		f, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: source})
+		if err != nil || f.ID != "concord-chess" || f.Verified != "GitHub" {
+			t.Fatalf("%s: %+v, %v", source, f, err)
+		}
+	}
+
+	digest = "sha256:" + strings.Repeat("a", 64)
+	if _, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: "jordan/concord-chess"}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("a download not matching GitHub's digest = %v", err)
+	}
+	if _, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: "jordan/no-such-repo"}); err == nil || !strings.Contains(err.Error(), "no published release") {
+		t.Fatalf("missing repo = %v", err)
+	}
+}
+
+func TestPickAsset(t *testing.T) {
+	assets := []githubAsset{
+		{Name: "tak_linux_x86_64.zip"}, {Name: "tak_linux_arm64.zip"},
+		{Name: "tak_windows_amd64.zip"}, {Name: "tak_darwin_arm64.zip"}, {Name: "tak.tar.gz"},
+	}
+	for _, tc := range []struct{ goos, goarch, want string }{
+		{"linux", "amd64", "tak_linux_x86_64.zip"},
+		{"linux", "arm64", "tak_linux_arm64.zip"},
+		{"windows", "amd64", "tak_windows_amd64.zip"},
+		{"darwin", "arm64", "tak_darwin_arm64.zip"},
+	} {
+		if a, err := pickAsset(assets, tc.goos, tc.goarch); err != nil || a.Name != tc.want {
+			t.Errorf("%s/%s: got %q, %v; want %s", tc.goos, tc.goarch, a.Name, err, tc.want)
+		}
+	}
+	if _, err := pickAsset(assets, "freebsd", "amd64"); err == nil || !strings.Contains(err.Error(), "tak_linux_x86_64.zip") {
+		t.Errorf("no match should list what's available: %v", err)
+	}
+	if a, err := pickAsset([]githubAsset{{Name: "tukan-plugin.zip"}}, "linux", "amd64"); err != nil || a.Name != "tukan-plugin.zip" {
+		t.Errorf("a single platform-neutral zip should be used: %v %v", a, err)
 	}
 }
 
@@ -251,7 +353,7 @@ func TestInstallFromURL_MakesEntrypointExecutable(t *testing.T) {
 	defer srv.Close()
 
 	pluginsDir := t.TempDir()
-	if err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{PluginID: "execplug", SourceURL: srv.URL, SHA256: sum}); err != nil {
+	if _, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{PluginID: "execplug", SourceURL: srv.URL, SHA256: sum}); err != nil {
 		t.Fatalf("InstallFromURL failed: %v", err)
 	}
 	info, err := os.Stat(filepath.Join(pluginsDir, "execplug", "test"))
@@ -260,5 +362,57 @@ func TestInstallFromURL_MakesEntrypointExecutable(t *testing.T) {
 	}
 	if info.Mode().Perm()&0o100 == 0 {
 		t.Errorf("entrypoint installed with mode %v, want it executable", info.Mode().Perm())
+	}
+}
+
+// Zipping a plugin's folder (the usual way to make a release archive) puts
+// everything under one top-level folder; that must install the same.
+func TestInstallFromURL_UnwrapsSingleTopLevelFolder(t *testing.T) {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	f, _ := w.Create("wrapped/plugin.toml")
+	_, _ = f.Write([]byte("[plugin]\nid = \"wrapped\"\nname = \"W\"\nversion = \"1.0.0\"\n\n[process]\n" +
+		"[process.entrypoint.windows]\nbin = \"w.exe\"\n[process.entrypoint.linux]\nbin = \"w\"\n[process.entrypoint.darwin]\nbin = \"w\"\n"))
+	for _, name := range []string{"wrapped/w", "wrapped/w.exe"} {
+		b, _ := w.Create(name)
+		_, _ = b.Write([]byte("bin"))
+	}
+	_ = w.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	srv := servePluginZip(t, buf.Bytes())
+	defer srv.Close()
+
+	pluginsDir := t.TempDir()
+	if _, err := InstallFromURL(context.Background(), pluginsDir, InstallRequest{PluginID: "wrapped", SourceURL: srv.URL, SHA256: hex.EncodeToString(sum[:])}); err != nil {
+		t.Fatalf("InstallFromURL: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(pluginsDir, "wrapped", "plugin.toml")); err != nil {
+		t.Fatalf("plugin.toml not at the plugin folder's root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(pluginsDir, ".staging")); err == nil {
+		entries, _ := os.ReadDir(filepath.Join(pluginsDir, ".staging"))
+		if len(entries) != 0 {
+			t.Errorf("staging left behind: %v", entries)
+		}
+	}
+}
+
+// Live check against the real GitHub API (opt-in: CONCORD_LIVE_GITHUB=1):
+// a public repo's latest release resolves to this platform's .zip, with
+// GitHub's published digest.
+func TestResolveSourceLiveGitHub(t *testing.T) {
+	if os.Getenv("CONCORD_LIVE_GITHUB") == "" {
+		t.Skip("set CONCORD_LIVE_GITHUB=1 to hit the real GitHub API")
+	}
+	if runtime.GOOS != "windows" {
+		t.Skip("charmbracelet/vhs only ships .zip builds for Windows")
+	}
+	src, err := ResolveSource(context.Background(), "charmbracelet/vhs", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("resolved %s (checksum from %s: %s)", src.URL, src.ChecksumFrom, src.SHA256)
+	if !strings.Contains(strings.ToLower(src.URL), "windows") || src.ChecksumFrom != "GitHub" || len(src.SHA256) != 64 {
+		t.Fatalf("unexpected resolution: %+v", src)
 	}
 }

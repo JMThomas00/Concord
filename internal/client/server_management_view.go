@@ -541,6 +541,9 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	if s.PluginConfigState != nil {
 		return a.handlePluginConfigKey(msg)
 	}
+	if s.FocusOnForm && s.SelectedCategory == 4 && a.handlePluginListKey(msg.String()) {
+		return nil
+	}
 
 	switch msg.String() {
 	case "esc":
@@ -1665,7 +1668,7 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 		case layout.isPlugin && field >= layout.pluginStart && field < layout.pluginStart+len(state.PluginFields):
 			idx := field - layout.pluginStart
 			ft := state.PluginFields[idx].Type
-			if ft == "text" || ft == "number" {
+			if isTextField(ft) {
 				state.PluginTextInputs[idx].Focus()
 			}
 		}
@@ -1744,7 +1747,7 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 	if layout.isPlugin && state.FocusField >= layout.pluginStart && state.FocusField < layout.pluginStart+len(state.PluginFields) {
 		idx := state.FocusField - layout.pluginStart
 		ft := state.PluginFields[idx].Type
-		if ft == "text" || ft == "number" {
+		if isTextField(ft) {
 			var cmd tea.Cmd
 			state.PluginTextInputs[idx], cmd = state.PluginTextInputs[idx].Update(msg)
 			return cmd
@@ -4094,7 +4097,7 @@ func (a *App) renderServerAboutContent(width, height int) string {
 }
 
 func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState) string {
-	layout := calculateSettingsLayout(width, height, 3, 1)
+	layout := calculateSettingsLayout(width, height, 3, 2) // 2 = the second actions line
 
 	// ── TOP SECTION ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
@@ -4106,7 +4109,7 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 
 	descStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(descStyle.Render("Drop a plugin's folder into Plugins/ and restart to install it"))
+	top.writeLine(descStyle.Render("Install, update and configure plugins here — no server restart needed"))
 
 	enabledCount := 0
 	for _, p := range s.PluginList {
@@ -4117,7 +4120,15 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 	statsStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	top.writeLine(statsStyle.Render(fmt.Sprintf("%d plugins · %d enabled", len(s.PluginList), enabledCount)))
-	top.writeBlank()
+	if s.PluginNotice != "" {
+		noticeColor := a.theme.Colors.Green
+		if s.PluginNoticeError {
+			noticeColor = a.theme.Colors.Orange
+		}
+		top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(noticeColor)).Render(s.PluginNotice))
+	} else {
+		top.writeBlank()
+	}
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE SECTION ──
@@ -4186,7 +4197,8 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Esc close"))
-	bottom.writeLine(helpStyle.Render("Actions: Enter configure · T toggle enabled"))
+	bottom.writeLine(helpStyle.Render("Actions: Enter configure · T enable/disable · R restart · U update · X uninstall"))
+	bottom.writeLine(helpStyle.Render("         I install from a URL · S rescan the Plugins folder"))
 	bottom.pad()
 
 	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
@@ -4215,10 +4227,20 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 
 	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
-	top.writeLine(headerStyle.Render("Configure " + pluginDisplayLabel(state.PluginID, state.Product)))
+	title, subtitle := "Configure "+pluginDisplayLabel(state.PluginID, state.Product), "Server-wide settings for this plugin"
+	switch state.Mode {
+	case "install":
+		title, subtitle = "Install a plugin", "Downloads, checks and starts it — no server restart needed"
+	case "update":
+		title, subtitle = "Update "+state.PluginID, "If the new version won't start, the current one is put back"
+	}
+	if state.Saving {
+		subtitle = "Working…"
+	}
+	top.writeLine(headerStyle.Render(title))
 
 	subtitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	top.writeLine(subtitleStyle.Render("Server-wide settings for this plugin"))
+	top.writeLine(subtitleStyle.Render(subtitle))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
@@ -4247,7 +4269,7 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 		middle.writeLine(labelStyle.Render("▸ " + f.Label + required + ":"))
 
 		switch f.Type {
-		case "text", "number":
+		case "text", "number", "secret":
 			view := state.TextInputs[i].View()
 			if focused {
 				middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Render("  " + view))
@@ -4265,6 +4287,11 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 			}
 			middle.writeLine(valStyle.Render("  ◂ " + val + " ▸"))
 		}
+		if problem := state.FieldErrors[f.Key]; problem != "" {
+			middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("  ⚠ " + problem))
+		} else if f.Help != "" {
+			middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true).Render("  " + f.Help))
+		}
 		middle.writeBlank()
 	}
 	middle.pad()
@@ -4276,14 +4303,21 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
 
+	saveLabel := "Save"
+	switch state.Mode {
+	case "install":
+		saveLabel = "Install"
+	case "update":
+		saveLabel = "Update"
+	}
 	var saveButton, backButton string
 	if state.FocusField == saveField {
 		saveButton = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Background)).
 			Background(lipgloss.Color(a.theme.Colors.Green)).
-			Bold(true).Padding(0, 2).Render("Save")
+			Bold(true).Padding(0, 2).Render(saveLabel)
 	} else {
-		saveButton = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Render("[Save]")
+		saveButton = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Render("[" + saveLabel + "]")
 	}
 	if state.FocusField == backField {
 		backButton = lipgloss.NewStyle().
@@ -5336,7 +5370,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 			middle.writeLine(fieldLabelStyle.Render("▸ " + f.Label + required + ":"))
 
 			switch f.Type {
-			case "text", "number":
+			case "text", "number", "secret":
 				view := state.PluginTextInputs[i].View()
 				if focused {
 					middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Render("  " + view))

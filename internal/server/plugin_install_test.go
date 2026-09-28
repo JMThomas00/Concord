@@ -140,3 +140,79 @@ func TestHandlePluginInstallRequiresPermission(t *testing.T) {
 		t.Error("expected no plugin folder to be created for a forbidden request")
 	}
 }
+
+// OpPluginManage install is live: the plugin is loaded without a server
+// restart, and every connected client hears about its channel kind at once.
+// Uninstall takes it away again the same way.
+func TestPluginManageInstallIsLiveAndUninstallRemovesIt(t *testing.T) {
+	srv, wsURL := startPlainTestServer(t)
+	admin, token := createTestUserAndToken(t, srv, "manage-admin")
+	testServer := models.NewServer("Plugin Manage Test", admin.ID)
+	if err := srv.db.CreateServer(testServer); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.db.CreateRole(models.NewEveryoneRole(testServer.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.db.AddServerMember(models.NewServerMember(admin.ID, testServer.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	f, _ := w.Create("plugin.toml")
+	_, _ = f.Write([]byte("[plugin]\nid = \"liveplug\"\nname = \"Live\"\nversion = \"1.0.0\"\n\n" +
+		"[process]\n[process.entrypoint.windows]\nbin = \"live.exe\"\n[process.entrypoint.linux]\nbin = \"live\"\n[process.entrypoint.darwin]\nbin = \"live\"\n\n" +
+		"[[channel_kind]]\nkind = \"board\"\ndisplay_name = \"Live Board\"\nremote_pane = true\n"))
+	_ = w.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	archiveSrv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { _, _ = rw.Write(buf.Bytes()) }))
+	defer archiveSrv.Close()
+
+	client := newTestWSClient(t, wsURL)
+	client.identify(token)
+
+	hasKind := func(m *protocol.Message) bool {
+		var p protocol.PluginRegistryPayload
+		_ = json.Unmarshal(m.Data, &p)
+		for _, k := range p.PluginChannelKinds {
+			if k.PluginID == "liveplug" && k.Kind == "board" {
+				return true
+			}
+		}
+		return false
+	}
+	result := func() protocol.PluginManageResult {
+		m := client.readUntil(10*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginManageResult })
+		var r protocol.PluginManageResult
+		_ = json.Unmarshal(m.Data, &r)
+		return r
+	}
+
+	client.send(protocol.OpPluginManage, protocol.PluginManageRequest{
+		ServerID: testServer.ID, Action: protocol.PluginActionInstall,
+		PluginID: "liveplug", SourceURL: archiveSrv.URL, SHA256: hex.EncodeToString(sum[:]),
+	})
+	reg := client.readUntil(10*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginRegistryUpdate })
+	if !hasKind(reg) {
+		t.Fatalf("registry update after install lacks the new kind: %s", reg.Data)
+	}
+	if r := result(); !r.OK {
+		t.Fatalf("install result: %+v", r)
+	}
+	if _, ok := srv.plugins.Registry().Manifest("liveplug"); !ok {
+		t.Fatal("installed plugin isn't loaded")
+	}
+
+	client.send(protocol.OpPluginManage, protocol.PluginManageRequest{ServerID: testServer.ID, Action: protocol.PluginActionUninstall, PluginID: "liveplug"})
+	reg = client.readUntil(10*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginRegistryUpdate })
+	if hasKind(reg) {
+		t.Fatal("registry update after uninstall still lists the kind")
+	}
+	if r := result(); !r.OK {
+		t.Fatalf("uninstall result: %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(srv.plugins.PluginsDir(), "liveplug")); !os.IsNotExist(err) {
+		t.Fatal("uninstall left the plugin folder behind")
+	}
+}

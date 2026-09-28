@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
@@ -22,6 +23,7 @@ import (
 // careful fix (redirect after the fact, instead of at InitLogger's own
 // construction) would have fallen into.
 func TestInitLoggerRoutesComponentLoggersToGivenWriter(t *testing.T) {
+	t.Cleanup(restoreTestLogger)
 	var buf bytes.Buffer
 	InitLogger(&buf, log.InfoLevel)
 
@@ -53,6 +55,7 @@ func TestInitLoggerRoutesComponentLoggersToGivenWriter(t *testing.T) {
 // old writer after the "redirect" would mean the alt-screen corruption
 // bug is still live.
 func TestInitLoggerSwitchingWriterStopsOldOneReceivingOutput(t *testing.T) {
+	t.Cleanup(restoreTestLogger)
 	var first, second bytes.Buffer
 
 	InitLogger(&first, log.InfoLevel)
@@ -75,3 +78,9 @@ func TestInitLoggerSwitchingWriterStopsOldOneReceivingOutput(t *testing.T) {
 		t.Error("expected the second writer to receive the post-switch log lines")
 	}
 }
+
+// restoreTestLogger puts the package loggers back to the quiet stderr setup
+// the other tests use. Leaving them pointed at a test's bytes.Buffer made
+// every later server test log into one unsynchronized buffer from many
+// goroutines -- a data race under -race.
+func restoreTestLogger() { InitLogger(os.Stderr, log.FatalLevel) }

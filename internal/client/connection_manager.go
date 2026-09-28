@@ -66,6 +66,10 @@ type ServerConnection struct {
 	ServerVersion   string
 	ServerGitCommit string
 	ServerBuildTime string
+	// Plugin channel kinds this server offers: from READY, replaced by
+	// PLUGIN_REGISTRY_UPDATE when plugins are installed or removed live.
+	// App.pluginChannelKinds is the union across connections.
+	PluginChannelKinds []protocol.PluginChannelKindInfo
 	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
 	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
 	Members  []*MemberDisplay        // Members in current server

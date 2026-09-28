@@ -222,6 +222,12 @@ type ServerManagementState struct {
 	PluginList         []protocol.PluginInfo
 	SelectedPlugin      int
 	PluginConfigState   *PluginConfigFormState
+	// PluginNotice is the outcome of the last plugin action (install,
+	// restart, ...), shown atop the Plugins list.
+	PluginNotice      string
+	PluginNoticeError bool
+	// UninstallConfirm is the plugin id awaiting a second X to uninstall.
+	UninstallConfirm string
 }
 
 // PluginConfigFormState holds state for a single plugin's config sub-page
@@ -233,10 +239,17 @@ type PluginConfigFormState struct {
 	PluginID     string
 	Product      string // manifest [plugin].product, if declared — see pluginDisplayLabel
 	Fields       []protocol.PluginField
-	TextInputs   []textinput.Model // parallel to Fields, used for text/number
+	TextInputs   []textinput.Model // parallel to Fields, used for text/number/secret
 	Values       []string          // parallel to Fields, used for boolean/select/channel_select
 	FocusField   int               // 0..len(Fields)-1 fields, then save, then back
 	ErrorMsg     string
+
+	// Mode is "" for a plugin's own settings, or "install"/"update" when
+	// the same generic form collects a release URL and checksum instead.
+	Mode        string
+	Saving      bool              // sent; waiting for the server's verdict
+	FieldErrors map[string]string // from a rejected save, by field key
+	SecretsSet  map[string]bool   // secret fields that already have a value
 }
 
 // RoleFormState holds state for the role creation/edit modal

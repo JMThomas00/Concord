@@ -1,6 +1,8 @@
 package client
 
 import (
+	"strings"
+
 	"fmt"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -14,12 +16,12 @@ import (
 // the selected type is voice (adds a max-users field) or a plugin kind (adds
 // its declared create_fields) — the two are mutually exclusive.
 type channelFormFieldLayout struct {
-	isVoice      bool
-	isPlugin     bool
-	pluginStart  int // FocusField of the first plugin field (only meaningful if isPlugin)
+	isVoice       bool
+	isPlugin      bool
+	pluginStart   int // FocusField of the first plugin field (only meaningful if isPlugin)
 	maxUsersField int // FocusField of the max-users field (only meaningful if isVoice)
-	submitField  int
-	cancelField  int
+	submitField   int
+	cancelField   int
 }
 
 func computeChannelFormLayout(state *ChannelFormState) channelFormFieldLayout {
@@ -59,11 +61,18 @@ func buildFieldEditors(fields []protocol.PluginField, currentValues map[string]s
 			val = f.Default
 		}
 		switch f.Type {
-		case "text", "number":
+		case "text", "number", "secret":
 			ti := textinput.New()
-			ti.SetValue(val)
-			ti.CharLimit = 100
+			ti.CharLimit = 1000 // room for URLs, checksums and API keys
 			ti.Width = 40
+			if f.Type == "secret" {
+				// Never pre-filled: the server doesn't send secrets back.
+				// Typing replaces the stored value; leaving it empty keeps it.
+				ti.EchoMode = textinput.EchoPassword
+				ti.EchoCharacter = '•'
+			} else {
+				ti.SetValue(val)
+			}
 			textInputs[i] = ti
 		default: // boolean, select, channel_select
 			if f.Type == "boolean" && val == "" {
@@ -85,6 +94,10 @@ func collectFieldValues(fields []protocol.PluginField, textInputs []textinput.Mo
 	result := make(map[string]string, len(fields))
 	for i, f := range fields {
 		switch f.Type {
+		case "secret":
+			if v := textInputs[i].Value(); v != "" { // empty = keep what's stored
+				result[f.Key] = v
+			}
 		case "text", "number":
 			result[f.Key] = textInputs[i].Value()
 		default:
@@ -160,12 +173,26 @@ func pluginDisplayLabel(name, product string) string {
 // state for one plugin, seeded from its currently-saved server config values.
 func newPluginConfigFormState(info protocol.PluginInfo) *PluginConfigFormState {
 	textInputs, values := buildFieldEditors(info.ConfigFields, info.ConfigValues)
+	secretsSet := map[string]bool{}
+	for _, key := range info.SecretsSet {
+		secretsSet[key] = true
+	}
+	for i, fld := range info.ConfigFields {
+		if fld.Type == "secret" {
+			if secretsSet[fld.Key] {
+				textInputs[i].Placeholder = "set — type to replace"
+			} else {
+				textInputs[i].Placeholder = "not set"
+			}
+		}
+	}
 	return &PluginConfigFormState{
 		PluginID:   info.ID,
 		Product:    info.Product,
 		Fields:     info.ConfigFields,
 		TextInputs: textInputs,
 		Values:     values,
+		SecretsSet: secretsSet,
 	}
 }
 
@@ -235,7 +262,7 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 			return
 		}
 		ft := state.Fields[f].Type
-		if ft == "text" || ft == "number" {
+		if isTextField(ft) {
 			state.TextInputs[f].Focus()
 		}
 	}
@@ -263,7 +290,7 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 	case "up", "down", "left", "right":
 		if state.FocusField >= 0 && state.FocusField < len(state.Fields) {
 			f := state.Fields[state.FocusField]
-			if f.Type != "text" && f.Type != "number" {
+			if !isTextField(f.Type) {
 				dir := 1
 				if msg.String() == "up" || msg.String() == "left" {
 					dir = -1
@@ -284,7 +311,7 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 
 	if state.FocusField >= 0 && state.FocusField < len(state.Fields) {
 		f := state.Fields[state.FocusField]
-		if f.Type == "text" || f.Type == "number" {
+		if isTextField(f.Type) {
 			var cmd tea.Cmd
 			state.TextInputs[state.FocusField], cmd = state.TextInputs[state.FocusField].Update(msg)
 			return cmd
@@ -293,13 +320,34 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// handleSavePluginConfig sends the edited server_config_field values and
-// closes the sub-page; the refreshed plugin list arrives via
-// EventPluginConfigUpdate like any other config change.
+// handleSavePluginConfig sends the form -- a plugin's settings, or an
+// install/update request -- and keeps it open until the server's
+// EventPluginManageResult arrives (applyPluginManageResult): it closes on
+// success, and shows what's wrong, per field, on failure.
 func (a *App) handleSavePluginConfig() tea.Cmd {
 	state := a.serverManagementState.PluginConfigState
-	a.sendPluginConfigSet(state.PluginID, nil, pluginConfigFormValues(state))
-	a.serverManagementState.PluginConfigState = nil
-	a.statusMessage = "Saving plugin configuration..."
+	if state.Saving {
+		return nil
+	}
+	values := pluginConfigFormValues(state)
+	state.ErrorMsg, state.FieldErrors = "", nil
+	switch state.Mode {
+	case protocol.PluginActionInstall, protocol.PluginActionUpdate:
+		// Install: the plugin's ID comes from the download itself. Update:
+		// an empty source means "wherever the plugin says it comes from".
+		if !a.sendPluginManage(protocol.PluginManageRequest{
+			Action: state.Mode, PluginID: state.PluginID,
+			SourceURL: strings.TrimSpace(values["source"]),
+		}) {
+			state.ErrorMsg = "Not connected"
+			return nil
+		}
+		a.statusMessage = "Downloading and checking the plugin…"
+	default:
+		a.sendPluginConfigSet(state.PluginID, nil, values)
+		a.statusMessage = "Saving plugin settings…"
+	}
+	state.Saving = true
+	a.statusError = false
 	return nil
 }

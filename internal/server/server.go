@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"runtime"
 	"strings"
@@ -186,6 +187,14 @@ func New(config *Config) (*Server, error) {
 		pluginsDir = "Plugins"
 	}
 	handlers.SetPluginsDir(pluginsDir)
+	// Key for plugin "secret" settings: beside the database, so it lives on
+	// the same volume (Docker) and is backed up/restored together with it.
+	secretsKey := filepath.Join(filepath.Dir(config.DatabasePath), "plugin-secrets.key")
+	if box, err := plugins.LoadOrCreateSecretBox(secretsKey); err == nil {
+		handlers.SetPluginSecrets(box)
+	} else {
+		DBLog.Warn("plugin secret settings will be stored unencrypted", "error", err)
+	}
 	// Before any plugin starts, so none is ever handed a pre-migration value.
 	if reg, _ := plugins.Discover(pluginsDir); reg != nil {
 		migrateChannelSelectNames(db, reg)

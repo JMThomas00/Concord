@@ -5917,12 +5917,7 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 
 	// Cache plugin-provided channel kinds so the client can render/create
 	// plugin channels generically without any plugin-specific code compiled in.
-	if a.pluginChannelKinds == nil {
-		a.pluginChannelKinds = make(map[string]protocol.PluginChannelKindInfo)
-	}
-	for _, kind := range payload.PluginChannelKinds {
-		a.pluginChannelKinds[kind.PluginID+":"+kind.Kind] = kind
-	}
+	a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
 
 	// Mark as ready and clear any reconnect backoff state
 	sc.SetState(StateReady)
@@ -7018,6 +7013,22 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				a.statusMessage = "Retention policy updated"
 			}
 		}
+
+	case protocol.EventPluginRegistryUpdate:
+		var payload protocol.PluginRegistryPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse PLUGIN_REGISTRY_UPDATE payload: %v", err)
+			return nil
+		}
+		a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
+
+	case protocol.EventPluginManageResult:
+		var result protocol.PluginManageResult
+		if err := json.Unmarshal(msg.Data, &result); err != nil {
+			log.Printf("Failed to parse PLUGIN_MANAGE_RESULT payload: %v", err)
+			return nil
+		}
+		a.applyPluginManageResult(result)
 
 	case protocol.EventPluginConfigUpdate:
 		// Parse installed plugin list + config payload (response to

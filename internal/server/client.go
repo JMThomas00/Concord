@@ -406,6 +406,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandlePluginInstall(c, msg)
 		})
 
+	case protocol.OpPluginManage:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginManage(c, msg)
+		})
+
 	case protocol.OpUpdateChannelOverwrite:
 		c.requireAuth(func() {
 			c.handlers.HandleUpdateChannelOverwrite(c, msg)
@@ -624,7 +629,7 @@ func (c *Client) identifyAsPlugin(token string) {
 	// Passthrough install's mention_enabled) is correct from its very first
 	// message, not just from the next time an admin happens to re-save it.
 	if installed, err := c.handlers.db.GetInstalledPlugin(pluginID); err == nil && installed != nil {
-		info := c.handlers.buildPluginInfo(installed)
+		info := c.handlers.buildPluginInfo(installed, true)
 		if configMsg, err := protocol.NewMessage(protocol.OpDispatch, protocol.PluginConfigListPayload{Plugins: []protocol.PluginInfo{info}}); err == nil {
 			configMsg.Type = protocol.EventPluginConfigUpdate
 			c.send <- configMsg

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +27,9 @@ type Handlers struct {
 
 	// paneViewers tracks who has which plugin pane open -- see pane_viewers.go.
 	paneViewers *PaneViewers
+
+	// secrets seals "secret" plugin config values at rest -- see SetPluginSecrets.
+	secrets *plugins.SecretBox
 
 	// pluginsDir is the resolved plugins directory (config.PluginsDir,
 	// defaulting to "Plugins" -- see server.go), set once at startup via
@@ -67,6 +69,9 @@ func NewHandlers(db *database.DB, hub *Hub, stats *StatsTracker, pluginManager *
 		paneViewers: NewPaneViewers(),
 	}
 	h.typingManager = NewTypingManager(hub)
+	if pluginManager != nil {
+		pluginManager.SetHooks(h.onPluginStopped, h.onPluginRegistryChanged)
+	}
 	// A viewer whose connection closes can't send a Leave; tell the plugin
 	// ourselves so its seat/board state doesn't hold a ghost viewer.
 	hub.SetClientGoneCallback(func(c *Client) {
@@ -643,11 +648,9 @@ func (h *Handlers) HandleCreateChannel(c *Client, msg *protocol.Message) {
 			c.sendError(protocol.ErrorCodeInvalidPayload, "Unknown plugin channel kind")
 			return
 		}
-		for _, f := range kindDef.CreateFields {
-			if f.Required && req.PluginConfig[f.Key] == "" {
-				c.sendError(protocol.ErrorCodeInvalidPayload, fmt.Sprintf("Missing required field %q", f.Label))
-				return
-			}
+		if err := h.validatePluginChannelConfig(req.ServerID, kindDef.CreateFields, req.PluginConfig, nil); err != nil {
+			c.sendError(protocol.ErrorCodeInvalidPayload, err.Error())
+			return
 		}
 		channel = models.NewPluginChannel(req.ServerID, req.Name, req.PluginID, req.PluginChannelKind)
 	default:
@@ -779,11 +782,9 @@ func (h *Handlers) HandleUpdateChannel(c *Client, msg *protocol.Message) {
 
 	if channel.Type == models.ChannelTypePlugin && len(req.PluginConfig) > 0 {
 		if kindDef, ok := h.plugins.Registry().Lookup(channel.PluginID, channel.PluginChannelKind); ok {
-			for _, f := range kindDef.CreateFields {
-				if f.Required && req.PluginConfig[f.Key] == "" {
-					c.sendError(protocol.ErrorCodeInvalidPayload, fmt.Sprintf("Missing required field %q", f.Label))
-					return
-				}
+			if err := h.validatePluginChannelConfig(channel.ServerID, kindDef.CreateFields, req.PluginConfig, channel.PluginConfig); err != nil {
+				c.sendError(protocol.ErrorCodeInvalidPayload, err.Error())
+				return
 			}
 		}
 		if err := h.db.SetPluginChannelConfig(channel.ID, req.PluginConfig); err != nil {
@@ -2646,7 +2647,7 @@ func (h *Handlers) HandleGetPluginConfig(c *Client, msg *protocol.Message) {
 
 	infos := make([]protocol.PluginInfo, 0, len(installedList))
 	for _, installed := range installedList {
-		infos = append(infos, h.buildPluginInfo(installed))
+		infos = append(infos, h.buildPluginInfo(installed, false))
 	}
 
 	reply, err := protocol.NewMessage(protocol.OpDispatch, protocol.PluginConfigListPayload{Plugins: infos})
@@ -2656,122 +2657,4 @@ func (h *Handlers) HandleGetPluginConfig(c *Client, msg *protocol.Message) {
 	}
 }
 
-// buildPluginInfo assembles one plugin's Settings > Plugins row: its
-// manifest-declared server_config_field definitions plus its currently
-// stored values. Factored out of HandleGetPluginConfig so
-// HandleSetPluginConfig's self-notify push (below) can build the same shape
-// for a single plugin without re-querying every installed plugin.
-func (h *Handlers) buildPluginInfo(installed *models.InstalledPlugin) protocol.PluginInfo {
-	manifest, _ := h.plugins.Registry().Manifest(installed.ID)
-	info := protocol.PluginInfo{
-		ID:        installed.ID,
-		Name:      installed.Name,
-		Version:   installed.Version,
-		Enabled:   installed.Enabled,
-		Status:    installed.Status,
-		LastError: installed.LastError,
-	}
-	if manifest != nil {
-		info.Product = manifest.Plugin.Product
-		info.SourceURL = manifest.Plugin.SourceURL
-		for _, f := range manifest.ServerConfigFields {
-			info.ConfigFields = append(info.ConfigFields, protocol.PluginField{
-				Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,
-				Default: f.Default, Required: f.Required,
-			})
-		}
-	}
-	values, err := h.db.GetPluginServerConfig(installed.ID)
-	if err == nil {
-		info.ConfigValues = values
-	}
-	return info
-}
-
-// HandlePluginInstall fetches, checksum-verifies, and places a new plugin
-// from a release archive URL, for the Settings > Plugins "install new
-// plugin" action -- the first slice of the admin install/update flow (see
-// internal/plugins/install.go's InstallFromURL for exactly what this does
-// and doesn't cover). A successful install still needs a server restart to
-// actually start the plugin -- InstallFromURL's doc comment explains why
-// live pickup isn't safe to attempt here yet.
-func (h *Handlers) HandlePluginInstall(c *Client, msg *protocol.Message) {
-	var req protocol.PluginInstallRequest
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManagePlugins); err != nil {
-		c.sendError(protocol.ErrorCodeForbidden, err.Error())
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	install := plugins.InstallRequest{
-		PluginID:  req.PluginID,
-		SourceURL: req.SourceURL,
-		SHA256:    req.SHA256,
-	}
-	if err := plugins.InstallFromURL(ctx, h.pluginsDir, install); err != nil {
-		c.sendError(protocol.ErrorCodeServerError, "Plugin install failed: "+err.Error())
-		return
-	}
-
-	MsgLog.Info("plugin installed, restart required to activate", "plugin_id", req.PluginID, "admin", c.UserID)
-
-	// Re-send the current installed-plugin list (same pattern
-	// HandleSetPluginConfig uses) -- PluginConfigGetRequest and
-	// PluginInstallRequest share the same leading ServerID field/JSON key,
-	// so unmarshaling msg.Data into the former still resolves correctly.
-	// The freshly installed plugin won't appear in it yet -- it isn't
-	// provisioned/started until the next LoadAll (server restart), by
-	// design (see InstallFromURL's doc comment).
-	h.HandleGetPluginConfig(c, msg)
-}
-
-// HandleSetPluginConfig toggles a plugin's enabled flag and/or updates its
-// server-wide config field values from the Settings > Plugins page.
-func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
-	var req protocol.PluginConfigSetRequest
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
-		return
-	}
-	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionManagePlugins); err != nil {
-		c.sendError(protocol.ErrorCodeForbidden, err.Error())
-		return
-	}
-
-	if req.Enabled != nil {
-		if err := h.plugins.SetEnabled(req.PluginID, *req.Enabled); err != nil {
-			c.sendError(protocol.ErrorCodeServerError, "Failed to update plugin: "+err.Error())
-			return
-		}
-	}
-	for key, value := range req.Config {
-		if err := h.db.SetPluginServerConfig(req.PluginID, key, value); err != nil {
-			MsgLog.Error("Failed to persist plugin server config", "plugin_id", req.PluginID, "key", key, "error", err)
-		}
-	}
-
-	h.HandleGetPluginConfig(c, msg) // re-send the updated list to the admin who made the change
-
-	// A plugin has no other way to learn its own server_config_field values
-	// changed (OpPluginConfigGet is gated behind PermissionManageServer for
-	// a human client — there's no analogous self-query a plugin's own
-	// connection can make). Push it the same targeted way HandleCreateChannel
-	// already notifies a plugin about its own new channel, so e.g. an AI
-	// Passthrough install can react live when an admin flips mention_enabled
-	// on, rather than only picking it up on its next reconnect.
-	if installed, err := h.db.GetInstalledPlugin(req.PluginID); err == nil && installed != nil {
-		if serviceUserID, err := h.plugins.ServiceUserIDFor(req.PluginID); err == nil {
-			info := h.buildPluginInfo(installed)
-			if err := h.hub.SendToUser(serviceUserID, protocol.EventPluginConfigUpdate, protocol.PluginConfigListPayload{Plugins: []protocol.PluginInfo{info}}); err != nil {
-				MsgLog.Warn("Failed to push updated config to plugin", "plugin_id", req.PluginID, "error", err)
-			}
-		}
-	}
-}
 

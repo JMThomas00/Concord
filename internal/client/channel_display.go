@@ -118,3 +118,32 @@ func (a *App) pluginFieldValueLabel(f protocol.PluginField, val string) string {
 	}
 	return val
 }
+
+// setPluginChannelKinds records the plugin channel kinds one server offers
+// and rebuilds a.pluginChannelKinds as the union over every connection, so
+// a live install/uninstall on one server doesn't disturb another's.
+func (a *App) setPluginChannelKinds(sc *ServerConnection, kinds []protocol.PluginChannelKindInfo) {
+	if sc != nil {
+		sc.mu.Lock()
+		sc.PluginChannelKinds = kinds
+		sc.mu.Unlock()
+	}
+	all := make(map[string]protocol.PluginChannelKindInfo)
+	var conns []*ServerConnection
+	if a.connMgr != nil {
+		conns = a.connMgr.GetAllConnections()
+	}
+	for _, c := range conns {
+		c.mu.RLock()
+		for _, kind := range c.PluginChannelKinds {
+			all[kind.PluginID+":"+kind.Kind] = kind
+		}
+		c.mu.RUnlock()
+	}
+	if sc != nil && (a.connMgr == nil || a.connMgr.GetConnection(sc.ServerID) != sc) {
+		for _, kind := range kinds { // a connection the manager doesn't track (tests)
+			all[kind.PluginID+":"+kind.Kind] = kind
+		}
+	}
+	a.pluginChannelKinds = all
+}

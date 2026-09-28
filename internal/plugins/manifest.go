@@ -44,10 +44,12 @@ type ProcessDef struct {
 type ConfigField struct {
 	Key      string   `toml:"key"`
 	Label    string   `toml:"label"`
-	Type     string   `toml:"type"` // text | number | boolean | select | channel_select
+	Type     string   `toml:"type"` // text | number | boolean | select | channel_select | secret
 	Options  []string `toml:"options"`
 	Default  string   `toml:"default"`
 	Required bool     `toml:"required"`
+	// Help is a one-line explanation shown under the field in the form.
+	Help string `toml:"help"`
 }
 
 // ChannelKindDef describes one channel kind a plugin provides.
@@ -135,6 +137,11 @@ func (m *Manifest) Entrypoint() (*EntrypointDef, error) {
 // understands. Adding a new type later is one case there, not a protocol change.
 var validFieldTypes = map[string]bool{
 	"text": true, "number": true, "boolean": true, "select": true, "channel_select": true,
+	// secret: a text value (API key, password) stored encrypted, shown to
+	// admins only as set/not set, and delivered in plaintext only to the
+	// plugin itself. Server config only -- per-channel values are sent to
+	// every member who can see the channel.
+	"secret": true,
 }
 
 // Validate checks a manifest is well-formed and usable on this host. It does
@@ -166,6 +173,11 @@ func (m *Manifest) Validate() error {
 		seenKinds[ck.Kind] = true
 		if err := validateFields(m.Plugin.ID, ck.CreateFields); err != nil {
 			return err
+		}
+		for _, f := range ck.CreateFields {
+			if f.Type == "secret" {
+				return fmt.Errorf("plugin %q: channel_kind %q field %q can't be a secret (channel settings are visible to members); use a server_config_field", m.Plugin.ID, ck.Kind, f.Key)
+			}
 		}
 	}
 	if err := validateFields(m.Plugin.ID, m.ServerConfigFields); err != nil {

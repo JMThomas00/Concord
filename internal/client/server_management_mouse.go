@@ -527,7 +527,7 @@ func (a *App) setChannelFormFocus(state *ChannelFormState, layout channelFormFie
 	case layout.isPlugin && field >= layout.pluginStart && field < layout.pluginStart+len(state.PluginFields):
 		idx := field - layout.pluginStart
 		ft := state.PluginFields[idx].Type
-		if ft == "text" || ft == "number" {
+		if isTextField(ft) {
 			state.PluginTextInputs[idx].Focus()
 		}
 	}

@@ -51,6 +51,12 @@ remote_pane = true
 key = "activity_notify_channel"
 label = "Activity Notification Channel"
 type = "channel_select"
+
+[[server_config_field]]
+key = "api_key"
+label = "API Key"
+type = "secret"
+help = "Used to call the upstream service"
 `
 
 // startTestPluginServer builds the testplugin fixture binary, writes its

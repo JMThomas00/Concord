@@ -17,91 +17,147 @@ import (
 	"strings"
 )
 
-// InstallRequest is what an admin supplies (via Settings > Plugins > install
-// new plugin, OpPluginInstall) to have the server fetch and place a new
-// plugin. First slice only -- see InstallFromURL's doc comment for what's
-// explicitly out of scope.
+// InstallRequest is what an admin supplies (Settings > Plugins > install or
+// update) to have the server fetch a plugin.
 type InstallRequest struct {
-	PluginID  string // becomes the folder name under pluginsDir; must match plugin.toml's [plugin].id
-	SourceURL string // a release archive (.zip) URL
-	SHA256    string // expected hex-encoded SHA256 of the downloaded archive
+	// PluginID, when set, is the plugin the archive must contain (an
+	// update). For a fresh install it's read from the archive's plugin.toml.
+	PluginID string
+	// SourceURL is what the admin typed: a GitHub repo ("owner/name" or its
+	// URL), a GitHub release-asset link, or any https link to a .zip. See
+	// ResolveSource.
+	SourceURL string
+	// SHA256 optionally pins the archive's checksum. Usually left empty:
+	// GitHub's published digest (or a "<url>.sha256" file) is used instead.
+	SHA256 string
 }
 
 // validPluginIDPattern mirrors the folder-name safety the registry already
 // implicitly relies on (Discover matches [plugin].id against the actual
 // folder name) -- rejecting anything that isn't a plain identifier here,
 // before it ever becomes a filesystem path, is what actually prevents path
-// traversal via a crafted PluginID (e.g. "../../etc").
+// traversal via a crafted plugin id (e.g. "../../etc").
 var validPluginIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-// InstallFromURL downloads a plugin release archive, verifies its SHA256
-// checksum, and extracts it into pluginsDir/<PluginID>/, then confirms the
-// extracted plugin.toml actually declares that same ID -- mirroring
-// Discover's own folder-name-matches-manifest-id check, so a newly
-// installed plugin passes the exact same validation an already-installed
-// one does.
-//
-// Explicitly out of scope for this first slice (see the pre-v0.1.0 plan):
-// signature verification (checksum only), hot-swapping or updating an
-// already-installed plugin (this refuses to overwrite an existing folder),
-// and picking the new plugin up without a server restart -- Manager.LoadAll
-// isn't safe to re-invoke live while other plugins' supervisors are already
-// running (it unconditionally rotates every existing plugin's auth token
-// and starts a fresh supervisor without stopping the old one first, which
-// would orphan the running process and immediately invalidate its token).
-// A restart is the honest, safe way to activate a freshly installed plugin
-// until that gap is closed as its own follow-up.
-func InstallFromURL(ctx context.Context, pluginsDir string, req InstallRequest) error {
-	if !validPluginIDPattern.MatchString(req.PluginID) {
-		return fmt.Errorf("invalid plugin id %q: must contain only letters, digits, '-', and '_'", req.PluginID)
-	}
-	if req.SourceURL == "" {
-		return fmt.Errorf("source URL is required")
-	}
-	if req.SHA256 == "" {
-		return fmt.Errorf("a SHA256 checksum is required")
-	}
-	if err := validateSourceURL(req.SourceURL); err != nil {
-		return err
-	}
+// Fetched is a plugin downloaded, verified and unpacked into staging.
+type Fetched struct {
+	Dir     string // pluginsDir/.staging/<random>/<id>
+	ID      string
+	Version string
+	// Verified says what the download was checked against: "GitHub",
+	// "a .sha256 file", "you", or "" (nothing published; https only).
+	Verified string
+}
 
-	destDir := filepath.Join(pluginsDir, req.PluginID)
-	if _, err := os.Stat(destDir); err == nil {
-		return fmt.Errorf("a plugin folder already exists at %q -- this first-slice install flow only supports fresh installs, not updating an existing one", destDir)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to check destination folder: %w", err)
+// FetchToStaging resolves req.SourceURL (ResolveSource), downloads the
+// archive -- verifying its SHA-256 whenever one is known -- and extracts it
+// to pluginsDir/.staging/<random>/<id>/, where <id> comes from the
+// archive's own plugin.toml. The manifest is validated exactly as
+// discovery would, and the entrypoint marked executable. Nothing under
+// pluginsDir/<id> is touched; the caller moves the folder into place
+// (InstallFromURL for a fresh install, Manager.Update to replace one).
+func FetchToStaging(ctx context.Context, pluginsDir string, req InstallRequest) (*Fetched, error) {
+	if req.PluginID != "" && !validPluginIDPattern.MatchString(req.PluginID) {
+		return nil, fmt.Errorf("invalid plugin id %q: must contain only letters, digits, '-', and '_'", req.PluginID)
 	}
-
-	archivePath, err := downloadAndVerify(ctx, req.SourceURL, req.SHA256)
+	if strings.TrimSpace(req.SourceURL) == "" {
+		return nil, fmt.Errorf("enter a GitHub repo (owner/name) or a link to the plugin's .zip")
+	}
+	src, err := ResolveSource(ctx, req.SourceURL, req.SHA256)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if err := validateSourceURL(src.URL); err != nil {
+		return nil, err
+	}
+
+	stagingRoot := filepath.Join(pluginsDir, ".staging")
+	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create staging folder: %w", err)
+	}
+	slot, err := os.MkdirTemp(stagingRoot, "fetch-")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create staging folder: %w", err)
+	}
+	fail := func(err error) (*Fetched, error) {
+		_ = os.RemoveAll(slot)
+		return nil, err
+	}
+
+	archivePath, err := downloadAndVerify(ctx, src.URL, src.SHA256)
+	if err != nil {
+		return fail(err)
 	}
 	defer os.Remove(archivePath)
 
-	if err := extractZip(archivePath, destDir); err != nil {
-		_ = os.RemoveAll(destDir)
-		return err
+	unpacked := filepath.Join(slot, "unpacked")
+	if err := extractZip(archivePath, unpacked); err != nil {
+		return fail(err)
 	}
-
-	manifest, err := LoadManifest(filepath.Join(destDir, "plugin.toml"))
+	if err := unwrapSingleFolder(unpacked); err != nil {
+		return fail(err)
+	}
+	m, err := LoadManifest(filepath.Join(unpacked, "plugin.toml"))
 	if err != nil {
-		_ = os.RemoveAll(destDir)
-		return fmt.Errorf("extracted archive has no valid plugin.toml: %w", err)
+		return fail(fmt.Errorf("that download isn't a Concord plugin (no valid plugin.toml): %w", err))
 	}
-	if err := manifest.Validate(); err != nil {
-		_ = os.RemoveAll(destDir)
-		return fmt.Errorf("extracted plugin.toml is invalid: %w", err)
+	id := m.Plugin.ID
+	if !validPluginIDPattern.MatchString(id) {
+		return fail(fmt.Errorf("the plugin's [plugin].id %q isn't a usable folder name", id))
 	}
-	if manifest.Plugin.ID != req.PluginID {
-		_ = os.RemoveAll(destDir)
-		return fmt.Errorf("archive's plugin.toml declares id %q, which does not match the requested plugin id %q", manifest.Plugin.ID, req.PluginID)
+	if req.PluginID != "" && id != req.PluginID {
+		return fail(fmt.Errorf("that download is the plugin %q, not %q", id, req.PluginID))
+	}
+	staged := filepath.Join(slot, id)
+	if err := os.Rename(unpacked, staged); err != nil {
+		return fail(err)
+	}
+	manifest, err := LoadPluginFolder(staged)
+	if err != nil {
+		return fail(fmt.Errorf("plugin.toml is invalid: %w", err))
 	}
 	if err := ensureEntrypointExecutable(manifest); err != nil {
-		_ = os.RemoveAll(destDir)
-		return err
+		return fail(err)
 	}
+	return &Fetched{Dir: staged, ID: id, Version: manifest.Plugin.Version, Verified: src.ChecksumFrom}, nil
+}
 
-	return nil
+// DiscardStaged removes a folder FetchToStaging produced (after a failed
+// or abandoned update, or once it's been moved into place).
+func DiscardStaged(f *Fetched) {
+	if f == nil {
+		return
+	}
+	// Only ever a .staging/fetch-* slot -- never, say, the plugins folder
+	// if f.Dir has since been moved into place.
+	slot := filepath.Dir(f.Dir)
+	if filepath.Base(filepath.Dir(slot)) == ".staging" && strings.HasPrefix(filepath.Base(slot), "fetch-") {
+		_ = os.RemoveAll(slot)
+	}
+}
+
+// InstallFromURL fetches a plugin (FetchToStaging) and moves it into
+// pluginsDir/<id>/ -- fresh installs only; an existing plugin is replaced
+// through Manager.Update instead. The caller then starts it with
+// Manager.Load.
+func InstallFromURL(ctx context.Context, pluginsDir string, req InstallRequest) (*Fetched, error) {
+	f, err := FetchToStaging(ctx, pluginsDir, req)
+	if err != nil {
+		return nil, err
+	}
+	defer DiscardStaged(f)
+	destDir := filepath.Join(pluginsDir, f.ID)
+	if _, err := os.Stat(destDir); err == nil {
+		return nil, fmt.Errorf("%s is already installed -- update it instead", f.ID)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to check destination folder: %w", err)
+	}
+	if err := os.Rename(f.Dir, destDir); err != nil {
+		return nil, fmt.Errorf("failed to move the plugin into place: %w", err)
+	}
+	installed := *f // the deferred DiscardStaged still sees the staging path
+	installed.Dir = destDir
+	return &installed, nil
 }
 
 // validateSourceURL requires https, so the archive (and, in effect, the
@@ -158,6 +214,7 @@ func ensureEntrypointExecutable(m *Manifest) error {
 
 // downloadAndVerify streams sourceURL to a temp file while hashing it, and
 // returns the temp file's path only if the hash matches expectedSHA256
+// (skipped when it's empty: nothing was published to check against)
 // (case-insensitive hex compare). The caller owns removing the temp file.
 func downloadAndVerify(ctx context.Context, sourceURL, expectedSHA256 string) (string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
@@ -186,7 +243,7 @@ func downloadAndVerify(ctx context.Context, sourceURL, expectedSHA256 string) (s
 	}
 
 	got := hex.EncodeToString(hasher.Sum(nil))
-	if !strings.EqualFold(got, expectedSHA256) {
+	if expectedSHA256 != "" && !strings.EqualFold(got, expectedSHA256) {
 		os.Remove(tmp.Name())
 		return "", fmt.Errorf("checksum mismatch: expected %s, got %s", expectedSHA256, got)
 	}
@@ -251,4 +308,32 @@ func extractZipFile(f *zip.File, targetPath string) error {
 		return fmt.Errorf("failed to write %q: %w", f.Name, err)
 	}
 	return nil
+}
+
+// unwrapSingleFolder handles the common archive layout where everything
+// sits inside one top-level folder (e.g. "concord-chess/plugin.toml", as
+// zipping a folder produces): if dir has no plugin.toml of its own but
+// holds exactly one folder, that folder's contents are moved up into dir.
+func unwrapSingleFolder(dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, "plugin.toml")); err == nil {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		return nil // leave it; LoadPluginFolder reports the missing manifest
+	}
+	inner := filepath.Join(dir, entries[0].Name())
+	children, err := os.ReadDir(inner)
+	if err != nil {
+		return err
+	}
+	for _, c := range children {
+		if err := os.Rename(filepath.Join(inner, c.Name()), filepath.Join(dir, c.Name())); err != nil {
+			return fmt.Errorf("failed to unpack the archive's %s folder: %w", entries[0].Name(), err)
+		}
+	}
+	return os.Remove(inner)
 }

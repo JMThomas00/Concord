@@ -20,7 +20,14 @@ type StatusFunc func(status, lastError string)
 
 // Supervisor spawns and supervises one plugin's OS process: start, pipe its
 // stdout/stderr into Concord's logger, restart on unexpected exit with
-// backoff up to a limit, and stop gracefully on shutdown.
+// exponential backoff up to a limit, and stop on request.
+//
+// A Supervisor runs exactly once: Start, then Stop. Restarting a plugin
+// (enable after disable, update, admin restart) builds a new Supervisor with
+// a fresh token, so no state from a previous run can leak into the next.
+// Stop is safe at any point -- before the first spawn, mid-spawn, during a
+// backoff sleep, or while the process runs -- and returns only once the
+// supervision loop has fully exited, so no process can be started after it.
 type Supervisor struct {
 	pluginID string
 	manifest *Manifest
@@ -30,9 +37,23 @@ type Supervisor struct {
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
+	started bool
 	stopped bool
-	done    chan struct{}
+	stopCh  chan struct{} // closed by Stop; wakes a backoff sleep
+	done    chan struct{} // closed when superviseLoop exits
 }
+
+// Backoff between crash restarts: starts at [process].restart_backoff_seconds
+// (default 2s), doubles per consecutive crash up to maxBackoff, and resets
+// once a run stays up for healthyRun. max_restarts counts consecutive crashes.
+const (
+	defaultBackoff = 2 * time.Second
+	maxBackoff     = 60 * time.Second
+	healthyRun     = 60 * time.Second
+)
+
+// errStopped is runOnce's result when Stop won the race with a spawn.
+var errStopped = fmt.Errorf("supervisor stopped")
 
 // NewSupervisor builds a Supervisor for one plugin. env is merged over the
 // manifest's own [process.env] map and over the plugin's declared entrypoint
@@ -44,20 +65,27 @@ func NewSupervisor(pluginID string, manifest *Manifest, env map[string]string, l
 		env:      env,
 		log:      log,
 		onStatus: onStatus,
+		stopCh:   make(chan struct{}),
 		done:     make(chan struct{}),
 	}
 }
 
-// Start launches the plugin process and begins the crash-restart supervision
-// loop in the background. It returns once the first spawn attempt has been made.
+// Start launches the supervision loop in the background. Calling it twice,
+// or after Stop, is an error.
 func (s *Supervisor) Start() error {
 	s.mu.Lock()
-	s.stopped = false
-	s.mu.Unlock()
-
+	defer s.mu.Unlock()
+	if s.started || s.stopped {
+		return fmt.Errorf("plugin %q supervisor already used; build a new one", s.pluginID)
+	}
+	s.started = true
 	go s.superviseLoop()
 	return nil
 }
+
+// Done is closed once the supervision loop has exited -- after Stop, or
+// after the plugin crashed more times than it's allowed to restart.
+func (s *Supervisor) Done() <-chan struct{} { return s.done }
 
 func (s *Supervisor) superviseLoop() {
 	defer close(s.done)
@@ -66,48 +94,55 @@ func (s *Supervisor) superviseLoop() {
 	if maxRestarts <= 0 {
 		maxRestarts = 5
 	}
-	backoff := time.Duration(s.manifest.Process.RestartBackoffSeconds) * time.Second
-	if backoff <= 0 {
-		backoff = 5 * time.Second
+	base := time.Duration(s.manifest.Process.RestartBackoffSeconds) * time.Second
+	if base <= 0 {
+		base = defaultBackoff
 	}
+	backoff := base
 
-	attempts := 0
+	crashes := 0
 	for {
-		s.mu.Lock()
-		if s.stopped {
-			s.mu.Unlock()
-			return
-		}
-		s.mu.Unlock()
-
 		s.setStatus(models.PluginStatusStarting, "")
+		began := time.Now()
 		err := s.runOnce()
-
-		s.mu.Lock()
-		stopped := s.stopped
-		s.mu.Unlock()
-		if stopped {
+		if s.isStopped() {
 			s.setStatus(models.PluginStatusStopped, "")
 			return
 		}
-
 		if err == nil {
 			// Clean exit while not asked to stop — treat as crashed; a
 			// well-behaved plugin should run until Stop() is called.
 			err = fmt.Errorf("process exited unexpectedly")
 		}
+		if time.Since(began) >= healthyRun {
+			crashes, backoff = 0, base // it had been fine; start counting afresh
+		}
 
-		if !s.manifest.Process.RestartOnCrash || attempts >= maxRestarts {
-			s.log.Error("plugin exited, not restarting", "plugin", s.pluginID, "error", err, "attempts", attempts)
+		if !s.manifest.Process.RestartOnCrash || crashes >= maxRestarts {
+			s.log.Error("plugin exited, not restarting", "plugin", s.pluginID, "error", err, "crashes", crashes)
 			s.setStatus(models.PluginStatusCrashed, err.Error())
 			return
 		}
 
-		attempts++
-		s.log.Warn("plugin exited, restarting", "plugin", s.pluginID, "error", err, "attempt", attempts, "backoff", backoff)
+		crashes++
+		s.log.Warn("plugin exited, restarting", "plugin", s.pluginID, "error", err, "attempt", crashes, "backoff", backoff)
 		s.setStatus(models.PluginStatusCrashed, err.Error())
-		time.Sleep(backoff)
+		select {
+		case <-time.After(backoff):
+		case <-s.stopCh:
+			s.setStatus(models.PluginStatusStopped, "")
+			return
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
+}
+
+func (s *Supervisor) isStopped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopped
 }
 
 func (s *Supervisor) setStatus(status, lastError string) {
@@ -155,11 +190,18 @@ func (s *Supervisor) runOnce() error {
 	cmd.Stdout = &lineWriter{log: s.log, prefix: prefix, level: "info"}
 	cmd.Stderr = &lineWriter{log: s.log, prefix: prefix, level: "warn"}
 
+	// Checking stopped and publishing s.cmd under the same lock as Stop
+	// means Stop either sees this process (and kills it) or prevents it
+	// from ever starting -- never neither.
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return errStopped
+	}
 	if err := cmd.Start(); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to start plugin process: %w", err)
 	}
-
-	s.mu.Lock()
 	s.cmd = cmd
 	s.mu.Unlock()
 
@@ -175,34 +217,43 @@ func (s *Supervisor) runOnce() error {
 	return err
 }
 
-// Stop signals the plugin process to exit and waits up to ctx's deadline
-// before forcibly killing it.
+// Stop ends supervision: no further restarts, and the running process (if
+// any) is asked to exit, then killed at ctx's deadline. It waits for the
+// supervision loop to finish. Safe to call more than once, and on a
+// Supervisor that was never started.
 func (s *Supervisor) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	s.stopped = true
+	if !s.stopped {
+		s.stopped = true
+		close(s.stopCh)
+	}
+	started := s.started
 	cmd := s.cmd
 	s.mu.Unlock()
 
-	if cmd == nil || cmd.Process == nil {
+	if !started {
 		return nil
 	}
-
-	// os.Interrupt isn't implemented on Windows — Process.Signal returns an
-	// error immediately rather than delivering anything, so waiting out the
-	// full ctx timeout for a graceful exit that will never happen would make
-	// every disable/restart take as long as the timeout. If the signal
-	// wasn't actually delivered, go straight to Kill instead of waiting.
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		_ = cmd.Process.Kill()
-		<-s.done
-		return nil
+	if cmd != nil && cmd.Process != nil {
+		// os.Interrupt isn't implemented on Windows — Process.Signal returns
+		// an error immediately rather than delivering anything, so go
+		// straight to Kill instead of waiting out a graceful exit that
+		// will never happen.
+		if err := cmd.Process.Signal(os.Interrupt); err != nil {
+			_ = cmd.Process.Kill()
+		}
 	}
 
 	select {
 	case <-s.done:
 		return nil
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
+		s.mu.Lock()
+		cmd = s.cmd
+		s.mu.Unlock()
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
 		<-s.done
 		return ctx.Err()
 	}

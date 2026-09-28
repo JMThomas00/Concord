@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -70,7 +71,12 @@ func TestWheelOverChannelListRoutesToItsScroll(t *testing.T) {
 	a.view = ViewMain
 	a.channelTree = newBenchChannelTree(map[uuid.UUID]bool{})
 	zone.Scan(a.renderMainView()) // register panel zones
+	// bubblezone records zones on a background goroutine, so give it a moment.
 	z := zone.Get("channel-list")
+	for deadline := time.Now().Add(time.Second); (z == nil || z.IsZero()) && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+		z = zone.Get("channel-list")
+	}
 	if z == nil || z.IsZero() {
 		t.Fatal("channel-list zone not registered")
 	}
