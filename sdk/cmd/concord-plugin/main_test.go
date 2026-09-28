@@ -17,7 +17,7 @@ func TestTemplatesRender(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := Project{ID: "demo-" + kind, Name: "Demo", GoName: "demo", Module: "github.com/x/demo-" + kind,
-			Kind: kind, SDKVersion: "v0.1.0", ChannelKind: "thing"}
+			Kind: kind, SDKVersion: "v0.1.0", PTYVersion: "v0.1.1", ChannelKind: "thing"}
 		err := render(p)
 		_ = os.Chdir(wd)
 		if err != nil {

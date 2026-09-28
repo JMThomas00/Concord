@@ -212,7 +212,11 @@ External programs attach to a Concord server as privileged clients — bots, int
 
 ## Plugin SDK (`sdk/`)
 
-Plugins are built on the SDK, a **separate Go module** nested in this repo: `github.com/JMThomas00/Concord/sdk`. External plugin repos import it (tagged `sdk/vX.Y.Z` once published). Concord's root `go.mod` uses it through `replace … => ./sdk`, so a change to both sides lands in one commit. The root `./...` does **not** include `sdk/`: test it with `cd sdk && go test ./...`; `make test` and `make fmt` do both. The Dockerfile copies `sdk/go.mod`/`go.sum` before `go mod download`.
+Plugins are built on the SDK, a **separate Go module** nested in this repo: `github.com/JMThomas00/Concord/sdk`.
+
+- **Releases are git tags.** `sdk/vX.Y.Z` releases the SDK and `sdk/pty/vX.Y.Z` releases the terminal passthrough module. First published 2026-09-28: `sdk/v0.1.0` and `sdk/pty/v0.1.1`.
+- **Don't use `sdk/pty/v0.1.0`.** It was tagged before its `go.mod` named a real SDK version, and a published tag is never moved.
+- **Before tagging `sdk/pty`,** make sure its `go.mod` requires an SDK version that's already tagged. Its `replace ../` only applies inside that module, so other repos ignore it. Concord's root `go.mod` uses it through `replace … => ./sdk`, so a change to both sides lands in one commit. The root `./...` does **not** include `sdk/`: test it with `cd sdk && go test ./...`; `make test` and `make fmt` do both. The Dockerfile copies `sdk/go.mod`/`go.sum` before `go mod download`.
 
 - **`sdk/wire`** is the single definition of everything a plugin sends or receives. `internal/protocol` **aliases** the plugin payload types (`PluginPane*`, `PluginEvent*`, `PaneTheme`, `PluginInfo`/`PluginField`/`PluginConfigListPayload`, and the event-kind constants), so edit them in `sdk/wire`, not in `internal/protocol`. The SDK's slim mirrors of Concord's own types (opcodes, event names, `Channel`, `User`, chat messages) are held to the server's actual JSON by `internal/protocol/wire_contract_test.go`.
 - **`sdk/plugin`** is the runtime:

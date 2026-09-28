@@ -6,7 +6,7 @@ require github.com/JMThomas00/Concord/sdk <%.SDKVersion%>
 <%- if eq .Kind "pty"%>
 
 // Terminal passthrough is its own module (it needs a terminal emulator).
-require github.com/JMThomas00/Concord/sdk/pty <%.SDKVersion%>
+require github.com/JMThomas00/Concord/sdk/pty <%.PTYVersion%>
 <%- end%>
 <%- if .SDKReplace%>
 

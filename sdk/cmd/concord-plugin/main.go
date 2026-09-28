@@ -42,6 +42,7 @@ type Project struct {
 	Module      string // Go module path
 	Kind        string
 	SDKVersion  string
+	PTYVersion  string // sdk/pty is versioned separately
 	SDKReplace  string // local SDK checkout, for developing before a release
 	ChannelKind string // the manifest's channel kind
 }
@@ -59,6 +60,7 @@ func main() {
 	name := fs.String("name", "", "display name (default from <name>)")
 	sdk := fs.String("sdk", "", "path to a local Concord sdk/ checkout to build against (adds a replace)")
 	sdkVersion := fs.String("sdk-version", "v0.1.0", "SDK version to require")
+	ptyVersion := fs.String("pty-version", "v0.1.1", "sdk/pty version to require (pty template)")
 	_ = fs.Parse(reorder(os.Args[2:]))
 	if fs.NArg() != 1 {
 		usage()
@@ -73,7 +75,7 @@ func main() {
 	}
 	p := Project{
 		ID: id, Name: *name, Kind: *kind, Module: *module,
-		GoName: strings.ReplaceAll(id, "-", ""), SDKVersion: *sdkVersion,
+		GoName: strings.ReplaceAll(id, "-", ""), SDKVersion: *sdkVersion, PTYVersion: *ptyVersion,
 	}
 	if p.Name == "" {
 		p.Name = titleCase(id)
@@ -88,7 +90,7 @@ func main() {
 			fail("%v", err)
 		}
 		p.SDKReplace = filepath.ToSlash(abs)
-		p.SDKVersion = "v0.0.0"
+		p.SDKVersion, p.PTYVersion = "v0.0.0", "v0.0.0"
 	}
 	if _, err := os.Stat(id); err == nil {
 		fail("%s already exists", id)
