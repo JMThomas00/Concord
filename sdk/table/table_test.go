@@ -24,8 +24,10 @@ func startKit(t *testing.T, cfg *plugin.Config, seating string) (*plugintest.Ser
 		c.DataDir = cfg.DataDir
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go plugin.Run(ctx, c, table.New(tictactoe.Rules).Handler())
+	done := make(chan struct{})
+	go func() { plugin.Run(ctx, c, table.New(tictactoe.Rules).Handler()); close(done) }()
+	// Stop the plugin before the test's temp dir is removed: it may still be saving.
+	t.Cleanup(func() { cancel(); <-done })
 	srv.WaitReady()
 	channel := uuid.New()
 	settings := map[string]string{}
@@ -88,6 +90,16 @@ func TestComputerTakesTheOpenSeatAndPlays(t *testing.T) {
 	if strings.Count(frame, "O") < 2 { // "O: Computer" in the header plus its mark on the board
 		t.Fatalf("no computer move on the board:\n%s", frame)
 	}
+}
+
+// The channel's computer_level setting picks the computer's strength.
+func TestComputerLevelComesFromTheChannel(t *testing.T) {
+	srv, ch, _ := startKit(t, nil, table.ModeSeats)
+	srv.Channel(wire.Channel{ID: ch, Name: "games", PluginConfig: map[string]string{table.SettingLevel: "hard"}})
+	alice := srv.Enter(ch, "alice", 60, 12)
+	menu(srv, alice, 0) // Sit as X
+	menu(srv, alice, 0) // Computer plays O
+	srv.FrameContaining(alice, "O: Computer (hard)")
 }
 
 func TestResignAndRematchSwapsSides(t *testing.T) {

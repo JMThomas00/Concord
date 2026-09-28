@@ -47,9 +47,17 @@ type Project struct {
 	ChannelKind string // the manifest's channel kind
 }
 
+// Repo is what admins type to install it: the module path without
+// "github.com/" (Concord resolves owner/repo to its latest release).
+func (p Project) Repo() string { return strings.TrimPrefix(p.Module, "github.com/") }
+
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 func main() {
+	if len(os.Args) >= 2 && (os.Args[1] == "help" || os.Args[1] == "-h" || os.Args[1] == "--help") {
+		usage()
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "new" {
 		usage()
 		os.Exit(2)
@@ -59,7 +67,7 @@ func main() {
 	module := fs.String("module", "", "Go module path (default github.com/you/<name>)")
 	name := fs.String("name", "", "display name (default from <name>)")
 	sdk := fs.String("sdk", "", "path to a local Concord sdk/ checkout to build against (adds a replace)")
-	sdkVersion := fs.String("sdk-version", "v0.1.0", "SDK version to require")
+	sdkVersion := fs.String("sdk-version", "v0.2.0", "SDK version to require")
 	ptyVersion := fs.String("pty-version", "v0.1.1", "sdk/pty version to require (pty template)")
 	_ = fs.Parse(reorder(os.Args[2:]))
 	if fs.NArg() != 1 {
@@ -109,7 +117,7 @@ Next:
 Publish: push to GitHub and tag a release (git tag v0.1.0 && git push --tags);
 the included workflow attaches the zips. Server admins then install it from
 Server Settings > Plugins > I with just "%s".
-`, id, kinds[p.Kind], id, strings.TrimPrefix(p.Module, "github.com/"))
+`, id, kinds[p.Kind], id, p.Repo())
 }
 
 // render writes templates/<kind>/** (and templates/common/**) into ./<id>.

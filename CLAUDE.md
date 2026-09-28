@@ -216,6 +216,7 @@ Plugins are built on the SDK, a **separate Go module** nested in this repo: `git
 
 - **Releases are git tags.** `sdk/vX.Y.Z` releases the SDK and `sdk/pty/vX.Y.Z` releases the terminal passthrough module. Published: `sdk/v0.1.0` and `sdk/pty/v0.1.1` (2026-09-28), then `sdk/v0.2.0` (network play).
 - **Don't use `sdk/pty/v0.1.0`.** It was tagged before its `go.mod` named a real SDK version, and a published tag is never moved.
+- **After tagging either module,** bump the scaffolder's `--sdk-version`/`--pty-version` defaults (`sdk/cmd/concord-plugin/main.go`) so new plugins start on it.
 - **Before tagging `sdk/pty`,** make sure its `go.mod` requires an SDK version that's already tagged. Its `replace ../` only applies inside that module, so other repos ignore it. Concord's root `go.mod` uses it through `replace … => ./sdk`, so a change to both sides lands in one commit. The root `./...` does **not** include `sdk/`: test it with `cd sdk && go test ./...`; `make test` and `make fmt` do both. The Dockerfile copies `sdk/go.mod`/`go.sum` before `go mod download`.
 
 - **`sdk/wire`** is the single definition of everything a plugin sends or receives. `internal/protocol` **aliases** the plugin payload types (`PluginPane*`, `PluginEvent*`, `PaneTheme`, `PluginInfo`/`PluginField`/`PluginConfigListPayload`, and the event-kind constants), so edit them in `sdk/wire`, not in `internal/protocol`. The SDK's slim mirrors of Concord's own types (opcodes, event names, `Channel`, `User`, chat messages) are held to the server's actual JSON by `internal/protocol/wire_contract_test.go`.
@@ -246,7 +247,8 @@ Plugins are built on the SDK, a **separate Go module** nested in this repo: `git
   - a GitHub Actions workflow that attaches those zips to a release on each `v*` tag.
 
   The zips are exactly what `ResolveSource`/`pickAsset` look for. Its templates use `<% %>` delimiters, because TOML's `[[channel_kind]]` collides with `[[ ]]`.
-- **`sdk/examples/tictactoe`** is the reference game: rules, board, a three-level computer, one binary for standalone and plugin, and a `plugin.toml`. The table kit's tests run against it.
+- **`sdk/examples/tictactoe`** is the reference game: rules, board, a three-level computer, one binary for standalone and plugin, and a `plugin.toml`. The table kit's tests run against it. The full games are their own repos: `JMThomas00/concord-checkers`, `concord-tak` and `concord-chess` (each `engine/` + `game/`, perft-tested, released as `v0.1.0`).
+- **The `/concord` skill** (`.claude/skills/concord/`: `SKILL.md` plus topic guides) teaches an agent to build, test, package and install plugins using only the SDK. Keep it in step with the SDK: a changed helper, key, field type or install step belongs in the matching guide.
 - **`sdk/PROTOCOL.md`** is the wire protocol for plugins written in other languages.
 - **`sdk/plugintest`** is a fake Concord server for plugin unit tests. It sends Enter, Key, Type, Resize and Leave, plus channels, settings, chat and custom events, and reads back frames, events and chat. It also flags frames sent to non-viewers, frames taller than the pane, and a non-increasing `Seq`.
 - **`cmd/testplugin`** is the smallest SDK plugin, and the server and client integration tests spawn it against the real server.

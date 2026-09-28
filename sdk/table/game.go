@@ -16,7 +16,7 @@
 //
 // Standalone (hotseat or against the computer):
 //
-//	table.RunLocal(rules)
+//	table.RunLocal(rules, nil)
 //
 // Keys: Tab opens the table menu (sit, stand, resign, rematch, lobby...);
 // every other key goes to the board. In a lobby, arrows and Enter choose.

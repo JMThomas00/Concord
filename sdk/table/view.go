@@ -178,7 +178,7 @@ func (m *viewerModel) menu() []menuItem {
 			for i, p := range t.Seats {
 				if p.Empty() {
 					i := i
-					items = append(items, menuItem{"Computer plays " + k.rules.SeatNames[i], func() { k.sit(r, t, i, k.computerPlayer(2)) }})
+					items = append(items, menuItem{"Computer plays " + k.rules.SeatNames[i], func() { k.sit(r, t, i, k.computerPlayer(r.computerLevel())) }})
 				}
 			}
 		}
@@ -271,7 +271,7 @@ func (m *viewerModel) lobby() []lobbyItem {
 		k.requestMembers(m.channel, func(members []wire.PluginMember) { k.host.Send(id, membersMsg{members}) })
 	}})
 	if k.computerAllowed(r) {
-		items = append(items, lobbyItem{label: "+ Play the computer", open: func() { m.openTable(k.startGame(r, me, k.computerPlayer(2))) }})
+		items = append(items, lobbyItem{label: "+ Play the computer", open: func() { m.openTable(k.startGame(r, me, k.computerPlayer(r.computerLevel()))) }})
 	}
 	return items
 }

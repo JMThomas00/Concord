@@ -47,3 +47,11 @@ remote_pane = true
   type = "boolean"
   default = "true"
   help = "Let players play against the computer"
+
+  [[channel_kind.create_field]]
+  key = "computer_level"
+  label = "Computer strength"
+  type = "select"
+  options = ["easy", "normal", "hard"]
+  default = "normal"
+  help = "How well the computer plays"

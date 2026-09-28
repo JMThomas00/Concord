@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/JMThomas00/Concord/sdk/pane"
@@ -37,6 +38,7 @@ const (
 	SettingSeating    = "seating"           // ModeSeats (default) | ModeChallenge | ModePrivate
 	SettingSpectators = "allow_spectators"  // "false" hides games from non-players (default "true")
 	SettingComputer   = "computer_opponent" // "false" disables playing the computer (default "true" when Rules.AI is set)
+	SettingLevel      = "computer_level"    // "easy" | "normal" (default) | "hard", or "1".."3"
 )
 
 // Room is one channel's games.
@@ -364,6 +366,17 @@ func (k *Kit) computerPlayer(level int) Player {
 		level = 2
 	}
 	return Player{Name: names[level], Computer: true, Level: level}
+}
+
+// computerLevel is the channel's computer strength, 1-3 (default 2).
+func (r *Room) computerLevel() int {
+	switch strings.ToLower(strings.TrimSpace(r.settings[SettingLevel])) {
+	case "easy", "1":
+		return 1
+	case "hard", "3":
+		return 3
+	}
+	return 2
 }
 
 func (k *Kit) computerAllowed(r *Room) bool {

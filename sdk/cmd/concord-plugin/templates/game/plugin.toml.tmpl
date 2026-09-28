@@ -23,7 +23,7 @@ bin = "<%.ID%>.exe"
 [[channel_kind]]
 kind = "<%.ChannelKind%>"
 display_name = "<%.Name%> Table"
-icon = "♟"
+icon = "♟"                   # change to suit your game
 remote_pane = true
 
   # How people find opponents -- the table kit's seating modes.
@@ -48,3 +48,11 @@ remote_pane = true
   type = "boolean"
   default = "true"
   help = "Let players play against the computer"
+
+  [[channel_kind.create_field]]
+  key = "computer_level"
+  label = "Computer strength"
+  type = "select"
+  options = ["easy", "normal", "hard"]
+  default = "normal"
+  help = "How well the computer plays"
