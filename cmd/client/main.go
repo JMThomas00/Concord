@@ -107,7 +107,15 @@ func main() {
 	p := tea.NewProgram(
 		app,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+		// All Motion Tracking (xterm mode 1003), not Cell Motion Tracking
+		// (mode 1002): the latter only reports mouse movement while a button
+		// is held, which is why the grape logo's follow-the-cursor effect
+		// (steerGrapeLight, called on every tea.MouseMsg regardless of
+		// action/button in App.Update) needed a button held down on Linux/
+		// Mac terminals to work at all. Windows was unaffected either way --
+		// its native console mouse input doesn't negotiate this xterm
+		// protocol mode in the first place.
+		tea.WithMouseAllMotion(),
 		// Lets the terminal tell us when the window regains focus, so Concord
 		// can force a full repaint on refocus -- see the tea.FocusMsg case in
 		// App.Update for why (a real rendering-glitch report on Linux/Wayland
