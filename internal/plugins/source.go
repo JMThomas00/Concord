@@ -152,8 +152,8 @@ var archAliases = map[string][]string{
 
 var osAliases = map[string][]string{
 	"linux":   {"linux"},
-	"windows": {"windows", "win"},
-	"darwin":  {"darwin", "macos", "mac", "osx"},
+	"windows": {"windows"},
+	"darwin":  {"darwin", "macos", "osx"},
 }
 
 // pickAsset finds the release's .zip built for goos/goarch.

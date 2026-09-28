@@ -1,0 +1,91 @@
+// <%.Name%>: a full-screen app that runs in a terminal and in Concord
+// channels. Each viewer gets their own copy of the model (their own cursor
+// and scroll); state everyone shares lives outside it, and Broadcast tells
+// every viewer's model it changed.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+
+	"github.com/JMThomas00/Concord/sdk/pane"
+	"github.com/JMThomas00/Concord/sdk/plugin"
+	"github.com/JMThomas00/Concord/sdk/wire"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// shared is the state every viewer of a channel sees. Handler callbacks run
+// one at a time, so it needs no lock.
+var shared = struct {
+	greeting string
+	presses  int
+}{greeting: "Hello"}
+
+// changedMsg tells every viewer's model to redraw after shared changes.
+type changedMsg struct{}
+
+func main() {
+	cfg, underConcord := plugin.ConfigFromEnv()
+	if !underConcord {
+		// Standalone: the same model in this terminal.
+		if _, err := tea.NewProgram(newModel("you", nil), tea.WithAltScreen()).Run(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	var host *pane.Host
+	host = pane.NewHost(func(v *pane.Viewer) tea.Model {
+		return newModel(v.DisplayName, func() { host.Broadcast(v.ChannelID, changedMsg{}) })
+	})
+	h := host.Handler()
+	h.OnConfig = func(_ *plugin.Conn, info wire.PluginInfo) {
+		if g := info.ConfigValues["greeting"]; g != "" {
+			shared.greeting = g
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := plugin.Run(ctx, cfg, h); err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatal(err)
+	}
+}
+
+type model struct {
+	name          string
+	onChange      func() // tell the other viewers (nil when standalone)
+	width, height int
+}
+
+func newModel(name string, onChange func()) *model { return &model{name: name, onChange: onChange} }
+
+func (m *model) Init() tea.Cmd { return nil }
+
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "esc", "ctrl+c":
+			return m, tea.Quit // in Concord: hand the keyboard back to Concord
+		case " ", "enter":
+			shared.presses++
+			if m.onChange != nil {
+				m.onChange()
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *model) View() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("<%.Name%>")
+	return fmt.Sprintf("%s\n\n%s, %s!\nThe button has been pressed %d times.\n\nspace: press it · q: done",
+		title, shared.greeting, m.name, shared.presses)
+}

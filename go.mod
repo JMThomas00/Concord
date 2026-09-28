@@ -35,7 +35,6 @@ require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.3.1 // indirect
-	github.com/charmbracelet/x/ansi v0.8.0 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.13 // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -94,3 +93,12 @@ require (
 	modernc.org/strutil v1.2.0 // indirect
 	modernc.org/token v1.1.0 // indirect
 )
+
+require (
+	github.com/JMThomas00/Concord/sdk v0.0.0
+	github.com/charmbracelet/x/ansi v0.8.0
+)
+
+// The plugin SDK lives in ./sdk as its own module (so plugins can import it);
+// Concord builds against the copy in this repo.
+replace github.com/JMThomas00/Concord/sdk => ./sdk

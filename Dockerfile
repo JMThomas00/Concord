@@ -25,6 +25,8 @@ WORKDIR /src
 
 # Cache module downloads separately from source changes.
 COPY go.mod go.sum ./
+# The plugin SDK is a nested module that go.mod replaces with ./sdk.
+COPY sdk/go.mod sdk/go.sum ./sdk/
 RUN go mod download
 
 COPY . .

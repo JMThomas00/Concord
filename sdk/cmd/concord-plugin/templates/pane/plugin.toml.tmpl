@@ -1,0 +1,33 @@
+# Concord reads this to install and run <%.Name%>. Admins never edit it: the
+# settings below appear as forms in Concord.
+
+[plugin]
+id = "<%.ID%>"
+name = "<%.Name%>"
+version = "0.1.0"            # release.go stamps the git tag here
+description = "<%.Name%> in a Concord channel."
+source_url = "https://<%.Module%>"
+
+[process]
+restart_on_crash = true
+max_restarts = 5
+
+[process.entrypoint.linux]
+bin = "<%.ID%>"
+[process.entrypoint.darwin]
+bin = "<%.ID%>"
+[process.entrypoint.windows]
+bin = "<%.ID%>.exe"
+
+[[channel_kind]]
+kind = "<%.ChannelKind%>"
+display_name = "<%.Name%>"
+remote_pane = true
+
+# Server-wide settings, edited in Server Settings > Plugins > Enter.
+[[server_config_field]]
+key = "greeting"
+label = "Greeting"
+type = "text"
+default = "Hello"
+help = "Shown to everyone who opens a <%.Name%> channel"

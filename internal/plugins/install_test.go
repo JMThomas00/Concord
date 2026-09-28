@@ -80,12 +80,16 @@ bin = "test"
 		t.Fatalf("write plugin.toml: %v", err)
 	}
 
-	binFile, err := w.Create("test")
-	if err != nil {
-		t.Fatalf("zip.Create(test): %v", err)
-	}
-	if _, err := binFile.Write([]byte("#!/bin/sh\necho fake plugin binary\n")); err != nil {
-		t.Fatalf("write test binary: %v", err)
+	// One entrypoint per OS the manifest names, so the install is valid
+	// wherever the test runs.
+	for _, name := range []string{"test", "test.exe"} {
+		binFile, err := w.Create(name)
+		if err != nil {
+			t.Fatalf("zip.Create(%s): %v", name, err)
+		}
+		if _, err := binFile.Write([]byte("#!/bin/sh\necho fake plugin binary\n")); err != nil {
+			t.Fatalf("write test binary: %v", err)
+		}
 	}
 
 	if err := w.Close(); err != nil {

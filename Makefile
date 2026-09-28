@@ -89,6 +89,9 @@ clean:
 test:
 	@echo "Running tests..."
 	$(GOTEST) -v ./...
+	# The plugin SDK is its own module, so ./... above doesn't reach it.
+	cd sdk && $(GOTEST) -v ./...
+	cd sdk/pty && $(GOTEST) -v ./...
 
 # Download dependencies
 deps:
@@ -228,6 +231,7 @@ docs:
 fmt:
 	@echo "Formatting code..."
 	$(GOCMD) fmt ./...
+	cd sdk && $(GOCMD) fmt ./...
 
 # Lint code
 lint:

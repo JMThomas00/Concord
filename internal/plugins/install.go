@@ -186,14 +186,13 @@ func validateSourceURL(raw string) error {
 	}
 }
 
-// ensureEntrypointExecutable marks this OS's entrypoint binary executable.
-// Zip archives built on Windows carry no Unix permission bits, so without
-// this the extracted binary is 0600 and the plugin can never start on a
-// Linux or macOS server (including the Docker image).
+// ensureEntrypointExecutable checks the archive really contains this OS's
+// entrypoint binary -- on every OS, so a broken archive fails the same way
+// everywhere (it once installed "fine" on Windows and failed only on Linux)
+// -- and marks it executable. Zip archives built on Windows carry no Unix
+// permission bits, so without this the extracted binary is 0600 and the
+// plugin can never start on a Linux or macOS server (including Docker).
 func ensureEntrypointExecutable(m *Manifest) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
 	ep, err := m.Entrypoint()
 	if err != nil {
 		return err
@@ -205,6 +204,9 @@ func ensureEntrypointExecutable(m *Manifest) error {
 	info, err := os.Stat(binPath)
 	if err != nil {
 		return fmt.Errorf("archive has no entrypoint binary at %q: %w", ep.Bin, err)
+	}
+	if runtime.GOOS == "windows" {
+		return nil // no executable bit to set
 	}
 	if err := os.Chmod(binPath, info.Mode().Perm()|0o755); err != nil {
 		return fmt.Errorf("failed to make %q executable: %w", ep.Bin, err)

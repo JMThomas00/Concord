@@ -6,6 +6,8 @@ import (
 
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/google/uuid"
+
+	"github.com/JMThomas00/Concord/sdk/wire"
 )
 
 // OpCode represents the type of WebSocket message
@@ -498,18 +500,6 @@ type PluginChannelKindInfo struct {
 	CreateFields []PluginField `json:"create_fields,omitempty"`
 }
 
-// PluginField describes one manifest-declared, generically-rendered config
-// field (used for both channel-creation fields and server-config fields).
-type PluginField struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label"`
-	Type     string   `json:"type"` // text | number | boolean | select | channel_select | secret
-	Options  []string `json:"options,omitempty"`
-	Default  string   `json:"default,omitempty"`
-	Required bool     `json:"required,omitempty"`
-	Help     string   `json:"help,omitempty"`
-}
-
 // ServerCreatePayload is sent for each server the user is a member of (after READY)
 type ServerCreatePayload struct {
 	*models.Server
@@ -669,206 +659,6 @@ type ReactionPayload struct {
 // PluginEventPayload for the catch-all bidirectional channel (used today for
 // activity notifications; reusable for anything else a plugin needs later
 // without a protocol change).
-
-// PaneTheme is the viewer's current Concord theme, sent with Enter/Resize so
-// a plugin can render in matching colors. Palette keys are the theme's base
-// color names (background, foreground, comment, selection, current_line,
-// red, orange, yellow, green, cyan, purple, pink); values are "#rrggbb" or
-// ANSI palette indexes ("0"-"15"), or "" for the terminal's own default.
-// ColorProfile is the viewer terminal's capability: "truecolor", "ansi256",
-// "ansi" or "ascii" -- render no richer than this.
-type PaneTheme struct {
-	Name         string            `json:"name,omitempty"`
-	Palette      map[string]string `json:"palette,omitempty"`
-	ColorProfile string            `json:"color_profile,omitempty"`
-}
-
-// PluginPaneEnterPayload is sent when a client opens a remote-pane plugin channel.
-// The server re-sends it to a plugin for every current viewer when the
-// plugin (re)connects, so a restarted plugin repaints everyone.
-type PluginPaneEnterPayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"` // Server-stamped on relay; ignored if client-supplied
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-	// Server-stamped: the viewer's username and how they appear in this
-	// server (nickname, else display name, else username).
-	ViewerName        string     `json:"viewer_name,omitempty"`
-	ViewerDisplayName string     `json:"viewer_display_name,omitempty"`
-	Theme             *PaneTheme `json:"theme,omitempty"`
-}
-
-// PluginPaneResizePayload reports a viewport size (or theme) change for an active pane.
-type PluginPaneResizePayload struct {
-	ChannelID         uuid.UUID  `json:"channel_id"`
-	ViewerID          uuid.UUID  `json:"viewer_id,omitempty"`
-	Width             int        `json:"width"`
-	Height            int        `json:"height"`
-	ViewerName        string     `json:"viewer_name,omitempty"`
-	ViewerDisplayName string     `json:"viewer_display_name,omitempty"`
-	Theme             *PaneTheme `json:"theme,omitempty"`
-}
-
-// PluginPaneInputPayload forwards one keypress from a viewer to the plugin
-// owning the channel. KeyString is the canonical encoding (Bubble Tea's
-// KeyMsg.String(): "a", "enter", "ctrl+c", "alt+left", ...); KeyType/Runes/
-// Alt are kept for existing Bubble Tea v1 plugins that rebuild a tea.KeyMsg.
-type PluginPaneInputPayload struct {
-	ChannelID         uuid.UUID `json:"channel_id"`
-	ViewerID          uuid.UUID `json:"viewer_id,omitempty"`
-	KeyType           int       `json:"key_type"`
-	Runes             []rune    `json:"runes,omitempty"`
-	Alt               bool      `json:"alt,omitempty"`
-	KeyString         string    `json:"key_string"`
-	ViewerName        string    `json:"viewer_name,omitempty"`
-	ViewerDisplayName string    `json:"viewer_display_name,omitempty"`
-}
-
-// PluginPaneLeavePayload is sent when a client navigates away from a plugin channel.
-type PluginPaneLeavePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
-}
-
-// PluginPaneFramePayload is pushed by a plugin process (as its service-account
-// client) with the rendered View() for one specific viewer -- or, with
-// ViewerID left empty, for every current viewer of ChannelID (a shared view
-// such as a passthrough terminal). The server only delivers frames for the
-// plugin's own channels, to users actually viewing them.
-type PluginPaneFramePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
-	Frame     string    `json:"frame"`
-	Seq       int64     `json:"seq"` // Monotonic per viewer; client drops frames with Seq <= last-applied
-	// Epoch is stamped by the server (ignored if a plugin sets it) and
-	// changes whenever the plugin reconnects, so the client knows a lower
-	// Seq means a fresh stream rather than a stale frame.
-	Epoch int64 `json:"epoch,omitempty"`
-}
-
-// PluginEventPayload is the generic, opaque envelope for anything that isn't
-// pane rendering — e.g. a plugin posting a "notify" event to trigger a system
-// message. Kind is plugin-defined; Concord special-cases "notify" (posts to
-// the admin-configured activity channel) and, when ViewerID is set, relays
-// the envelope unchanged to that specific viewer's own client via
-// EventPluginEvent — e.g. a plugin telling one viewer's pane to close
-// itself (Kind "leave_pane") without needing a dedicated opcode.
-type PluginEventPayload struct {
-	PluginID string          `json:"plugin_id"`
-	Kind     string          `json:"kind"`
-	Payload  json.RawMessage `json:"payload"`
-	ViewerID uuid.UUID       `json:"viewer_id,omitempty"`
-}
-
-// PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
-type PluginNotifyEventPayload struct {
-	Content string `json:"content"`
-}
-
-// PluginPaneClosePayload is the Payload shape for
-// PluginEventPayload{Kind: "leave_pane"} — tells the named viewer's client
-// to leave a plugin pane it's currently displaying, e.g. because the
-// plugin's own UI reached a state (its main/top-level view) where a
-// designated "quit" keypress should back out to Concord's own navigation
-// instead of being interpreted by the plugin.
-type PluginPaneClosePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-}
-
-// PluginEventPayload.Kind values Concord itself understands. Any other kind
-// sent with ViewerID set is relayed unchanged to that viewer's client.
-const (
-	// Plugin → Concord: post Payload (PluginNotifyEventPayload) as a system
-	// message in the plugin's configured activity channel.
-	PluginEventNotify = "notify"
-	// Plugin → one viewer: stop capturing keys for Payload's
-	// (PluginPaneClosePayload) channel and hand focus back to Concord's own
-	// navigation. The pane stays open and keeps receiving frames.
-	PluginEventLeavePane = "leave_pane"
-	// Plugin → one member (PluginNotifyUserPayload): a toast plus an unread
-	// badge on the plugin's channel -- e.g. "Alex challenged you to chess".
-	// Only delivered to members who can view that channel.
-	PluginEventNotifyUser = "notify_user"
-	// Plugin → Concord request (PluginMembersRequest), answered with the
-	// same kind (PluginMembersResponse): who can see a channel and who's
-	// online, e.g. for a challenge lobby.
-	PluginEventMembers = "members"
-	// Plugin → viewer(s) (PluginPaneTitlePayload): the text shown in the
-	// pane's border title in place of the channel name, e.g.
-	// "Chess — Jordan vs Alex". ViewerID empty = every viewer.
-	PluginEventPaneTitle = "pane_title"
-)
-
-// PluginNotifyUserPayload is the Payload for Kind "notify_user".
-type PluginNotifyUserPayload struct {
-	UserID    uuid.UUID `json:"user_id"`
-	ChannelID uuid.UUID `json:"channel_id"`
-	Content   string    `json:"content"`
-}
-
-// PluginMembersRequest is the Payload a plugin sends with Kind "members".
-// RequestID is echoed back so a plugin can match the reply.
-type PluginMembersRequest struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	RequestID string    `json:"request_id,omitempty"`
-}
-
-// PluginMembersResponse is the Payload of the "members" reply.
-type PluginMembersResponse struct {
-	ChannelID uuid.UUID      `json:"channel_id"`
-	RequestID string         `json:"request_id,omitempty"`
-	Members   []PluginMember `json:"members"`
-}
-
-// PluginMember is one member who can view the requested channel.
-type PluginMember struct {
-	UserID      uuid.UUID `json:"user_id"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"display_name"`
-	Online      bool      `json:"online"`
-	Viewing     bool      `json:"viewing"` // has this channel's pane open right now
-}
-
-// PluginPaneTitlePayload is the Payload for Kind "pane_title". An empty
-// Title restores the channel's own name.
-type PluginPaneTitlePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	Title     string    `json:"title"`
-}
-
-// PluginInfo describes one installed plugin for the Settings > Plugins UI.
-type PluginInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	// Product names the underlying plugin family this install belongs to
-	// (e.g. "Mynah" for a persona install named "Burt") — set only when the
-	// manifest declares [plugin].product; empty for plugins where Name
-	// already is the whole identity (e.g. Tukan).
-	Product string `json:"product,omitempty"`
-	Version string `json:"version"`
-	// SourceURL, when the manifest declares one, is shown as a reference
-	// link in Settings > Plugins so an admin knows where to look for a
-	// newer release -- there's no live version-check or auto-update-prompt
-	// yet (see item 10/13's 7b scoping note in the vault to-do); manually
-	// re-running the install flow against a new [plugin].id is the only
-	// supported update path today (InstallFromURL refuses to overwrite an
-	// existing folder by design).
-	SourceURL    string            `json:"source_url,omitempty"`
-	Enabled      bool              `json:"enabled"`
-	Status       string            `json:"status"`
-	LastError    string            `json:"last_error,omitempty"`
-	ConfigFields []PluginField     `json:"config_fields,omitempty"`
-	ConfigValues map[string]string `json:"config_values,omitempty"`
-	// SecretsSet lists "secret" fields that have a value. Their values are
-	// never sent to clients (ConfigValues leaves them out); only the plugin
-	// itself receives them.
-	SecretsSet []string `json:"secrets_set,omitempty"`
-}
-
-// PluginConfigListPayload answers OpPluginConfigGet.
-type PluginConfigListPayload struct {
-	Plugins []PluginInfo `json:"plugins"`
-}
 
 // PluginConfigGetRequest requests the installed plugin list + config for the
 // Settings > Plugins page. ServerID gates the request behind that server's
@@ -1162,3 +952,39 @@ type MoveVoicePayload struct {
 	UserID    uuid.UUID `json:"user_id"`    // user to move
 	ChannelID uuid.UUID `json:"channel_id"` // destination voice channel
 }
+
+// ── Plugin wire types ───────────────────────────────────────────────────────
+//
+// Everything a plugin process sends or receives is defined once, in the
+// plugin SDK's wire package (sdk/wire, module github.com/JMThomas00/Concord/sdk),
+// and aliased here -- so Concord and every plugin built on the SDK share the
+// exact same shapes. Change them there, not here.
+
+type (
+	PaneTheme                = wire.PaneTheme
+	PluginPaneEnterPayload   = wire.PluginPaneEnterPayload
+	PluginPaneResizePayload  = wire.PluginPaneResizePayload
+	PluginPaneInputPayload   = wire.PluginPaneInputPayload
+	PluginPaneLeavePayload   = wire.PluginPaneLeavePayload
+	PluginPaneFramePayload   = wire.PluginPaneFramePayload
+	PluginEventPayload       = wire.PluginEventPayload
+	PluginNotifyEventPayload = wire.PluginNotifyEventPayload
+	PluginPaneClosePayload   = wire.PluginPaneClosePayload
+	PluginNotifyUserPayload  = wire.PluginNotifyUserPayload
+	PluginMembersRequest     = wire.PluginMembersRequest
+	PluginMembersResponse    = wire.PluginMembersResponse
+	PluginMember             = wire.PluginMember
+	PluginPaneTitlePayload   = wire.PluginPaneTitlePayload
+	PluginField              = wire.PluginField
+	PluginInfo               = wire.PluginInfo
+	PluginConfigListPayload  = wire.PluginConfigListPayload
+)
+
+// PluginEventPayload.Kind values Concord understands; see sdk/wire.
+const (
+	PluginEventNotify     = wire.PluginEventNotify
+	PluginEventLeavePane  = wire.PluginEventLeavePane
+	PluginEventNotifyUser = wire.PluginEventNotifyUser
+	PluginEventMembers    = wire.PluginEventMembers
+	PluginEventPaneTitle  = wire.PluginEventPaneTitle
+)

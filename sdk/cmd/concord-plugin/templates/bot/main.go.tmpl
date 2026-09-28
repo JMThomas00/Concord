@@ -1,0 +1,97 @@
+// <%.Name%>: a chat bot. It answers commands (e.g. "!roll 2d6") in the
+// channels it owns, and anywhere it's @mentioned. Run it from a terminal to
+// try commands without a Concord server.
+package main
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+
+	"github.com/JMThomas00/Concord/sdk/plugin"
+	"github.com/JMThomas00/Concord/sdk/wire"
+)
+
+// settings are the admin's choices from Server Settings > Plugins.
+var settings = map[string]string{"prefix": "!"}
+
+func main() {
+	cfg, underConcord := plugin.ConfigFromEnv()
+	if !underConcord {
+		fmt.Println("<%.Name%> -- type a command (e.g. !roll 2d6), Ctrl+C to quit")
+		in := bufio.NewScanner(os.Stdin)
+		for in.Scan() {
+			if reply, ok := answer("you", in.Text()); ok {
+				fmt.Println(reply)
+			}
+		}
+		return
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	err := plugin.Run(ctx, cfg, plugin.Handler{
+		OnConfig: func(_ *plugin.Conn, info wire.PluginInfo) {
+			for k, v := range info.ConfigValues {
+				settings[k] = v
+			}
+		},
+		OnMessage: func(c *plugin.Conn, m wire.MessageCreatePayload) {
+			if self := c.Self(); self != nil && m.AuthorID == self.ID {
+				return // never answer ourselves
+			}
+			if reply, ok := answer(m.Author.Name(), m.Content); ok {
+				_ = c.SendMessage(m.ChannelID, reply, &m.ID)
+			}
+		},
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatal(err)
+	}
+}
+
+// answer handles one message; ok is false when it isn't a command.
+func answer(who, text string) (string, bool) {
+	prefix := settings["prefix"]
+	text = strings.TrimSpace(text)
+	if i := strings.Index(text, prefix); i >= 0 && prefix != "" { // also after an @mention
+		text = text[i+len(prefix):]
+	} else {
+		return "", false
+	}
+	cmd, arg, _ := strings.Cut(text, " ")
+	switch strings.ToLower(cmd) {
+	case "roll":
+		return roll(who, strings.TrimSpace(arg)), true
+	case "help":
+		return "commands: " + prefix + "roll NdM, " + prefix + "help", true
+	}
+	return "", false
+}
+
+// roll rolls dice written like 2d6 (default 1d6).
+func roll(who, spec string) string {
+	if spec == "" {
+		spec = "1d6"
+	}
+	n, sides, ok := strings.Cut(strings.ToLower(spec), "d")
+	count, err1 := strconv.Atoi(n)
+	faces, err2 := strconv.Atoi(sides)
+	if !ok || err1 != nil || err2 != nil || count < 1 || count > 50 || faces < 2 || faces > 1000 {
+		return "try something like 2d6"
+	}
+	total, rolls := 0, make([]string, count)
+	for i := range rolls {
+		r := rand.Intn(faces) + 1
+		total += r
+		rolls[i] = strconv.Itoa(r)
+	}
+	return fmt.Sprintf("%s rolled %s: %s = %d", who, spec, strings.Join(rolls, " + "), total)
+}

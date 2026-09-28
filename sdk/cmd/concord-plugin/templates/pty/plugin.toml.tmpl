@@ -1,0 +1,27 @@
+# Concord reads this to install and run <%.Name%>. Admins never edit it.
+#
+# This plugin shows a terminal program in a channel. Put the program's own
+# binary next to this plugin's in the release zip (see release.go) -- a
+# Docker-hosted Concord server can't install packages. Never wrap a shell.
+
+[plugin]
+id = "<%.ID%>"
+name = "<%.Name%>"
+version = "0.1.0"            # release.go stamps the git tag here
+description = "A terminal program in a channel."
+source_url = "https://<%.Module%>"
+
+[process]
+restart_on_crash = true
+max_restarts = 5
+
+[process.entrypoint.linux]
+bin = "<%.ID%>"
+[process.entrypoint.darwin]
+bin = "<%.ID%>"
+# Windows servers aren't supported for terminal passthrough yet.
+
+[[channel_kind]]
+kind = "<%.ChannelKind%>"
+display_name = "<%.Name%>"
+remote_pane = true

@@ -26,6 +26,8 @@ This repo has no `.golangci.yml` — the commands below are the actual gate used
 go build -tags novoice ./...
 go vet -tags novoice ./...
 go test -tags novoice -count=1 ./...
+(cd sdk && go vet ./... && go test -count=1 ./...)   # the plugin SDK is its own module
+(cd sdk/pty && go vet ./... && go test -count=1 ./...)   # ...and terminal passthrough is another (its PTY test needs Linux/macOS)
 
 # Single package or test
 go test -tags novoice ./internal/server/...
@@ -207,6 +209,41 @@ External programs attach to a Concord server as privileged clients — bots, int
   - `[plugin].source_url` is still only informational; there's no auto-update polling or catalog yet (Phase 2).
 
 ---
+
+## Plugin SDK (`sdk/`)
+
+Plugins are built on the SDK, a **separate Go module** nested in this repo: `github.com/JMThomas00/Concord/sdk`. External plugin repos import it (tagged `sdk/vX.Y.Z` once published). Concord's root `go.mod` uses it through `replace … => ./sdk`, so a change to both sides lands in one commit. The root `./...` does **not** include `sdk/`: test it with `cd sdk && go test ./...`; `make test` and `make fmt` do both. The Dockerfile copies `sdk/go.mod`/`go.sum` before `go mod download`.
+
+- **`sdk/wire`** is the single definition of everything a plugin sends or receives. `internal/protocol` **aliases** the plugin payload types (`PluginPane*`, `PluginEvent*`, `PaneTheme`, `PluginInfo`/`PluginField`/`PluginConfigListPayload`, and the event-kind constants), so edit them in `sdk/wire`, not in `internal/protocol`. The SDK's slim mirrors of Concord's own types (opcodes, event names, `Channel`, `User`, chat messages) are held to the server's actual JSON by `internal/protocol/wire_contract_test.go`.
+- **`sdk/plugin`** is the runtime:
+  - `ConfigFromEnv()` returns ok=false when not launched by Concord (run standalone).
+  - `Run(ctx, cfg, Handler)` identifies, reconnects with backoff, and exits on `ErrRejected`. Callbacks run one at a time on one goroutine, in order.
+  - `Conn` has helpers: `Frame`/`Broadcast` (automatic per-frame `Seq`), `Notify`, `NotifyUser`, `SetTitle`, `LeavePane`, `SendMessage`, `Typing`, and `RequestMembers`, which blocks, so call it from a goroutine rather than from inside a callback.
+- **`sdk/pane`** runs Bubble Tea models as panes: one model per viewer, fed `tea.WindowSizeMsg` and rebuilt `tea.KeyMsg`s (`pane.KeyMsg`).
+  - `Host.Broadcast(channel, msg)` re-renders every viewer of a channel after shared state changes.
+  - `tea.Quit` hands that viewer's keys back to Concord.
+  - Frames are clamped to the pane (`pane.Fit`), rendered in true color, and downsampled per viewer with `colorprofile`.
+  - Cursor-blink commands are skipped without being called, since calling one blocks about 530ms (the Tukan lesson).
+- **`sdk/table`** hosts turn-based games. A game implements `Game` (`Turn`/`Play`/`Outcome`; moves are strings, and saved games are just the move list replayed) plus `Rules.NewBoard`, a Bubble Tea board that reads and moves through a `*Seat`. The kit supplies everything else:
+  - **Seating modes**, from the channel's `seating` create_field: `seats` (one table, sit down), `challenge` (a lobby: challenge members, accept or decline) or `private` (only the two players see a game). `allow_spectators` and `computer_opponent` are the other channel settings it reads.
+  - **Table menu.** Tab is reserved for it (sit, stand, resign, rematch, add computer, lobby); every other key goes to the board.
+  - **Computer opponent** via `Rules.AI`, run off the event loop and posted back with `Conn.Post`.
+  - **Turn notifications:** a "your turn" `notify_user` when the next player isn't watching.
+  - **Saving:** JSON under `$CONCORD_PLUGIN_DATA_DIR/tables/`.
+  - **Change batching:** changes made during one event are saved and redrawn once, at the end of it (`Kit.flush`).
+  - **Standalone play:** `table.RunLocal(rules, opts)` runs the same board as a terminal game, hotseat or against the computer.
+- **`sdk/pty`** is a **separate module** (`github.com/JMThomas00/Concord/sdk/pty`). It runs an unmodified terminal program in a pseudo-terminal behind an `x/vt` emulator and shows it in a channel. One viewer drives (the first; `Options.Shared` lets everyone type), and the pane title says who. It's Linux/macOS only (Windows needs ConPTY). It's its own module because `x/vt` needs newer x/ansi/runewidth/colorprofile, which would otherwise float into the client (see the pinning rule below).
+- **`sdk/cmd/concord-plugin new <name> --template game|pane|bot|pty [--sdk path]`** scaffolds a plugin repo:
+  - `main.go`, `plugin.toml`, a README and `.gitignore`;
+  - `release.go` (pure Go, so no make or zip is needed), which builds `dist/<id>_<os>_<arch>.zip` for linux/darwin/windows × amd64/arm64 and stamps the git tag into `plugin.toml`;
+  - a GitHub Actions workflow that attaches those zips to a release on each `v*` tag.
+
+  The zips are exactly what `ResolveSource`/`pickAsset` look for. Its templates use `<% %>` delimiters, because TOML's `[[channel_kind]]` collides with `[[ ]]`.
+- **`sdk/examples/tictactoe`** is the reference game: rules, board, a three-level computer, one binary for standalone and plugin, and a `plugin.toml`. The table kit's tests run against it.
+- **`sdk/PROTOCOL.md`** is the wire protocol for plugins written in other languages.
+- **`sdk/plugintest`** is a fake Concord server for plugin unit tests. It sends Enter, Key, Type, Resize and Leave, plus channels, settings, chat and custom events, and reads back frames, events and chat. It also flags frames sent to non-viewers, frames taller than the pane, and a non-increasing `Seq`.
+- **`cmd/testplugin`** is the smallest SDK plugin, and the server and client integration tests spawn it against the real server.
+- **Keep the SDK's shared dependencies pinned to Concord's versions** (bubbletea, bubbles, lipgloss, x/ansi, colorprofile, runewidth, go-colorful, x/term). Go's module resolution takes the highest version any module asks for, so an SDK `go mod tidy` that floats one of them upgrades the client's UI stack too. This happened once: bubbles went 0.20 → 1.0 and runewidth 0.0.16 → 0.0.19. After tidying the SDK, check `git diff go.mod` at the root.
 
 ## Permissions & Channel Overwrites
 

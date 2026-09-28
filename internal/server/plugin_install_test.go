@@ -35,6 +35,14 @@ func buildTestPluginZip(t *testing.T, pluginID string) (data []byte, sha256Hex s
 	if _, err := f.Write([]byte(manifest)); err != nil {
 		t.Fatalf("write plugin.toml: %v", err)
 	}
+	// The installer checks the archive holds this OS's entrypoint binary.
+	for _, name := range []string{"test", "test.exe"} {
+		b, err := w.Create(name)
+		if err != nil {
+			t.Fatalf("zip.Create(%s): %v", name, err)
+		}
+		_, _ = b.Write([]byte("fake binary"))
+	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("zip.Close: %v", err)
 	}
@@ -80,10 +88,13 @@ func TestHandlePluginInstallEndToEnd(t *testing.T) {
 		SourceURL: archiveSrv.URL,
 		SHA256:    sum,
 	})
-	resp := client.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginConfigUpdate })
-	var list protocol.PluginConfigListPayload
-	if err := json.Unmarshal(resp.Data, &list); err != nil {
+	resp := client.readUntil(10*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginManageResult })
+	var result protocol.PluginManageResult
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("install failed: %s", result.Message)
 	}
 
 	manifestPath := filepath.Join(srv.handlers.pluginsDir, "newplug", "plugin.toml")
@@ -164,6 +175,10 @@ func TestPluginManageInstallIsLiveAndUninstallRemovesIt(t *testing.T) {
 	_, _ = f.Write([]byte("[plugin]\nid = \"liveplug\"\nname = \"Live\"\nversion = \"1.0.0\"\n\n" +
 		"[process]\n[process.entrypoint.windows]\nbin = \"live.exe\"\n[process.entrypoint.linux]\nbin = \"live\"\n[process.entrypoint.darwin]\nbin = \"live\"\n\n" +
 		"[[channel_kind]]\nkind = \"board\"\ndisplay_name = \"Live Board\"\nremote_pane = true\n"))
+	for _, name := range []string{"live", "live.exe"} {
+		b, _ := w.Create(name)
+		_, _ = b.Write([]byte("fake binary"))
+	}
 	_ = w.Close()
 	sum := sha256.Sum256(buf.Bytes())
 	archiveSrv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { _, _ = rw.Write(buf.Bytes()) }))

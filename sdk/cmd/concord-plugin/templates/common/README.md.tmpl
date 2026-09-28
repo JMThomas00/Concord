@@ -1,0 +1,40 @@
+# <%.Name%>
+
+A [Concord](https://github.com/JMThomas00/Concord) plugin that's also a
+standalone program.
+
+## Run it
+
+```sh
+go run .
+```
+
+Launched by a Concord server, the same program joins that server as a
+plugin instead (Concord sets `CONCORD_WS_URL` and friends; see
+`plugin.ConfigFromEnv`).
+
+## Install it on a Concord server
+
+In Concord, open **Server Settings → Plugins**, press **I**, and enter
+`<%.Module%>` without the `github.com/` (or paste the repo's URL). Concord
+downloads the latest release for its own OS and CPU, checks it against the
+checksum GitHub publishes, and starts it. No restart, no config files.
+Settings then live under **Enter** on the plugin.
+
+## Release a version
+
+```sh
+git tag v0.1.0 && git push --tags
+```
+
+`.github/workflows/release.yml` builds every target with `go run release.go`
+and attaches `dist/<%.ID%>_<os>_<arch>.zip` to the release. Run
+`go run release.go` locally to check the zips.
+
+## How it fits together
+
+- `plugin.toml`: what Concord reads: the channel type this plugin adds, its
+  settings (shown as a form in Server Settings; never hand-edited), and
+  which binary to start on each OS.
+- `main.go`: standalone vs plugin, and the plugin's behaviour, built on the
+  Concord SDK (`github.com/JMThomas00/Concord/sdk`).
