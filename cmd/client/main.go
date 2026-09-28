@@ -110,12 +110,19 @@ func main() {
 		// All Motion Tracking (xterm mode 1003), not Cell Motion Tracking
 		// (mode 1002): the latter only reports mouse movement while a button
 		// is held, which is why the grape logo's follow-the-cursor effect
-		// (steerGrapeLight, called on every tea.MouseMsg regardless of
-		// action/button in App.Update) needed a button held down on Linux/
-		// Mac terminals to work at all. Windows was unaffected either way --
-		// its native console mouse input doesn't negotiate this xterm
-		// protocol mode in the first place.
+		// (steerGrapeLight) needed a button held down on Linux/Mac terminals
+		// to work at all. Windows was unaffected either way -- its native
+		// console mouse input doesn't negotiate this xterm protocol mode in
+		// the first place.
 		tea.WithMouseAllMotion(),
+		// All Motion Tracking means every pixel of mouse movement produces a
+		// MouseMsg, and Bubbletea calls model.View() unconditionally after
+		// every single message regardless of what Update() does with it --
+		// without this filter, just moving the mouse floods the app with a
+		// full Update+render pass per pixel, which starved real input
+		// processing badly enough to make the whole TUI unresponsive on a
+		// live report. See MouseHoverFilter's own comment (grape_logo.go).
+		tea.WithFilter(client.MouseHoverFilter),
 		// Lets the terminal tell us when the window regains focus, so Concord
 		// can force a full repaint on refocus -- see the tea.FocusMsg case in
 		// App.Update for why (a real rendering-glitch report on Linux/Wayland

@@ -1157,6 +1157,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case paneCheckMsg:
 		return a, a.syncPluginPane()
 	case tea.MouseMsg:
+		// Plain hover motion (no button held) is handled -- and dropped --
+		// by MouseHoverFilter (grape_logo.go) before it ever reaches here,
+		// via tea.WithFilter in main.go. Anything that does reach this case
+		// is a real click/drag/wheel event that needs full processing.
 		a.steerGrapeLight(m)
 	}
 	model, cmd := a.update(msg)
@@ -1522,8 +1526,12 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the race where READY arrives before activeConn is set
 			cmds = append(cmds, a.connectServerAsync(msg.ServerID, msg.Token))
 		}
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
+		// AutoConnectMsg is a direct Cmd result (see autoConnectServer), never
+		// something delivered via connEvents -- do NOT re-subscribe here. Doing
+		// so used to leak one permanently-blocked waitForConnEvent listener per
+		// AutoConnectMsg, since connEvents only ever carries ServerScopedMsg
+		// (see connection_manager.go's four eventChan sends) and nothing would
+		// ever satisfy the extra listener.
 
 	case ConnectionReadyMsg:
 		// Set connection state to ready
@@ -1535,8 +1543,8 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update status bar
 		a.statusMessage = "Connected to server"
 		a.statusError = false
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
+		// ConnectionReadyMsg is a direct Cmd result too (see connectServerAsync)
+		// -- same reasoning as AutoConnectMsg above, no connEvents re-subscribe.
 
 	case ConnectionFailedMsg:
 		sc := a.connMgr.GetConnection(msg.ServerID)
@@ -1720,8 +1728,13 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ErrorMsg:
 		a.statusMessage = msg.Error
 		a.statusError = true
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
+		// A bare top-level ErrorMsg is a direct Cmd result (add_server_view.go,
+		// identity_setup_view.go, message send/edit failures, etc.) -- never
+		// something delivered via connEvents, so no connEvents re-subscribe
+		// here. The ErrorMsg connEvents CAN carry arrives wrapped inside
+		// ServerScopedMsg and is handled entirely within
+		// handleServerScopedMessage instead (see its own case ErrorMsg below),
+		// which never reaches this top-level switch.
 	}
 
 	// Update focused component

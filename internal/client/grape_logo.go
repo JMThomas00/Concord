@@ -251,6 +251,34 @@ func (a *App) steerGrapeLight(msg tea.MouseMsg) {
 	gl.steered = time.Now()
 }
 
+// MouseHoverFilter is installed via tea.WithFilter in main.go. Bubbletea
+// calls model.View() unconditionally after every single Update() call,
+// regardless of what Update() actually did -- so with All Motion Tracking
+// enabled (main.go's tea.WithMouseAllMotion, needed for the grape logo to
+// follow the cursor at all on Linux/macOS terminals), every pixel of mouse
+// movement would otherwise trigger a full Update+render pass. A filter is
+// the only hook that runs before Update/View both, so it's the only place
+// that can actually drop these events rather than merely skip some of the
+// work they'd otherwise cause.
+//
+// A plain hover (motion, no button held) has no effect anywhere else in the
+// app -- every other mouse handler either only acts on a Press, or (the Help
+// scrollbar drag) explicitly requires Button == Left -- so it's safe to
+// steer the light directly here and drop the message entirely. The logo
+// itself is animated by its own bounded 30fps tick (grapeTick), completely
+// decoupled from raw mouse-event rate, so nothing is lost by not forcing an
+// extra render for every single one of these.
+func MouseHoverFilter(model tea.Model, msg tea.Msg) tea.Msg {
+	m, ok := msg.(tea.MouseMsg)
+	if !ok || m.Action != tea.MouseActionMotion || m.Button != tea.MouseButtonNone {
+		return msg
+	}
+	if a, ok := model.(*App); ok {
+		a.steerGrapeLight(m)
+	}
+	return nil
+}
+
 // --- rendering -------------------------------------------------------------
 
 // mixHex blends two "#rrggbb" colors (t of a); ok is false for anything
