@@ -19,3 +19,7 @@ grapevine-local/
 .git/
 .claude/
 demo/*.gif
+# The documented Docker setup keeps each service's live data (database,
+# plugins, plugin-secrets.key) in these folders inside the checkout.
+server-data/
+hub-data/
