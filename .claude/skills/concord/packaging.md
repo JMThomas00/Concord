@@ -52,6 +52,13 @@ Creating a public repo and pushing a tag publish the code; confirm with the
 user before doing either. Check the workflow run succeeded and the release
 has five zips before telling anyone to install.
 
+The workflow runs `go test ./...` **on Linux** first, and a failing test means
+no release. Tests written on Windows often assume Windows (`%APPDATA%`, path
+separators, `.exe`); run them on Linux before tagging (WSL, or
+`docker run --rm -v "$PWD:/src" -w /src golang:1.25 go test ./...`). A tag
+whose release failed stays failed: fix, and tag the next version rather
+than moving the tag.
+
 ## Installing (admins, in the Concord client)
 
 **Server Settings → Plugins → I**, then type one of:
