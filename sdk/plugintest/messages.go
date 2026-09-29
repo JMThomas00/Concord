@@ -114,3 +114,17 @@ func (s *Server) WaitStreamDone(id uuid.UUID) Posted {
 	s.t.Fatalf("plugintest: message %s still streaming after %v", id, Timeout)
 	return Posted{}
 }
+
+// DrainEvents returns every plugin event sent so far and not yet read,
+// without waiting: for checking that something was sent only once.
+func (s *Server) DrainEvents() []wire.PluginEventPayload {
+	var out []wire.PluginEventPayload
+	for {
+		select {
+		case e := <-s.events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}

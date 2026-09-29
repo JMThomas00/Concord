@@ -29,9 +29,13 @@ srv.Type(alice, "Nf3")                              // one key per rune
 frame := srv.FrameContaining(alice, "your move")    // waits up to 5s, fails with the last frame
 srv.Resize(alice, 40, 12); srv.Leave(alice)
 
-srv.ChatMessage(ch, "bob", "!roll 2d6")             // chat → OnMessage
+srv.ChatMessage(ch, "bob", "!roll 2d6")             // chat → OnMessage (bob keeps one user ID: srv.UserID("bob"))
 reply := srv.NextChat()                             // what the plugin posted
+posted := srv.Posted()                              // every message as it stands now (streamed ones included)
+final := srv.WaitStreamDone(posted[0].ID)           // a streamed reply, once finished
+edit := srv.NextEdit()                              // the next EditMessage
 ev := srv.NextEvent()                               // notify, notify_user, pane_title, members...
+rest := srv.DrainEvents()                           // anything else already sent, without waiting
 srv.AnswerMembers(ev, []wire.PluginMember{...})     // reply to a members request
 srv.DropConnection()                                // test reconnect: Enter is replayed
 ```

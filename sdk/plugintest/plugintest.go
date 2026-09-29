@@ -47,6 +47,7 @@ type Server struct {
 	edits   chan wire.EditMessagePayload
 	posted  map[uuid.UUID]*Posted // the plugin's messages, by ID
 	order   []uuid.UUID
+	users   map[string]uuid.UUID // ChatMessage authors, by name
 	viewers map[uuid.UUID]*Viewer
 }
 
@@ -74,6 +75,7 @@ func NewServer(t testing.TB) *Server {
 		chat:    make(chan wire.SendMessagePayload, 256),
 		edits:   make(chan wire.EditMessagePayload, 1024),
 		posted:  map[uuid.UUID]*Posted{},
+		users:   map[string]uuid.UUID{},
 		viewers: map[uuid.UUID]*Viewer{},
 	}
 	s.http = httptest.NewServer(http.HandlerFunc(s.serveWS))
@@ -402,9 +404,23 @@ func (s *Server) Settings(values map[string]string) {
 // ChatMessage relays a chat message to the plugin.
 func (s *Server) ChatMessage(channelID uuid.UUID, author, content string) {
 	s.dispatch(wire.EventMessageCreate, wire.MessageCreatePayload{
-		ChatMessage: &wire.ChatMessage{ID: uuid.New(), ChannelID: channelID, AuthorID: uuid.New(), Content: content},
-		Author:      &wire.User{ID: uuid.New(), Username: author},
+		ChatMessage: &wire.ChatMessage{ID: uuid.New(), ChannelID: channelID, AuthorID: s.UserID(author), Content: content},
+		Author:      &wire.User{ID: s.UserID(author), Username: author},
 	})
+}
+
+// UserID is the user ID ChatMessage uses for author: the same for every
+// message by that name, so per-user logic (rate limits, turn order) can be
+// tested.
+func (s *Server) UserID(author string) uuid.UUID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.users[author]
+	if !ok {
+		id = uuid.New()
+		s.users[author] = id
+	}
+	return id
 }
 
 // AnswerMembers replies to a members request event with the given list.
