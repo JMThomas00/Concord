@@ -253,6 +253,20 @@ func downloadAndVerify(ctx context.Context, sourceURL, expectedSHA256 string) (s
 	return tmp.Name(), nil
 }
 
+// looksLikeWebPage reports whether a download is HTML: what a link to a
+// GitHub page (rather than to a release file) returns.
+func looksLikeWebPage(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	n, _ := f.Read(head)
+	s := strings.ToLower(strings.TrimSpace(string(head[:n])))
+	return strings.HasPrefix(s, "<!doctype html") || strings.HasPrefix(s, "<html")
+}
+
 // extractZip unpacks a zip archive into destDir, which must not already
 // exist. Guards against zip-slip (an archive entry whose path escapes
 // destDir via "../" components or an absolute path) by resolving every
@@ -260,6 +274,9 @@ func downloadAndVerify(ctx context.Context, sourceURL, expectedSHA256 string) (s
 func extractZip(archivePath, destDir string) error {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
+		if looksLikeWebPage(archivePath) {
+			return fmt.Errorf("that link is a web page, not a .zip: enter the GitHub repo as owner/name, or a link to the .zip file itself")
+		}
 		return fmt.Errorf("failed to open downloaded archive as zip: %w", err)
 	}
 	defer r.Close()
@@ -327,7 +344,13 @@ func unwrapSingleFolder(dir string) error {
 	if len(entries) != 1 || !entries[0].IsDir() {
 		return nil // leave it; LoadPluginFolder reports the missing manifest
 	}
-	inner := filepath.Join(dir, entries[0].Name())
+	// Move the folder out of the way first: it often holds a file with its
+	// own name (a "concord-chess" binary in "concord-chess/"), which can't
+	// be moved up while the folder still sits at that name.
+	inner := dir + ".wrapped"
+	if err := os.Rename(filepath.Join(dir, entries[0].Name()), inner); err != nil {
+		return fmt.Errorf("failed to unpack the archive's %s folder: %w", entries[0].Name(), err)
+	}
 	children, err := os.ReadDir(inner)
 	if err != nil {
 		return err

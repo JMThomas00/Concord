@@ -72,7 +72,10 @@ Read the matching guide before starting:
 7. **Treat plugin power seriously.** A plugin runs with the server's
    privileges. Never wrap a shell, never run commands built from chat text,
    and keep a pty plugin to one specific program.
-8. **Stay on the SDK's dependency versions.** Don't upgrade bubbletea,
+8. **The README explains both ways to use it:** standalone (download or
+   `go install`, then run) and on a Concord server (install, create the
+   channel, use it). See [`packaging.md`](packaging.md).
+9. **Stay on the SDK's dependency versions.** Don't upgrade bubbletea,
    bubbles, lipgloss or x/ansi past what the SDK requires unless the user asks.
 
 ## Command Discovery
@@ -126,9 +129,10 @@ string you can validate, it's `game`.
 An admin with the **Manage Plugins** permission (or the server owner) opens
 **Server Settings → Plugins** in the Concord client:
 
-- **I**: install. Type `owner/repo` (the latest GitHub release's zip for the
-  server's OS/CPU is picked and verified automatically), a GitHub release
-  asset link, or any https zip link.
+- **I**: install. Type `owner/repo` or paste any github.com link into the repo
+  (the latest GitHub release's zip for the server's OS/CPU is picked and
+  verified automatically; a release's own page picks that release), a
+  release asset link, or any https zip link.
 - **U**: update (Enter alone uses the manifest's `source_url`). A failed
   update rolls back automatically.
 - **R** restart · **T** enable/disable · **X** uninstall (twice) · **S** rescan ·

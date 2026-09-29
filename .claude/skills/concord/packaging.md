@@ -22,6 +22,23 @@ Concord picks an asset by OS and CPU words in its file name (`linux`,
 naming. A single platform-neutral zip is also accepted. Only `.zip` works
 (no `.tar.gz`).
 
+## The README
+
+Every plugin's README must tell a non-developer both ways to use it (the
+scaffolded README has this shape; keep it when rewriting):
+
+1. **On your own computer:** download the zip for your system from
+   Releases, unzip, run it (and the macOS quarantine note), or `go install
+   <module>@latest`. What the standalone program offers (for games: hotseat,
+   computer, network play and how joining works; any flags).
+2. **On a Concord server:** Server Settings → Plugins → **I**, type
+   `owner/repo`; then Server Settings → Channels → create a channel of the
+   plugin's type (its `display_name`), and what each channel option does; then
+   how to use it (Tab into a pane, Ctrl+] back out; or chat for a bot).
+   Updating is **U**, Enter.
+
+Then the rules or commands, the keys, and a short "Develop" section.
+
 ## Publishing on GitHub
 
 The scaffolded `.github/workflows/release.yml` runs on a `v*` tag: it runs
@@ -39,7 +56,9 @@ has five zips before telling anyone to install.
 
 **Server Settings → Plugins → I**, then type one of:
 
-- `owner/repo`: the latest release's zip for the server's platform
+- `owner/repo`, or any github.com link into the repo (its page, its
+  Releases page): the latest release's zip for the server's platform
+- a link to one release's page (`…/releases/tag/v0.2.0`): that release's zip
 - a GitHub release asset link: that file
 - any other https link to a zip
 

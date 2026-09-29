@@ -33,6 +33,10 @@ var (
 	githubRepoPattern = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:github\.com/)?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
 	// A release asset link: https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
 	githubAssetPattern = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)$`)
+	// Any other page of a repo on github.com (its releases list, a release's
+	// page, a file view): what people copy from the browser's address bar.
+	githubPagePattern = regexp.MustCompile(`^https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:/(.*))?$`)
+	githubTagPage     = regexp.MustCompile(`^releases/tag/([^/?#]+)`)
 	sha256HexPattern   = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 )
 
@@ -74,22 +78,29 @@ func ResolveSource(ctx context.Context, source, checksum string) (ResolvedSource
 		return withChecksum(r), nil
 	}
 
-	if !strings.Contains(source, "://") || strings.HasPrefix(source, "https://github.com/") || strings.HasPrefix(source, "http://github.com/") {
-		if m := githubRepoPattern.FindStringSubmatch(source); m != nil {
-			rel, err := githubRelease(ctx, m[1], m[2], "latest")
-			if err != nil {
-				return ResolvedSource{}, err
-			}
-			asset, err := pickAsset(rel.Assets, runtime.GOOS, runtime.GOARCH)
-			if err != nil {
-				return ResolvedSource{}, fmt.Errorf("%s/%s %s: %w", m[1], m[2], rel.TagName, err)
-			}
-			r := ResolvedSource{URL: asset.URL, SHA256: digestHex(asset.Digest)}
-			if r.SHA256 != "" {
-				r.ChecksumFrom = "GitHub"
-			}
-			return withChecksum(r), nil
+	owner, repo, which := "", "", "latest"
+	if m := githubRepoPattern.FindStringSubmatch(source); m != nil && (!strings.Contains(source, "://") || githubPagePattern.MatchString(source)) {
+		owner, repo = m[1], m[2]
+	} else if m := githubPagePattern.FindStringSubmatch(source); m != nil {
+		owner, repo = m[1], m[2]
+		if t := githubTagPage.FindStringSubmatch(m[3]); t != nil {
+			which = "tags/" + t[1] // a release's own page: that release
 		}
+	}
+	if owner != "" {
+		rel, err := githubRelease(ctx, owner, repo, which)
+		if err != nil {
+			return ResolvedSource{}, err
+		}
+		asset, err := pickAsset(rel.Assets, runtime.GOOS, runtime.GOARCH)
+		if err != nil {
+			return ResolvedSource{}, fmt.Errorf("%s/%s %s: %w", owner, repo, rel.TagName, err)
+		}
+		r := ResolvedSource{URL: asset.URL, SHA256: digestHex(asset.Digest)}
+		if r.SHA256 != "" {
+			r.ChecksumFrom = "GitHub"
+		}
+		return withChecksum(r), nil
 	}
 
 	if err := validateSourceURL(source); err != nil {

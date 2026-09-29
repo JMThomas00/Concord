@@ -271,7 +271,7 @@ func TestInstallFromGitHubRepoPicksPlatformAssetAndUsesDigest(t *testing.T) {
 	files = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(data) }))
 	defer files.Close()
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/jordan/concord-chess/releases/latest" {
+		if r.URL.Path != "/repos/jordan/concord-chess/releases/latest" && r.URL.Path != "/repos/jordan/concord-chess/releases/tags/v1.2.0" {
 			http.NotFound(w, r)
 			return
 		}
@@ -289,7 +289,10 @@ func TestInstallFromGitHubRepoPicksPlatformAssetAndUsesDigest(t *testing.T) {
 	defer func(orig string) { githubAPI = orig }(githubAPI)
 	githubAPI = api.URL
 
-	for _, source := range []string{"jordan/concord-chess", "https://github.com/jordan/concord-chess", "github.com/jordan/concord-chess.git"} {
+	for _, source := range []string{"jordan/concord-chess", "https://github.com/jordan/concord-chess", "github.com/jordan/concord-chess.git",
+		// Links copied from the browser: the releases list, a release's page, a file.
+		"https://github.com/jordan/concord-chess/releases", "https://github.com/jordan/concord-chess/releases/tag/v1.2.0",
+		"https://github.com/jordan/concord-chess/blob/main/README.md"} {
 		f, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: source})
 		if err != nil || f.ID != "concord-chess" || f.Verified != "GitHub" {
 			t.Fatalf("%s: %+v, %v", source, f, err)
@@ -302,6 +305,9 @@ func TestInstallFromGitHubRepoPicksPlatformAssetAndUsesDigest(t *testing.T) {
 	}
 	if _, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: "jordan/no-such-repo"}); err == nil || !strings.Contains(err.Error(), "no published release") {
 		t.Fatalf("missing repo = %v", err)
+	}
+	if _, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: "https://github.com/jordan/concord-chess/releases/tag/v9.9.9"}); err == nil {
+		t.Fatal("a release that doesn't exist was installed")
 	}
 }
 
@@ -370,14 +376,15 @@ func TestInstallFromURL_MakesEntrypointExecutable(t *testing.T) {
 }
 
 // Zipping a plugin's folder (the usual way to make a release archive) puts
-// everything under one top-level folder; that must install the same.
+// everything under one top-level folder, usually holding a binary with the
+// folder's own name (release.go's layout); that must install the same.
 func TestInstallFromURL_UnwrapsSingleTopLevelFolder(t *testing.T) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 	f, _ := w.Create("wrapped/plugin.toml")
 	_, _ = f.Write([]byte("[plugin]\nid = \"wrapped\"\nname = \"W\"\nversion = \"1.0.0\"\n\n[process]\n" +
-		"[process.entrypoint.windows]\nbin = \"w.exe\"\n[process.entrypoint.linux]\nbin = \"w\"\n[process.entrypoint.darwin]\nbin = \"w\"\n"))
-	for _, name := range []string{"wrapped/w", "wrapped/w.exe"} {
+		"[process.entrypoint.windows]\nbin = \"wrapped.exe\"\n[process.entrypoint.linux]\nbin = \"wrapped\"\n[process.entrypoint.darwin]\nbin = \"wrapped\"\n"))
+	for _, name := range []string{"wrapped/wrapped", "wrapped/wrapped.exe"} {
 		b, _ := w.Create(name)
 		_, _ = b.Write([]byte("bin"))
 	}
@@ -418,5 +425,17 @@ func TestResolveSourceLiveGitHub(t *testing.T) {
 	t.Logf("resolved %s (checksum from %s: %s)", src.URL, src.ChecksumFrom, src.SHA256)
 	if !strings.Contains(strings.ToLower(src.URL), "windows") || src.ChecksumFrom != "GitHub" || len(src.SHA256) != 64 {
 		t.Fatalf("unexpected resolution: %+v", src)
+	}
+}
+
+// A link to a web page (not a .zip) says so, instead of "not a valid zip".
+func TestInstallFromAWebPageExplainsWhatToEnter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("\n<!DOCTYPE html><html><body>releases</body></html>"))
+	}))
+	defer srv.Close()
+	_, err := InstallFromURL(context.Background(), t.TempDir(), InstallRequest{SourceURL: srv.URL + "/page"})
+	if err == nil || !strings.Contains(err.Error(), "web page") {
+		t.Fatalf("err = %v", err)
 	}
 }

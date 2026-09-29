@@ -199,6 +199,7 @@ External programs attach to a Concord server as privileged clients — bots, int
   - **Stopping a plugin** also disconnects its service account (`onPluginStopped` → `Hub.DisconnectUser`).
   - **Sources (no checksum or plugin ID to type):** an admin enters one thing, and `ResolveSource` (`internal/plugins/source.go`) turns it into a download:
     - `owner/repo`, or its github.com URL → the latest release's `.zip` for the server's own OS and CPU (`pickAsset` matches `linux`/`windows`/`darwin` plus `amd64`/`x86_64`/`arm64`… as separate words in the asset name). A single platform-neutral zip is also accepted.
+    - Any other github.com link into the repo (its Releases page, a file view) → the same; a release's own page (`/releases/tag/<tag>`) → that release. People paste whatever is in their address bar, and before 2026-09-28 those links were downloaded as HTML and failed with "not a valid zip file"; a downloaded web page now gets an error saying what to type instead.
     - A GitHub release-asset link → that file.
     - Any other https link → that file.
 
