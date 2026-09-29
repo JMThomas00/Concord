@@ -393,9 +393,19 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		Member:  senderMember,
 		Nonce:   payload.Nonce,
 	}
+	if c.IsPlugin && payload.Stream == protocol.StreamWriting {
+		responsePayload.Stream = protocol.StreamWriting
+	}
 
 	// Broadcast to channel
 	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageCreate, responsePayload, nil)
+
+	// A plugin isn't a channel member, so it would never hear about its own
+	// message; echo it (with its nonce) so the plugin learns the new
+	// message's ID -- which it needs to edit it, e.g. to stream a reply.
+	if c.IsPlugin {
+		_ = h.dispatchTo(c, protocol.EventMessageCreate, responsePayload)
+	}
 
 	if channel != nil {
 		h.relayMessageToPlugins(channel, newMsg, c)
@@ -434,7 +444,10 @@ func (h *Handlers) relayMessageToPlugins(channel *models.Channel, message *model
 
 	delivered := make(map[string]bool)
 
-	if channel.Type == models.ChannelTypePlugin && channel.PluginID != "" {
+	// The owning plugin posting in its own channel already got its message
+	// back from HandleSendMessage's echo.
+	ownPost := c.IsPlugin && c.PluginID == channel.PluginID
+	if channel.Type == models.ChannelTypePlugin && channel.PluginID != "" && !ownPost {
 		if serviceUserID, err := h.plugins.ServiceUserIDFor(channel.PluginID); err == nil {
 			if err := h.hub.SendToUser(serviceUserID, protocol.EventMessageCreate, responsePayload); err != nil {
 				MsgLog.Warn("Failed to relay message to owning plugin", "plugin_id", channel.PluginID, "channel_id", channel.ID, "error", err)
@@ -1833,6 +1846,14 @@ func (h *Handlers) HandleEditMessage(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	// A streamed reply growing isn't an edit: only its author may send
+	// those steps, and they don't mark the message edited.
+	streaming := payload.Stream == protocol.StreamWriting || payload.Stream == protocol.StreamDone
+	if streaming && origMsg.AuthorID != c.UserID {
+		c.sendError(protocol.ErrorCodeForbidden, "Only a message's author can stream into it")
+		return
+	}
+
 	// Permission check: user can only edit their own messages, or admin/mod with PermissionManageMessages
 	if origMsg.AuthorID != c.UserID {
 		// Check if user has PermissionManageMessages
@@ -1850,8 +1871,10 @@ func (h *Handlers) HandleEditMessage(c *Client, msg *protocol.Message) {
 
 	// Update message
 	origMsg.Content = payload.Content
-	origMsg.EditedAt = new(time.Time)
-	*origMsg.EditedAt = time.Now()
+	if !streaming {
+		origMsg.EditedAt = new(time.Time)
+		*origMsg.EditedAt = time.Now()
+	}
 
 	if err := h.db.UpdateMessage(origMsg); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to update message")
@@ -1865,6 +1888,9 @@ func (h *Handlers) HandleEditMessage(c *Client, msg *protocol.Message) {
 		ChannelID: payload.ChannelID,
 		Content:   payload.Content,
 		EditedAt:  origMsg.EditedAt,
+	}
+	if streaming {
+		updatePayload.Stream = payload.Stream
 	}
 
 	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageUpdate, updatePayload, nil)

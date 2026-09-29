@@ -451,6 +451,7 @@ type MessageDisplay struct {
 	IsWhisper     bool // Ephemeral DM from /whisper
 	IsSystem      bool // Server-wide moderation/system announcement
 	IsDeleted     bool // Soft-deleted; rendered as [message deleted] placeholder
+	Streaming     bool // A plugin reply still being written (protocol.StreamWriting): shown with a cursor, unfinished markdown closed off
 	IsBotAuthor   bool // Author is a plugin's own service account (models.User.IsServiceAccount) — never grouped under a shared header with an adjacent message, even the same author's own within the grouping window, since e.g. two of Mynah's replies landing close together answer two different questions and reading as one merged reply is actively misleading
 }
 
@@ -4672,6 +4673,8 @@ func (a *App) updateChatContent() {
 		messageContentWithCursor := msg.Content
 		if isInLevel2 && !isSystemMsg {
 			messageContentWithCursor = a.insertCursorIntoMessage(msg.Content)
+		} else if msg.Streaming {
+			messageContentWithCursor = streamingMarkdown(msg.Content)
 		}
 
 		// Note: Reply quotes are now embedded inline in message content (press 'r' to reply)
@@ -6102,6 +6105,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			IsOwn:       payload.Author.ID == sc.User.ID,
 			ShowHeader:  true, // TODO: Implement message grouping
 			IsBotAuthor: payload.Author != nil && payload.Author.IsServiceAccount,
+			Streaming:   payload.Stream == protocol.StreamWriting,
 		}
 
 		// Add message to connection's message history
@@ -6278,6 +6282,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				if msg.ID == payload.ID {
 					msg.Content = payload.Content
 					msg.EditedAt = payload.EditedAt
+					msg.Streaming = payload.Stream == protocol.StreamWriting
 					break
 				}
 			}

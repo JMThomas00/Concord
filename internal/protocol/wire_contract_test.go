@@ -112,6 +112,24 @@ func TestWireDecodesWhatTheServerSends(t *testing.T) {
 	if send.ChannelID != ch.ID || send.Content != "hello" || send.ReplyToID == nil || *send.ReplyToID != reply {
 		t.Errorf("server decoded SendMessage as %+v", send)
 	}
+	roundTrip(t, wire.SendMessagePayload{ChannelID: ch.ID, Content: "hi", Nonce: "p1", Stream: wire.StreamWriting}, &send)
+	if send.Nonce != "p1" || send.Stream != StreamWriting {
+		t.Errorf("server decoded a streamed SendMessage as %+v", send)
+	}
+	var edit EditMessagePayload
+	roundTrip(t, wire.EditMessagePayload{MessageID: msg.ID, ChannelID: ch.ID, Content: "more", Stream: wire.StreamDone}, &edit)
+	if edit.MessageID != msg.ID || edit.ChannelID != ch.ID || edit.Content != "more" || edit.Stream != StreamDone {
+		t.Errorf("server decoded EditMessage as %+v", edit)
+	}
+	if int(wire.OpEditMessage) != int(OpEditMessage) {
+		t.Errorf("OpEditMessage: SDK %d, server %d", wire.OpEditMessage, OpEditMessage)
+	}
+	var echo wire.MessageCreatePayload
+	roundTrip(t, MessageCreatePayload{Message: msg, Author: author, Nonce: "p1", Stream: StreamWriting}, &echo)
+	if echo.Nonce != "p1" || echo.Stream != wire.StreamWriting {
+		t.Errorf("MESSAGE_CREATE echo decoded as nonce %q stream %q", echo.Nonce, echo.Stream)
+	}
+
 	var envelope Message
 	wmsg, _ := wire.NewMessage(wire.OpPluginPaneFrame, wire.PluginPaneFramePayload{ChannelID: ch.ID, Frame: "x", Seq: 1})
 	roundTrip(t, wmsg, &envelope)

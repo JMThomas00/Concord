@@ -109,6 +109,7 @@ type Conn struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]chan wire.PluginMembersResponse
+	posts     map[string]chan uuid.UUID // PostMessage calls waiting for their echo, by nonce
 	reqID     atomic.Int64
 
 	postMu sync.Mutex
@@ -287,8 +288,15 @@ func Run(ctx context.Context, cfg Config, h Handler) error {
 var ErrRejected = errors.New("Concord rejected this plugin's token")
 
 func (c *Conn) run(ctx context.Context, h Handler) error {
+	// Run returns only after the callback in progress (if any) finishes, so
+	// a plugin exiting after Run never cuts one short mid-save. The handler
+	// goroutine stops on this cancel, whichever way Run ends.
+	ctx, cancel := context.WithCancel(ctx)
 	events := make(chan func(), 1024)
+	handlersDone := make(chan struct{})
+	defer func() { cancel(); <-handlersDone }()
 	go func() {
+		defer close(handlersDone)
 		for {
 			select {
 			case fn := <-events:
@@ -471,7 +479,10 @@ func (c *Conn) route(m *wire.Message, h Handler, dispatch func(func())) {
 		}
 	case wire.EventMessageCreate:
 		var p wire.MessageCreatePayload
-		if h.OnMessage != nil && decode(&p) && p.ChatMessage != nil {
+		if !decode(&p) || p.ChatMessage == nil || c.answerPost(p) {
+			return // the echo of our own PostMessage: its caller has it
+		}
+		if h.OnMessage != nil {
 			dispatch(func() { h.OnMessage(c, p) })
 		}
 	case wire.EventPluginEvent:

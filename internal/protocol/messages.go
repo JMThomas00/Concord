@@ -252,6 +252,9 @@ type SendMessagePayload struct {
 	ReplyToID   *uuid.UUID          `json:"reply_to_id,omitempty"`
 	Nonce       string              `json:"nonce,omitempty"` // Client-generated ID for deduplication
 	Attachments []models.Attachment `json:"attachments,omitempty"`
+	// Stream is StreamWriting for a plugin reply that will grow by edits
+	// (ignored from human clients).
+	Stream string `json:"stream,omitempty"`
 }
 
 // EditMessagePayload is sent to edit a message
@@ -259,7 +262,16 @@ type EditMessagePayload struct {
 	MessageID uuid.UUID `json:"message_id"`
 	ChannelID uuid.UUID `json:"channel_id"`
 	Content   string    `json:"content"`
+	// Stream (StreamWriting/StreamDone) marks a step of a reply being
+	// written, which doesn't count as an edit. Only the author may send it.
+	Stream string `json:"stream,omitempty"`
 }
+
+// Stream states for a streamed reply; see sdk/wire.
+const (
+	StreamWriting = wire.StreamWriting
+	StreamDone    = wire.StreamDone
+)
 
 // DeleteMessagePayload is sent to delete a message
 type DeleteMessagePayload struct {
@@ -518,6 +530,7 @@ type MessageCreatePayload struct {
 	Author *models.User         `json:"author"`
 	Member *models.ServerMember `json:"member,omitempty"`
 	Nonce  string               `json:"nonce,omitempty"`
+	Stream string               `json:"stream,omitempty"` // StreamWriting while a plugin reply is still being written
 }
 
 // MessageHistoryPayload contains historical messages for a channel
@@ -542,6 +555,7 @@ type MessageUpdatePayload struct {
 	ChannelID uuid.UUID  `json:"channel_id"`
 	Content   string     `json:"content,omitempty"`
 	EditedAt  *time.Time `json:"edited_at,omitempty"`
+	Stream    string     `json:"stream,omitempty"` // StreamWriting or StreamDone for a streamed reply
 }
 
 // MessageDeletePayload is dispatched when a message is deleted

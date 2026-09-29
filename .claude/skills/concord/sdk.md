@@ -48,7 +48,10 @@ callback goroutine.
 
 | Method | Does |
 |---|---|
-| `SendMessage(channel, text, replyTo)` | posts chat as the plugin (markdown works) |
+| `SendMessage(channel, text, replyTo)` | posts chat as the plugin (markdown works; at most 2000 bytes) |
+| `PostMessage(ctx, channel, text, replyTo)` | the same, but **blocks** until saved and returns the message ID |
+| `EditMessage(channel, id, text)` | changes one of the plugin's own messages |
+| `Stream(ctx, channel, replyTo)` | a reply written as it's produced (LLM tokens): see below |
 | `Typing(channel, true)` | typing indicator; lasts ~5s, so **re-send every ~3s** during slow work |
 | `Frame(channel, viewer, s)` / `Broadcast(channel, s)` | a rendered screen to one viewer / all viewers |
 | `Notify(text)` | message in the admin-configured notification channel |
@@ -59,6 +62,33 @@ callback goroutine.
 | `Post(fn)` | run fn on the callback goroutine |
 | `DataDir()` | private folder for the plugin's files; survives updates and reinstalls |
 | `Self()`, `PluginID()` | the plugin's account and install ID |
+
+## Streaming a reply
+
+For anything that produces text over time (an LLM), stream it rather than
+posting once at the end: members see the reply grow with a cursor, and it
+isn't marked "edited".
+
+```go
+go func() { // Stream blocks on the network: never inside a callback
+	s := c.Stream(ctx, m.ChannelID, &m.ID)
+	for token := range tokens {
+		s.Write(token)
+	}
+	s.Close()
+}()
+```
+
+- The first piece appears at once; later ones are batched into an edit
+  every `s.Interval` (400ms). Write pieces of any size.
+- Markdown renders correctly at every step: Concord treats an unfinished code
+  block (or `` ` `` / `**`) as closed until the rest arrives.
+- A reply over 2000 bytes continues in a new message, split between
+  paragraphs; a code block cut in two is closed and reopened.
+- `Close` on an empty stream posts nothing. Check `Write`/`Close` errors (the
+  connection can drop mid-reply).
+- In tests, `plugintest.Server.Posted()` and `WaitStreamDone(id)` show the
+  messages as they end up.
 
 ## `pane`: Bubble Tea models as panes
 

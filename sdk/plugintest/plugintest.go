@@ -44,6 +44,9 @@ type Server struct {
 	frames  map[uuid.UUID]chan wire.PluginPaneFramePayload // by viewer; uuid.Nil = broadcasts
 	events  chan wire.PluginEventPayload
 	chat    chan wire.SendMessagePayload
+	edits   chan wire.EditMessagePayload
+	posted  map[uuid.UUID]*Posted // the plugin's messages, by ID
+	order   []uuid.UUID
 	viewers map[uuid.UUID]*Viewer
 }
 
@@ -69,6 +72,8 @@ func NewServer(t testing.TB) *Server {
 		frames:  map[uuid.UUID]chan wire.PluginPaneFramePayload{},
 		events:  make(chan wire.PluginEventPayload, 256),
 		chat:    make(chan wire.SendMessagePayload, 256),
+		edits:   make(chan wire.EditMessagePayload, 1024),
+		posted:  map[uuid.UUID]*Posted{},
 		viewers: map[uuid.UUID]*Viewer{},
 	}
 	s.http = httptest.NewServer(http.HandlerFunc(s.serveWS))
@@ -166,7 +171,12 @@ func (s *Server) handle(ws *websocket.Conn, m *wire.Message) {
 	case wire.OpSendMessage:
 		var p wire.SendMessagePayload
 		if json.Unmarshal(m.Data, &p) == nil {
-			s.chat <- p
+			s.post(ws, p)
+		}
+	case wire.OpEditMessage:
+		var e wire.EditMessagePayload
+		if json.Unmarshal(m.Data, &e) == nil {
+			s.edit(e)
 		}
 	}
 }

@@ -67,7 +67,7 @@ func main() {
 	module := fs.String("module", "", "Go module path (default github.com/you/<name>)")
 	name := fs.String("name", "", "display name (default from <name>)")
 	sdk := fs.String("sdk", "", "path to a local Concord sdk/ checkout to build against (adds a replace)")
-	sdkVersion := fs.String("sdk-version", "v0.3.0", "SDK version to require")
+	sdkVersion := fs.String("sdk-version", "v0.4.0", "SDK version to require")
 	ptyVersion := fs.String("pty-version", "v0.1.1", "sdk/pty version to require (pty template)")
 	_ = fs.Parse(reorder(os.Args[2:]))
 	if fs.NArg() != 1 {

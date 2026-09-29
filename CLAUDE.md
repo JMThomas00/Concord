@@ -216,7 +216,7 @@ External programs attach to a Concord server as privileged clients — bots, int
 
 Plugins are built on the SDK, a **separate Go module** nested in this repo: `github.com/JMThomas00/Concord/sdk`.
 
-- **Releases are git tags.** `sdk/vX.Y.Z` releases the SDK and `sdk/pty/vX.Y.Z` releases the terminal passthrough module. Published: `sdk/v0.1.0` and `sdk/pty/v0.1.1` (2026-09-28), then `sdk/v0.2.0` (network play) and `sdk/v0.3.0` (`computer_level` channel setting, scaffolder fixes).
+- **Releases are git tags.** `sdk/vX.Y.Z` releases the SDK and `sdk/pty/vX.Y.Z` releases the terminal passthrough module. Published: `sdk/v0.1.0` and `sdk/pty/v0.1.1` (2026-09-28), then `sdk/v0.2.0` (network play), `sdk/v0.3.0` (`computer_level` channel setting, scaffolder fixes) and `sdk/v0.4.0` (streamed replies: `PostMessage`, `EditMessage`, `Stream`).
 - **Don't use `sdk/pty/v0.1.0`.** It was tagged before its `go.mod` named a real SDK version, and a published tag is never moved.
 - **After tagging either module,** bump the scaffolder's `--sdk-version`/`--pty-version` defaults (`sdk/cmd/concord-plugin/main.go`) so new plugins start on it.
 - **Before tagging `sdk/pty`,** make sure its `go.mod` requires an SDK version that's already tagged. Its `replace ../` only applies inside that module, so other repos ignore it. Concord's root `go.mod` uses it through `replace … => ./sdk`, so a change to both sides lands in one commit. The root `./...` does **not** include `sdk/`: test it with `cd sdk && go test ./...`; `make test` and `make fmt` do both. The Dockerfile copies `sdk/go.mod`/`go.sum` before `go mod download`.
@@ -225,7 +225,8 @@ Plugins are built on the SDK, a **separate Go module** nested in this repo: `git
 - **`sdk/plugin`** is the runtime:
   - `ConfigFromEnv()` returns ok=false when not launched by Concord (run standalone).
   - `Run(ctx, cfg, Handler)` identifies, reconnects with backoff, and exits on `ErrRejected`. Callbacks run one at a time on one goroutine, in order.
-  - `Conn` has helpers: `Frame`/`Broadcast` (automatic per-frame `Seq`), `Notify`, `NotifyUser`, `SetTitle`, `LeavePane`, `SendMessage`, `Typing`, and `RequestMembers`, which blocks, so call it from a goroutine rather than from inside a callback.
+  - `Conn` has helpers: `Frame`/`Broadcast` (automatic per-frame `Seq`), `Notify`, `NotifyUser`, `SetTitle`, `LeavePane`, `SendMessage`, `EditMessage`, `Typing`, and three that block (call them from a goroutine, not a callback): `RequestMembers`, `PostMessage` (returns the new message ID, from Concord echoing a plugin's own post with its nonce) and `Stream` (a reply written as it arrives: posted with `stream: writing`, grown by edits that don't mark it edited, finished with `stream: done`, split past 2000 bytes; the client shows a cursor and closes unfinished markdown meanwhile, `streamingMarkdown`).
+  - `Run` returns only after the callback in progress finishes, however it ends.
 - **`sdk/pane`** runs Bubble Tea models as panes: one model per viewer, fed `tea.WindowSizeMsg` and rebuilt `tea.KeyMsg`s (`pane.KeyMsg`).
   - `Host.Broadcast(channel, msg)` re-renders every viewer of a channel after shared state changes.
   - `tea.Quit` hands that viewer's keys back to Concord.

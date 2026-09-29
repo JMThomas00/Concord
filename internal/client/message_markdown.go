@@ -310,3 +310,63 @@ func trimTrailingRenderedPadding(line string) string {
 	}
 	return line[:i]
 }
+
+// streamCursor marks the end of a reply that's still being written.
+const streamCursor = "▍"
+
+// streamingMarkdown prepares a partly written reply (protocol.StreamWriting)
+// for the markdown renderer: markup the text has opened but not yet closed
+// is closed off for now, so the rest of the message doesn't turn into one
+// big code block (an open ``` fence) or show stray markers, and a cursor
+// marks where the text is still arriving. The real text replaces it on the
+// next update.
+func streamingMarkdown(text string) string {
+	fence := "" // the open fence's marker, e.g. "```" or "~~~~"
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if len(line)-len(trimmed) > 3 {
+			continue // indented code, not a fence
+		}
+		if marker := fenceMarker(trimmed); marker != "" {
+			switch {
+			case fence == "":
+				fence = marker
+			case strings.HasPrefix(marker, fence[:1]) && len(marker) >= len(fence) && strings.TrimSpace(trimmed[len(marker):]) == "":
+				fence = ""
+			}
+		}
+	}
+	if fence != "" {
+		return text + streamCursor + "\n" + fence
+	}
+
+	// Inline markup left open on the line being written.
+	last := text[strings.LastIndexByte(text, '\n')+1:]
+	closing := ""
+	if strings.Count(last, "`")%2 == 1 {
+		closing = "`"
+	} else {
+		if strings.Count(last, "**")%2 == 1 {
+			closing = "**"
+		}
+		if strings.Count(strings.ReplaceAll(last, "**", ""), "_")%2 == 1 && strings.Contains(last, " _") {
+			closing += "_"
+		}
+	}
+	return text + streamCursor + closing
+}
+
+// fenceMarker returns the ``` or ~~~ run a fenced code block line starts
+// with, or "".
+func fenceMarker(line string) string {
+	for _, ch := range []byte{'`', '~'} {
+		n := 0
+		for n < len(line) && line[n] == ch {
+			n++
+		}
+		if n >= 3 {
+			return line[:n]
+		}
+	}
+	return ""
+}

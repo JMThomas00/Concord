@@ -716,11 +716,7 @@ func (c *Client) sendError(code int, message string) {
 		Data: data,
 	}
 
-	select {
-	case c.send <- msg:
-	default:
-		ClientLog.Warn("Failed to send error, buffer full", "user_id", c.UserID, "error_code", code)
-	}
+	c.Send(msg) // safe even if the connection has closed meanwhile
 }
 
 // sendInvalidSession sends an INVALID_SESSION message

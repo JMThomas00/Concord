@@ -24,6 +24,7 @@ const (
 	OpHeartbeat    OpCode = 1  // plugin → server: keep-alive
 	OpSendMessage  OpCode = 3  // plugin → server: post a chat message (SendMessagePayload)
 	OpTypingStart  OpCode = 4  // plugin → server: show "typing…" in a channel
+	OpEditMessage  OpCode = 30 // plugin → server: change one of your own messages (EditMessagePayload)
 	OpDispatch     OpCode = 10 // server → plugin: an event; see Message.Type
 	OpHeartbeatAck OpCode = 11 // server → plugin: reply to OpHeartbeat
 	OpHello        OpCode = 12 // server → plugin: first message on connect (HelloPayload)
@@ -158,17 +159,43 @@ type ChatMessage struct {
 	ReplyToID *uuid.UUID `json:"reply_to_id,omitempty"`
 }
 
-// MessageCreatePayload is EventMessageCreate's data.
+// MessageCreatePayload is EventMessageCreate's data. For a message you
+// sent yourself, Nonce is the one you sent it with.
 type MessageCreatePayload struct {
 	*ChatMessage
-	Author *User `json:"author"`
+	Author *User  `json:"author"`
+	Nonce  string `json:"nonce,omitempty"`
+	Stream string `json:"stream,omitempty"`
 }
+
+// Stream states for a reply written a piece at a time: post it with
+// StreamWriting, edit it with StreamWriting as it grows, and finish with an
+// edit marked StreamDone. Clients show a cursor while it's being written,
+// don't mark it "edited", and render unfinished markdown (an open code
+// block) sensibly. plugin.Conn.Stream does all of this.
+const (
+	StreamWriting = "writing"
+	StreamDone    = "done"
+)
+
+// MaxMessageLength is the most characters one chat message can hold.
+const MaxMessageLength = 2000
 
 // SendMessagePayload is OpSendMessage's data.
 type SendMessagePayload struct {
 	ChannelID uuid.UUID  `json:"channel_id"`
 	Content   string     `json:"content"`
 	ReplyToID *uuid.UUID `json:"reply_to_id,omitempty"`
+	Nonce     string     `json:"nonce,omitempty"`  // echoed back in your own MESSAGE_CREATE
+	Stream    string     `json:"stream,omitempty"` // StreamWriting for a reply that will grow by edits
+}
+
+// EditMessagePayload is OpEditMessage's data.
+type EditMessagePayload struct {
+	MessageID uuid.UUID `json:"message_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	Content   string    `json:"content"`
+	Stream    string    `json:"stream,omitempty"` // StreamWriting or StreamDone while streaming a reply
 }
 
 // TypingPayload is OpTypingStart/OpTypingStop's data.
