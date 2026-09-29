@@ -174,7 +174,7 @@ func (h *Hub) unregisterClient(client *Client) {
 		// offline -- would silently cut off the live session. Only this
 		// stale connection's own send channel is ours to close.
 		h.mu.Unlock()
-		close(client.send)
+		client.closeSend()
 		HubLog.Info("Superseded client unregistered", "user_id", client.UserID)
 		return
 	}
@@ -218,7 +218,7 @@ func (h *Hub) unregisterClient(client *Client) {
 	}
 
 	// Close the client's send channel
-	close(client.send)
+	client.closeSend()
 
 	cb := h.onVoiceLeave
 	disconnectCb := h.onUserDisconnect

@@ -197,22 +197,33 @@ func TestPluginManageInstallIsLiveAndUninstallRemovesIt(t *testing.T) {
 		}
 		return false
 	}
-	result := func() protocol.PluginManageResult {
-		m := client.readUntil(10*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginManageResult })
-		var r protocol.PluginManageResult
-		_ = json.Unmarshal(m.Data, &r)
-		return r
+	// An action answers with its result (sent to the asking connection) and
+	// a registry update (broadcast); they can arrive in either order.
+	after := func() (reg *protocol.Message, r protocol.PluginManageResult) {
+		var res *protocol.Message
+		for reg == nil || res == nil {
+			m := client.readUntil(10*time.Second, func(m *protocol.Message) bool {
+				return m.Type == protocol.EventPluginRegistryUpdate || m.Type == protocol.EventPluginManageResult
+			})
+			if m.Type == protocol.EventPluginRegistryUpdate {
+				reg = m
+			} else {
+				res = m
+			}
+		}
+		_ = json.Unmarshal(res.Data, &r)
+		return reg, r
 	}
 
 	client.send(protocol.OpPluginManage, protocol.PluginManageRequest{
 		ServerID: testServer.ID, Action: protocol.PluginActionInstall,
 		PluginID: "liveplug", SourceURL: archiveSrv.URL, SHA256: hex.EncodeToString(sum[:]),
 	})
-	reg := client.readUntil(10*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginRegistryUpdate })
+	reg, r := after()
 	if !hasKind(reg) {
 		t.Fatalf("registry update after install lacks the new kind: %s", reg.Data)
 	}
-	if r := result(); !r.OK {
+	if !r.OK {
 		t.Fatalf("install result: %+v", r)
 	}
 	if _, ok := srv.plugins.Registry().Manifest("liveplug"); !ok {
@@ -220,14 +231,49 @@ func TestPluginManageInstallIsLiveAndUninstallRemovesIt(t *testing.T) {
 	}
 
 	client.send(protocol.OpPluginManage, protocol.PluginManageRequest{ServerID: testServer.ID, Action: protocol.PluginActionUninstall, PluginID: "liveplug"})
-	reg = client.readUntil(10*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginRegistryUpdate })
+	reg, r = after()
 	if hasKind(reg) {
 		t.Fatal("registry update after uninstall still lists the kind")
 	}
-	if r := result(); !r.OK {
+	if !r.OK {
 		t.Fatalf("uninstall result: %+v", r)
 	}
 	if _, err := os.Stat(filepath.Join(srv.plugins.PluginsDir(), "liveplug")); !os.IsNotExist(err) {
 		t.Fatal("uninstall left the plugin folder behind")
+	}
+}
+
+// The same account signed in twice (two terminals, or a reconnect before
+// the old socket closed): a plugin action's result goes back to the
+// connection that asked. It used to go to whichever connection the hub
+// had last registered for the account, leaving the asking client's form
+// stuck on "Working…".
+func TestPluginManageResultReachesTheAskingConnection(t *testing.T) {
+	srv, wsURL := startPlainTestServer(t)
+	admin, token := createTestUserAndToken(t, srv, "plugin-two-sessions")
+	testServer := models.NewServer("Two Sessions", admin.ID)
+	if err := srv.db.CreateServer(testServer); err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	if err := srv.db.CreateRole(models.NewEveryoneRole(testServer.ID)); err != nil {
+		t.Fatalf("failed to create @everyone role: %v", err)
+	}
+	if err := srv.db.AddServerMember(models.NewServerMember(admin.ID, testServer.ID)); err != nil {
+		t.Fatalf("failed to add owner as member: %v", err)
+	}
+
+	first := newTestWSClient(t, wsURL)
+	first.identify(token)
+	second := newTestWSClient(t, wsURL)
+	second.identify(token) // now the hub's connection for this account
+
+	first.send(protocol.OpPluginManage, protocol.PluginManageRequest{ServerID: testServer.ID, Action: "no-such-action"})
+	resp := first.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventPluginManageResult })
+	var result protocol.PluginManageResult
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if result.OK || result.Message == "" {
+		t.Fatalf("expected a failure with a message, got %+v", result)
 	}
 }

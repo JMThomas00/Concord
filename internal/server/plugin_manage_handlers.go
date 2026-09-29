@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/plugins"
 	"github.com/concord-chat/concord/internal/protocol"
@@ -38,8 +37,8 @@ func (h *Handlers) HandlePluginManage(c *Client, msg *protocol.Message) {
 		} else {
 			MsgLog.Info("Plugin action done", "action", req.Action, "plugin_id", req.PluginID, "admin", adminID)
 		}
-		_ = h.hub.SendToUser(adminID, protocol.EventPluginManageResult, result)
-		h.sendPluginList(adminID)
+		_ = c.SendDispatch(protocol.EventPluginManageResult, result)
+		h.sendPluginList(c)
 	}()
 }
 
@@ -131,8 +130,9 @@ func (h *Handlers) runPluginAction(req protocol.PluginManageRequest) (string, er
 	return "", fmt.Errorf("unknown plugin action %q", req.Action)
 }
 
-// sendPluginList pushes the current Settings > Plugins list to one user.
-func (h *Handlers) sendPluginList(userID uuid.UUID) {
+// sendPluginList pushes the current Settings > Plugins list to the admin
+// connection that asked (not every connection of that account).
+func (h *Handlers) sendPluginList(c *Client) {
 	installedList, err := h.db.ListInstalledPlugins()
 	if err != nil {
 		return
@@ -141,7 +141,7 @@ func (h *Handlers) sendPluginList(userID uuid.UUID) {
 	for _, installed := range installedList {
 		infos = append(infos, h.buildPluginInfo(installed, false))
 	}
-	_ = h.hub.SendToUser(userID, protocol.EventPluginConfigUpdate, protocol.PluginConfigListPayload{Plugins: infos})
+	_ = c.SendDispatch(protocol.EventPluginConfigUpdate, protocol.PluginConfigListPayload{Plugins: infos})
 }
 
 // onPluginStopped drops a stopped plugin's connection, so nothing that

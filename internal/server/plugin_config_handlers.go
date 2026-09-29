@@ -90,7 +90,6 @@ func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeForbidden, err.Error())
 		return
 	}
-	adminID := c.UserID
 	reply := func(err error, fieldErrors map[string]string) {
 		result := protocol.PluginManageResult{Action: "configure", PluginID: req.PluginID, OK: err == nil && len(fieldErrors) == 0, FieldErrors: fieldErrors}
 		switch {
@@ -101,7 +100,7 @@ func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
 		default:
 			result.Message = "Saved."
 		}
-		_ = h.hub.SendToUser(adminID, protocol.EventPluginManageResult, result)
+		_ = c.SendDispatch(protocol.EventPluginManageResult, result)
 	}
 
 	manifest, ok := h.plugins.Registry().Manifest(req.PluginID)
@@ -125,7 +124,7 @@ func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
 		if req.Enabled != nil {
 			if err := h.plugins.SetEnabled(req.PluginID, *req.Enabled); err != nil {
 				reply(fmt.Errorf("failed to update plugin: %w", err), nil)
-				h.sendPluginList(adminID)
+				h.sendPluginList(c)
 				return
 			}
 		}
@@ -149,7 +148,7 @@ func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
 			}
 		}
 		reply(nil, nil)
-		h.sendPluginList(adminID)
+		h.sendPluginList(c)
 
 		// A plugin has no other way to learn its own server_config_field
 		// values changed, so push them (plaintext, secrets included) the

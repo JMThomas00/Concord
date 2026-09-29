@@ -42,6 +42,11 @@ type Client struct {
 
 	// Buffered channel of outbound messages
 	send chan *protocol.Message
+	// sendMu guards sendClosed, so Send from another goroutine (a plugin
+	// action finishing after this connection dropped) never writes to a
+	// closed channel.
+	sendMu     sync.Mutex
+	sendClosed bool
 
 	// User information (set after authentication)
 	UserID    uuid.UUID
@@ -737,10 +742,25 @@ func (c *Client) sendInvalidSession(reason string) {
 
 // Send sends a message to the client
 func (c *Client) Send(msg *protocol.Message) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendClosed {
+		return
+	}
 	select {
 	case c.send <- msg:
 	default:
 		ClientLog.Warn("Client send buffer full, dropping message", "user_id", c.UserID, "op", msg.Op)
+	}
+}
+
+// closeSend closes the outbound channel once; later Sends are dropped.
+func (c *Client) closeSend() {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.send)
 	}
 }
 
