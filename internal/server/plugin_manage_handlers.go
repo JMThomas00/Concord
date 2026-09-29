@@ -37,7 +37,7 @@ func (h *Handlers) HandlePluginManage(c *Client, msg *protocol.Message) {
 		} else {
 			MsgLog.Info("Plugin action done", "action", req.Action, "plugin_id", req.PluginID, "admin", adminID)
 		}
-		_ = c.SendDispatch(protocol.EventPluginManageResult, result)
+		_ = h.dispatchTo(c, protocol.EventPluginManageResult, result)
 		h.sendPluginList(c)
 	}()
 }
@@ -141,7 +141,7 @@ func (h *Handlers) sendPluginList(c *Client) {
 	for _, installed := range installedList {
 		infos = append(infos, h.buildPluginInfo(installed, false))
 	}
-	_ = c.SendDispatch(protocol.EventPluginConfigUpdate, protocol.PluginConfigListPayload{Plugins: infos})
+	_ = h.dispatchTo(c, protocol.EventPluginConfigUpdate, protocol.PluginConfigListPayload{Plugins: infos})
 }
 
 // onPluginStopped drops a stopped plugin's connection, so nothing that

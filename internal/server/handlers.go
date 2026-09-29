@@ -78,7 +78,7 @@ func NewHandlers(db *database.DB, hub *Hub, stats *StatsTracker, pluginManager *
 		if c.IsPlugin {
 			return // its viewers stay registered and are replayed on reconnect
 		}
-		if v := h.paneViewers.LeaveAll(c.UserID); v != nil {
+		if v := h.paneViewers.LeaveConn(c); v != nil {
 			h.sendPaneLeaveToPlugin(v.pluginID, v.enter.ChannelID, c.UserID)
 		}
 	})
@@ -1239,12 +1239,7 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 	}
 
 	// Force-close the kicked user's connection
-	h.hub.mu.RLock()
-	kicked, ok := h.hub.clients[req.UserID]
-	h.hub.mu.RUnlock()
-	if ok {
-		kicked.conn.Close()
-	}
+	h.hub.DisconnectUser(req.UserID) // every device they're signed in on
 }
 
 // HandleBanMember bans a member from the server (requires PermissionBanMembers).
@@ -1303,12 +1298,7 @@ func (h *Handlers) HandleBanMember(c *Client, msg *protocol.Message) {
 	}
 
 	// Disconnect the banned user
-	h.hub.mu.RLock()
-	banned, ok := h.hub.clients[req.UserID]
-	h.hub.mu.RUnlock()
-	if ok {
-		banned.conn.Close()
-	}
+	h.hub.DisconnectUser(req.UserID) // every device they're signed in on
 }
 
 // HandleMuteMember server-mutes or unmutes a member (requires PermissionMuteMembers).
@@ -1402,12 +1392,7 @@ func (h *Handlers) HandleTimeoutMember(c *Client, msg *protocol.Message) {
 	h.sendSystemMessage(req.ChannelID, timeoutMsg)
 
 	// Force-close the connection
-	h.hub.mu.RLock()
-	timedOut, ok := h.hub.clients[req.UserID]
-	h.hub.mu.RUnlock()
-	if ok {
-		timedOut.conn.Close()
-	}
+	h.hub.DisconnectUser(req.UserID) // every device they're signed in on
 }
 
 // HandleUnbanMember unbans a member from the server (requires PermissionBanMembers).
@@ -2406,7 +2391,7 @@ func (h *Handlers) HandleVoiceStateUpdate(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to join voice channel")
 		return
 	}
-	h.hub.JoinVoiceChannel(c.UserID, req.ServerID, *req.ChannelID)
+	h.hub.JoinVoiceChannel(c.UserID, req.ServerID, *req.ChannelID, c)
 
 	// Broadcast new state to all server members
 	joinPayload := &protocol.VoiceStateEventPayload{
@@ -2587,7 +2572,7 @@ func (h *Handlers) HandleMoveVoice(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to move user")
 		return
 	}
-	h.hub.JoinVoiceChannel(req.UserID, req.ServerID, req.ChannelID)
+	h.hub.JoinVoiceChannel(req.UserID, req.ServerID, req.ChannelID, nil)
 
 	// Broadcast join in new channel.
 	joinPayload := &protocol.VoiceStateEventPayload{

@@ -53,8 +53,10 @@ the next game.)
 **Stale binaries look like missing features.** If a behavior seems absent,
 check the installed version in Settings > Plugins before debugging code.
 
-**One live connection per account.** Testing with the same Concord account
-in two clients makes the first stop receiving frames. Use two accounts.
+**A viewer is a user, not a device.** The same account with the pane open
+on two computers is one viewer to the plugin; the pane follows whichever
+opened it last and the other is handed its keyboard back. Test multiplayer
+with two accounts.
 
 **Don't float the UI libraries.** `go get -u` on bubbletea/bubbles/lipgloss
 can pull versions the SDK hasn't been tested with. Update the SDK instead,

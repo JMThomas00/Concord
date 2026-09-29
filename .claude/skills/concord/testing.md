@@ -61,9 +61,8 @@ or install/update. Before release:
 1. Tag a release (or host the zip anywhere over https).
 2. Install it with **Server Settings → Plugins → I**, create a channel of
    its kind, and open it from two clients signed in as **different
-   accounts**. The same account on two clients steals delivery from the
-   first (a known Concord limitation), and the pane looks stuck on "Waiting
-   for plugin…".
+   accounts** (plugins see viewers as users: the same account on two
+   clients is one viewer, and the pane follows whichever opened it last).
 3. Check: settings forms and their errors, a restart (**R**) repaints open
    panes, an update (**U**) keeps data, Ctrl+] always returns the keyboard.
 4. The plugin's stdout/stderr go to the server's log, prefixed with its ID.

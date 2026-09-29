@@ -38,7 +38,7 @@ func (h *Handlers) sendToPlugin(pluginID string, event protocol.EventType, paylo
 	if target == nil {
 		return false
 	}
-	if err := h.hub.SendToUser(target.UserID, event, payload); err != nil {
+	if err := h.dispatchTo(target, event, payload); err != nil {
 		MsgLog.Error("Failed to relay to plugin", "plugin_id", pluginID, "event", event, "error", err)
 	}
 	return true
@@ -49,6 +49,40 @@ func (h *Handlers) sendPaneLeaveToPlugin(pluginID string, channelID, viewerID uu
 	h.sendToPlugin(pluginID, protocol.EventPluginPaneLeave, protocol.PluginPaneLeavePayload{
 		ChannelID: channelID,
 		ViewerID:  viewerID,
+	})
+}
+
+// dispatchTo sends one event to one connection (not every connection of
+// its user, as hub.SendToUser does).
+func (h *Handlers) dispatchTo(conn *Client, event protocol.EventType, data interface{}) error {
+	msg, err := protocol.NewDispatch(event, h.hub.NextSequence(), data)
+	if err != nil {
+		return err
+	}
+	conn.Send(msg)
+	return nil
+}
+
+// viewersFor resolves who a plugin's frame or event is for: one viewer
+// (viewerID set), or every viewer of the channel. Either way only viewers
+// of pluginID's own panes, each with the connection that has it open.
+func (h *Handlers) viewersFor(pluginID string, channelID, viewerID uuid.UUID) []channelViewer {
+	if viewerID == uuid.Nil {
+		return h.paneViewers.ChannelViewers(channelID, pluginID)
+	}
+	if _, owner, conn, ok := h.paneViewers.Viewer(viewerID, channelID); ok && owner == pluginID {
+		return []channelViewer{{viewerID, conn}}
+	}
+	return nil
+}
+
+// sendLeavePane hands conn's keyboard back from channelID's pane (the
+// same signal a plugin's leave_pane sends): used when the viewer opened
+// the pane on another device and this one stops receiving it.
+func (h *Handlers) sendLeavePane(conn *Client, channelID uuid.UUID) {
+	payload, _ := json.Marshal(protocol.PluginPaneClosePayload{ChannelID: channelID})
+	_ = h.dispatchTo(conn, protocol.EventPluginEvent, protocol.PluginEventPayload{
+		Kind: protocol.PluginEventLeavePane, Payload: payload, ViewerID: conn.UserID,
 	})
 }
 
@@ -101,8 +135,15 @@ func (h *Handlers) HandlePluginPaneEnter(c *Client, msg *protocol.Message) {
 		req.ViewerName = c.User.Username
 		req.ViewerDisplayName = h.memberDisplayName(channel.ServerID, c.User)
 	}
-	if prev := h.paneViewers.Enter(channel.PluginID, req); prev != nil {
+	_, _, oldConn, _ := h.paneViewers.Viewer(c.UserID, req.ChannelID)
+	if prev := h.paneViewers.Enter(channel.PluginID, req, c); prev != nil {
 		h.sendPaneLeaveToPlugin(prev.pluginID, prev.enter.ChannelID, c.UserID)
+		oldConn = prev.conn
+	}
+	// Opened on another device: the earlier one stops getting frames, so
+	// hand its keyboard back rather than leave it typing into a dead pane.
+	if oldConn != nil && oldConn != c {
+		h.sendLeavePane(oldConn, req.ChannelID)
 	}
 	// If the plugin is down the viewer stays registered, and it's replayed
 	// to the plugin when it connects (see replayPaneEnters) -- the client
@@ -120,7 +161,7 @@ func (h *Handlers) HandlePluginPaneResize(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
 		return
 	}
-	state, pluginID, ok := h.paneViewers.Update(c.UserID, req.ChannelID, func(e *protocol.PluginPaneEnterPayload) {
+	state, pluginID, ok := h.paneViewers.Update(c, req.ChannelID, func(e *protocol.PluginPaneEnterPayload) {
 		e.Width, e.Height = req.Width, req.Height
 		if req.Theme != nil {
 			e.Theme = req.Theme
@@ -147,8 +188,8 @@ func (h *Handlers) HandlePluginPaneInput(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
 		return
 	}
-	state, pluginID, ok := h.paneViewers.Viewer(c.UserID, req.ChannelID)
-	if !ok {
+	state, pluginID, viewing, ok := h.paneViewers.Viewer(c.UserID, req.ChannelID)
+	if !ok || viewing != c {
 		return // keys only count from someone who Entered this pane
 	}
 	req.ViewerID = c.UserID
@@ -166,7 +207,7 @@ func (h *Handlers) HandlePluginPaneLeave(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
 		return
 	}
-	if pluginID, ok := h.paneViewers.Leave(c.UserID, req.ChannelID); ok {
+	if pluginID, ok := h.paneViewers.Leave(c, req.ChannelID); ok {
 		h.sendPaneLeaveToPlugin(pluginID, req.ChannelID, c.UserID)
 	}
 }
@@ -190,20 +231,16 @@ func (h *Handlers) HandlePluginPaneFrame(c *Client, msg *protocol.Message) {
 	// stream instead of dropping every frame until Seq catches back up.
 	req.Epoch = c.connEpoch
 
-	var viewers []uuid.UUID
-	if req.ViewerID == uuid.Nil {
-		viewers = h.paneViewers.ChannelViewers(req.ChannelID, c.PluginID)
-	} else if _, pluginID, ok := h.paneViewers.Viewer(req.ViewerID, req.ChannelID); ok && pluginID == c.PluginID {
-		viewers = []uuid.UUID{req.ViewerID}
-	} else {
+	viewers := h.viewersFor(c.PluginID, req.ChannelID, req.ViewerID)
+	if len(viewers) == 0 && req.ViewerID != uuid.Nil {
 		MsgLog.Debug("Dropped plugin frame for a non-viewer", "plugin_id", c.PluginID, "channel_id", req.ChannelID, "viewer_id", req.ViewerID)
 		return
 	}
-	for _, viewerID := range viewers {
+	for _, v := range viewers {
 		out := req
-		out.ViewerID = viewerID
-		if err := h.hub.SendToUser(viewerID, protocol.EventPluginPaneFrame, out); err != nil {
-			MsgLog.Error("Failed to relay plugin pane frame", "channel_id", req.ChannelID, "viewer_id", viewerID, "error", err)
+		out.ViewerID = v.userID
+		if err := h.dispatchTo(v.conn, protocol.EventPluginPaneFrame, out); err != nil {
+			MsgLog.Error("Failed to relay plugin pane frame", "channel_id", req.ChannelID, "viewer_id", v.userID, "error", err)
 		}
 	}
 }
@@ -240,11 +277,12 @@ func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
 			MsgLog.Warn("Unhandled plugin event kind", "plugin_id", req.PluginID, "kind", req.Kind)
 			return
 		}
-		if !h.paneViewers.ViewingPlugin(req.ViewerID, c.PluginID) {
+		viewing := h.paneViewers.ViewingPlugin(req.ViewerID, c.PluginID)
+		if viewing == nil {
 			MsgLog.Debug("Dropped plugin event for a non-viewer", "plugin_id", c.PluginID, "viewer_id", req.ViewerID, "kind", req.Kind)
 			return
 		}
-		if err := h.hub.SendToUser(req.ViewerID, protocol.EventPluginEvent, req); err != nil {
+		if err := h.dispatchTo(viewing, protocol.EventPluginEvent, req); err != nil {
 			MsgLog.Error("Failed to relay plugin event to viewer", "plugin_id", req.PluginID, "viewer_id", req.ViewerID, "kind", req.Kind, "error", err)
 		}
 	}
@@ -327,8 +365,8 @@ func (h *Handlers) handlePluginMembers(c *Client, req protocol.PluginEventPayloa
 		return
 	}
 	viewing := map[uuid.UUID]bool{}
-	for _, id := range h.paneViewers.ChannelViewers(channel.ID, c.PluginID) {
-		viewing[id] = true
+	for _, v := range h.paneViewers.ChannelViewers(channel.ID, c.PluginID) {
+		viewing[v.userID] = true
 	}
 	resp := protocol.PluginMembersResponse{ChannelID: channel.ID, RequestID: p.RequestID, Members: []protocol.PluginMember{}}
 	for _, m := range members {
@@ -369,17 +407,11 @@ func (h *Handlers) handlePluginPaneTitle(c *Client, req protocol.PluginEventPayl
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid pane_title payload")
 		return
 	}
-	var viewers []uuid.UUID
-	if req.ViewerID == uuid.Nil {
-		viewers = h.paneViewers.ChannelViewers(p.ChannelID, c.PluginID)
-	} else if _, pluginID, ok := h.paneViewers.Viewer(req.ViewerID, p.ChannelID); ok && pluginID == c.PluginID {
-		viewers = []uuid.UUID{req.ViewerID}
-	}
-	for _, viewerID := range viewers {
+	for _, v := range h.viewersFor(c.PluginID, p.ChannelID, req.ViewerID) {
 		out := req
-		out.ViewerID = viewerID
-		if err := h.hub.SendToUser(viewerID, protocol.EventPluginEvent, out); err != nil {
-			MsgLog.Error("Failed to relay pane title", "plugin_id", c.PluginID, "viewer_id", viewerID, "error", err)
+		out.ViewerID = v.userID
+		if err := h.dispatchTo(v.conn, protocol.EventPluginEvent, out); err != nil {
+			MsgLog.Error("Failed to relay pane title", "plugin_id", c.PluginID, "viewer_id", v.userID, "error", err)
 		}
 	}
 }

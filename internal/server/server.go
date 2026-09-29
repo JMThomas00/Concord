@@ -887,9 +887,7 @@ func (s *Server) updateDashboardLoop() {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 
-		s.hub.mu.RLock()
-		connectionCount := len(s.hub.clients)
-		s.hub.mu.RUnlock()
+		connectionCount := s.hub.ConnectionCount()
 
 		s.dashboard.UpdateSystemStats(
 			s.stats.GetUptime(),
@@ -921,12 +919,10 @@ func (s *Server) updateDashboardLoop() {
 
 // getConnectedClientInfo returns information about connected clients
 func (s *Server) getConnectedClientInfo() []*dashboard.ClientInfo {
-	s.hub.mu.RLock()
-	defer s.hub.mu.RUnlock()
+	conns := s.hub.Connections()
+	clients := make([]*dashboard.ClientInfo, 0, len(conns))
 
-	clients := make([]*dashboard.ClientInfo, 0, len(s.hub.clients))
-
-	for _, client := range s.hub.clients {
+	for _, client := range conns {
 		// Skip clients that haven't authenticated yet
 		if client == nil || client.User == nil {
 			continue
@@ -1072,9 +1068,7 @@ func (s *Server) updateHybridDashboardLoop(renderer *dashboard.HybridRenderer) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 
-		s.hub.mu.RLock()
-		connectionCount := len(s.hub.clients)
-		s.hub.mu.RUnlock()
+		connectionCount := s.hub.ConnectionCount()
 
 		renderer.UpdateSystemStats(
 			s.stats.GetUptime(),

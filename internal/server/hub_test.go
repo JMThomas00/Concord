@@ -154,10 +154,10 @@ func TestHubStaleUnregisterKeepsNewerConnection(t *testing.T) {
 		t.Fatalf("clients[%s] = %p after the stale unregister, want the fresh connection %p", userID, got, fresh)
 	}
 	hub.mu.RLock()
-	if hub.serverClients[serverID][userID] != fresh {
+	if _, ok := hub.serverClients[serverID][userID]; !ok {
 		t.Error("stale unregister removed the fresh connection from its server's broadcast list")
 	}
-	if hub.channelClients[channelID][userID] != fresh {
+	if _, ok := hub.channelClients[channelID][userID]; !ok {
 		t.Error("stale unregister removed the fresh connection from its channel list")
 	}
 	hub.mu.RUnlock()
@@ -416,4 +416,101 @@ func TestHubJoinLeaveChannel(t *testing.T) {
 		}
 	}
 	hub.mu.RUnlock()
+}
+
+// One account signed in on two computers: everything addressed to the
+// user, their servers or their channels reaches both, and they only go
+// offline when the second one disconnects too.
+func TestHubUserWithTwoConnections(t *testing.T) {
+	hub := NewHub()
+	userID, serverID, channelID := uuid.New(), uuid.New(), uuid.New()
+	user := &models.User{ID: userID, Username: "twice"}
+	laptop := &Client{UserID: userID, ServerIDs: []uuid.UUID{serverID}, User: user, send: make(chan *protocol.Message, 10)}
+	desktop := &Client{UserID: userID, ServerIDs: []uuid.UUID{serverID}, User: user, send: make(chan *protocol.Message, 10)}
+	hub.registerClient(laptop)
+	hub.registerClient(desktop)
+	hub.JoinChannel(userID, channelID)
+
+	for _, target := range []*BroadcastMessage{
+		{UserID: &userID}, {ServerID: &serverID}, {ChannelID: &channelID},
+	} {
+		target.Message = &protocol.Message{Op: protocol.OpDispatch, Type: protocol.EventMessageCreate}
+		hub.broadcastMessage(target)
+		for name, c := range map[string]*Client{"laptop": laptop, "desktop": desktop} {
+			select {
+			case <-c.send:
+			default:
+				t.Errorf("%s didn't get a message sent to %+v", name, target)
+			}
+		}
+	}
+
+	hub.unregisterClient(laptop)
+	if !hub.IsUserOnline(userID) {
+		t.Fatal("user went offline while the desktop is still connected")
+	}
+	select {
+	case msg := <-hub.broadcast:
+		t.Fatalf("closing one of two connections broadcast %v", msg.Message.Type)
+	default:
+	}
+	if _, ok := <-laptop.send; ok {
+		t.Error("the closed connection's send channel should be closed")
+	}
+	hub.broadcastMessage(&BroadcastMessage{ServerID: &serverID, Message: &protocol.Message{Op: protocol.OpDispatch}})
+	select {
+	case <-desktop.send:
+	default:
+		t.Error("the remaining connection stopped receiving server broadcasts")
+	}
+
+	hub.unregisterClient(desktop)
+	if hub.IsUserOnline(userID) {
+		t.Fatal("user still online after their last connection closed")
+	}
+	select {
+	case msg := <-hub.broadcast:
+		if msg.Message.Type != protocol.EventPresenceUpdate {
+			t.Fatalf("last disconnect broadcast %v, want a presence update", msg.Message.Type)
+		}
+	default:
+		t.Fatal("last disconnect didn't announce the user offline")
+	}
+}
+
+// Voice belongs to the connection that joined: another device closing
+// leaves the call alone; the joining device closing ends it.
+func TestHubVoiceEndsWithTheConnectionThatJoined(t *testing.T) {
+	hub := NewHub()
+	left := make(chan uuid.UUID, 2)
+	hub.SetVoiceLeaveCallback(func(userID, serverID, channelID uuid.UUID) { left <- channelID })
+	userID, serverID, voiceID := uuid.New(), uuid.New(), uuid.New()
+	user := &models.User{ID: userID, Username: "caller"}
+	phone := &Client{UserID: userID, User: user, send: make(chan *protocol.Message, 10)}
+	desk := &Client{UserID: userID, User: user, send: make(chan *protocol.Message, 10)}
+	third := &Client{UserID: userID, User: user, send: make(chan *protocol.Message, 10)}
+	hub.registerClient(phone)
+	hub.registerClient(desk)
+	hub.registerClient(third)
+	hub.JoinVoiceChannel(userID, serverID, voiceID, desk)
+
+	hub.unregisterClient(phone)
+	if hub.CountVoiceUsers(voiceID) != 1 {
+		t.Fatal("closing a device that wasn't in the call ended it")
+	}
+	hub.unregisterClient(desk)
+	if hub.CountVoiceUsers(voiceID) != 0 {
+		t.Fatal("the call outlived the device carrying it")
+	}
+	select {
+	case ch := <-left:
+		if ch != voiceID {
+			t.Fatalf("voice leave for %v, want %v", ch, voiceID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no voice leave callback")
+	}
+	if !hub.IsUserOnline(userID) {
+		t.Fatal("user went offline with a device still connected")
+	}
 }

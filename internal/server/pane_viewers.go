@@ -9,18 +9,23 @@ import (
 
 // paneViewer is one user with a plugin channel's remote pane open. enter
 // holds the last Enter/Resize state (size, theme, names) so it can be
-// replayed to the plugin after the plugin reconnects.
+// replayed to the plugin after the plugin reconnects. conn is the
+// connection that opened it: frames go only there, and only it can type.
 type paneViewer struct {
 	pluginID string
 	enter    protocol.PluginPaneEnterPayload
+	conn     *Client
 }
 
-// PaneViewers tracks who has which plugin pane open. A user views at most
-// one pane at a time (one connection per user). It's the server's source of
-// truth for routing: input is only relayed from, and frames only delivered
-// to, users registered here for that channel -- and since the owning plugin
-// is recorded at Enter (after a DB check), the per-key and per-frame paths
-// never need to touch the database.
+// PaneViewers tracks who has which plugin pane open. It's the server's
+// source of truth for routing: input is only relayed from, and frames only
+// delivered to, connections registered here for that channel -- and since
+// the owning plugin is recorded at Enter (after a DB check), the per-key
+// and per-frame paths never need to touch the database.
+//
+// Plugins see viewers as users, so a user views at most one pane at a
+// time: opening a pane from another device (another connection) moves the
+// pane there, and the earlier device stops receiving frames.
 type PaneViewers struct {
 	mu        sync.Mutex
 	byUser    map[uuid.UUID]*paneViewer
@@ -34,10 +39,10 @@ func NewPaneViewers() *PaneViewers {
 	}
 }
 
-// Enter registers enter.ViewerID as viewing enter.ChannelID, owned by
-// pluginID. If they were viewing a different pane, that one is returned so
-// the caller can tell its plugin they left.
-func (p *PaneViewers) Enter(pluginID string, enter protocol.PluginPaneEnterPayload) (previous *paneViewer) {
+// Enter registers enter.ViewerID, on connection conn, as viewing
+// enter.ChannelID, owned by pluginID. If they were viewing a different
+// pane, that one is returned so the caller can tell its plugin they left.
+func (p *PaneViewers) Enter(pluginID string, enter protocol.PluginPaneEnterPayload, conn *Client) (previous *paneViewer) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if old, ok := p.byUser[enter.ViewerID]; ok {
@@ -46,7 +51,7 @@ func (p *PaneViewers) Enter(pluginID string, enter protocol.PluginPaneEnterPaylo
 			previous = old
 		}
 	}
-	v := &paneViewer{pluginID: pluginID, enter: enter}
+	v := &paneViewer{pluginID: pluginID, enter: enter, conn: conn}
 	p.byUser[enter.ViewerID] = v
 	if p.byChannel[enter.ChannelID] == nil {
 		p.byChannel[enter.ChannelID] = make(map[uuid.UUID]*paneViewer)
@@ -55,63 +60,66 @@ func (p *PaneViewers) Enter(pluginID string, enter protocol.PluginPaneEnterPaylo
 	return previous
 }
 
-// Update applies a change (a Resize) to a registered viewer's state and
-// returns the result; ok is false if userID isn't viewing channelID.
-func (p *PaneViewers) Update(userID, channelID uuid.UUID, apply func(*protocol.PluginPaneEnterPayload)) (state protocol.PluginPaneEnterPayload, pluginID string, ok bool) {
+// Update applies a change (a Resize) sent on conn to its viewer's state and
+// returns the result; ok is false if conn isn't the one viewing channelID.
+func (p *PaneViewers) Update(conn *Client, channelID uuid.UUID, apply func(*protocol.PluginPaneEnterPayload)) (state protocol.PluginPaneEnterPayload, pluginID string, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	v, ok := p.byUser[userID]
-	if !ok || v.enter.ChannelID != channelID {
+	v, ok := p.byUser[conn.UserID]
+	if !ok || v.conn != conn || v.enter.ChannelID != channelID {
 		return state, "", false
 	}
 	apply(&v.enter)
 	return v.enter, v.pluginID, true
 }
 
-// Viewer returns userID's registration and owning plugin if they're viewing
-// channelID.
-func (p *PaneViewers) Viewer(userID, channelID uuid.UUID) (state protocol.PluginPaneEnterPayload, pluginID string, ok bool) {
+// Viewer returns userID's registration, owning plugin and viewing
+// connection if they're viewing channelID.
+func (p *PaneViewers) Viewer(userID, channelID uuid.UUID) (state protocol.PluginPaneEnterPayload, pluginID string, conn *Client, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	v, ok := p.byUser[userID]
 	if !ok || v.enter.ChannelID != channelID {
-		return state, "", false
+		return state, "", nil, false
 	}
-	return v.enter, v.pluginID, true
+	return v.enter, v.pluginID, v.conn, true
 }
 
-// ViewingPlugin reports whether userID currently has one of pluginID's
-// panes open.
-func (p *PaneViewers) ViewingPlugin(userID uuid.UUID, pluginID string) bool {
+// ViewingPlugin returns the connection on which userID has one of
+// pluginID's panes open, or nil.
+func (p *PaneViewers) ViewingPlugin(userID uuid.UUID, pluginID string) *Client {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	v, ok := p.byUser[userID]
-	return ok && v.pluginID == pluginID
+	if v, ok := p.byUser[userID]; ok && v.pluginID == pluginID {
+		return v.conn
+	}
+	return nil
 }
 
-// Leave unregisters userID from channelID; ok reports whether they were
-// registered there (and so whether the plugin needs telling).
-func (p *PaneViewers) Leave(userID, channelID uuid.UUID) (pluginID string, ok bool) {
+// Leave unregisters conn's viewer from channelID; ok reports whether it was
+// registered there (and so whether the plugin needs telling). A Leave from
+// a device the pane has since moved away from is ignored.
+func (p *PaneViewers) Leave(conn *Client, channelID uuid.UUID) (pluginID string, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	v, ok := p.byUser[userID]
-	if !ok || v.enter.ChannelID != channelID {
+	v, ok := p.byUser[conn.UserID]
+	if !ok || v.conn != conn || v.enter.ChannelID != channelID {
 		return "", false
 	}
-	p.removeLocked(userID, channelID)
+	p.removeLocked(conn.UserID, channelID)
 	return v.pluginID, true
 }
 
-// LeaveAll unregisters userID from whatever pane they had open (their
-// connection closed) and returns it, if any.
-func (p *PaneViewers) LeaveAll(userID uuid.UUID) *paneViewer {
+// LeaveConn unregisters whatever pane conn had open (the connection closed)
+// and returns it, if any.
+func (p *PaneViewers) LeaveConn(conn *Client) *paneViewer {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	v, ok := p.byUser[userID]
-	if !ok {
+	v, ok := p.byUser[conn.UserID]
+	if !ok || v.conn != conn {
 		return nil
 	}
-	p.removeLocked(userID, v.enter.ChannelID)
+	p.removeLocked(conn.UserID, v.enter.ChannelID)
 	return v
 }
 
@@ -125,15 +133,21 @@ func (p *PaneViewers) DropChannel(channelID uuid.UUID) {
 	delete(p.byChannel, channelID)
 }
 
-// ChannelViewers returns the users currently viewing channelID, if it's
+// channelViewer is one viewer of a channel and the connection to reach.
+type channelViewer struct {
+	userID uuid.UUID
+	conn   *Client
+}
+
+// ChannelViewers returns everyone currently viewing channelID, if it's
 // owned by pluginID (otherwise none).
-func (p *PaneViewers) ChannelViewers(channelID uuid.UUID, pluginID string) []uuid.UUID {
+func (p *PaneViewers) ChannelViewers(channelID uuid.UUID, pluginID string) []channelViewer {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]uuid.UUID, 0, len(p.byChannel[channelID]))
+	out := make([]channelViewer, 0, len(p.byChannel[channelID]))
 	for userID, v := range p.byChannel[channelID] {
 		if v.pluginID == pluginID {
-			out = append(out, userID)
+			out = append(out, channelViewer{userID, v.conn})
 		}
 	}
 	return out

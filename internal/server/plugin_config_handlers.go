@@ -100,7 +100,7 @@ func (h *Handlers) HandleSetPluginConfig(c *Client, msg *protocol.Message) {
 		default:
 			result.Message = "Saved."
 		}
-		_ = c.SendDispatch(protocol.EventPluginManageResult, result)
+		_ = h.dispatchTo(c, protocol.EventPluginManageResult, result)
 	}
 
 	manifest, ok := h.plugins.Registry().Manifest(req.PluginID)
