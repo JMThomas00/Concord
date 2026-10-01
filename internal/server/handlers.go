@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -94,16 +95,19 @@ func (h *Handlers) PluginChannelKindInfos() []protocol.PluginChannelKindInfo {
 	for _, manifest := range h.plugins.Registry().All() {
 		for _, ck := range manifest.ChannelKinds {
 			info := protocol.PluginChannelKindInfo{
-				PluginID:    manifest.Plugin.ID,
-				Kind:        ck.Kind,
-				DisplayName: ck.DisplayName,
-				Icon:        ck.Icon,
-				RemotePane:  ck.RemotePane,
+				PluginID:        manifest.Plugin.ID,
+				Kind:            ck.Kind,
+				DisplayName:     ck.DisplayName,
+				Icon:            ck.Icon,
+				RemotePane:      ck.RemotePane,
+				InstanceName:    manifest.Plugin.Name,
+				BaseID:          manifest.BaseID,
+				AllowsInstances: manifest.Plugin.Instances,
 			}
 			for _, f := range ck.CreateFields {
 				info.CreateFields = append(info.CreateFields, protocol.PluginField{
 					Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,
-					Default: f.Default, Required: f.Required,
+					Default: f.Default, Required: f.Required, Help: f.Help,
 				})
 			}
 			infos = append(infos, info)
@@ -468,8 +472,18 @@ func (h *Handlers) relayMessageToPlugins(channel *models.Channel, message *model
 		if err != nil || cfg["mention_enabled"] != "true" {
 			continue
 		}
-		trigger := cfg["mention_trigger"]
+		// No trigger word set: @<its name>, so each instance of a plugin
+		// (Mynah's Alice and Burt) answers to its own name.
+		trigger := strings.TrimPrefix(strings.TrimSpace(cfg["mention_trigger"]), "@")
+		if trigger == "" {
+			trigger = manifest.Plugin.Name
+		}
 		if trigger == "" || !mentionsTrigger(message.Content, trigger) {
+			continue
+		}
+		// mention_channels (a channel_multi_select) limits where mentions
+		// work; empty means every channel.
+		if !inChannelList(cfg["mention_channels"], channel.ID) {
 			continue
 		}
 		serviceUserID, err := h.plugins.ServiceUserIDFor(pluginID)
@@ -480,6 +494,20 @@ func (h *Handlers) relayMessageToPlugins(channel *models.Channel, message *model
 			MsgLog.Warn("Failed to relay mention to plugin", "plugin_id", pluginID, "channel_id", channel.ID, "error", err)
 		}
 	}
+}
+
+// inChannelList reports whether channelID is in list, a comma-separated
+// channel_multi_select value; an empty list means every channel.
+func inChannelList(list string, channelID uuid.UUID) bool {
+	if strings.TrimSpace(list) == "" {
+		return true
+	}
+	for _, part := range strings.Split(list, ",") {
+		if id, err := uuid.Parse(strings.TrimSpace(part)); err == nil && id == channelID {
+			return true
+		}
+	}
+	return false
 }
 
 // mentionsTrigger reports whether content contains an @-mention of trigger

@@ -3563,6 +3563,19 @@ func (db *DB) MigratePluginPlatform() error {
 		return err
 	}
 
+	// Instances (2026-09-30): extra copies of a plugin that allows them (one
+	// Mynah persona per row), sharing the base plugin's folder. A row whose
+	// id equals its base_id only renames the base plugin's own instance.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS plugin_instances (
+			id         TEXT PRIMARY KEY,
+			base_id    TEXT NOT NULL,
+			name       TEXT NOT NULL,
+			created_at DATETIME NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("failed to create plugin_instances table: %w", err)
+	}
+
 	return nil
 }
 

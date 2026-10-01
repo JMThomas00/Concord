@@ -219,7 +219,11 @@ type ServerManagementState struct {
 	RemoveExemptSelected   int
 
 	// Plugins category state
+	// PluginList is the installed plugins (the Plugins list); AllPlugins
+	// adds their instances, shown on each plugin's page (PluginPage).
 	PluginList         []protocol.PluginInfo
+	AllPlugins         []protocol.PluginInfo
+	PluginPage         *PluginPageState
 	SelectedPlugin      int
 	PluginConfigState   *PluginConfigFormState
 	// PluginNotice is the outcome of the last plugin action (install,
@@ -250,6 +254,9 @@ type PluginConfigFormState struct {
 	Saving      bool              // sent; waiting for the server's verdict
 	FieldErrors map[string]string // from a rejected save, by field key
 	SecretsSet  map[string]bool   // secret fields that already have a value
+
+	// Picker is open while a channel_multi_select field is being edited.
+	Picker *channelPicker
 }
 
 // RoleFormState holds state for the role creation/edit modal
@@ -301,6 +308,18 @@ type ChannelFormState struct {
 	// renders as a locked label and is never sent in the update request.
 	OriginalType      models.ChannelType
 	PluginDisplayLabel string
+
+	// A plugin channel's settings live on their own Configure page, opened
+	// from the form's "Configure" row, so a plugin with many settings can't
+	// push the form off screen. ConfigFocus walks: the instance choice (when
+	// there's more than one), then PluginFields, then Done.
+	Configuring bool
+	ConfigFocus int
+	// InstanceOptions: the chosen plugin's instances (Mynah's personas) offering
+	// this channel kind; InstanceIndex picks the one that will own it.
+	InstanceOptions []protocol.PluginChannelKindInfo
+	InstanceIndex   int
+	Picker          *channelPicker
 }
 
 // MoveDialogState holds state for the move channel dialog

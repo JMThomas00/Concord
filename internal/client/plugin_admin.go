@@ -49,6 +49,21 @@ func (a *App) handlePluginListKey(key string) bool {
 		a.runPluginAction(protocol.PluginActionUninstall, selected.ID, "Uninstalling "+selected.Name+"…")
 	case "s", "S":
 		a.runPluginAction(protocol.PluginActionRescan, "", "Rescanning the plugins folder…")
+	case "m", "M":
+		// An old separate install of a plugin that now takes instances (a
+		// Mynah persona folder) becomes one of its instances.
+		if selected == nil {
+			return true
+		}
+		target := s.legacyInstanceTarget(*selected)
+		if target == nil {
+			return true
+		}
+		if !a.sendPluginManage(protocol.PluginManageRequest{Action: protocol.PluginActionAdoptInstance, PluginID: selected.ID, TargetID: target.ID}) {
+			s.PluginNotice, s.PluginNoticeError = "Not connected", true
+			return true
+		}
+		s.PluginNotice, s.PluginNoticeError = "Making "+selected.Name+" an instance of "+target.ID+"…", false
 	default:
 		return false
 	}

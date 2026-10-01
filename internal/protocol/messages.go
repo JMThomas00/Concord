@@ -510,6 +510,13 @@ type PluginChannelKindInfo struct {
 	Icon         string        `json:"icon"`
 	RemotePane   bool          `json:"remote_pane"`
 	CreateFields []PluginField `json:"create_fields,omitempty"`
+	// Instances: InstanceName is the owning plugin's (or instance's) name;
+	// BaseID is set when PluginID is an instance of another plugin, and
+	// AllowsInstances when the base plugin can have several. The client
+	// lists an instanced plugin's kind once and asks which instance.
+	InstanceName    string `json:"instance_name,omitempty"`
+	BaseID          string `json:"base_id,omitempty"`
+	AllowsInstances bool   `json:"allows_instances,omitempty"`
 }
 
 // ServerCreatePayload is sent for each server the user is a member of (after READY)
@@ -701,6 +708,11 @@ const (
 	PluginActionUninstall = "uninstall" // stop + delete the folder (data, channels kept)
 	PluginActionRestart   = "restart"   // stop + start with a fresh token
 	PluginActionRescan    = "rescan"    // pick up folders added/removed/changed on disk
+	// Instances of a plugin that allows several (see plugins/instances.go).
+	PluginActionAddInstance    = "add_instance"    // PluginID (base) + Name → a new instance, started live
+	PluginActionRenameInstance = "rename_instance" // PluginID + Name (also renames its account)
+	PluginActionRemoveInstance = "remove_instance" // PluginID → stopped and forgotten (account, settings, channels, data kept)
+	PluginActionAdoptInstance  = "adopt_instance"  // PluginID (a separate install) + TargetID → it becomes an instance
 )
 
 // PluginManageRequest drives OpPluginManage. PluginID is required for every
@@ -711,6 +723,10 @@ type PluginManageRequest struct {
 	PluginID  string    `json:"plugin_id,omitempty"`
 	SourceURL string    `json:"source_url,omitempty"`
 	SHA256    string    `json:"sha256,omitempty"`
+	// Name names an instance (add_instance, rename_instance); TargetID is
+	// the plugin an adopted install becomes an instance of (adopt_instance).
+	Name     string `json:"name,omitempty"`
+	TargetID string `json:"target_id,omitempty"`
 }
 
 // PluginManageResult reports how an OpPluginManage (or a config save) went.

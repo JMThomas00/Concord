@@ -64,6 +64,14 @@ func ValidateValues(fields []ConfigField, submitted, stored map[string]string, i
 			if err != nil || isTextChannel == nil || !isTextChannel(id) {
 				problems[f.Key] = "pick an existing text channel"
 			}
+		case "channel_multi_select":
+			for _, part := range strings.Split(v, ",") {
+				id, err := uuid.Parse(strings.TrimSpace(part))
+				if err != nil || isTextChannel == nil || !isTextChannel(id) {
+					problems[f.Key] = "pick existing text channels"
+					break
+				}
+			}
 		case "text", "secret":
 			if len(v) > maxTextValue {
 				problems[f.Key] = "too long"

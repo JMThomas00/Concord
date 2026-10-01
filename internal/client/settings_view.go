@@ -146,6 +146,12 @@ type settingsSectionBuilder struct {
 	linesWritten int
 	targetLines  int
 	width        int
+
+	// Scrolling sections (newScrollSection) clip to targetLines around
+	// focusLine instead of growing.
+	scroll    bool
+	focusLine int
+	more      func(string) string
 }
 
 // newSectionBuilder creates a section builder.
@@ -213,8 +219,56 @@ func (sb *settingsSectionBuilder) pad() {
 // shared primitive every category/page function builds on, rather than
 // hand-tuning pageTopExtra/pageBottomExtra at each of the ~28 call sites.
 func (sb *settingsSectionBuilder) String() string {
+	if sb.scroll && sb.linesWritten > sb.targetLines && sb.targetLines >= 3 {
+		lines := strings.Split(strings.TrimSuffix(sb.buf.String(), "\n"), "\n")
+		return strings.Join(scrollWindow(lines, sb.focusLine, sb.targetLines, sb.more), "\n")
+	}
 	sb.pad()
 	return strings.TrimSuffix(sb.buf.String(), "\n")
+}
+
+// newScrollSection is a section builder for a form that can outgrow its
+// space (a plugin with many settings): instead of growing taller than its
+// budget, which pushes the whole page off screen, it shows a window that
+// keeps the line marked with markFocus in view, with "↑/↓ N more" markers.
+// more renders those markers.
+func newScrollSection(targetLines, width int, more func(string) string) *settingsSectionBuilder {
+	sb := newSectionBuilder(targetLines, width)
+	sb.scroll, sb.more = true, more
+	return sb
+}
+
+// markFocus records that the next line written is where focus is, so a
+// scrolling section keeps it (and what follows) visible.
+func (sb *settingsSectionBuilder) markFocus() { sb.focusLine = sb.linesWritten }
+
+// scrollWindow fits lines into height rows around focus: a marker row on
+// top and bottom (blank when there's nothing more that way), and the
+// focused line a third of the way down when possible.
+func scrollWindow(lines []string, focus, height int, more func(string) string) []string {
+	inner := height - 2
+	start := focus - inner/3
+	if start > len(lines)-inner {
+		start = len(lines) - inner
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := min(start+inner, len(lines))
+	out := make([]string, 0, height)
+	if start > 0 {
+		out = append(out, more(fmt.Sprintf("  ↑ %d more", start)))
+	} else {
+		out = append(out, "")
+	}
+	out = append(out, lines[start:end]...)
+	if rest := len(lines) - end; rest > 0 {
+		out = append(out, more(fmt.Sprintf("  ↓ %d more", rest)))
+	}
+	for len(out) < height {
+		out = append(out, "")
+	}
+	return out
 }
 
 // writeZoneMarkedLines writes 2+ lines to a section builder wrapped in a

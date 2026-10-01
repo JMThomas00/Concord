@@ -95,6 +95,7 @@ func (m *Manager) LoadAll(pluginsDir string) error {
 		pluginsDir = abs
 	}
 	reg, errs := Discover(pluginsDir)
+	reg = withInstances(reg, m.listInstances())
 	m.mu.Lock()
 	m.pluginsDir = pluginsDir
 	m.dataRoot = filepath.Join(filepath.Dir(pluginsDir), "PluginData")
@@ -323,14 +324,27 @@ func (m *Manager) setRegistry(r *Registry) {
 func (m *Manager) Load(pluginID string) error {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	manifest, err := LoadPluginFolder(filepath.Join(m.PluginsDir(), pluginID))
+	baseID := pluginID
+	if inst, ok, err := m.db.GetPluginInstance(pluginID); err == nil && ok {
+		baseID = inst.BaseID
+	}
+	manifests, err := m.loadFolderWithInstances(baseID)
 	if err != nil {
 		return err
 	}
-	m.stop(pluginID)
-	m.setRegistry(m.Registry().with(manifest))
 	defer m.registryChanged()
-	return m.startIfEnabled(manifest)
+	var firstErr error
+	for _, manifest := range manifests {
+		if baseID != pluginID && manifest.Plugin.ID != pluginID {
+			continue // loading one instance: leave the base and the others be
+		}
+		m.stop(manifest.Plugin.ID)
+		m.setRegistry(m.Registry().with(manifest))
+		if err := m.startIfEnabled(manifest); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // Unload stops a plugin and forgets it until its folder is loaded again.
@@ -338,8 +352,7 @@ func (m *Manager) Load(pluginID string) error {
 func (m *Manager) Unload(pluginID string) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	m.stop(pluginID)
-	m.setRegistry(m.Registry().without(pluginID))
+	m.stopWithInstances(pluginID)
 	m.registryChanged()
 }
 
@@ -385,8 +398,10 @@ func (m *Manager) Uninstall(pluginID string) error {
 	if !validPluginIDPattern.MatchString(pluginID) {
 		return fmt.Errorf("invalid plugin id %q", pluginID)
 	}
-	m.stop(pluginID)
-	m.setRegistry(m.Registry().without(pluginID))
+	if manifest, ok := m.Registry().Manifest(pluginID); ok && manifest.IsInstance() {
+		return fmt.Errorf("%s is an instance of %s; remove the instance instead", manifest.Plugin.Name, manifest.BaseID)
+	}
+	m.stopWithInstances(pluginID)
 	defer m.registryChanged()
 	if err := os.RemoveAll(filepath.Join(m.PluginsDir(), pluginID)); err != nil {
 		return fmt.Errorf("failed to remove plugin folder: %w", err)
@@ -407,6 +422,7 @@ func (m *Manager) Rescan() RescanResult {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	fresh, errs := Discover(m.PluginsDir())
+	fresh = withInstances(fresh, m.listInstances())
 	old := m.Registry()
 	res := RescanResult{Invalid: errs}
 
@@ -463,7 +479,7 @@ func (m *Manager) Update(pluginID, stagedDir string) error {
 		return fmt.Errorf("plugin %q is not installed", pluginID)
 	}
 
-	m.stop(pluginID)
+	m.stopWithInstances(pluginID)
 	if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
 		m.restartFrom(live, pluginID)
 		return err
@@ -479,12 +495,18 @@ func (m *Manager) Update(pluginID, stagedDir string) error {
 		return fmt.Errorf("failed to move the new version into place: %w", err)
 	}
 
-	manifest, err := LoadPluginFolder(live)
+	// The base must come up on the new version; its instances run the same
+	// files, so they follow it (and roll back with it).
+	manifests, err := m.loadFolderWithInstances(pluginID)
 	if err == nil {
-		m.setRegistry(m.Registry().with(manifest))
-		err = m.startIfEnabled(manifest)
-		if err == nil {
-			err = m.waitIdentified(pluginID, manifest)
+		for i, manifest := range manifests {
+			m.setRegistry(m.Registry().with(manifest))
+			if serr := m.startIfEnabled(manifest); serr != nil && i == 0 {
+				err = serr
+			}
+		}
+		if err == nil && len(manifests) > 0 {
+			err = m.waitIdentified(pluginID, manifests[0])
 		}
 	}
 	if err == nil {
@@ -495,7 +517,7 @@ func (m *Manager) Update(pluginID, stagedDir string) error {
 
 	// Roll back; the failed version goes to .backup/<id>.failed for a look.
 	m.log.Error("plugin update failed, rolling back", "plugin", pluginID, "error", err)
-	m.stop(pluginID)
+	m.stopWithInstances(pluginID)
 	failed := backup + ".failed"
 	_ = os.RemoveAll(failed)
 	_ = os.Rename(live, failed)
@@ -506,18 +528,32 @@ func (m *Manager) Update(pluginID, stagedDir string) error {
 	return fmt.Errorf("update failed and was rolled back: %w", err)
 }
 
-// restartFrom reloads and starts the plugin in dir after a failed step.
+// restartFrom reloads and starts the plugin in dir, and its instances,
+// after a failed step.
 func (m *Manager) restartFrom(dir, pluginID string) {
-	manifest, err := LoadPluginFolder(dir)
+	manifests, err := m.loadFolderWithInstances(filepath.Base(dir))
 	if err != nil {
 		m.log.Error("could not reload plugin", "plugin", pluginID, "error", err)
 		return
 	}
-	m.setRegistry(m.Registry().with(manifest))
-	if err := m.startIfEnabled(manifest); err != nil {
-		m.log.Error("could not restart plugin", "plugin", pluginID, "error", err)
+	for _, manifest := range manifests {
+		m.setRegistry(m.Registry().with(manifest))
+		if err := m.startIfEnabled(manifest); err != nil {
+			m.log.Error("could not restart plugin", "plugin", manifest.Plugin.ID, "error", err)
+		}
 	}
 	m.registryChanged()
+}
+
+// stopWithInstances stops a plugin and any instances of it, and drops them
+// from the registry. Caller holds opMu.
+func (m *Manager) stopWithInstances(pluginID string) {
+	for _, inst := range instancesOf(m.Registry(), pluginID) {
+		m.stop(inst.Plugin.ID)
+		m.setRegistry(m.Registry().without(inst.Plugin.ID))
+	}
+	m.stop(pluginID)
+	m.setRegistry(m.Registry().without(pluginID))
 }
 
 // waitIdentified blocks until the plugin's process connects and identifies

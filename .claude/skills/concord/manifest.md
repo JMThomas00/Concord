@@ -12,7 +12,7 @@ version = "0.1.0"              # release.go stamps the git tag here
 description = "Rolls dice."
 author = "you"
 source_url = "https://github.com/you/concord-dice"   # U (update) with nothing typed uses this
-# product = "Mynah"            # only when several installs are personas of one product
+# instances = true             # admins can run several named copies (personas) of this one install
 
 [process]
 restart_on_crash = true
@@ -60,6 +60,7 @@ help = "From your account page at example.com"
 | `boolean` | `"true"` / `"false"` | |
 | `select` | one of `options` | |
 | `channel_select` | a channel **ID** (UUID string) | shown to admins as `#name` |
+| `channel_multi_select` | comma-separated channel IDs, `""` for none | a checklist of text channels; treat empty as "every channel" if that suits the setting |
 | `secret` | the plaintext, to the plugin only | **server fields only**; encrypted at rest; admins see only "set" |
 
 Every field takes `key`, `label`, `type`, optional `default`, `required`,
@@ -84,8 +85,31 @@ Where values arrive:
   settings are visible to members).
 - The zip's binary missing, or `id` not matching on update.
 
-## Multiple installs
+Admins see channel settings behind a **Configure…** row on the channel form,
+and server settings on the plugin's page (Settings > Plugins > Enter). So
+long lists of either are fine.
 
-Two folders with the same binary but different `[plugin].id` run as fully
-separate plugins (own account, process, channels, settings). Set
-`product` so the Settings list groups them.
+## Instances (several personas from one install)
+
+Set `[plugin] instances = true` when it makes sense to run the same plugin
+more than once on a server under different names. Mynah's AI personas are
+the example. An admin adds, renames and removes instances on the plugin's
+page, with no extra download. Each instance:
+
+- runs as its own process, from the same folder and binary;
+- has its own service account (shown by the instance's name), settings,
+  channels and `CONCORD_PLUGIN_DATA_DIR`;
+- gets its name as `info.Name` in `OnConfig`. Use it, not a hard-coded
+  name, wherever the plugin refers to itself (an @mention trigger, say).
+
+The channel form offers the plugin once, and its Configure page asks which
+instance owns the channel. Updating the plugin restarts every instance.
+Write the plugin as if it were the only copy: nothing in the SDK changes.
+
+**Built-in @mention relay:** Concord forwards a message from a channel the
+plugin doesn't own when the plugin has a `mention_enabled` server field set
+to `"true"` and the message @mentions its `mention_trigger` value (an empty
+trigger defaults to the plugin's or instance's name). An optional
+`mention_channels` field (`channel_multi_select`) limits that relay to the
+channels listed, and empty means everywhere. Declare those three keys to
+get it.

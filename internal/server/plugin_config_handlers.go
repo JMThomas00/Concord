@@ -37,6 +37,8 @@ func (h *Handlers) buildPluginInfo(installed *models.InstalledPlugin, forPlugin 
 	if manifest != nil {
 		info.Product = manifest.Plugin.Product
 		info.SourceURL = manifest.Plugin.SourceURL
+		info.BaseID = manifest.BaseID
+		info.AllowsInstances = manifest.Plugin.Instances
 		for _, f := range manifest.ServerConfigFields {
 			info.ConfigFields = append(info.ConfigFields, protocol.PluginField{
 				Key: f.Key, Label: f.Label, Type: f.Type, Options: f.Options,

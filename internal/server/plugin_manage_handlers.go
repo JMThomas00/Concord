@@ -59,8 +59,44 @@ func (h *Handlers) HandlePluginInstall(c *Client, msg *protocol.Message) {
 
 // runPluginAction performs one action and returns a short success message.
 func (h *Handlers) runPluginAction(req protocol.PluginManageRequest) (string, error) {
+	// An instance runs its base plugin's files: updating "it" updates the
+	// base (and with it every instance).
+	if req.Action == protocol.PluginActionUpdate {
+		if m, ok := h.plugins.Registry().Manifest(req.PluginID); ok && m.IsInstance() {
+			req.PluginID = m.BaseID
+		}
+	}
 	fetch := plugins.InstallRequest{PluginID: req.PluginID, SourceURL: req.SourceURL, SHA256: req.SHA256}
 	switch req.Action {
+	case protocol.PluginActionAddInstance:
+		id, err := h.plugins.AddInstance(req.PluginID, req.Name)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Added %s (%s). Configure it under its name in this list.", strings.TrimSpace(req.Name), id), nil
+
+	case protocol.PluginActionRenameInstance:
+		if err := h.plugins.RenameInstance(req.PluginID, req.Name); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Renamed to %s.", strings.TrimSpace(req.Name)), nil
+
+	case protocol.PluginActionRemoveInstance:
+		name := req.PluginID
+		if m, ok := h.plugins.Registry().Manifest(req.PluginID); ok {
+			name = m.Plugin.Name
+		}
+		if err := h.plugins.RemoveInstance(req.PluginID); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Removed %s. Its channels and settings are kept, in case you add it back.", name), nil
+
+	case protocol.PluginActionAdoptInstance:
+		if err := h.plugins.AdoptInstance(req.PluginID, req.TargetID); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s is now an instance of %s, with its channels and settings kept. Re-enter any API key it used from its old plugin.toml.", req.PluginID, req.TargetID), nil
+
 	case protocol.PluginActionInstall:
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()

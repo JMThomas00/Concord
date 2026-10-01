@@ -541,6 +541,9 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	if s.PluginConfigState != nil {
 		return a.handlePluginConfigKey(msg)
 	}
+	if s.PluginPage != nil && s.SelectedCategory == 4 && s.FocusOnForm {
+		return a.handlePluginPageKey(msg)
+	}
 	if s.FocusOnForm && s.SelectedCategory == 4 && a.handlePluginListKey(msg.String()) {
 		return nil
 	}
@@ -604,7 +607,7 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 			// Enter into the selected category
 			s.FocusOnForm = true
 		} else if s.SelectedCategory == 4 {
-			a.handleOpenPluginConfigAction()
+			a.openPluginPage()
 		}
 
 	case "c", "C":
@@ -1650,14 +1653,14 @@ func (a *App) handleCreateChannelOverride() {
 // Placeholder key handlers for forms/dialogs
 func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 	state := a.serverManagementState.ChannelFormState
+	if state.Configuring {
+		return a.handleChannelConfigKey(msg)
+	}
 	layout := computeChannelFormLayout(state)
 
 	blurAll := func() {
 		state.NameTextInput.Blur()
 		state.MaxUsersInput.Blur()
-		for i := range state.PluginTextInputs {
-			state.PluginTextInputs[i].Blur()
-		}
 	}
 	focusField := func(field int) {
 		switch {
@@ -1665,12 +1668,6 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 			state.NameTextInput.Focus()
 		case layout.isVoice && field == layout.maxUsersField:
 			state.MaxUsersInput.Focus()
-		case layout.isPlugin && field >= layout.pluginStart && field < layout.pluginStart+len(state.PluginFields):
-			idx := field - layout.pluginStart
-			ft := state.PluginFields[idx].Type
-			if isTextField(ft) {
-				state.PluginTextInputs[idx].Focus()
-			}
 		}
 	}
 
@@ -1703,30 +1700,25 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 		pluginTypeLocked := state.Mode == "edit" && state.OriginalType == models.ChannelTypePlugin
 		if state.FocusField == 1 && !pluginTypeLocked {
 			// Cycle through built-in types (Text/Voice/Category) then every
-			// plugin-provided kind advertised at READY.
+			// plugin-provided kind the current server offers.
 			pluginKinds := a.pluginKindOptions()
 			total := 3 + len(pluginKinds)
 			state.TypeIndex = (state.TypeIndex + dir + total) % total
 			if state.TypeIndex >= 3 {
-				setPluginKind(state, pluginKinds[state.TypeIndex-3])
+				a.setPluginKind(state, pluginKinds[state.TypeIndex-3])
 			} else {
-				state.PluginFields = nil
-				state.PluginTextInputs = nil
-				state.PluginValues = nil
-			}
-		} else if layout.isPlugin && state.FocusField >= layout.pluginStart && state.FocusField < layout.pluginStart+len(state.PluginFields) {
-			idx := state.FocusField - layout.pluginStart
-			field := state.PluginFields[idx]
-			if field.Type != "text" && field.Type != "number" {
-				state.PluginValues[idx] = cyclePluginFieldValue(field, state.PluginValues[idx], dir, a.textChannelIDs())
+				clearPluginKind(state)
 			}
 		}
 		return nil
 
 	case "enter":
-		if state.FocusField == layout.submitField {
+		switch {
+		case layout.isPlugin && state.FocusField == layout.configureField:
+			a.openChannelConfig(state)
+		case state.FocusField == layout.submitField:
 			return a.handleChannelFormSubmit()
-		} else if state.FocusField == layout.cancelField {
+		case state.FocusField == layout.cancelField:
 			a.serverManagementState.ChannelFormOpen = false
 			a.serverManagementState.ChannelFormState = nil
 		}
@@ -1744,16 +1736,113 @@ func (a *App) handleChannelFormKey(msg tea.KeyMsg) tea.Cmd {
 		state.MaxUsersInput, cmd = state.MaxUsersInput.Update(msg)
 		return cmd
 	}
-	if layout.isPlugin && state.FocusField >= layout.pluginStart && state.FocusField < layout.pluginStart+len(state.PluginFields) {
-		idx := state.FocusField - layout.pluginStart
-		ft := state.PluginFields[idx].Type
-		if isTextField(ft) {
-			var cmd tea.Cmd
-			state.PluginTextInputs[idx], cmd = state.PluginTextInputs[idx].Update(msg)
-			return cmd
+	return nil
+}
+
+// openChannelConfig opens a plugin channel's Configure page.
+func (a *App) openChannelConfig(state *ChannelFormState) {
+	state.Configuring = true
+	state.ConfigFocus = 0
+	state.NameTextInput.Blur()
+	a.focusChannelConfigRow(state)
+}
+
+// focusChannelConfigRow focuses the text input under ConfigFocus, if any.
+func (a *App) focusChannelConfigRow(state *ChannelFormState) {
+	for i := range state.PluginTextInputs {
+		state.PluginTextInputs[i].Blur()
+	}
+	if field := channelConfigField(state); field >= 0 && isTextField(state.PluginFields[field].Type) {
+		state.PluginTextInputs[field].Focus()
+	}
+}
+
+// channelConfigField is the PluginFields index ConfigFocus is on, or -1
+// for the instance choice or Done.
+func channelConfigField(state *ChannelFormState) int {
+	instanceRow, rows := configRows(state)
+	field := state.ConfigFocus
+	if instanceRow {
+		field--
+	}
+	if field < 0 || state.ConfigFocus >= rows {
+		return -1
+	}
+	return field
+}
+
+// handleChannelConfigKey drives a plugin channel's Configure page:
+// ↑↓/Tab move, ←→ change a choice, Enter on a channel list opens its
+// picker, and Esc or Done goes back to the form (values are kept).
+func (a *App) handleChannelConfigKey(msg tea.KeyMsg) tea.Cmd {
+	state := a.serverManagementState.ChannelFormState
+	if p := state.Picker; p != nil {
+		if p.Key(msg.String()) {
+			state.PluginValues[p.Field] = p.Value()
+			state.Picker = nil
+		}
+		return nil
+	}
+	instanceRow, rows := configRows(state)
+	done := rows // ConfigFocus of Done
+	field := channelConfigField(state)
+
+	back := func() {
+		state.Configuring = false
+		for i := range state.PluginTextInputs {
+			state.PluginTextInputs[i].Blur()
 		}
 	}
-
+	switch msg.String() {
+	case "esc":
+		back()
+		return nil
+	case "tab", "down":
+		state.ConfigFocus = (state.ConfigFocus + 1) % (done + 1)
+		a.focusChannelConfigRow(state)
+		return nil
+	case "shift+tab", "up":
+		state.ConfigFocus = (state.ConfigFocus + done) % (done + 1)
+		a.focusChannelConfigRow(state)
+		return nil
+	case "left", "right":
+		dir := 1
+		if msg.String() == "left" {
+			dir = -1
+		}
+		switch {
+		case instanceRow && state.ConfigFocus == 0:
+			n := len(state.InstanceOptions)
+			state.InstanceIndex = (state.InstanceIndex + dir + n) % n
+			state.PluginID = state.InstanceOptions[state.InstanceIndex].PluginID
+		case field >= 0 && !isTextField(state.PluginFields[field].Type) && state.PluginFields[field].Type != "channel_multi_select":
+			state.PluginValues[field] = cyclePluginFieldValue(state.PluginFields[field], state.PluginValues[field], dir, a.textChannelIDs())
+		default:
+			if field >= 0 { // move the cursor in a text field
+				var cmd tea.Cmd
+				state.PluginTextInputs[field], cmd = state.PluginTextInputs[field].Update(msg)
+				return cmd
+			}
+		}
+		return nil
+	case "enter":
+		switch {
+		case state.ConfigFocus == done:
+			back()
+		case field >= 0 && state.PluginFields[field].Type == "channel_multi_select":
+			f := state.PluginFields[field]
+			state.Picker = newChannelPicker(field, f.Label, state.PluginValues[field], a.textChannelIDs())
+		default: // Enter on a field moves on, like Tab
+			state.ConfigFocus = (state.ConfigFocus + 1) % (done + 1)
+			a.focusChannelConfigRow(state)
+		}
+		return nil
+	}
+	if field >= 0 && isTextField(state.PluginFields[field].Type) {
+		var cmd tea.Cmd
+		state.PluginTextInputs[field], cmd = state.PluginTextInputs[field].Update(msg)
+		return cmd
+	}
 	return nil
 }
 
@@ -1800,7 +1889,7 @@ func (a *App) handleChannelFormSubmit() tea.Cmd {
 	if channelType == models.ChannelTypePlugin {
 		for _, f := range state.PluginFields {
 			if f.Required && pluginConfigValues(state)[f.Key] == "" {
-				state.ErrorMsg = fmt.Sprintf("%s is required", f.Label)
+				state.ErrorMsg = fmt.Sprintf("%s is required (under Configure…)", f.Label)
 				return nil
 			}
 		}
@@ -3329,6 +3418,8 @@ func (a *App) renderServerManagementView() string {
 	case 4: // Plugins
 		if s.PluginConfigState != nil {
 			contentPanel = a.renderPluginConfigPage(contentWidth, totalHeight-1, s)
+		} else if s.PluginPage != nil {
+			contentPanel = a.renderPluginPage(contentWidth, totalHeight-1, s)
 		} else {
 			contentPanel = a.renderPluginsCategory(contentWidth, totalHeight-1, s)
 		}
@@ -4160,6 +4251,13 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 			}
 
 			line := fmt.Sprintf("%s v%s", pluginDisplayLabel(p.Name, p.Product), p.Version)
+			if count := s.instanceCount(p); count > 0 {
+				title := p.Product
+				if title == "" {
+					title = p.Name
+				}
+				line = fmt.Sprintf("%s v%s · %d instance(s)", title, p.Version, count)
+			}
 			status := statusStyle.Render(p.Status)
 
 			var rendered string
@@ -4186,6 +4284,10 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 				sourceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true)
 				middle.writeLine(sourceStyle.Render("    Source: " + p.SourceURL))
 			}
+			if target := s.legacyInstanceTarget(p); target != nil && selected {
+				middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Render(
+					fmt.Sprintf("    M: make %s an instance of %s (keeps its channels and settings)", p.Name, target.ID)))
+			}
 		}
 	}
 	middle.pad()
@@ -4197,7 +4299,7 @@ func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState)
 
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(helpStyle.Render("Navigation: ↑↓ select · Esc close"))
-	bottom.writeLine(helpStyle.Render("Actions: Enter configure · T enable/disable · R restart · U update · X uninstall"))
+	bottom.writeLine(helpStyle.Render("Actions: Enter open (settings, instances, channels) · T enable/disable · R restart · U update · X uninstall"))
 	bottom.writeLine(helpStyle.Render("         I install from a URL · S rescan the Plugins folder"))
 	bottom.pad()
 
@@ -4245,7 +4347,9 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE SECTION ──
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	// Scrolls: a plugin with many settings would otherwise push the page
+	// (and the category list beside it) off screen.
+	middle := newScrollSection(layout.middleLines, layout.interiorWidth, a.dimText)
 
 	if state.ErrorMsg != "" {
 		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Bold(true)
@@ -4253,46 +4357,16 @@ func (a *App) renderPluginConfigPage(width, height int, s *ServerManagementState
 		middle.writeBlank()
 	}
 
-	if len(state.Fields) == 0 {
-		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-		middle.writeLine(dimStyle.Render("  This plugin has no server-wide settings."))
+	switch {
+	case state.Picker != nil:
+		a.writeChannelPicker(middle, state.Picker)
+	case len(state.Fields) == 0:
+		middle.writeLine(a.dimText("  This plugin has no server-wide settings."))
 		middle.writeBlank()
-	}
-
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
-	for i, f := range state.Fields {
-		focused := state.FocusField == i
-		required := ""
-		if f.Required {
-			required = " *"
+	default:
+		for i, f := range state.Fields {
+			a.writePluginField(middle, f, &state.TextInputs[i], state.Values[i], state.FocusField == i, state.FieldErrors[f.Key])
 		}
-		middle.writeLine(labelStyle.Render("▸ " + f.Label + required + ":"))
-
-		switch f.Type {
-		case "text", "number", "secret":
-			view := state.TextInputs[i].View()
-			if focused {
-				middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Render("  " + view))
-			} else {
-				middle.writeLine("  " + view)
-			}
-		default:
-			valStyle := lipgloss.NewStyle()
-			if focused {
-				valStyle = valStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
-			}
-			val := a.pluginFieldValueLabel(f, state.Values[i])
-			if val == "" {
-				val = "(none)"
-			}
-			middle.writeLine(valStyle.Render("  ◂ " + val + " ▸"))
-		}
-		if problem := state.FieldErrors[f.Key]; problem != "" {
-			middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Red)).Render("  ⚠ " + problem))
-		} else if f.Help != "" {
-			middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true).Render("  " + f.Help))
-		}
-		middle.writeBlank()
 	}
 	middle.pad()
 
@@ -5213,6 +5287,9 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	if state == nil {
 		return ""
 	}
+	if state.Configuring {
+		return a.renderChannelConfigPage(width, height, s)
+	}
 
 	// Use same layout calculation as channel list
 	layout := calculateSettingsLayout(width, height, 2, 0) // 2 = 2 padding lines, 0 = bottom is correct
@@ -5262,7 +5339,9 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE SECTION ──
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	// Scrolls rather than growing, so a long list of plugin types can't push
+	// the page (and the category list beside it) off screen.
+	middle := newScrollSection(layout.middleLines, layout.interiorWidth, a.dimText)
 
 	// Error message if present
 	if state.ErrorMsg != "" {
@@ -5277,6 +5356,9 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	labelStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Bold(true)
+	if state.FocusField == 0 {
+		middle.markFocus()
+	}
 	middle.writeLine(labelStyle.Render("▸ Name:"))
 
 	// Render textinput with focus indicator
@@ -5301,6 +5383,11 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 		if state.FocusField == 1 {
 			typeStyle = typeStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
 		}
+		markSelected := func(idx int) {
+			if state.FocusField == 1 && state.TypeIndex == idx {
+				middle.markFocus()
+			}
+		}
 
 		typeOptions := []struct {
 			label string
@@ -5319,32 +5406,37 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 			hint := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 				Render("  " + opt.hint)
+			markSelected(opt.idx)
 			writeZoneMarkedLines(middle, fmt.Sprintf("srvmgmt-channelform-type:%d", opt.idx),
 				typeStyle.Render("  "+radio+opt.label), hint)
 		}
-		// Plugin-provided kinds, advertised at READY — a folder dropped into
-		// Plugins/ shows up here with zero changes to this rendering code.
-		for i, kind := range a.pluginKindOptions() {
-			idx := 3 + i
-			radio := "( ) "
-			if state.TypeIndex == idx {
-				radio = "(●) "
+		// Plugin-provided kinds this server offers, one line each — a plugin
+		// installed live shows up here with no changes to this code.
+		if kinds := a.pluginKindOptions(); len(kinds) > 0 {
+			middle.writeLine(a.dimText("  Plugin channels:"))
+			for i, kind := range kinds {
+				idx := 3 + i
+				radio := "( ) "
+				if state.TypeIndex == idx {
+					radio = "(●) "
+				}
+				icon := kind.Icon
+				if icon == "" {
+					icon = "▤"
+				}
+				markSelected(idx)
+				middle.writeLine(zone.Mark(fmt.Sprintf("srvmgmt-channelform-type:%d", idx),
+					typeStyle.Render("  "+radio+icon+" "+kind.DisplayName)))
 			}
-			icon := kind.Icon
-			if icon == "" {
-				icon = "▤"
-			}
-			hint := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-				Render(fmt.Sprintf("  %s Plugin channel", icon))
-			writeZoneMarkedLines(middle, fmt.Sprintf("srvmgmt-channelform-type:%d", idx),
-				typeStyle.Render("  "+radio+kind.DisplayName), hint)
 		}
 	}
 	middle.writeBlank()
 
 	// Max Users field — voice channels only
 	if isVoice {
+		if state.FocusField == formLayout.maxUsersField {
+			middle.markFocus()
+		}
 		middle.writeLine(labelStyle.Render("▸ Max Users (0 = unlimited):"))
 		maxUsersView := state.MaxUsersInput.View()
 		if state.FocusField == formLayout.maxUsersField {
@@ -5357,41 +5449,25 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 		middle.writeBlank()
 	}
 
-	// Plugin-declared create_fields, one per manifest field — the same
-	// generic field renderer will be reused for Settings > Plugins config.
+	// A plugin channel's own settings are on its Configure page, so however
+	// many a plugin declares, this form stays the same size.
 	if formLayout.isPlugin {
-		for i, f := range state.PluginFields {
-			focused := state.FocusField == formLayout.pluginStart+i
-			fieldLabelStyle := labelStyle
-			required := ""
-			if f.Required {
-				required = " *"
-			}
-			middle.writeLine(fieldLabelStyle.Render("▸ " + f.Label + required + ":"))
-
-			switch f.Type {
-			case "text", "number", "secret":
-				view := state.PluginTextInputs[i].View()
-				if focused {
-					middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Render("  " + view))
-				} else {
-					middle.writeLine("  " + view)
-				}
-			default: // boolean, select, channel_select
-				valStyle := lipgloss.NewStyle()
-				if focused {
-					valStyle = valStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan))
-				}
-				val := a.pluginFieldValueLabel(f, state.PluginValues[i])
-				if val == "" {
-					val = "(none)"
-				}
-				middle.writeLine(valStyle.Render("  ◂ " + val + " ▸"))
-			}
-			middle.writeBlank()
+		focused := state.FocusField == formLayout.configureField
+		if focused {
+			middle.markFocus()
 		}
+		middle.writeLine(labelStyle.Render("▸ Channel settings:"))
+		rowStyle := lipgloss.NewStyle()
+		if focused {
+			rowStyle = rowStyle.Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
+		}
+		row := "  [Configure…]"
+		if summary := a.channelConfigSummary(state); summary != "" {
+			row += "  " + a.dimText(truncateRunes(summary, layout.interiorWidth-18))
+		}
+		middle.writeLine(zone.Mark("srvmgmt-channelform-configure", rowStyle.Render("  [Configure…]")+strings.TrimPrefix(row, "  [Configure…]")))
+		middle.writeBlank()
 	}
-
 	// Show parent group if applicable (text/voice only, categories and plugin channels are always top-level)
 	if state.TypeIndex != 2 && !formLayout.isPlugin && state.CategoryID != nil && a.activeConn != nil {
 		a.activeConn.mu.RLock()
@@ -5447,6 +5523,9 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	createButton = zone.Mark("srvmgmt-channelform-submit", createButton)
 	cancelButton = zone.Mark("srvmgmt-channelform-cancel", cancelButton)
 
+	if state.FocusField == submitField || state.FocusField == cancelField {
+		middle.markFocus()
+	}
 	middle.writeLine("  " + createButton + "  " + cancelButton)
 
 	// Fill remaining middle section space
@@ -5461,7 +5540,7 @@ func (a *App) renderChannelFormPage(width, height int, s *ServerManagementState)
 	// Navigation help
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(helpStyle.Render("Tab/Shift+Tab: Navigate · ↑↓←→: Select type · Enter: Submit · Esc: Cancel"))
+	bottom.writeLine(helpStyle.Render("Tab/Shift+Tab: Navigate · ↑↓←→: Select type · Enter: Configure / Submit · Esc: Cancel"))
 
 	// Fill remaining bottom section space
 	bottom.pad()

@@ -16,9 +16,9 @@ import (
 // the selected type is voice (adds a max-users field) or a plugin kind (adds
 // its declared create_fields) — the two are mutually exclusive.
 type channelFormFieldLayout struct {
-	isVoice       bool
-	isPlugin      bool
-	pluginStart   int // FocusField of the first plugin field (only meaningful if isPlugin)
+	isVoice        bool
+	isPlugin       bool
+	configureField int // FocusField of the "Configure" row (only meaningful if isPlugin)
 	maxUsersField int // FocusField of the max-users field (only meaningful if isVoice)
 	submitField   int
 	cancelField   int
@@ -33,8 +33,8 @@ func computeChannelFormLayout(state *ChannelFormState) channelFormFieldLayout {
 	l := channelFormFieldLayout{isVoice: state.TypeIndex == 1, isPlugin: isPlugin}
 	next := 2 // 0=name, 1=type
 	if l.isPlugin {
-		l.pluginStart = next
-		next += len(state.PluginFields)
+		l.configureField = next
+		next++
 	}
 	if l.isVoice {
 		l.maxUsersField = next
@@ -108,12 +108,55 @@ func collectFieldValues(fields []protocol.PluginField, textInputs []textinput.Mo
 }
 
 // setPluginKind switches the channel-creation form to a plugin channel kind,
-// rebuilding the field editors for that kind's declared create_fields.
-func setPluginKind(state *ChannelFormState, info protocol.PluginChannelKindInfo) {
+// rebuilding the field editors for that kind's declared create_fields, and
+// offering its instances (if the plugin has several) to own the channel.
+func (a *App) setPluginKind(state *ChannelFormState, info protocol.PluginChannelKindInfo) {
 	state.PluginID = info.PluginID
 	state.PluginKind = info.Kind
 	state.PluginFields = info.CreateFields
 	state.PluginTextInputs, state.PluginValues = buildFieldEditors(info.CreateFields, nil)
+	state.InstanceOptions = a.kindInstances(info)
+	state.InstanceIndex = 0
+	state.ConfigFocus = 0
+}
+
+// clearPluginKind switches the form back to a built-in channel type.
+func clearPluginKind(state *ChannelFormState) {
+	state.PluginFields, state.PluginTextInputs, state.PluginValues = nil, nil, nil
+	state.InstanceOptions, state.InstanceIndex = nil, 0
+}
+
+// kindInstances lists every instance of info's plugin (the plugin itself
+// first) that offers info's channel kind on the current server.
+func (a *App) kindInstances(info protocol.PluginChannelKindInfo) []protocol.PluginChannelKindInfo {
+	base := info.PluginID
+	if info.BaseID != "" {
+		base = info.BaseID
+	}
+	var out []protocol.PluginChannelKindInfo
+	for _, k := range a.currentServerKinds() {
+		if k.Kind != info.Kind || (k.PluginID != base && k.BaseID != base) {
+			continue
+		}
+		if k.PluginID == base {
+			out = append([]protocol.PluginChannelKindInfo{k}, out...)
+		} else {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// configRows describes the Configure page: whether it starts with the
+// instance choice (more than one instance, and only when creating), and
+// how many rows come before Done.
+func configRows(state *ChannelFormState) (instanceRow bool, rows int) {
+	instanceRow = state.Mode != "edit" && len(state.InstanceOptions) > 1
+	rows = len(state.PluginFields)
+	if instanceRow {
+		rows++
+	}
+	return instanceRow, rows
 }
 
 // cyclePluginFieldValue advances a boolean/select field's value by one step
@@ -267,6 +310,14 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
+	if p := state.Picker; p != nil {
+		if p.Key(msg.String()) {
+			state.Values[p.Field] = p.Value()
+			state.Picker = nil
+		}
+		return nil
+	}
+
 	switch msg.String() {
 	case "esc":
 		a.serverManagementState.PluginConfigState = nil
@@ -290,7 +341,7 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 	case "up", "down", "left", "right":
 		if state.FocusField >= 0 && state.FocusField < len(state.Fields) {
 			f := state.Fields[state.FocusField]
-			if !isTextField(f.Type) {
+			if !isTextField(f.Type) && f.Type != "channel_multi_select" {
 				dir := 1
 				if msg.String() == "up" || msg.String() == "left" {
 					dir = -1
@@ -301,6 +352,11 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "enter":
+		if state.FocusField >= 0 && state.FocusField < len(state.Fields) && state.Fields[state.FocusField].Type == "channel_multi_select" {
+			f := state.Fields[state.FocusField]
+			state.Picker = newChannelPicker(state.FocusField, f.Label, state.Values[state.FocusField], a.textChannelIDs())
+			return nil
+		}
 		if state.FocusField == saveField {
 			return a.handleSavePluginConfig()
 		} else if state.FocusField == backField {

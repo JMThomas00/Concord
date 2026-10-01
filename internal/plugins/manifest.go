@@ -82,6 +82,10 @@ type PluginDef struct {
 	// (no auto-update polling); a plugin without one can still be
 	// installed by an admin supplying a URL directly at install time.
 	SourceURL string `toml:"source_url"`
+	// Instances lets an admin run several named copies of this plugin
+	// (Mynah's personas), each with its own account, settings, channels and
+	// data, all running this one install's files. See instances.go.
+	Instances bool `toml:"instances"`
 }
 
 // Manifest is the parsed, validated contents of a plugin.toml file.
@@ -93,6 +97,9 @@ type Manifest struct {
 
 	// Dir is the plugin's own folder (set by LoadManifest, not from TOML).
 	Dir string `toml:"-"`
+	// BaseID is set on an instance's manifest: the installed plugin it's a
+	// copy of (Dir is then the base's folder). Empty for an installed plugin.
+	BaseID string `toml:"-"`
 }
 
 // LoadManifest reads and parses a plugin.toml file. It does not validate —
@@ -137,6 +144,9 @@ func (m *Manifest) Entrypoint() (*EntrypointDef, error) {
 // understands. Adding a new type later is one case there, not a protocol change.
 var validFieldTypes = map[string]bool{
 	"text": true, "number": true, "boolean": true, "select": true, "channel_select": true,
+	// channel_multi_select: several text channels, stored as comma-separated
+	// channel IDs (empty means none were picked).
+	"channel_multi_select": true,
 	// secret: a text value (API key, password) stored encrypted, shown to
 	// admins only as set/not set, and delivered in plaintext only to the
 	// plugin itself. Server config only -- per-channel values are sent to

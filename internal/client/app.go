@@ -7059,9 +7059,10 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		if a.view == ViewServerManagement && a.serverManagementState != nil {
 			if a.serverManagementState.Categories[a.serverManagementState.SelectedCategory] == "Plugins" {
-				a.serverManagementState.PluginList = payload.Plugins
-				if a.serverManagementState.SelectedPlugin >= len(payload.Plugins) {
-					a.serverManagementState.SelectedPlugin = len(payload.Plugins) - 1
+				a.serverManagementState.AllPlugins = payload.Plugins
+				a.serverManagementState.PluginList = installedPlugins(payload.Plugins)
+				if a.serverManagementState.SelectedPlugin >= len(a.serverManagementState.PluginList) {
+					a.serverManagementState.SelectedPlugin = len(a.serverManagementState.PluginList) - 1
 				}
 				if a.serverManagementState.SelectedPlugin < 0 {
 					a.serverManagementState.SelectedPlugin = 0

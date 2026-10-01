@@ -410,6 +410,10 @@ type PluginInfo struct {
 	// never sent to admins' clients (ConfigValues leaves them out there);
 	// only the plugin itself receives them.
 	SecretsSet []string `json:"secrets_set,omitempty"`
+	// BaseID is set on an instance of another plugin (a second Mynah
+	// persona); AllowsInstances on a plugin that can have several.
+	BaseID          string `json:"base_id,omitempty"`
+	AllowsInstances bool   `json:"allows_instances,omitempty"`
 }
 
 // PluginConfigListPayload is EventPluginConfigUpdate's data.
