@@ -127,11 +127,20 @@ func (m *localModel) Init() tea.Cmd { return nil }
 func (m *localModel) start(seats []Player, mySeat int) tea.Cmd {
 	m.t = &Table{ID: "local", Seats: seats, Options: m.options, Resigned: -1}
 	m.t.rebuild(&m.rules)
-	m.seat = &Seat{Index: mySeat, table: m.t, rules: &m.rules, hotseat: mySeat < 0, play: m.play}
+	m.seat = &Seat{Index: mySeat, table: m.t, rules: &m.rules, hotseat: mySeat < 0, play: m.playHuman}
 	m.board = m.rules.NewBoard(m.seat)
 	m.choosing, m.menuOpen, m.notice = false, false, ""
 	m.board, _ = m.board.Update(tea.WindowSizeMsg{Width: m.width, Height: m.boardHeight()})
 	return tea.Batch(m.board.Init(), m.computerTurn())
+}
+
+// playHuman is a move from a person at this computer: never for the
+// computer's seat.
+func (m *localModel) playHuman(seat int, move string) error {
+	if seat >= 0 && seat < len(m.t.Seats) && m.t.Seats[seat].Computer {
+		return fmt.Errorf("it's not your turn")
+	}
+	return m.play(seat, move)
 }
 
 func (m *localModel) play(seat int, move string) error {
@@ -139,7 +148,7 @@ func (m *localModel) play(seat int, move string) error {
 	if t.outcome().Over {
 		return fmt.Errorf("this game is over")
 	}
-	if seat < 0 || t.game.Turn() != seat || t.Seats[seat].Computer {
+	if seat < 0 || t.game.Turn() != seat {
 		return fmt.Errorf("it's not your turn")
 	}
 	if m.net != nil && m.net.gone {

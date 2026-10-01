@@ -128,3 +128,22 @@ func TestNetworkPlay(t *testing.T) {
 		t.Fatalf("drift wasn't caught: gone=%v notice=%q", host.net.gone, host.notice)
 	}
 }
+
+// Standalone against the computer: the computer's seat refuses a person's
+// move, and the computer's own moves go through.
+func TestLocalComputerPlays(t *testing.T) {
+	rules := countRules
+	rules.AI = func(Game, int) string { return "1" }
+	m := newLocal(rules, nil)
+	m.start([]Player{{Name: "me"}, {Name: "Computer", Computer: true, Level: 1}}, 0)
+	if err := m.seat.Play("3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.playHuman(1, "2"); err == nil {
+		t.Fatal("a person moved for the computer")
+	}
+	m.Update(run(t, m.computerTurn()))
+	if got := m.t.Moves; len(got) != 2 || got[1] != "1" || m.notice != "" {
+		t.Fatalf("moves %v, notice %q", got, m.notice)
+	}
+}
