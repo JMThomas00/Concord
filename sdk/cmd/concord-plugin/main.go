@@ -58,6 +58,14 @@ func main() {
 		usage()
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "keygen" {
+		keygen(os.Args[2:])
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "sign" {
+		sign(os.Args[2:])
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "new" {
 		usage()
 		os.Exit(2)
@@ -186,6 +194,8 @@ func titleCase(id string) string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: concord-plugin new <name> [--template game|pane|bot|pty] [--module path] [--name \"Display Name\"] [--sdk path/to/Concord/sdk]")
+	fmt.Fprintln(os.Stderr, "       concord-plugin keygen [--out publisher.key]      make a key to sign client code")
+	fmt.Fprintln(os.Stderr, "       concord-plugin sign [--key publisher.key] client/plugin.wasm")
 	fmt.Fprintln(os.Stderr, "\ntemplates:")
 	for _, k := range []string{"game", "pane", "bot", "pty"} {
 		fmt.Fprintf(os.Stderr, "  %-5s %s\n", k, kinds[k])

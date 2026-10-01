@@ -344,6 +344,12 @@ const (
 	// Plugin → viewer(s) (PluginPlaySoundPayload): play a sound from the
 	// plugin's client/ folder. ViewerID empty = everyone viewing the channel.
 	PluginEventPlaySound = "play_sound"
+	// Plugin ↔ one viewer's client code (PluginClientMessagePayload):
+	// messages between a plugin and the WebAssembly code it ships in its
+	// client/ folder. A plugin sends it with ViewerID set; a viewer's
+	// client code sends it to the plugin, and Concord fills in ViewerID
+	// and the viewer's names.
+	PluginEventClientMessage = "client_message"
 )
 
 // PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
@@ -405,6 +411,19 @@ type PluginPlaySoundPayload struct {
 	Asset     string    `json:"asset"`
 	Volume    float64   `json:"volume,omitempty"`
 }
+
+// PluginClientMessagePayload is the Payload for Kind "client_message".
+// Data is whatever JSON the two sides agree on, at most
+// MaxClientMessageBytes.
+type PluginClientMessagePayload struct {
+	ChannelID         uuid.UUID       `json:"channel_id"`
+	Data              json.RawMessage `json:"data"`
+	ViewerName        string          `json:"viewer_name,omitempty"`         // set by Concord, toward the plugin
+	ViewerDisplayName string          `json:"viewer_display_name,omitempty"` // set by Concord, toward the plugin
+}
+
+// MaxClientMessageBytes caps a client_message's Data.
+const MaxClientMessageBytes = 64 << 10
 
 // ── Settings ────────────────────────────────────────────────────────────────
 

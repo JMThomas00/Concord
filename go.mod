@@ -98,6 +98,7 @@ require (
 	github.com/JMThomas00/Concord/sdk v0.0.0
 	github.com/charmbracelet/x/ansi v0.8.0
 	github.com/mattn/go-sixel v0.0.5
+	github.com/tetratelabs/wazero v1.11.0
 	golang.org/x/term v0.39.0
 )
 

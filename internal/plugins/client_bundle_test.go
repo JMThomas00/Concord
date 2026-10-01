@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/JMThomas00/Concord/sdk/codesign"
 )
 
 func TestClientDefValidation(t *testing.T) {
@@ -67,5 +69,46 @@ func TestIndexClientBundle(t *testing.T) {
 	write("big.wav", MaxClientBundleBytes)
 	if _, err := IndexClientBundle(dir); err == nil {
 		t.Fatal("a bundle over the cap was accepted")
+	}
+}
+
+func TestVerifyClientCode(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "client"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pub, privFile, _ := codesign.GenerateKey()
+	priv, _ := codesign.ParsePrivateKey(privFile)
+	module := []byte("\x00asm\x01\x00\x00\x00")
+	write := func(name string, data []byte) {
+		if err := os.WriteFile(filepath.Join(dir, "client", name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	def := ClientDef{WASM: "client/plugin.wasm", PublisherKey: pub}
+
+	if err := VerifyClientCode(dir, ClientDef{}); err != nil {
+		t.Fatalf("no code should pass: %v", err)
+	}
+	write("plugin.wasm", module)
+	if err := VerifyClientCode(dir, def); err == nil || !strings.Contains(err.Error(), "no signature") {
+		t.Fatalf("unsigned code: %v", err)
+	}
+	write("plugin.wasm.sig", codesign.Sign(priv, module))
+	if err := VerifyClientCode(dir, def); err != nil {
+		t.Fatalf("signed code: %v", err)
+	}
+	write("plugin.wasm", append(module, 0))
+	if err := VerifyClientCode(dir, def); err == nil {
+		t.Fatal("code changed after signing passed")
+	}
+
+	// The .sig is served to clients alongside the code.
+	b, err := IndexClientBundle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.File("plugin.wasm.sig"); !ok {
+		t.Fatal("the signature isn't in the client bundle")
 	}
 }

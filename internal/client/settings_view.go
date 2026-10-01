@@ -2381,6 +2381,23 @@ func (a *App) renderDisplayContent(width, height int) string {
 
 	// Field 13: how plugin pictures are drawn
 	writeField(13, "Plugin Pictures", imagesSettingLabel(cfg.Images)+"  ◀▶")
+
+	// Field 14: whether plugins' client code may run
+	codeVal := "Ask before running each plugin's code  ◀▶"
+	if cfg.PluginCode == "never" {
+		codeVal = "Never run plugin code  ◀▶"
+	}
+	writeField(14, "Plugin Code", codeVal)
+
+	// Field 15: forget the answers given to "run this plugin's code?"
+	answers := len(a.decisions().Decisions)
+	forgetVal := "No saved answers"
+	if answers > 0 {
+		forgetVal = fmt.Sprintf("%d saved answer(s): Enter forgets them, so each plugin asks again", answers)
+	}
+	writeField(15, "Plugin Code Answers", forgetVal)
+
+	// Notes go last, so the fields above keep fixed positions for scrolling.
 	for _, hint := range imagesSettingHints(cfg.Images) {
 		addLine(dimStyle.Render("    " + hint))
 	}
@@ -2458,8 +2475,8 @@ func (a *App) updateNotifScroll(s *SettingsState) {
 // Layout: fields 0-5 (3 lines each), divider+blank (2), fields 6-8 (3 lines each),
 // divider+header+blank (3), fields 9-10 (3 lines each),
 // divider+header+blank (3), fields 11-12 (3 lines each),
-// divider+header+blank (3), field 13 (3 lines, then its hints).
-var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44, 50}
+// divider+header+blank (3), fields 13-15 (3 lines each), then notes.
+var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44, 50, 53, 56}
 
 // updateDisplayScroll adjusts DisplayScrollOffset so the focused field is visible.
 func (a *App) updateDisplayScroll(s *SettingsState) {
@@ -2564,6 +2581,18 @@ func (a *App) handleDisplayFieldActivate(s *SettingsState) {
 		cfg.TypingAnimation = typingAnimNames[(idx+1)%len(typingAnimNames)]
 	case 13: // Plugin Pictures: cycle auto → each drawing method → off
 		cfg.Images = nextImagesSetting(cfg.Images)
+	case 14: // Plugin Code: ask ↔ never
+		if cfg.PluginCode == "never" {
+			cfg.PluginCode = ""
+		} else {
+			cfg.PluginCode = "never"
+			a.pluginPane.stopPaneCode() // and stop any running now
+			if a.pluginPane != nil {
+				a.pluginPane.consent = nil
+			}
+		}
+	case 15: // forget saved answers
+		a.forgetCodeDecisions()
 	}
 	a.saveDisplayConfig()
 	a.updateChatContent()

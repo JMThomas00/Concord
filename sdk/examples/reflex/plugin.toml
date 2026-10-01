@@ -1,0 +1,30 @@
+# Reflex: the smallest plugin with client code. `go run build.go` builds
+# the client code, signs it, and builds the server half for this computer;
+# copy this folder (plugin.toml, the binary and client/) into a server's
+# Plugins/ folder, or zip it, to try it.
+
+[plugin]
+id = "reflex"
+name = "Reflex"
+version = "0.1.0"
+description = "How fast are you? A reaction-time game that runs on each player's computer."
+source_url = "https://github.com/JMThomas00/Concord"
+
+[process.entrypoint.linux]
+bin = "reflex"
+[process.entrypoint.darwin]
+bin = "reflex"
+[process.entrypoint.windows]
+bin = "reflex.exe"
+
+[client]
+wasm = "client/plugin.wasm"
+capabilities = ["pane", "storage", "server"]
+# build.go fills this in from your publisher.key (concord-plugin keygen).
+publisher_key = "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+[[channel_kind]]
+kind = "reflex"
+display_name = "Reflex"
+icon = "!"
+remote_pane = true

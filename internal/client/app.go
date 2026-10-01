@@ -399,6 +399,11 @@ type App struct {
 	// images the current render placed, and what was last painted.
 	pluginAssets *pluginAssets
 	sfx          *sfxPlayer // plugin sounds (sfx.go), opened on first use
+	// Plugin client code (plugin_code.go): the runtime, created on first
+	// use, the remembered consent answers, and plugins declined this session.
+	codeHost      *codeHost
+	codeDecisions *codeDecisions
+	codeNotNow    map[string]bool
 	paneRasters  []rasterImage
 	rasterState  rasterState
 }
@@ -1182,6 +1187,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleGrapeTick(m)
 	case paneCheckMsg:
 		return a, a.syncPluginPane()
+	case codeMsg:
+		// Plugin client code wants something; then wait for its next.
+		return a, tea.Batch(a.handleCodeMsg(m), a.codeHost.listen())
 	case pluginAssetMsg:
 		// A plugin file arrived (this re-render shows it) or failed.
 		if m.err != nil {
@@ -1840,7 +1848,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// without this check the same keypress that moves Concord's own
 			// list cursor would also leak into the plugin's board as a
 			// spurious cursor move.
-			a.forwardPluginPaneInput(keyMsg)
+			cmds = append(cmds, a.forwardPluginPaneInput(keyMsg))
 		} else if a.focus == FocusInput && !a.messageNavMode {
 			// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode.
 			// Exception: skip forwarding alt+left/alt+b on a completely empty

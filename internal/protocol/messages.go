@@ -755,6 +755,7 @@ type PluginRegistryPayload struct {
 // Instances share their base plugin's files.
 type PluginClientInfo struct {
 	PluginID     string             `json:"plugin_id"`
+	Name         string             `json:"name,omitempty"`
 	Version      string             `json:"version"`
 	Hash         string             `json:"hash"` // of the whole bundle
 	Files        []PluginClientFile `json:"files"`
@@ -1017,33 +1018,38 @@ type MoveVoicePayload struct {
 // exact same shapes. Change them there, not here.
 
 type (
-	PaneTheme                = wire.PaneTheme
-	PluginPaneEnterPayload   = wire.PluginPaneEnterPayload
-	PluginPaneResizePayload  = wire.PluginPaneResizePayload
-	PluginPaneInputPayload   = wire.PluginPaneInputPayload
-	PluginPaneLeavePayload   = wire.PluginPaneLeavePayload
-	PluginPaneFramePayload   = wire.PluginPaneFramePayload
-	PluginEventPayload       = wire.PluginEventPayload
-	PluginNotifyEventPayload = wire.PluginNotifyEventPayload
-	PluginPaneClosePayload   = wire.PluginPaneClosePayload
-	PluginNotifyUserPayload  = wire.PluginNotifyUserPayload
-	PluginMembersRequest     = wire.PluginMembersRequest
-	PluginMembersResponse    = wire.PluginMembersResponse
-	PluginMember             = wire.PluginMember
-	PluginPaneTitlePayload   = wire.PluginPaneTitlePayload
-	PluginPlaySoundPayload   = wire.PluginPlaySoundPayload
-	PaneImage                = wire.PaneImage
-	PluginField              = wire.PluginField
-	PluginInfo               = wire.PluginInfo
-	PluginConfigListPayload  = wire.PluginConfigListPayload
+	PaneTheme                  = wire.PaneTheme
+	PluginPaneEnterPayload     = wire.PluginPaneEnterPayload
+	PluginPaneResizePayload    = wire.PluginPaneResizePayload
+	PluginPaneInputPayload     = wire.PluginPaneInputPayload
+	PluginPaneLeavePayload     = wire.PluginPaneLeavePayload
+	PluginPaneFramePayload     = wire.PluginPaneFramePayload
+	PluginEventPayload         = wire.PluginEventPayload
+	PluginNotifyEventPayload   = wire.PluginNotifyEventPayload
+	PluginPaneClosePayload     = wire.PluginPaneClosePayload
+	PluginNotifyUserPayload    = wire.PluginNotifyUserPayload
+	PluginMembersRequest       = wire.PluginMembersRequest
+	PluginMembersResponse      = wire.PluginMembersResponse
+	PluginMember               = wire.PluginMember
+	PluginPaneTitlePayload     = wire.PluginPaneTitlePayload
+	PluginPlaySoundPayload     = wire.PluginPlaySoundPayload
+	PluginClientMessagePayload = wire.PluginClientMessagePayload
+	PaneImage                  = wire.PaneImage
+	PluginField                = wire.PluginField
+	PluginInfo                 = wire.PluginInfo
+	PluginConfigListPayload    = wire.PluginConfigListPayload
 )
 
 // PluginEventPayload.Kind values Concord understands; see sdk/wire.
 const (
-	PluginEventNotify     = wire.PluginEventNotify
-	PluginEventLeavePane  = wire.PluginEventLeavePane
-	PluginEventNotifyUser = wire.PluginEventNotifyUser
-	PluginEventMembers    = wire.PluginEventMembers
-	PluginEventPaneTitle  = wire.PluginEventPaneTitle
-	PluginEventPlaySound  = wire.PluginEventPlaySound
+	PluginEventNotify        = wire.PluginEventNotify
+	PluginEventLeavePane     = wire.PluginEventLeavePane
+	PluginEventNotifyUser    = wire.PluginEventNotifyUser
+	PluginEventMembers       = wire.PluginEventMembers
+	PluginEventPaneTitle     = wire.PluginEventPaneTitle
+	PluginEventPlaySound     = wire.PluginEventPlaySound
+	PluginEventClientMessage = wire.PluginEventClientMessage
 )
+
+// MaxClientMessageBytes caps a client_message's Data; see sdk/wire.
+const MaxClientMessageBytes = wire.MaxClientMessageBytes

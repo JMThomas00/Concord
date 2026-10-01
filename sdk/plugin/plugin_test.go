@@ -208,3 +208,32 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatalf("ConfigFromEnv = %+v, %v", cfg, ok)
 	}
 }
+
+// A viewer's client code and the plugin talk through client_message
+// events: OnClientMessage in, SendToClient out.
+func TestClientMessages(t *testing.T) {
+	got := make(chan wire.PluginClientMessagePayload, 1)
+	h := newCounter().handler()
+	h.OnClientMessage = func(c *plugin.Conn, viewer uuid.UUID, m wire.PluginClientMessagePayload) {
+		got <- m
+		_ = c.SendToClient(m.ChannelID, viewer, map[string]string{"echo": string(m.Data)})
+	}
+	srv, _, _ := startPlugin(t, h)
+	alice := srv.Enter(uuid.New(), "alice", 80, 24)
+	srv.NextFrame(alice)
+
+	srv.ClientMessage(alice, map[string]int{"score": 3})
+	m := <-got
+	if string(m.Data) != `{"score":3}` || m.ViewerName != "alice" {
+		t.Fatalf("plugin got %+v", m)
+	}
+	reply, viewer := srv.NextClientMessage()
+	if viewer != alice.ID || reply.ChannelID != alice.ChannelID || string(reply.Data) != `{"echo":"{\"score\":3}"}` {
+		t.Fatalf("reply %+v to %v", reply, viewer)
+	}
+
+	var c plugin.Conn
+	if err := c.SendToClient(alice.ChannelID, alice.ID, strings.Repeat("x", wire.MaxClientMessageBytes)); err == nil {
+		t.Fatal("an oversized message was sent")
+	}
+}

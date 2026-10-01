@@ -127,6 +127,7 @@ keyboard back.
 | `pane_title` | `{"channel_id", "title"}` | the pane's border title, for `viewer_id` or everyone if it's omitted. `""` restores the channel name |
 | `leave_pane` | `{"channel_id"}` + `viewer_id` | hand that viewer's keyboard back to Concord. The pane stays open and keeps updating |
 | `play_sound` | `{"channel_id", "asset", "volume"}` | plays a WAV (8/16-bit PCM) or Ogg Opus file from your `client/` folder for `viewer_id`, or everyone viewing the channel if it's omitted. `volume` is 0 to 1 (0 means 1), scaled by the member's own setting |
+| `client_message` | `{"channel_id", "data"}` + `viewer_id` | sends `data` (any JSON, at most 64 KB) to that viewer's copy of your client code (below) |
 | anything else | anything | relayed as-is to `viewer_id`'s client, if they're viewing your pane |
 
 **Chat**:
@@ -140,6 +141,51 @@ next to `plugin.toml`. Concord indexes it when the plugin loads and serves
 each file to signed-in members at `GET /api/plugins/client/<plugin id>/<path>`.
 Clients check every download against the SHA-256 Concord lists for it.
 Asset paths are relative to `client/`, e.g. `"assets/king.png"`.
+
+## Client code (WebAssembly)
+
+Your `client/` folder can also hold code that runs inside each viewer's
+client, next to your pane: `[client] wasm = "client/plugin.wasm"`, with the
+`capabilities` it uses (`pane`, `images`, `sound`, `storage`, `server`) and
+a `publisher_key` (`ed25519:<base64>`). Concord runs it only when:
+
+- `<wasm>.sig` holds the base64 ed25519 signature of the module, made with
+  that key (`concord-plugin sign`);
+- the viewer agreed (they're shown the key's fingerprint and the capabilities).
+
+It must be a `wasip1` command module (it runs `_start`) with no filesystem
+or network. It gets 256 MB of memory, and 2 seconds to handle each event.
+
+It talks to Concord through imports from module `concord`, all in JSON:
+
+| Import | Does |
+|---|---|
+| `next_event(buf i32, cap i32) -> i32` | blocks for the next event and copies it into `buf`, returning its length. If that's more than `cap`, nothing is copied: call again with that much room. `-1` means stop: return from `_start` |
+| `call(req i32, len i32) -> i32` | a host call, `{"fn": ..., ...}`. Negative is an error: `-1` bad request, `-2` capability not granted, `-3` unknown function, `-4` over a limit, `-5` not found. Otherwise it's the length of the result |
+| `result(buf i32, cap i32) -> i32` | copies the last call's result into `buf` |
+
+Events (`"type"`):
+
+- `start`: `plugin_id`, `channel_id`, `viewer_id`, `width`, `height`, `theme`, `capabilities`
+- `key`: `key` (Bubble Tea's name, as in pane input), `runes`
+- `resize`: `width`, `height`, `theme`
+- `server_frame`: `text`, `images` (what you sent this viewer)
+- `server`: `data` (a `client_message` from you)
+- `timer`: `id`
+
+Calls (`"fn"`):
+
+| `fn` | Fields | Needs |
+|---|---|---|
+| `log` | `text` | |
+| `frame` | `text`, `images` | `pane` (`images` too for pictures) |
+| `clear_frame` | | `pane` |
+| `forward_keys` | `forward` (keys also go to you as pane input; default true) | `pane` |
+| `timer` | `id`, `ms` (16 ms to 1 h, 16 pending) | `pane` |
+| `play_sound` | `asset`, `volume` | `sound` |
+| `storage_get` | `key` → `{"value": string or null}` | `storage` |
+| `storage_set` | `key`, `value` (null deletes; 1 MB per plugin) | `storage` |
+| `send_server` | `data` (≤ 64 KB): arrives as `PLUGIN_EVENT` kind `client_message` with `viewer_id`, `viewer_name`, `viewer_display_name` | `server` |
 
 ## Settings
 

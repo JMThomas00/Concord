@@ -44,6 +44,16 @@ type PluginPaneState struct {
 
 	checkPending bool
 	retryAt      time.Time
+
+	// The plugin's client code (plugin_code_pane.go).
+	codeChecked bool         // whether to run it has been decided
+	consent     *codeConsent // the question on screen instead of the pane
+	code        *codeRunner  // the running code
+	local       *codeFrame   // what it drew, shown instead of Frame
+	keysLocal   bool         // it asked for keys not to go to the server
+	codeW       int
+	codeH       int
+	codeTheme   string
 }
 
 // paneCheckMsg fires syncPluginPane's deferred check.
@@ -76,6 +86,7 @@ func (a *App) paneFocused() bool {
 // enterPluginPane switches the active pane to a plugin channel. The plugin
 // is told once the selection settles (see paneEnterDelay).
 func (a *App) enterPluginPane(ch *models.Channel) {
+	a.pluginPane.stopPaneCode()
 	a.pluginPane = &PluginPaneState{ChannelID: ch.ID, PluginID: ch.PluginID, conn: a.activeConn, selectedAt: time.Now()}
 }
 
@@ -90,6 +101,7 @@ func (a *App) leavePluginPane() {
 	if p.entered {
 		a.sendPluginPane(p, protocol.OpPluginPaneLeave, protocol.PluginPaneLeavePayload{ChannelID: p.ChannelID})
 	}
+	p.stopPaneCode()
 	a.pluginPane = nil
 }
 
@@ -111,12 +123,23 @@ func (a *App) paneDisconnected() {
 	}
 }
 
-// forwardPluginPaneInput relays one keypress to the owning plugin. Called
-// from Update() for any key not already claimed while the pane is focused.
-func (a *App) forwardPluginPaneInput(msg tea.KeyMsg) {
+// forwardPluginPaneInput relays one keypress to the owning plugin, and to
+// its client code if that's running. Called from Update() for any key not
+// already claimed while the pane is focused. A pane asking whether to run
+// the plugin's code takes the keys itself.
+func (a *App) forwardPluginPaneInput(msg tea.KeyMsg) tea.Cmd {
 	p := a.pluginPane
 	if p == nil || !p.entered || msg.String() == paneLeaveKey {
-		return
+		return nil
+	}
+	if p.consent != nil {
+		return a.handleConsentKey(p, msg)
+	}
+	if r := a.paneCode("pane"); r != nil {
+		r.push(codeKeyEvent(msg))
+		if p.keysLocal {
+			return nil
+		}
 	}
 	a.sendPluginPane(p, protocol.OpPluginPaneInput, protocol.PluginPaneInputPayload{
 		ChannelID: p.ChannelID,
@@ -125,6 +148,7 @@ func (a *App) forwardPluginPaneInput(msg tea.KeyMsg) {
 		Alt:       msg.Alt,
 		KeyString: msg.String(),
 	})
+	return nil
 }
 
 // sendPluginPane sends one plugin-pane opcode over the pane's own server
@@ -219,9 +243,10 @@ func (a *App) syncPluginPane() tea.Cmd {
 			return a.paneCheckAfter(paneRetryDelay)
 		}
 		p.entered, p.sentW, p.sentH, p.sentTheme = true, w, h, theme.Name
-		return nil
+		return a.startPaneCodeIfAny(p)
 	}
 
+	a.syncPaneCode(w, h, theme)
 	if w != p.sentW || h != p.sentH || theme.Name != p.sentTheme {
 		if a.sendPluginPane(p, protocol.OpPluginPaneResize, protocol.PluginPaneResizePayload{
 			ChannelID: p.ChannelID, Width: w, Height: h, Theme: theme,
@@ -249,6 +274,9 @@ func (a *App) applyPluginPaneFrame(payload protocol.PluginPaneFramePayload) tea.
 	a.pluginPane.LastSeq = payload.Seq
 	a.pluginPane.Epoch = payload.Epoch
 	a.pluginPane.Images = payload.Images
+	if r := a.paneCode("pane"); r != nil {
+		r.push(map[string]any{"type": "server_frame", "text": a.pluginPane.Frame, "images": payload.Images})
+	}
 	// Start fetching any image this frame shows for the first time.
 	return a.fetchPaneAssets(a.pluginPane.conn, a.pluginPane.PluginID, payload.Images)
 }
@@ -261,7 +289,18 @@ func (a *App) renderPluginPaneFrame(width, height int) string {
 	if a.pluginPane != nil {
 		a.pluginPane.renderW, a.pluginPane.renderH = width, height
 	}
-	if a.pluginPane == nil || a.pluginPane.Frame == "" {
+	if p := a.pluginPane; p != nil && p.consent != nil {
+		return a.renderConsent(p.consent, width, height)
+	}
+	frame, images := "", []protocol.PaneImage(nil)
+	if p := a.pluginPane; p != nil {
+		frame, images = p.Frame, p.Images
+		if p.local != nil && p.local.text != nil {
+			// The plugin's client code drew this one.
+			frame, images = *p.local.text, p.local.images
+		}
+	}
+	if frame == "" {
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 			Italic(true).
@@ -277,9 +316,8 @@ func (a *App) renderPluginPaneFrame(width, height int) string {
 	// see the laneWidth fix in Tukan's own history). A slightly narrower
 	// frame should sit centered in the pane, not jammed into the top-left
 	// corner with all the slack on the right.
-	frame := a.pluginPane.Frame
-	if len(a.pluginPane.Images) > 0 {
-		lines, rasters := a.drawPaneImages(strings.Split(frame, "\n"), width, a.pluginPane.conn, a.pluginPane.PluginID, a.pluginPane.Images)
+	if len(images) > 0 {
+		lines, rasters := a.drawPaneImages(strings.Split(frame, "\n"), width, a.pluginPane.conn, a.pluginPane.PluginID, images)
 		frame = strings.Join(lines, "\n")
 		a.paneRasters = rasters
 	}
@@ -332,6 +370,16 @@ func (a *App) handlePluginEvent(serverID uuid.UUID, sc *ServerConnection, ev pro
 			return
 		}
 		a.notifyFromPlugin(serverID, sc, p)
+
+	case protocol.PluginEventClientMessage:
+		// For the plugin's client code in the pane on screen, if it runs.
+		var p protocol.PluginClientMessagePayload
+		if json.Unmarshal(ev.Payload, &p) != nil {
+			return
+		}
+		if r := a.paneCode("server"); r != nil && a.pluginPane.ChannelID == p.ChannelID && a.pluginPane.conn == sc {
+			r.push(map[string]any{"type": "server", "data": p.Data})
+		}
 	}
 }
 

@@ -28,9 +28,14 @@ func (h *Handlers) PluginClientInfos() []protocol.PluginClientInfo {
 			continue
 		}
 		info := protocol.PluginClientInfo{
-			PluginID: m.Plugin.ID, Version: m.Plugin.Version, Hash: b.Hash,
+			PluginID: m.Plugin.ID, Name: m.Plugin.Name, Version: m.Plugin.Version, Hash: b.Hash,
 			WASM: strings.TrimPrefix(m.Client.WASM, plugins.ClientDir+"/"), Capabilities: m.Client.Capabilities,
 			PublisherKey: m.Client.PublisherKey,
+		}
+		if err := plugins.VerifyClientCode(m.Dir, m.Client); err != nil {
+			// Pictures and sounds still work; the code is never offered.
+			PluginLog.Warn("plugin client code not offered", "plugin_id", m.Plugin.ID, "error", err)
+			info.WASM, info.Capabilities, info.PublisherKey = "", nil, ""
 		}
 		for _, f := range b.Files {
 			info.Files = append(info.Files, protocol.PluginClientFile{Path: f.Path, Size: f.Size, SHA256: f.SHA256})

@@ -2,7 +2,6 @@ package plugins
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/JMThomas00/Concord/sdk/codesign"
 )
 
 // A plugin's client part (To Do item D): files in its client/ folder that
@@ -66,15 +67,28 @@ func (c ClientDef) validate(pluginID string) error {
 
 // ParsePublisherKey decodes "ed25519:<base64 of 32 bytes>".
 func ParsePublisherKey(s string) ([]byte, error) {
-	b64, ok := strings.CutPrefix(s, "ed25519:")
-	if !ok {
-		return nil, fmt.Errorf("must start with ed25519:")
+	return codesign.ParsePublicKey(s)
+}
+
+// VerifyClientCode checks a plugin's client code (in the plugin folder dir)
+// against its signature file, <wasm>.sig, and publisher key. Plugins without
+// client code pass.
+func VerifyClientCode(dir string, c ClientDef) error {
+	if c.WASM == "" {
+		return nil
 	}
-	key, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil || len(key) != 32 {
-		return nil, fmt.Errorf("not a base64 ed25519 public key")
+	module, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(c.WASM)))
+	if err != nil {
+		return fmt.Errorf("client code: %w", err)
 	}
-	return key, nil
+	sig, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(c.WASM)+".sig"))
+	if err != nil {
+		return fmt.Errorf("client code has no signature (%s.sig): sign it with concord-plugin sign", c.WASM)
+	}
+	if err := codesign.Verify(c.PublisherKey, module, sig); err != nil {
+		return fmt.Errorf("client code: %w", err)
+	}
+	return nil
 }
 
 // ClientDir is the folder, inside a plugin's folder, that holds its client part.
@@ -95,6 +109,7 @@ var clientTypes = map[string]string{
 	".opus": "audio/ogg",
 	".wasm": "application/wasm",
 	".json": "application/json",
+	".sig":  "text/plain", // a .wasm file's signature (sdk/codesign)
 }
 
 // ClientContentType is the Content-Type for a client file, or "" when the

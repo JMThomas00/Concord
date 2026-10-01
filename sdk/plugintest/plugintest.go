@@ -484,3 +484,41 @@ func (s *Server) NextSound() (wire.PluginPlaySoundPayload, uuid.UUID) {
 		}
 	}
 }
+
+// ClientMessage sends data from v's client code to the plugin, as Concord
+// relays it (OnClientMessage).
+func (s *Server) ClientMessage(v *Viewer, data any) {
+	s.t.Helper()
+	raw, err := json.Marshal(data)
+	if err != nil {
+		s.t.Fatalf("plugintest: client message: %v", err)
+	}
+	payload, _ := json.Marshal(wire.PluginClientMessagePayload{
+		ChannelID: v.ChannelID, Data: raw, ViewerName: v.Name, ViewerDisplayName: v.Name,
+	})
+	s.dispatch(wire.EventPluginEvent, wire.PluginEventPayload{
+		Kind: wire.PluginEventClientMessage, Payload: payload, ViewerID: v.ID,
+	})
+}
+
+// NextClientMessage waits for the plugin to send its client code a message
+// (SendToClient, skipping other events) and returns it with the viewer it
+// was for.
+func (s *Server) NextClientMessage() (wire.PluginClientMessagePayload, uuid.UUID) {
+	s.t.Helper()
+	deadline := time.After(Timeout)
+	for {
+		select {
+		case e := <-s.events:
+			if e.Kind != wire.PluginEventClientMessage {
+				continue
+			}
+			var p wire.PluginClientMessagePayload
+			_ = json.Unmarshal(e.Payload, &p)
+			return p, e.ViewerID
+		case <-deadline:
+			s.t.Fatalf("plugintest: no client message within %v", Timeout)
+			return wire.PluginClientMessagePayload{}, uuid.Nil
+		}
+	}
+}

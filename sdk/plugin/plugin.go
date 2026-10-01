@@ -92,6 +92,12 @@ type Handler struct {
 	// delivered to the RequestMembers caller that asked).
 	OnEvent func(c *Conn, e wire.PluginEventPayload)
 
+	// OnClientMessage receives a message from a viewer's copy of the
+	// plugin's client code (WebAssembly in client/, see sdk/client).
+	// viewer is who sent it; m.ViewerName and m.ViewerDisplayName say who
+	// they are. Answer with Conn.SendToClient.
+	OnClientMessage func(c *Conn, viewer uuid.UUID, m wire.PluginClientMessagePayload)
+
 	// OnDisconnect runs when the connection drops (Run then reconnects).
 	OnDisconnect func(err error)
 }
@@ -189,6 +195,21 @@ func (c *Conn) FrameWithImages(channelID, viewerID uuid.UUID, frame string, imag
 	return c.Send(wire.OpPluginPaneFrame, wire.PluginPaneFramePayload{
 		ChannelID: channelID, ViewerID: viewerID, Frame: frame, Seq: c.seq.Add(1), Images: images,
 	})
+}
+
+// SendToClient sends data (anything that marshals to JSON, at most
+// wire.MaxClientMessageBytes) to one viewer's copy of the plugin's client
+// code, which receives it as a "server" event. It's dropped if they're no
+// longer viewing the channel or aren't running the code.
+func (c *Conn) SendToClient(channelID, viewerID uuid.UUID, data any) error {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if len(raw) > wire.MaxClientMessageBytes {
+		return fmt.Errorf("client message is %d bytes, over %d", len(raw), wire.MaxClientMessageBytes)
+	}
+	return c.Event(wire.PluginEventClientMessage, viewerID, wire.PluginClientMessagePayload{ChannelID: channelID, Data: raw})
 }
 
 // PlaySound plays a sound file (WAV or Ogg/Opus) from the plugin's client/
@@ -511,6 +532,13 @@ func (c *Conn) route(m *wire.Message, h Handler, dispatch func(func())) {
 		}
 		if e.Kind == wire.PluginEventMembers {
 			c.answerMembers(e)
+		}
+		if e.Kind == wire.PluginEventClientMessage && h.OnClientMessage != nil {
+			var p wire.PluginClientMessagePayload
+			if json.Unmarshal(e.Payload, &p) == nil {
+				dispatch(func() { h.OnClientMessage(c, e.ViewerID, p) })
+			}
+			return
 		}
 		if h.OnEvent != nil {
 			dispatch(func() { h.OnEvent(c, e) })

@@ -119,6 +119,9 @@ func FetchToStaging(ctx context.Context, pluginsDir string, req InstallRequest) 
 	if err := ensureEntrypointExecutable(manifest); err != nil {
 		return fail(err)
 	}
+	if err := VerifyClientCode(staged, manifest.Client); err != nil {
+		return fail(err)
+	}
 	return &Fetched{Dir: staged, ID: id, Version: manifest.Plugin.Version, Verified: src.ChecksumFrom}, nil
 }
 

@@ -252,13 +252,19 @@ func (h *Handlers) HandlePluginPaneFrame(c *Client, msg *protocol.Message) {
 // one of this plugin's panes -- so plugins can add viewer-directed signals
 // without a protocol change.
 func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
-	if !c.IsPlugin {
-		c.sendError(protocol.ErrorCodeForbidden, "Only plugin connections may send plugin events")
-		return
-	}
 	var req protocol.PluginEventPayload
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	if !c.IsPlugin {
+		// The one event a member's client sends: its copy of a plugin's
+		// client code talking to the plugin.
+		if req.Kind == protocol.PluginEventClientMessage {
+			h.handleViewerClientMessage(c, req)
+			return
+		}
+		c.sendError(protocol.ErrorCodeForbidden, "Only plugin connections may send plugin events")
 		return
 	}
 	req.PluginID = c.PluginID // never trust a client-claimed plugin id
@@ -434,4 +440,32 @@ func (h *Handlers) handlePluginPlaySound(c *Client, req protocol.PluginEventPayl
 			MsgLog.Error("Failed to relay plugin sound", "plugin_id", c.PluginID, "viewer_id", v.userID, "error", err)
 		}
 	}
+}
+
+// handleViewerClientMessage relays a message from a viewer's client code
+// to the plugin that owns the pane they're viewing. Only someone who
+// Entered the pane, on the connection that entered it, can send one;
+// Concord fills in who they are.
+func (h *Handlers) handleViewerClientMessage(c *Client, req protocol.PluginEventPayload) {
+	var p protocol.PluginClientMessagePayload
+	if json.Unmarshal(req.Payload, &p) != nil || len(p.Data) == 0 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid client message")
+		return
+	}
+	if len(p.Data) > protocol.MaxClientMessageBytes {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Client message too large")
+		return
+	}
+	state, pluginID, viewing, ok := h.paneViewers.Viewer(c.UserID, p.ChannelID)
+	if !ok || viewing != c {
+		return // not viewing that pane (any more): nothing to relay
+	}
+	p.ViewerName, p.ViewerDisplayName = state.ViewerName, state.ViewerDisplayName
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return
+	}
+	h.sendToPlugin(pluginID, protocol.EventPluginEvent, protocol.PluginEventPayload{
+		PluginID: pluginID, Kind: protocol.PluginEventClientMessage, Payload: payload, ViewerID: c.UserID,
+	})
 }

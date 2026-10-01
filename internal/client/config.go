@@ -189,6 +189,10 @@ type DisplayConfig struct {
 	// Images says how plugin images are drawn: "" or "auto" (the best this
 	// terminal supports), "kitty", "sixel", "iterm2", "blocks" or "off".
 	Images string `json:"images,omitempty"`
+
+	// PluginCode says whether plugins' client code may run: "" asks for
+	// each plugin first (plugin_code_consent.go), "never" turns it off.
+	PluginCode string `json:"plugin_code,omitempty"`
 }
 
 // ServerSoundOverride stores per-server sound settings, overriding global defaults.

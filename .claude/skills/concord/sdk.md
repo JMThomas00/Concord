@@ -41,6 +41,7 @@ callback goroutine.
 | `OnChannelDelete(c, e)` | one of its channels was deleted: drop its state |
 | `OnMessage(c, m)` | a chat message in one of its channels, or an @mention anywhere. **Ignore its own**: `m.AuthorID == c.Self().ID` |
 | `OnEnter/OnInput/OnResize/OnLeave` | remote-pane viewers (use `pane.Host` instead of handling these yourself) |
+| `OnClientMessage(c, viewer, m)` | a message from that viewer's client code (see [`client-code.md`](client-code.md)); `m.Data`, `m.ViewerName` |
 | `OnEvent(c, e)` | any other `PLUGIN_EVENT` |
 | `OnDisconnect(err)` | the connection dropped (Run reconnects) |
 
@@ -56,6 +57,7 @@ callback goroutine.
 | `Frame(channel, viewer, s)` / `Broadcast(channel, s)` | a rendered screen to one viewer / all viewers |
 | `FrameWithImages(channel, viewer, s, images)` | a frame with pictures from `client/` placed over it: see [`media.md`](media.md) |
 | `PlaySound(channel, viewer, asset, volume)` | play a sound from `client/` for one viewer, or everyone viewing (`uuid.Nil`) |
+| `SendToClient(channel, viewer, v)` | a message to that viewer's client code (at most 64 KB of JSON) |
 | `Notify(text)` | message in the admin-configured notification channel |
 | `NotifyUser(user, channel, text)` | toast + unread badge for one member who can see the channel |
 | `SetTitle(channel, viewer, title)` | the pane's border title |
