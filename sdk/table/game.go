@@ -73,6 +73,10 @@ type Rules struct {
 	// from 1 (easy) to 3 (hard). It may take a while; it runs off the
 	// main loop.
 	AI func(g Game, level int) string
+	// Sound, if set, names a sound in the plugin's client/ folder to play
+	// for everyone watching a table after a move ("" for none). It sees the
+	// game after the move, so it can pick a capture or a winning sound.
+	Sound func(g Game, move string) string
 }
 
 // ChangedMsg is sent to every board showing a table after its game changes

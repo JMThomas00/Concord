@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/JMThomas00/Concord/sdk/plugin"
@@ -256,6 +257,14 @@ func (h *Host) run(v *Viewer, cmd tea.Cmd) tea.Model {
 	return m
 }
 
+// Imager is implemented by a pane model that places images from the
+// plugin's client/ folder in its frames. Images is called after View, with
+// boxes in the same cells (0-based, inside the pane). Leave sensible text
+// under each box: viewers who turned images off see that instead.
+type Imager interface {
+	Images() []wire.PaneImage
+}
+
 // render pushes the viewer's current View() if it changed: clamped to their
 // pane (anything wider or taller would be wrapped by Concord and garble
 // every line) and converted to their terminal's colors.
@@ -267,12 +276,53 @@ func (h *Host) render(v *Viewer) {
 		_, _ = w.WriteString(frame)
 		frame = buf.String()
 	}
-	if frame == v.lastSent || h.conn == nil {
+	var images []wire.PaneImage
+	if im, ok := v.model.(Imager); ok {
+		images = clampImages(im.Images(), v.Width, v.Height)
+	}
+	key := frame + imagesKey(images)
+	if key == v.lastSent || h.conn == nil {
 		return
 	}
-	if err := h.conn.Frame(v.ChannelID, v.ID, frame); err == nil {
-		v.lastSent = frame
+	if err := h.conn.FrameWithImages(v.ChannelID, v.ID, frame, images); err == nil {
+		v.lastSent = key
 	}
+}
+
+// clampImages drops boxes outside the pane and trims those that overflow it.
+func clampImages(images []wire.PaneImage, width, height int) []wire.PaneImage {
+	var out []wire.PaneImage
+	for _, im := range images {
+		if im.Asset == "" || im.Col < 0 || im.Row < 0 || im.Cols <= 0 || im.Rows <= 0 {
+			continue
+		}
+		if width > 0 {
+			if im.Col >= width {
+				continue
+			}
+			im.Cols = min(im.Cols, width-im.Col)
+		}
+		if height > 0 {
+			if im.Row >= height {
+				continue
+			}
+			im.Rows = min(im.Rows, height-im.Row)
+		}
+		out = append(out, im)
+	}
+	return out
+}
+
+func imagesKey(images []wire.PaneImage) string {
+	var b strings.Builder
+	for _, im := range images {
+		b.WriteString("\x00" + im.Asset)
+		for _, n := range []int{im.Col, im.Row, im.Cols, im.Rows} {
+			b.WriteByte(',')
+			b.WriteString(strconv.Itoa(n))
+		}
+	}
+	return b.String()
 }
 
 // Fit trims a rendered view to at most width columns and height lines

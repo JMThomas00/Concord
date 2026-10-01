@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/JMThomas00/Concord/sdk/table"
+	"github.com/JMThomas00/Concord/sdk/wire"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -21,6 +22,13 @@ var Rules = table.Rules{
 	New:       func(map[string]string) table.Game { return &Game{} },
 	NewBoard:  func(s *table.Seat) tea.Model { return &Board{seat: s, cursor: 4} },
 	AI:        func(g table.Game, level int) string { return bestMove(g.(*Game), level) },
+	// Sounds from client/sounds/ (played in Concord; standalone ignores them).
+	Sound: func(g table.Game, move string) string {
+		if o := g.Outcome(); o.Over && o.Winner >= 0 {
+			return "sounds/win.wav"
+		}
+		return "sounds/move.wav"
+	},
 }
 
 // ── The rules ──────────────────────────────────────────────────────────────
@@ -203,32 +211,78 @@ func (b *Board) move(cell string) {
 	}
 }
 
+// bigCell is the size of a cell in the large board (images in Concord),
+// or 0, 0 when there's only room for the compact one.
+func (b *Board) bigCell() (w, h int) {
+	h = min(6, (b.height-4)/3)
+	w = h*2 + 1
+	if h < 3 || w*3+2 > b.width {
+		return 0, 0
+	}
+	return w, h
+}
+
 func (b *Board) View() string {
 	g := b.seat.Game().(*Game)
 	x := lipgloss.NewStyle().Foreground(b.seat.Color("red", lipgloss.Color("9"))).Bold(true)
 	o := lipgloss.NewStyle().Foreground(b.seat.Color("cyan", lipgloss.Color("14"))).Bold(true)
 	cur := lipgloss.NewStyle().Reverse(true)
 	var rows []string
-	for r := 0; r < 3; r++ {
-		var cells []string
-		for c := 0; c < 3; c++ {
-			i := r*3 + c
-			mark := " "
-			switch g.Cell(i) {
-			case "X":
-				mark = x.Render("X")
-			case "O":
-				mark = o.Render("O")
+	if w, h := b.bigCell(); w > 0 {
+		// Large cells: X and O drawn as letters, which Concord covers with
+		// the piece images (Images); the cursor is a highlighted cell.
+		hl := lipgloss.NewStyle().Background(b.seat.Color("selection", lipgloss.Color("8")))
+		grid := lipgloss.NewStyle().Foreground(b.seat.Color("comment", lipgloss.Color("8")))
+		for r := 0; r < 3; r++ {
+			for line := 0; line < h; line++ {
+				var cells []string
+				for c := 0; c < 3; c++ {
+					i := r*3 + c
+					text := strings.Repeat(" ", w)
+					if line == h/2 {
+						mark := " "
+						switch g.Cell(i) {
+						case "X":
+							mark = x.Render("X")
+						case "O":
+							mark = o.Render("O")
+						}
+						text = strings.Repeat(" ", w/2) + mark + strings.Repeat(" ", w-w/2-1)
+					}
+					if i == b.cursor && b.seat.MyTurn() {
+						text = hl.Render(text)
+					}
+					cells = append(cells, text)
+				}
+				rows = append(rows, strings.Join(cells, grid.Render("│")))
 			}
-			cell := " " + mark + " "
-			if i == b.cursor && b.seat.MyTurn() {
-				cell = cur.Render(" " + g.Cell(i) + strings.Repeat(" ", 1-len(g.Cell(i))) + " ")
+			if r < 2 {
+				seg := strings.Repeat("─", w)
+				rows = append(rows, grid.Render(seg+"┼"+seg+"┼"+seg))
 			}
-			cells = append(cells, cell)
 		}
-		rows = append(rows, strings.Join(cells, "│"))
-		if r < 2 {
-			rows = append(rows, "───┼───┼───")
+	} else {
+		for r := 0; r < 3; r++ {
+			var cells []string
+			for c := 0; c < 3; c++ {
+				i := r*3 + c
+				mark := " "
+				switch g.Cell(i) {
+				case "X":
+					mark = x.Render("X")
+				case "O":
+					mark = o.Render("O")
+				}
+				cell := " " + mark + " "
+				if i == b.cursor && b.seat.MyTurn() {
+					cell = cur.Render(" " + g.Cell(i) + strings.Repeat(" ", 1-len(g.Cell(i))) + " ")
+				}
+				cells = append(cells, cell)
+			}
+			rows = append(rows, strings.Join(cells, "│"))
+			if r < 2 {
+				rows = append(rows, "───┼───┼───")
+			}
 		}
 	}
 	status := ""
@@ -241,4 +295,25 @@ func (b *Board) View() string {
 		status = "watching"
 	}
 	return strings.Join(append(rows, "", status), "\n")
+}
+
+// Images puts the X and O pictures over the large board's cells (Concord
+// draws them however each viewer's terminal can; the letters underneath
+// show where it can't).
+func (b *Board) Images() []wire.PaneImage {
+	w, h := b.bigCell()
+	if w == 0 {
+		return nil
+	}
+	g := b.seat.Game().(*Game)
+	var out []wire.PaneImage
+	for i := 0; i < 9; i++ {
+		asset := map[string]string{"X": "assets/x.png", "O": "assets/o.png"}[g.Cell(i)]
+		if asset == "" {
+			continue
+		}
+		r, c := i/3, i%3
+		out = append(out, wire.PaneImage{Asset: asset, Col: c * (w + 1), Row: r * (h + 1), Cols: w, Rows: h})
+	}
+	return out
 }

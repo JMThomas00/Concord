@@ -395,6 +395,12 @@ type App struct {
 	// The client never needs plugin-specific code — see plugin_pane.go.
 	pluginChannelKinds map[string]protocol.PluginChannelKindInfo
 	pluginPane         *PluginPaneState
+	// Plugin images (plugin_images.go): fetched client files, the raster
+	// images the current render placed, and what was last painted.
+	pluginAssets *pluginAssets
+	sfx          *sfxPlayer // plugin sounds (sfx.go), opened on first use
+	paneRasters  []rasterImage
+	rasterState  rasterState
 }
 
 // Position represents a cursor position in a message (for Level 2 navigation)
@@ -1176,6 +1182,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleGrapeTick(m)
 	case paneCheckMsg:
 		return a, a.syncPluginPane()
+	case pluginAssetMsg:
+		// A plugin file arrived (this re-render shows it) or failed.
+		if m.err != nil {
+			log.Printf("plugin file: %v", m.err)
+		}
+		return a, nil
 	case tea.MouseMsg:
 		// Plain hover motion (no button held) is handled -- and dropped --
 		// by MouseHoverFilter (grape_logo.go) before it ever reaches here,
@@ -1192,6 +1204,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if swap := a.ensureBannerFits(); swap != nil {
 		cmd = tea.Batch(cmd, swap)
+	}
+	// Sixel/iTerm2 pixels stay on screen until text is drawn over them;
+	// when a pane's images go away, repaint everything once.
+	if a.rasterState.clear {
+		a.rasterState.clear = false
+		cmd = tea.Batch(cmd, tea.ClearScreen)
 	}
 	return model, cmd
 }
@@ -1919,6 +1937,15 @@ func isEmptyTextareaWordNavKey(msg tea.Msg, input textarea.Model) bool {
 
 // View implements tea.Model
 func (a *App) View() string {
+	a.paneRasters = nil
+	out := a.view0()
+	overlay := a.showHubBrowser || a.linkBrowserState != nil || a.helpFinderState != nil || a.memberContextMenu != nil
+	return a.paintRasterImages(out, a.paneRasters, overlay)
+}
+
+// view0 renders the screen; View then paints any Sixel or iTerm2 images
+// over it (plugin_images.go).
+func (a *App) view0() string {
 	// Hub browser is a full-screen overlay; render it before the normal view switch.
 	if a.showHubBrowser {
 		return zone.Scan(a.renderHubBrowserView())
@@ -6028,6 +6055,9 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	// Cache plugin-provided channel kinds so the client can render/create
 	// plugin channels generically without any plugin-specific code compiled in.
 	a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
+	sc.mu.Lock()
+	sc.PluginClients = payload.PluginClients
+	sc.mu.Unlock()
 
 	// Mark as ready and clear any reconnect backoff state
 	sc.SetState(StateReady)
@@ -6751,7 +6781,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
-			a.applyPluginPaneFrame(payload)
+			return a.applyPluginPaneFrame(payload)
 		}
 
 	case protocol.EventPluginEvent:
@@ -7160,6 +7190,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 		a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
+		sc.mu.Lock()
+		sc.PluginClients = payload.PluginClients
+		sc.mu.Unlock()
 
 	case protocol.EventPluginManageResult:
 		var result protocol.PluginManageResult

@@ -103,6 +103,10 @@ func main() {
 	// side. Must be initialized before the first render.
 	zone.NewGlobal()
 
+	// Ask the terminal how it can draw images (plugin panes), before the
+	// UI takes it over.
+	client.SetTerminalGraphics(client.DetectTerminalGraphics())
+
 	// Create Bubble Tea program
 	p := tea.NewProgram(
 		app,

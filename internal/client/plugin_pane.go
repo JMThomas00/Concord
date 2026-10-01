@@ -30,6 +30,8 @@ type PluginPaneState struct {
 	LastSeq   int64
 	Epoch     int64  // the plugin connection LastSeq belongs to
 	Title     string // plugin-set border title (pane_title); "" = channel name
+	PluginID  string // the plugin (or instance) that owns the channel
+	Images    []protocol.PaneImage // the frame's images (plugin_images.go)
 
 	conn       *ServerConnection // the server this pane belongs to
 	selectedAt time.Time
@@ -74,7 +76,7 @@ func (a *App) paneFocused() bool {
 // enterPluginPane switches the active pane to a plugin channel. The plugin
 // is told once the selection settles (see paneEnterDelay).
 func (a *App) enterPluginPane(ch *models.Channel) {
-	a.pluginPane = &PluginPaneState{ChannelID: ch.ID, conn: a.activeConn, selectedAt: time.Now()}
+	a.pluginPane = &PluginPaneState{ChannelID: ch.ID, PluginID: ch.PluginID, conn: a.activeConn, selectedAt: time.Now()}
 }
 
 // leavePluginPane tells the owning plugin this viewer is gone (if it was
@@ -233,19 +235,22 @@ func (a *App) syncPluginPane() tea.Cmd {
 // applyPluginPaneFrame stores a newly-received rendered frame, dropping it if
 // stale (out-of-order delivery) or meant for a channel that isn't the
 // currently active pane.
-func (a *App) applyPluginPaneFrame(payload protocol.PluginPaneFramePayload) {
+func (a *App) applyPluginPaneFrame(payload protocol.PluginPaneFramePayload) tea.Cmd {
 	if a.pluginPane == nil || a.pluginPane.ChannelID != payload.ChannelID {
-		return
+		return nil
 	}
 	// A different epoch means the plugin reconnected (crash + restart) and
 	// its Seq counter started over, so the new stream wins regardless of Seq.
 	sameStream := payload.Epoch == a.pluginPane.Epoch
 	if sameStream && a.pluginPane.LastSeq != 0 && payload.Seq <= a.pluginPane.LastSeq {
-		return
+		return nil
 	}
 	a.pluginPane.Frame = sanitizePaneFrame(payload.Frame)
 	a.pluginPane.LastSeq = payload.Seq
 	a.pluginPane.Epoch = payload.Epoch
+	a.pluginPane.Images = payload.Images
+	// Start fetching any image this frame shows for the first time.
+	return a.fetchPaneAssets(a.pluginPane.conn, a.pluginPane.PluginID, payload.Images)
 }
 
 // renderPluginPaneFrame fits the plugin's last-pushed frame into the chat
@@ -272,11 +277,17 @@ func (a *App) renderPluginPaneFrame(width, height int) string {
 	// see the laneWidth fix in Tukan's own history). A slightly narrower
 	// frame should sit centered in the pane, not jammed into the top-left
 	// corner with all the slack on the right.
+	frame := a.pluginPane.Frame
+	if len(a.pluginPane.Images) > 0 {
+		lines, rasters := a.drawPaneImages(strings.Split(frame, "\n"), width, a.pluginPane.conn, a.pluginPane.PluginID, a.pluginPane.Images)
+		frame = strings.Join(lines, "\n")
+		a.paneRasters = rasters
+	}
 	return lipgloss.NewStyle().
 		Width(width).
 		Height(height).
 		Align(lipgloss.Center, lipgloss.Center).
-		Render(a.pluginPane.Frame)
+		Render(frame)
 }
 
 // handlePluginEvent acts on an EventPluginEvent a plugin sent this viewer.
@@ -302,6 +313,17 @@ func (a *App) handlePluginEvent(serverID uuid.UUID, sc *ServerConnection, ev pro
 		}
 		if a.pluginPane != nil && a.pluginPane.ChannelID == p.ChannelID {
 			a.pluginPane.Title = sanitizePaneTitle(p.Title)
+		}
+
+	case protocol.PluginEventPlaySound:
+		var p protocol.PluginPlaySoundPayload
+		if json.Unmarshal(ev.Payload, &p) != nil {
+			return
+		}
+		// Only for the pane on screen: a sound from a game you've switched
+		// away from would come from nowhere.
+		if a.pluginPane != nil && a.pluginPane.ChannelID == p.ChannelID && a.pluginPane.conn == sc {
+			a.playPluginSound(sc, a.pluginPane.PluginID, p)
 		}
 
 	case protocol.PluginEventNotifyUser:

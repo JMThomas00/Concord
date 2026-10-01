@@ -71,6 +71,9 @@ type ServerConnection struct {
 	// PLUGIN_REGISTRY_UPDATE when plugins are installed or removed live.
 	// App.pluginChannelKinds is the union across connections.
 	PluginChannelKinds []protocol.PluginChannelKindInfo
+	// PluginClients lists this server's plugin client parts (images, sounds),
+	// from READY and PLUGIN_REGISTRY_UPDATE.
+	PluginClients []protocol.PluginClientInfo
 	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
 	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
 	Members  []*MemberDisplay        // Members in current server

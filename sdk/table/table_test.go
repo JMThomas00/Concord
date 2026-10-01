@@ -125,7 +125,7 @@ func TestChallengeModeFlow(t *testing.T) {
 	srv.FrameContaining(alice, "lobby")
 	srv.Key(alice, "enter") // "+ Challenge someone…" (first item: nothing else yet)
 
-	req := srv.NextEvent()
+	req := nextEvent(srv)
 	if req.Kind != wire.PluginEventMembers {
 		t.Fatalf("expected a members lookup, got %+v", req)
 	}
@@ -138,7 +138,7 @@ func TestChallengeModeFlow(t *testing.T) {
 	srv.Key(alice, "enter")
 	srv.FrameContaining(alice, "Challenge sent to bob")
 
-	note := srv.NextEvent()
+	note := nextEvent(srv)
 	var p wire.PluginNotifyUserPayload
 	_ = json.Unmarshal(note.Payload, &p)
 	if note.Kind != wire.PluginEventNotifyUser || p.UserID != bobID || !strings.Contains(p.Content, "alice challenged you") {
@@ -150,7 +150,7 @@ func TestChallengeModeFlow(t *testing.T) {
 	srv.FrameContaining(bob, "alice challenged you")
 	srv.Key(bob, "enter")
 	srv.FrameContaining(bob, "X: alice")
-	accepted := srv.NextEvent()
+	accepted := nextEvent(srv)
 	if !strings.Contains(string(accepted.Payload), "bob accepted") {
 		t.Fatalf("alice wasn't told: %+v", accepted)
 	}
@@ -162,18 +162,18 @@ func TestPrivateGamesAreOnlyVisibleToTheirPlayers(t *testing.T) {
 	alice := srv.Enter(ch, "alice", 70, 14)
 	srv.FrameContaining(alice, "your games")
 	srv.Key(alice, "enter") // New game with…
-	req := srv.NextEvent()
+	req := nextEvent(srv)
 	bobID := uuid.New()
 	srv.AnswerMembers(req, []wire.PluginMember{{UserID: bobID, Username: "bob", DisplayName: "bob", Online: false}})
 	srv.FrameContaining(alice, "○ bob")
 	srv.Key(alice, "enter")
 	srv.FrameContaining(alice, "X: alice")
-	if e := srv.NextEvent(); !strings.Contains(string(e.Payload), "started a game") {
+	if e := nextEvent(srv); !strings.Contains(string(e.Payload), "started a game") {
 		t.Fatalf("bob wasn't told about the new game: %+v", e)
 	}
 
 	srv.Key(alice, "5")
-	if e := srv.NextEvent(); !strings.Contains(string(e.Payload), "your turn") {
+	if e := nextEvent(srv); !strings.Contains(string(e.Payload), "your turn") {
 		t.Fatalf("bob (not watching) wasn't told it's his turn: %+v", e)
 	}
 
@@ -207,4 +207,13 @@ func TestGamesSurviveARestart(t *testing.T) {
 	srv2.Channel(wire.Channel{ID: ch, Name: "games", PluginConfig: map[string]string{table.SettingSeating: table.ModeSeats}})
 	bob := srv2.Enter(ch, "bob", 60, 12)
 	srv2.FrameContaining(bob, "X: alice")
+}
+
+// nextEvent is the next plugin event other than a move sound.
+func nextEvent(srv *plugintest.Server) wire.PluginEventPayload {
+	for {
+		if e := srv.NextEvent(); e.Kind != wire.PluginEventPlaySound {
+			return e
+		}
+	}
 }

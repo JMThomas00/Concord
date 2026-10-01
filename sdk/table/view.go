@@ -35,6 +35,7 @@ type viewerModel struct {
 	seat    *Seat
 
 	cursor   int // lobby / picker selection
+	headerRows int // rows above the board in the last table view (for Images)
 	menuOpen bool
 	menuIdx  int
 	members  []wire.PluginMember
@@ -432,7 +433,25 @@ func (m *viewerModel) tableView() string {
 		}
 		footer = m.style("comment").Render(hint)
 	}
+	m.headerRows = lipgloss.Height(header)
 	return lipgloss.JoinVertical(lipgloss.Left, header, m.board.View(), footer)
+}
+
+// Images passes on a board's images (pane.Imager), moved down past the
+// header above it.
+func (m *viewerModel) Images() []wire.PaneImage {
+	if m.screen != screenTable || m.board == nil || m.table() == nil {
+		return nil
+	}
+	im, ok := m.board.(pane.Imager)
+	if !ok {
+		return nil
+	}
+	images := im.Images()
+	for i := range images {
+		images[i].Row += m.headerRows
+	}
+	return images
 }
 
 func (m *viewerModel) lobbyView() string {

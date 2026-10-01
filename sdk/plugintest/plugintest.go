@@ -59,6 +59,7 @@ type Viewer struct {
 	Width       int
 	Height      int
 	LastFrame   string // the most recent frame this viewer received
+	LastImages  []wire.PaneImage // the images placed on that frame
 	LastSeq     int64
 	frameEpochs int64
 }
@@ -205,6 +206,12 @@ func (s *Server) deliverFrame(f wire.PluginPaneFramePayload) {
 			s.t.Errorf("plugintest: frame Seq %d for %s isn't above the previous %d; Concord's client would drop it", f.Seq, v.Name, v.LastSeq)
 		}
 		v.LastSeq, v.LastFrame = f.Seq, f.Frame
+		v.LastImages = f.Images
+		for _, im := range f.Images {
+			if im.Col < 0 || im.Row < 0 || im.Cols <= 0 || im.Rows <= 0 || im.Col+im.Cols > v.Width || im.Row+im.Rows > v.Height {
+				s.t.Errorf("plugintest: image %q at %d,%d (%dx%d cells) doesn't fit %s's %dx%d pane", im.Asset, im.Col, im.Row, im.Cols, im.Rows, v.Name, v.Width, v.Height)
+			}
+		}
 		lines := strings.Split(f.Frame, "\n")
 		if len(lines) > v.Height {
 			s.t.Errorf("plugintest: frame for %s is %d lines; their pane is %d tall", v.Name, len(lines), v.Height)
@@ -448,4 +455,32 @@ func (s *Server) EnterAs(channelID, userID uuid.UUID, name string, width, height
 	s.mu.Unlock()
 	s.dispatch(wire.EventPluginPaneEnter, s.enterPayload(v))
 	return v
+}
+
+// Images returns the images placed on the last frame v received.
+func (s *Server) Images(v *Viewer) []wire.PaneImage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]wire.PaneImage(nil), v.LastImages...)
+}
+
+// NextSound waits for the plugin to play a sound (skipping other events)
+// and returns it, with ViewerID uuid.Nil when it's for everyone viewing.
+func (s *Server) NextSound() (wire.PluginPlaySoundPayload, uuid.UUID) {
+	s.t.Helper()
+	deadline := time.After(Timeout)
+	for {
+		select {
+		case e := <-s.events:
+			if e.Kind != wire.PluginEventPlaySound {
+				continue
+			}
+			var p wire.PluginPlaySoundPayload
+			_ = json.Unmarshal(e.Payload, &p)
+			return p, e.ViewerID
+		case <-deadline:
+			s.t.Fatalf("plugintest: no sound played within %v", Timeout)
+			return wire.PluginPlaySoundPayload{}, uuid.Nil
+		}
+	}
 }

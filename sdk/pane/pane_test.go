@@ -211,3 +211,61 @@ func TestBroadcastFromInsideUpdateIsQueued(t *testing.T) {
 	srv.FrameContaining(a, "bumps=2")
 	srv.FrameContaining(b, "bumps=2")
 }
+
+// pictureModel shows a king image that follows the cursor, and a second
+// image placed partly outside the pane.
+type pictureModel struct{ col int }
+
+func (m *pictureModel) Init() tea.Cmd { return nil }
+func (m *pictureModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "right" {
+		m.col++
+	}
+	return m, nil
+}
+func (m *pictureModel) View() string { return "♔ board" }
+func (m *pictureModel) Images() []wire.PaneImage {
+	return []wire.PaneImage{
+		{Asset: "pieces/king.png", Col: m.col, Row: 0, Cols: 4, Rows: 2},
+		{Asset: "board.png", Col: 18, Row: 1, Cols: 10, Rows: 10}, // spills over a 20x4 pane
+		{Asset: "gone.png", Col: 40, Row: 0, Cols: 2, Rows: 2},    // outside it entirely
+	}
+}
+
+func TestImagesRideAlongWithFramesAndFitThePane(t *testing.T) {
+	srv := start(t, pane.NewHost(func(*pane.Viewer) tea.Model { return &pictureModel{} }))
+	alice := srv.Enter(uuid.New(), "alice", 20, 4)
+	srv.FrameContaining(alice, "board")
+	images := srv.Images(alice)
+	if len(images) != 2 || images[0].Asset != "pieces/king.png" || images[1].Cols != 2 || images[1].Rows != 3 {
+		t.Fatalf("images %+v: want the king, and the board trimmed to the pane", images)
+	}
+
+	// The text doesn't change, but the image moved: that's a new frame.
+	srv.Key(alice, "right")
+	deadline := time.Now().Add(plugintest.Timeout)
+	for srv.Images(alice)[0].Col != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("moving only an image sent no new frame")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPlaySound(t *testing.T) {
+	srv := plugintest.NewServer(t)
+	ch := uuid.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go plugin.Run(ctx, srv.Config(), plugin.Handler{
+		OnEnter: func(c *plugin.Conn, e wire.PluginPaneEnterPayload) {
+			_ = c.PlaySound(e.ChannelID, uuid.Nil, "sounds/move.wav", .5)
+		},
+	})
+	srv.WaitReady()
+	srv.Enter(ch, "alice", 20, 4)
+	p, viewer := srv.NextSound()
+	if p.Asset != "sounds/move.wav" || p.Volume != .5 || p.ChannelID != ch || viewer != uuid.Nil {
+		t.Fatalf("sound %+v to %v", p, viewer)
+	}
+}

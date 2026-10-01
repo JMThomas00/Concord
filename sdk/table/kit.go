@@ -252,6 +252,7 @@ func (k *Kit) play(r *Room, t *Table, seat int, move string) error {
 	}
 	t.Moves = append(t.Moves, move)
 	k.changed(r, t, move)
+	k.moveSound(r, t, move)
 	k.afterMove(r, t, seat)
 	return nil
 }
@@ -452,4 +453,20 @@ func (k *Kit) requestMembers(channelID uuid.UUID, then func([]wire.PluginMember)
 		}
 		k.post(func() { then(members) })
 	}()
+}
+
+// moveSound plays Rules.Sound's choice for everyone watching table t.
+func (k *Kit) moveSound(r *Room, t *Table, move string) {
+	if k.rules.Sound == nil || k.conn == nil {
+		return
+	}
+	sound := k.rules.Sound(t.game, move)
+	if sound == "" {
+		return
+	}
+	for id := range k.viewers {
+		if k.watching(id, t.ID) {
+			_ = k.conn.PlaySound(r.ChannelID, id, sound, 1)
+		}
+	}
 }

@@ -180,6 +180,25 @@ func (c *Conn) Broadcast(channelID uuid.UUID, frame string) error {
 	return c.Frame(channelID, uuid.Nil, frame)
 }
 
+// FrameWithImages sends a rendered screen with images placed over it: files
+// from the plugin's client/ folder, each in a box of cells. Concord draws
+// them the best way each viewer's terminal allows (down to colored
+// half-blocks). Keep sensible text under each box: viewers who turned
+// images off see it instead.
+func (c *Conn) FrameWithImages(channelID, viewerID uuid.UUID, frame string, images []wire.PaneImage) error {
+	return c.Send(wire.OpPluginPaneFrame, wire.PluginPaneFramePayload{
+		ChannelID: channelID, ViewerID: viewerID, Frame: frame, Seq: c.seq.Add(1), Images: images,
+	})
+}
+
+// PlaySound plays a sound file (WAV or Ogg/Opus) from the plugin's client/
+// folder for one viewer, or for everyone viewing channelID when viewerID
+// is uuid.Nil. Volume is 0 to 1 (0 means full); members scale it again
+// with their own plugin-sound volume.
+func (c *Conn) PlaySound(channelID, viewerID uuid.UUID, asset string, volume float64) error {
+	return c.Event(wire.PluginEventPlaySound, viewerID, wire.PluginPlaySoundPayload{ChannelID: channelID, Asset: asset, Volume: volume})
+}
+
 // Event sends a generic plugin event.
 func (c *Conn) Event(kind string, viewerID uuid.UUID, payload interface{}) error {
 	raw, err := json.Marshal(payload)

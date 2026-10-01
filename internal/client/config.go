@@ -123,6 +123,9 @@ func defaultAudioConfig(c AudioConfig) AudioConfig {
 	if c.PerUserVolumes == nil {
 		c.PerUserVolumes = make(map[string]float64)
 	}
+	if c.PluginSoundVolume == 0 {
+		c.PluginSoundVolume = 0.8
+	}
 	return c
 }
 
@@ -142,6 +145,10 @@ type AudioConfig struct {
 	EchoCancellationStrength float64            `json:"echo_cancellation_strength"` // 0.0–1.0, default 0.5 -- NLMS adaptation aggressiveness (see aecMuForStrength)
 	CodecPreset              string             `json:"codec_preset"`               // "low" / "medium" / "high"
 	PerUserVolumes           map[string]float64 `json:"per_user_volumes"`           // userID → 0.0–2.0
+
+	// Plugin sounds (game moves, alerts): their own volume, and a mute.
+	PluginSoundVolume float64 `json:"plugin_sound_volume"` // 0.0–1.0, default 0.8
+	PluginSoundsMuted bool    `json:"plugin_sounds_muted"`
 }
 
 // NotificationConfig holds notification and sound alert preferences
@@ -178,6 +185,10 @@ type DisplayConfig struct {
 	// Animation options
 	DisablePanelAnimations bool   `json:"disable_panel_animations"` // skip slide-in/out for settings and server panels
 	TypingAnimation        string `json:"typing_animation"`         // "" = "braille"; see typingAnimNames for valid values
+
+	// Images says how plugin images are drawn: "" or "auto" (the best this
+	// terminal supports), "kitty", "sixel", "iterm2", "blocks" or "off".
+	Images string `json:"images,omitempty"`
 }
 
 // ServerSoundOverride stores per-server sound settings, overriding global defaults.
