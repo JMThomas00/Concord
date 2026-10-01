@@ -17,9 +17,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -261,6 +263,7 @@ type rasterImage struct {
 	key  string
 	blob string
 	rows int
+	cols int
 }
 
 // rasterMarker is a zero-width placeholder the frame carries where a raster
@@ -292,7 +295,11 @@ func (a *App) drawPaneImages(lines []string, width int, sc *ServerConnection, pl
 	if proto == gfxOff || len(images) == 0 {
 		return lines, nil
 	}
-	var rasters []rasterImage
+	var (
+		rasters   []rasterImage
+		markers   []placedMarker
+		transmits strings.Builder
+	)
 	store := a.assets()
 	for _, im := range images {
 		f, ok := clientFile(sc, pluginID, im.Asset)
@@ -318,41 +325,110 @@ func (a *App) drawPaneImages(lines []string, width int, sc *ServerConnection, pl
 			}
 		case gfxKitty:
 			id, transmit := store.kittyImage(key, img, fc, fr)
+			transmits.WriteString(transmit)
 			for r := 0; r < fr; r++ {
-				cells := kittyCells(id, r, fc)
-				if r == 0 && transmit != "" {
-					cells = transmit + cells
-				}
-				lines[row+r] = spliceCells(lines[row+r], col, fc, cells)
+				lines[row+r] = spliceCells(lines[row+r], col, fc, kittyCells(id, r, fc))
 			}
 		case gfxSixel, gfxITerm2:
 			blob := store.rasterBlob(proto, key, img, fc, fr)
 			for r := 0; r < fr; r++ {
-				blank := strings.Repeat(" ", fc)
-				if r == 0 {
-					blank = rasterMarker(len(rasters)) + blank
-				}
-				lines[row+r] = spliceCells(lines[row+r], col, fc, blank)
+				lines[row+r] = spliceCells(lines[row+r], col, fc, strings.Repeat(" ", fc))
 			}
-			rasters = append(rasters, rasterImage{key: key, blob: blob, rows: fr})
+			markers = append(markers, placedMarker{row: row, col: col, idx: len(rasters)})
+			rasters = append(rasters, rasterImage{key: key, blob: blob, rows: fr, cols: fc})
 		}
+	}
+	// Escape sequences are only added once every image is in place:
+	// cutting a line (spliceCells) carries the escape sequences of the part
+	// it drops into what it keeps, so an earlier marker would be copied
+	// along and its image painted twice. Markers go in right to left, so
+	// each cut only ever drops text with no marker in it.
+	sort.Slice(markers, func(i, j int) bool {
+		if markers[i].row != markers[j].row {
+			return markers[i].row < markers[j].row
+		}
+		return markers[i].col > markers[j].col
+	})
+	for _, m := range markers {
+		left, right := cutCells(lines[m.row], m.col)
+		lines[m.row] = left + rasterMarker(m.idx) + right
+	}
+	if transmits.Len() > 0 && len(lines) > 0 {
+		lines[0] = transmits.String() + lines[0]
 	}
 	return lines, rasters
 }
 
+// placedMarker is where a raster image's marker goes.
+type placedMarker struct{ row, col, idx int }
+
 // spliceCells replaces the cells [col, col+n) of line with repl (which is
-// n cells wide), keeping the text on either side.
+// n cells wide), keeping the text on either side and its colors.
 func spliceCells(line string, col, n int, repl string) string {
-	w := ansi.StringWidth(line)
-	left := ansi.Truncate(line, col, "")
+	left, _ := cutCells(line, col)
 	if pad := col - ansi.StringWidth(left); pad > 0 {
 		left += strings.Repeat(" ", pad)
 	}
-	right := ""
-	if w > col+n {
-		right = ansi.TruncateLeft(line, col+n, "")
-	}
+	_, right := cutCells(line, col+n)
 	return left + "\x1b[0m" + repl + "\x1b[0m" + right
+}
+
+// cutCells splits line at display column col. Escape sequences stay on the
+// side they're on (ansi.Truncate and TruncateLeft copy them across, which
+// duplicated image markers and Kitty image data); only the colors in force
+// at the cut (its SGR codes) are repeated at the start of the right part.
+func cutCells(line string, col int) (left, right string) {
+	var sgr strings.Builder
+	w := 0
+	i := 0
+	for i < len(line) {
+		if line[i] == '\x1b' {
+			end := escapeEnd(line, i)
+			if seq := line[i:end]; strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+				if seq == "\x1b[0m" || seq == "\x1b[m" {
+					sgr.Reset()
+				}
+				sgr.WriteString(seq)
+			}
+			i = end
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(line[i:])
+		cw := ansi.StringWidth(line[i : i+size])
+		if cw > 0 && w+cw > col {
+			break
+		}
+		w += cw
+		i += size
+	}
+	return line[:i], sgr.String() + line[i:]
+}
+
+// escapeEnd is the index just past the escape sequence starting at i.
+func escapeEnd(s string, i int) int {
+	if i+1 >= len(s) {
+		return len(s)
+	}
+	switch s[i+1] {
+	case '[': // CSI: parameters, then a final byte @..~
+		for j := i + 2; j < len(s); j++ {
+			if s[j] >= 0x40 && s[j] <= 0x7e {
+				return j + 1
+			}
+		}
+		return len(s)
+	case ']', '_', 'P', '^', 'X': // OSC, APC, DCS, PM, SOS: up to BEL or ST
+		for j := i + 2; j < len(s); j++ {
+			if s[j] == '\x07' {
+				return j + 1
+			}
+			if s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\' {
+				return j + 2
+			}
+		}
+		return len(s)
+	}
+	return i + 2
 }
 
 // blockCells draws an image as half-blocks, one string per row of cells.
@@ -473,19 +549,29 @@ type rasterState struct {
 	flip      bool
 	hadImages bool
 	clear     bool // the images went away: repaint the whole screen once
+	// prevRects are where the last painted images were; erase clears old
+	// pixels before a paint (see paintRasterImages).
+	prevRects []cellRect
+	erase     string
 }
+
+// cellRect is a box of cells on the screen.
+type cellRect struct{ row, col, rows, cols int }
 
 // paintRasterImages finds the raster markers in the final screen, removes
 // them, and appends the images to the last line so they're painted after
 // the rows Bubble Tea rewrote. Images are only re-sent when a row under
 // them changed (and briefly after, in case that frame was never flushed).
+//
+// Everything appended is escape sequences only: Bubble Tea trims every
+// line to the terminal's width, so any text appended here would be cut.
 func (a *App) paintRasterImages(view string, rasters []rasterImage, overlay bool) string {
 	st := &a.rasterState
 	if !strings.Contains(view, "\x1b]8337;") {
 		if st.hadImages {
 			st.hadImages, st.clear = false, true
 		}
-		st.prevLines = nil
+		st.prevLines, st.prevRects, st.erase = nil, nil, ""
 		return view
 	}
 	lines := strings.Split(view, "\n")
@@ -503,7 +589,9 @@ func (a *App) paintRasterImages(view string, rasters []rasterImage, overlay bool
 			}
 			var idx int
 			fmt.Sscanf(line[i+len("\x1b]8337;"):i+end], "%d", &idx)
-			found = append(found, placed{r, ansi.StringWidth(line[:i]), idx})
+			if idx < len(rasters) {
+				found = append(found, placed{r, ansi.StringWidth(line[:i]), idx})
+			}
 			line = line[:i] + line[i+end+1:]
 		}
 		lines[r] = line
@@ -513,19 +601,44 @@ func (a *App) paintRasterImages(view string, rasters []rasterImage, overlay bool
 	}
 
 	var keys strings.Builder
+	var rects []cellRect
 	dirty := len(st.prevLines) != len(lines)
 	for _, p := range found {
-		if p.idx >= len(rasters) {
-			continue
-		}
-		fmt.Fprintf(&keys, "%s@%d,%d;", rasters[p.idx].key, p.row, p.col)
-		for r := p.row; !dirty && r < p.row+rasters[p.idx].rows && r < len(lines); r++ {
+		im := rasters[p.idx]
+		fmt.Fprintf(&keys, "%s@%d,%d;", im.key, p.row, p.col)
+		rects = append(rects, cellRect{p.row, p.col, im.rows, im.cols})
+		for r := p.row; !dirty && r < p.row+im.rows && r < len(lines); r++ {
 			dirty = st.prevLines[r] != lines[r]
 		}
 	}
 	if keys.String() != st.prevKeys {
+		// Images moved, changed or appeared. A transparent image doesn't
+		// cover what was painted under it, and text Bubble Tea didn't
+		// rewrite doesn't clear old pixels, so erase first: the cells of
+		// every new image (blank by construction), and those of old images
+		// that are still blank (if text moved there, its row was rewritten,
+		// which already cleared them).
 		dirty = true
+		var e strings.Builder
+		for _, rc := range rects {
+			eraseRect(&e, rc)
+		}
+	old:
+		for _, rc := range st.prevRects {
+			for _, n := range rects {
+				if n == rc {
+					continue old
+				}
+			}
+			if rectIsBlank(lines, rc) {
+				eraseRect(&e, rc)
+			}
+		}
+		st.erase = e.String()
+	} else if dirty {
+		st.erase = ""
 	}
+	st.prevRects = rects
 	st.prevKeys = keys.String()
 	st.prevLines = append(st.prevLines[:0], lines...)
 	st.hadImages = true
@@ -542,16 +655,38 @@ func (a *App) paintRasterImages(view string, rasters []rasterImage, overlay bool
 	} else {
 		paint.WriteString("\x1b[0m")
 	}
-	paint.WriteString("\x1b7")
+	paint.WriteString("\x1b7" + st.erase)
 	for _, p := range found {
-		if p.idx < len(rasters) {
-			paint.WriteString(ansi.CursorPosition(p.col+1, p.row+1))
-			paint.WriteString(rasters[p.idx].blob)
-		}
+		paint.WriteString(ansi.CursorPosition(p.col+1, p.row+1))
+		paint.WriteString(rasters[p.idx].blob)
 	}
 	paint.WriteString("\x1b8")
 	lines[len(lines)-1] += paint.String()
 	return strings.Join(lines, "\n")
+}
+
+// eraseRect erases a box of cells (ECH on each row), which also removes
+// any image pixels there, without touching anything around it.
+func eraseRect(b *strings.Builder, rc cellRect) {
+	for r := rc.row; r < rc.row+rc.rows; r++ {
+		b.WriteString(ansi.CursorPosition(rc.col+1, r+1))
+		fmt.Fprintf(b, "\x1b[%dX", rc.cols)
+	}
+}
+
+// rectIsBlank reports whether a box of cells holds only spaces now.
+func rectIsBlank(lines []string, rc cellRect) bool {
+	for r := rc.row; r < rc.row+rc.rows; r++ {
+		if r >= len(lines) {
+			continue
+		}
+		_, rest := cutCells(lines[r], rc.col)
+		cells, _ := cutCells(rest, rc.cols)
+		if strings.TrimSpace(ansi.Strip(cells)) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // --- image helpers ---
