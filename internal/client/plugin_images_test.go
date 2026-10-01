@@ -262,3 +262,16 @@ func TestCutCellsKeepsEscapesWhereTheyAre(t *testing.T) {
 		t.Fatalf("kitty cut: %d + %d cells", ansi.StringWidth(l), ansi.StringWidth(r))
 	}
 }
+
+func TestImagesKeepTheCellBackground(t *testing.T) {
+	hl := "\x1b[48;2;68;71;90m"
+	frame := []string{"ab" + hl + "        \x1b[0mcd"}
+	a, sc := imageApp(t, "sixel")
+	lines, _ := a.drawPaneImages(append([]string(nil), frame...), 40, sc, "chess", []protocol.PaneImage{{Asset: "king.png", Col: 2, Row: 0, Cols: 4, Rows: 1}})
+	if !strings.Contains(lines[0], hl+"  ") && !strings.Contains(lines[0], hl+rasterMarker(0)) {
+		t.Fatalf("the highlight behind the image was dropped: %q", lines[0])
+	}
+	if got := styleAt("x\x1b[31my\x1b[0mz", 2); got != "\x1b[31m\x1b[0m" && got != "\x1b[0m" {
+		t.Fatalf("styleAt %q", got)
+	}
+}

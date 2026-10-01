@@ -68,6 +68,17 @@ func main() {
 		check(err)
 		add(bin, binData, 0o755)
 		add("plugin.toml", manifest, 0o644)
+		// The client/ folder (images, sounds) goes along as it is: Concord
+		// serves it to members' clients.
+		_ = filepath.WalkDir("client", func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || strings.HasSuffix(p, ".go") {
+				return nil
+			}
+			data, err := os.ReadFile(p)
+			check(err)
+			add(filepath.ToSlash(p), data, 0o644)
+			return nil
+		})
 		check(zw.Close())
 		check(f.Close())
 		fmt.Println("packed", zipPath)

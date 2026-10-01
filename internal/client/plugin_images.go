@@ -327,12 +327,12 @@ func (a *App) drawPaneImages(lines []string, width int, sc *ServerConnection, pl
 			id, transmit := store.kittyImage(key, img, fc, fr)
 			transmits.WriteString(transmit)
 			for r := 0; r < fr; r++ {
-				lines[row+r] = spliceCells(lines[row+r], col, fc, kittyCells(id, r, fc))
+				lines[row+r] = spliceCells(lines[row+r], col, fc, styleAt(lines[row+r], col)+kittyCells(id, r, fc))
 			}
 		case gfxSixel, gfxITerm2:
 			blob := store.rasterBlob(proto, key, img, fc, fr)
 			for r := 0; r < fr; r++ {
-				lines[row+r] = spliceCells(lines[row+r], col, fc, strings.Repeat(" ", fc))
+				lines[row+r] = spliceCells(lines[row+r], col, fc, styleAt(lines[row+r], col)+strings.Repeat(" ", fc))
 			}
 			markers = append(markers, placedMarker{row: row, col: col, idx: len(rasters)})
 			rasters = append(rasters, rasterImage{key: key, blob: blob, rows: fr, cols: fc})
@@ -780,4 +780,21 @@ func (a *App) playPluginSound(sc *ServerConnection, pluginID string, p protocol.
 			}
 		}
 	}()
+}
+
+// styleAt is the SGR state in force at cell col of line, so an image drawn
+// over a cell keeps its background (a highlighted cell stays highlighted
+// behind a piece's transparent pixels).
+func styleAt(line string, col int) string {
+	_, right := cutCells(line, col)
+	var b strings.Builder
+	for strings.HasPrefix(right, "\x1b[") {
+		end := escapeEnd(right, 0)
+		if !strings.HasSuffix(right[:end], "m") {
+			break
+		}
+		b.WriteString(right[:end])
+		right = right[end:]
+	}
+	return b.String()
 }
