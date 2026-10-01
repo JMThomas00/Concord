@@ -76,6 +76,7 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sergeymakinen/go-bmp v1.0.0 // indirect
 	github.com/sergeymakinen/go-ico v1.0.0-beta.0 // indirect
+	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/tadvi/systray v0.0.0-20190226123456-11a2b8fa57af // indirect
 	github.com/wlynxg/anet v0.0.3 // indirect
@@ -83,7 +84,6 @@ require (
 	github.com/yuin/goldmark-emoji v1.0.3 // indirect
 	golang.org/x/exp v0.0.0-20231108232855-2478ac86f678 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
@@ -97,6 +97,8 @@ require (
 require (
 	github.com/JMThomas00/Concord/sdk v0.0.0
 	github.com/charmbracelet/x/ansi v0.8.0
+	github.com/mattn/go-sixel v0.0.5
+	golang.org/x/term v0.39.0
 )
 
 // The plugin SDK lives in ./sdk as its own module (so plugins can import it);
