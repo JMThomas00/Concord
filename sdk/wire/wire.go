@@ -287,6 +287,22 @@ type PluginPaneFramePayload struct {
 	// changes whenever the plugin reconnects, so the client knows a lower
 	// Seq means a fresh stream rather than a stale frame.
 	Epoch int64 `json:"epoch,omitempty"`
+	// Images are drawn over the frame's text, each in a box of cells.
+	// Concord picks how (Kitty graphics, Sixel, iTerm2 or half-blocks) for
+	// each viewer's terminal. Asset is a path in the plugin's client/
+	// folder, e.g. "assets/pieces/white-king.png".
+	Images []PaneImage `json:"images,omitempty"`
+}
+
+// PaneImage places one image in a pane frame. Col and Row are the
+// top-left cell (0-based, inside the pane); Cols and Rows its size in
+// cells. The image is scaled to fit the box, keeping its aspect ratio.
+type PaneImage struct {
+	Asset string `json:"asset"`
+	Col   int    `json:"col"`
+	Row   int    `json:"row"`
+	Cols  int    `json:"cols"`
+	Rows  int    `json:"rows"`
 }
 
 // ── Plugin events ───────────────────────────────────────────────────────────
@@ -325,6 +341,9 @@ const (
 	// pane's border title in place of the channel name, e.g.
 	// "Chess — Jordan vs Alex". ViewerID empty = every viewer.
 	PluginEventPaneTitle = "pane_title"
+	// Plugin → viewer(s) (PluginPlaySoundPayload): play a sound from the
+	// plugin's client/ folder. ViewerID empty = everyone viewing the channel.
+	PluginEventPlaySound = "play_sound"
 )
 
 // PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
@@ -376,6 +395,15 @@ type PluginMember struct {
 type PluginPaneTitlePayload struct {
 	ChannelID uuid.UUID `json:"channel_id"`
 	Title     string    `json:"title"`
+}
+
+// PluginPlaySoundPayload is the Payload for Kind "play_sound". Asset is a
+// WAV or Ogg/Opus file in the plugin's client/ folder; Volume is 0 to 1
+// (0 means 1), scaled again by the member's own plugin-sound setting.
+type PluginPlaySoundPayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Asset     string    `json:"asset"`
+	Volume    float64   `json:"volume,omitempty"`
 }
 
 // ── Settings ────────────────────────────────────────────────────────────────

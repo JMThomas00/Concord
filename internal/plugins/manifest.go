@@ -94,6 +94,9 @@ type Manifest struct {
 	Process          ProcessDef       `toml:"process"`
 	ChannelKinds     []ChannelKindDef `toml:"channel_kind"`
 	ServerConfigFields []ConfigField  `toml:"server_config_field"`
+	// Client describes the part that runs on members' computers: images,
+	// sounds and (later) WebAssembly code in the plugin's client/ folder.
+	Client ClientDef `toml:"client"`
 
 	// Dir is the plugin's own folder (set by LoadManifest, not from TOML).
 	Dir string `toml:"-"`
@@ -191,6 +194,9 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	if err := validateFields(m.Plugin.ID, m.ServerConfigFields); err != nil {
+		return err
+	}
+	if err := m.Client.validate(m.Plugin.ID); err != nil {
 		return err
 	}
 

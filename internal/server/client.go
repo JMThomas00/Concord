@@ -502,6 +502,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		User:               user,
 		Servers:            servers,
 		PluginChannelKinds: c.handlers.PluginChannelKindInfos(),
+		PluginClients:      c.handlers.PluginClientInfos(),
 		ServerVersion:      c.handlers.version,
 		ServerGitCommit:    c.handlers.gitCommit,
 		ServerBuildTime:    c.handlers.buildTime,

@@ -492,6 +492,9 @@ type ReadyPayload struct {
 	// provide, so the client can render/create plugin channels generically
 	// without any plugin-specific code compiled in.
 	PluginChannelKinds []PluginChannelKindInfo `json:"plugin_channel_kinds,omitempty"`
+	// PluginClients lists the client-side parts (images, sounds, code) of
+	// the plugins that ship one, fetched from /api/plugins/client/.
+	PluginClients []PluginClientInfo `json:"plugin_clients,omitempty"`
 	// ServerVersion/ServerGitCommit/ServerBuildTime report the connected
 	// server's own build identity, for Server Settings > About -- piggybacks
 	// on Ready since it's already sent once per connection, no new opcode
@@ -743,6 +746,29 @@ type PluginManageResult struct {
 // kinds (EventPluginRegistryUpdate), replacing what READY advertised.
 type PluginRegistryPayload struct {
 	PluginChannelKinds []PluginChannelKindInfo `json:"plugin_channel_kinds"`
+	PluginClients      []PluginClientInfo      `json:"plugin_clients,omitempty"`
+}
+
+// PluginClientInfo describes a plugin's client-side part: the files in its
+// client/ folder, each with its size and SHA-256, so the client can fetch
+// (GET /api/plugins/client/{plugin_id}/{path}), verify and cache them.
+// Instances share their base plugin's files.
+type PluginClientInfo struct {
+	PluginID     string             `json:"plugin_id"`
+	Version      string             `json:"version"`
+	Hash         string             `json:"hash"` // of the whole bundle
+	Files        []PluginClientFile `json:"files"`
+	WASM         string             `json:"wasm,omitempty"`
+	Capabilities []string           `json:"capabilities,omitempty"`
+	PublisherKey string             `json:"publisher_key,omitempty"`
+}
+
+// PluginClientFile is one file of a plugin's client part; Path is
+// relative to its client/ folder.
+type PluginClientFile struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
 }
 
 // PluginConfigSetRequest is sent by clients (server admins) to update a
@@ -1005,6 +1031,8 @@ type (
 	PluginMembersResponse    = wire.PluginMembersResponse
 	PluginMember             = wire.PluginMember
 	PluginPaneTitlePayload   = wire.PluginPaneTitlePayload
+	PluginPlaySoundPayload   = wire.PluginPlaySoundPayload
+	PaneImage                = wire.PaneImage
 	PluginField              = wire.PluginField
 	PluginInfo               = wire.PluginInfo
 	PluginConfigListPayload  = wire.PluginConfigListPayload
@@ -1017,4 +1045,5 @@ const (
 	PluginEventNotifyUser = wire.PluginEventNotifyUser
 	PluginEventMembers    = wire.PluginEventMembers
 	PluginEventPaneTitle  = wire.PluginEventPaneTitle
+	PluginEventPlaySound  = wire.PluginEventPlaySound
 )

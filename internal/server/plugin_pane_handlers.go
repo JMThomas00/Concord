@@ -272,6 +272,8 @@ func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
 		h.handlePluginMembers(c, req)
 	case protocol.PluginEventPaneTitle:
 		h.handlePluginPaneTitle(c, req)
+	case protocol.PluginEventPlaySound:
+		h.handlePluginPlaySound(c, req)
 	default:
 		if req.ViewerID == uuid.Nil {
 			MsgLog.Warn("Unhandled plugin event kind", "plugin_id", req.PluginID, "kind", req.Kind)
@@ -412,6 +414,24 @@ func (h *Handlers) handlePluginPaneTitle(c *Client, req protocol.PluginEventPayl
 		out.ViewerID = v.userID
 		if err := h.dispatchTo(v.conn, protocol.EventPluginEvent, out); err != nil {
 			MsgLog.Error("Failed to relay pane title", "plugin_id", c.PluginID, "viewer_id", v.userID, "error", err)
+		}
+	}
+}
+
+// handlePluginPlaySound relays a play_sound event to one viewer of the
+// plugin's channel, or (ViewerID empty) to everyone viewing it. The client
+// plays the named file from the plugin's client part.
+func (h *Handlers) handlePluginPlaySound(c *Client, req protocol.PluginEventPayload) {
+	var p protocol.PluginPlaySoundPayload
+	if err := json.Unmarshal(req.Payload, &p); err != nil || p.Asset == "" {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid play_sound payload")
+		return
+	}
+	for _, v := range h.viewersFor(c.PluginID, p.ChannelID, req.ViewerID) {
+		out := req
+		out.ViewerID = v.userID
+		if err := h.dispatchTo(v.conn, protocol.EventPluginEvent, out); err != nil {
+			MsgLog.Error("Failed to relay plugin sound", "plugin_id", c.PluginID, "viewer_id", v.userID, "error", err)
 		}
 	}
 }
