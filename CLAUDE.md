@@ -235,6 +235,13 @@ External programs attach to a Concord server as privileged clients — bots, int
   - **`Update`:** moves the current folder to `Plugins/.backup/<id>`, swaps the new one in, starts it and waits for it to identify (`MarkRunning`, up to `startup_timeout_seconds`, default 20s). If it doesn't, the old version is restored and restarted automatically, and the failed one is kept at `.backup/<id>.failed`.
   - **`Uninstall`** deletes only the plugin folder. `PluginData/<id>`, the service account and its channels are kept for a reinstall.
   - `[plugin].source_url` is still only informational; there's no auto-update polling or catalog yet (Phase 2).
+- **Client parts: pictures and sounds (To Do D1, 2026-09-30 → 10-01).** A plugin's `client/` folder (`internal/plugins/client_bundle.go`: allowed types only, 50 MB cap, SHA-256 per file) is indexed at load, advertised to clients as `PluginClients` in READY and the registry update, and served at `GET /api/plugins/client/{id}/{path}` (Bearer auth, `internal/server/plugin_client.go`). The client fetches, verifies and caches files in `~/.concord/plugin-cache/<sha>` (`plugin_images.go`).
+  - **Pictures** ride on frames (`PaneImage{Asset, Col, Row, Cols, Rows}`). `graphics.go` detects Kitty, Sixel or iTerm2 once at startup (a Kitty query, `CSI 16 t` for the cell size, DA1). Settings > Display > Plugin Pictures can force a method or turn them off; everything else gets colored half-blocks, and macOS Terminal gets a hint naming better terminals.
+  - **Sixel and iTerm2 fight Bubble Tea's line-diff renderer.** Pictures are emitted as escape codes appended to the last line (printable text past the width is truncated), positioned by zero-width OSC markers (`\x1b]8337;N\x07`) inserted *after* splicing, and repainted only when rows under them change. Old pixels are erased with ECH, never by printing spaces. **Never use `ansi.Truncate`/`TruncateLeft` around markers**: they copy every escape sequence across the cut in both directions, which duplicated pictures. `cutCells` carries only SGR, and `styleAt` keeps the cell background under a picture.
+  - **Sounds**: the `play_sound` event plays WAV (8/16-bit PCM) or Ogg Opus through a separate malgo device (`sfx.go`, `sfx_stub.go` for `novoice`). Settings > Audio > Plugin Sounds has mute and volume (`AudioConfig.PluginSoundsMuted`/`PluginSoundVolume`).
+  - Author docs: `.claude/skills/concord/media.md` and `sdk/PROTOCOL.md`. Reference plugin: `JMThomas00/concord-tictactoe`.
+  - **Testing note:** if colors are missing in screenshots of a client launched from an agent session, check for `NO_COLOR=1` in that environment before suspecting Concord.
+  - D2 (next): sandboxed WebAssembly client code (wazero), with `[client] wasm`/`capabilities`/`publisher_key` already validated by the manifest.
 
 ---
 
@@ -310,9 +317,9 @@ Because there's no server storage, **the sender must stay online for anyone to d
 | View | Access | Status |
 |---|---|---|
 | Theme Browser | Settings > Theme | ✅ Full |
-| Display Settings | Settings > Display | ✅ Full (live preview) |
+| Display Settings | Settings > Display | ✅ Full (live preview; Plugin Pictures) |
 | Notification Settings | Settings > Notifications | ✅ Full — two sections: **Desktop Notifications** (OS-native popup mode off/mentions/all, scope all-servers/current-server — `notifications.go`, `beeep.Notify`) and **Audio Notifications** (sound/bell alerts, per-server overrides) |
-| Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, noise suppression, echo cancellation, codec) |
+| Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, noise suppression, echo cancellation, codec, plugin sounds; scrolls) |
 | Help & Guide | Settings > Help | ✅ Full (glamour markdown, theme-derived style — `buildThemedGlamourStyle`) |
 | About | Settings > About | ✅ Full (client build info; server build info once connected; shaded grape logo when there's room) |
 | Server Management | Ctrl+B | ✅ Full (add/edit/remove servers) |

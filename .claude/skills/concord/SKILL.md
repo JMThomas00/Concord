@@ -7,6 +7,7 @@ description: >
   concord-plugin, plugin.toml, channel_kind, create_field, server_config_field,
   remote pane, pane frame, bot for Concord, game channel, table kit, seats,
   challenge, hotseat, computer opponent, network play, pty passthrough, plugin
+  pictures or sounds, client/ folder, pane images, plugin
   SDK (github.com/JMThomas00/Concord/sdk), plugintest, release zip, "install
   a plugin on my Concord server". Excludes developing Concord itself (the
   server, client or hub source).
@@ -43,6 +44,7 @@ Read the matching guide before starting:
 - [`sdk.md`](sdk.md): the SDK packages, `plugin.Run`, `Handler`, `Conn` helpers, and the pane host
 - [`manifest.md`](manifest.md): every `plugin.toml` field, and how settings become UI forms
 - [`games.md`](games.md): turn-based games on the table kit (seating modes, computer opponent, standalone and network play)
+- [`media.md`](media.md): pictures and sounds from a `client/` folder (theme-colored pieces, move sounds)
 - [`passthrough.md`](passthrough.md): showing an existing terminal program in a channel
 - [`packaging.md`](packaging.md): release zips, GitHub releases, and installing on a server
 - [`testing.md`](testing.md): unit tests with `plugintest`, then a live server

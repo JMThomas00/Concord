@@ -30,6 +30,9 @@ bin = "concord-dice"
 bin = "concord-dice.exe"
 # args = ["--flag"]            # optional, per OS
 
+# [client]                     # optional: pictures and sounds in client/ need nothing here (see media.md)
+# capabilities = ["images", "sound"]
+
 [[channel_kind]]
 kind = "dice"                  # unique within the plugin
 display_name = "Dice"          # the channel type admins pick

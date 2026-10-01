@@ -482,7 +482,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 					a.updateNotifScroll(s)
 				}
 			case 2: // Display category
-				if s.DisplayFocusField < 12 {
+				if s.DisplayFocusField < len(displayFieldLineStarts)-1 {
 					s.DisplayFocusField++
 					a.updateDisplayScroll(s)
 				}
@@ -493,7 +493,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 					}
 				} else if s.AudioSliderActive {
 					s.AudioSliderActive = false // exit slider before moving
-				} else if s.AudioFocusField < 10 {
+				} else if s.AudioFocusField < audioFieldCount-1 {
 					s.AudioFocusField++
 				}
 			case settingsCatManageServers:
@@ -2373,6 +2373,18 @@ func (a *App) renderDisplayContent(width, height int) string {
 	typingAnimVal := fmt.Sprintf("%-10s  %s  ◀▶", typingAnim, typingAnimPreviews[typingAnim])
 	writeField(12, "Typing Animation", typingAnimVal)
 
+	// Divider — Plugins section
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("  Plugins"))
+	addBlank()
+
+	// Field 13: how plugin pictures are drawn
+	writeField(13, "Plugin Pictures", imagesSettingLabel(cfg.Images)+"  ◀▶")
+	for _, hint := range imagesSettingHints(cfg.Images) {
+		addLine(dimStyle.Render("    " + hint))
+	}
+
 	// Apply scroll window: clip allMiddleLines to layout.middleLines starting at DisplayScrollOffset.
 	offset := 0
 	if s != nil {
@@ -2445,8 +2457,9 @@ func (a *App) updateNotifScroll(s *SettingsState) {
 // displayFieldLineStarts maps each Display field index to its first line in the middle section.
 // Layout: fields 0-5 (3 lines each), divider+blank (2), fields 6-8 (3 lines each),
 // divider+header+blank (3), fields 9-10 (3 lines each),
-// divider+header+blank (3), fields 11-12 (3 lines each).
-var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44}
+// divider+header+blank (3), fields 11-12 (3 lines each),
+// divider+header+blank (3), field 13 (3 lines, then its hints).
+var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44, 50}
 
 // updateDisplayScroll adjusts DisplayScrollOffset so the focused field is visible.
 func (a *App) updateDisplayScroll(s *SettingsState) {
@@ -2549,6 +2562,8 @@ func (a *App) handleDisplayFieldActivate(s *SettingsState) {
 			}
 		}
 		cfg.TypingAnimation = typingAnimNames[(idx+1)%len(typingAnimNames)]
+	case 13: // Plugin Pictures: cycle auto → each drawing method → off
+		cfg.Images = nextImagesSetting(cfg.Images)
 	}
 	a.saveDisplayConfig()
 	a.updateChatContent()

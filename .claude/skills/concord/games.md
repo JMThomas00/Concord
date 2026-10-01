@@ -34,6 +34,7 @@ var Rules = table.Rules{
 	New:       func(opts map[string]string) table.Game { return New(opts) },
 	NewBoard:  func(s *table.Seat) tea.Model { return newBoard(s) },
 	AI:        func(g table.Game, level int) string { ... }, // optional; levels 1-3
+	Sound:     func(g table.Game, move string) string { ... }, // optional; a file in client/
 }
 ```
 
@@ -131,6 +132,10 @@ game, `tab`,`right`,`enter` is Rematch.
 - Show the board from the player's side.
 - Unicode pieces render fine; color them with theme colors, not black/white
   (a "black" piece is invisible on dark themes). E.g. `foreground` vs `orange`.
+- Pieces can be **pictures** (the board implements `Images()`), with a sound
+  per move (`Rules.Sound`): see [`media.md`](media.md). Keep text pieces
+  under the pictures for viewers who turned pictures off.
+- A `?` help screen with the rules and keys. Tic-tac-toe's board has one.
 
 ## Testing a game
 

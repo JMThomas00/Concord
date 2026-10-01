@@ -54,6 +54,8 @@ callback goroutine.
 | `Stream(ctx, channel, replyTo)` | a reply written as it's produced (LLM tokens): see below |
 | `Typing(channel, true)` | typing indicator; lasts ~5s, so **re-send every ~3s** during slow work |
 | `Frame(channel, viewer, s)` / `Broadcast(channel, s)` | a rendered screen to one viewer / all viewers |
+| `FrameWithImages(channel, viewer, s, images)` | a frame with pictures from `client/` placed over it: see [`media.md`](media.md) |
+| `PlaySound(channel, viewer, asset, volume)` | play a sound from `client/` for one viewer, or everyone viewing (`uuid.Nil`) |
 | `Notify(text)` | message in the admin-configured notification channel |
 | `NotifyUser(user, channel, text)` | toast + unread badge for one member who can see the channel |
 | `SetTitle(channel, viewer, title)` | the pane's border title |
@@ -115,6 +117,9 @@ plugin.Run(ctx, cfg, h)
   `yellow`, `green`, `cyan`, `purple`, `pink`, `current_line`, `selection`,
   `background`.
 - `v.DisplayName` is how the viewer appears on the server; `v.ID` is stable.
+- A model that implements `pane.Imager` (`Images() []wire.PaneImage`) puts
+  pictures in its frames, in the same cell coordinates as its `View`. See
+  [`media.md`](media.md).
 
 Only SGR colors/styles and OSC 8 links survive to the screen; Concord strips
 every other escape sequence, so no cursor movement, alt screen or clipboard.

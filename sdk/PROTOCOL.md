@@ -111,6 +111,11 @@ keyboard back.
 - **Broadcast.** Leave `viewer_id` out to send the same frame to everyone viewing the
   channel, as a shared terminal does.
 - **Who receives it.** Frames only reach users currently viewing one of *your* channels.
+- **Pictures.** Add `"images": [{"asset", "col", "row", "cols", "rows"}]` to
+  place pictures from your `client/` folder (below) over the frame, each in a
+  box of cells (0-based, inside the pane). Each client draws them however its
+  terminal can, down to colored half-blocks, or not at all if the viewer
+  turned pictures off, so keep readable text under every box.
 
 **Events** (`op 54`): `{"plugin_id": "<yours>", "kind": "...", "payload": {...}, "viewer_id": "..."}`.
 
@@ -121,12 +126,20 @@ keyboard back.
 | `members` | `{"channel_id", "request_id"}` | asks who can see the channel; the reply is a `PLUGIN_EVENT` of kind `members` with `{"request_id", "members": [{"user_id", "username", "display_name", "online", "viewing"}]}` |
 | `pane_title` | `{"channel_id", "title"}` | the pane's border title, for `viewer_id` or everyone if it's omitted. `""` restores the channel name |
 | `leave_pane` | `{"channel_id"}` + `viewer_id` | hand that viewer's keyboard back to Concord. The pane stays open and keeps updating |
+| `play_sound` | `{"channel_id", "asset", "volume"}` | plays a WAV (8/16-bit PCM) or Ogg Opus file from your `client/` folder for `viewer_id`, or everyone viewing the channel if it's omitted. `volume` is 0 to 1 (0 means 1), scaled by the member's own setting |
 | anything else | anything | relayed as-is to `viewer_id`'s client, if they're viewing your pane |
 
 **Chat**:
 
 - `op 3` sends a message: `{"channel_id", "content", "reply_to_id"}`.
 - `op 4` shows "typing…" and `op 60` clears it: `{"channel_id"}`.
+
+**Your `client/` folder** holds the pictures and sounds above (`.png`,
+`.jpg`, `.gif`, `.wav`, `.ogg`/`.opus`, `.json`; under 50 MB in total) and ships in your release zip
+next to `plugin.toml`. Concord indexes it when the plugin loads and serves
+each file to signed-in members at `GET /api/plugins/client/<plugin id>/<path>`.
+Clients check every download against the SHA-256 Concord lists for it.
+Asset paths are relative to `client/`, e.g. `"assets/king.png"`.
 
 ## Settings
 

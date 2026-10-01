@@ -172,3 +172,90 @@ func cellPixels() (int, int) {
 	}
 	return 10, 20
 }
+
+// imagesSettings are the Display page's Plugin Pictures choices, in the
+// order Enter cycles through them.
+var imagesSettings = []string{"auto", "kitty", "sixel", "iterm2", "blocks", "off"}
+
+// nextImagesSetting is the choice after setting.
+func nextImagesSetting(setting string) string {
+	setting = strings.ToLower(setting)
+	for i, s := range imagesSettings {
+		if s == setting {
+			return imagesSettings[(i+1)%len(imagesSettings)]
+		}
+	}
+	return imagesSettings[1] // "" is auto
+}
+
+// gfxTitle is how a drawing method is named on the settings page.
+func gfxTitle(p gfxProtocol) string {
+	return [...]string{"Off", "Blocks", "Kitty", "Sixel", "iTerm2"}[p]
+}
+
+// imagesSettingLabel is the Plugin Pictures value: the setting, and for
+// auto what it chose in this terminal.
+func imagesSettingLabel(setting string) string {
+	switch strings.ToLower(setting) {
+	case "kitty":
+		return "Kitty"
+	case "sixel":
+		return "Sixel"
+	case "iterm2":
+		return "iTerm2"
+	case "blocks":
+		return "Blocks  (colored half-blocks)"
+	case "off":
+		return "Off  (plugins show their text instead)"
+	}
+	label := "Auto: " + gfxTitle(termGraphics.best())
+	if termGraphics.Term != "" {
+		label += " in " + terminalName(termGraphics.Term)
+	}
+	return label
+}
+
+// imagesSettingHints are notes under the Plugin Pictures value: what the
+// terminal can't do, and what would do better.
+func imagesSettingHints(setting string) []string {
+	setting = strings.ToLower(setting)
+	g := termGraphics
+	switch setting {
+	case "kitty", "sixel", "iterm2":
+		supported := map[string]bool{"kitty": g.Kitty, "sixel": g.Sixel, "iterm2": g.ITerm2}[setting]
+		if !supported {
+			return []string{"This terminal didn't say it supports that; pictures may not appear."}
+		}
+		return nil
+	case "blocks", "off":
+		return nil
+	}
+	if g.best() != gfxBlocks {
+		return nil
+	}
+	if g.Term == "Apple_Terminal" {
+		return []string{
+			"macOS Terminal can only draw pictures as colored blocks.",
+			"For real pictures use iTerm2, Ghostty, Kitty or WezTerm.",
+		}
+	}
+	return []string{
+		"This terminal didn't report picture support, so they're drawn as blocks.",
+		"Windows Terminal, iTerm2, Ghostty, Kitty, WezTerm and foot show real pictures.",
+	}
+}
+
+// terminalName makes TERM_PROGRAM values readable.
+func terminalName(term string) string {
+	switch term {
+	case "Apple_Terminal":
+		return "macOS Terminal"
+	case "iTerm.app":
+		return "iTerm2"
+	case "vscode":
+		return "VS Code"
+	case "ghostty":
+		return "Ghostty"
+	}
+	return term
+}

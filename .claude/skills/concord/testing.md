@@ -38,6 +38,8 @@ ev := srv.NextEvent()                               // notify, notify_user, pane
 rest := srv.DrainEvents()                           // anything else already sent, without waiting
 srv.AnswerMembers(ev, []wire.PluginMember{...})     // reply to a members request
 srv.DropConnection()                                // test reconnect: Enter is replayed
+srv.Images(alice)                                   // pictures on alice's last frame
+snd, viewer := srv.NextSound()                      // the next sound (viewer uuid.Nil = everyone)
 ```
 
 It fails the test on protocol mistakes: frames to non-viewers, frames taller
