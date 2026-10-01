@@ -102,6 +102,7 @@ type App struct {
 	codeState     *AccountCodeState
 	pendingVerify map[uuid.UUID]string
 	addingProfile bool // the identity form is adding a profile, not the first one
+	formHintRows  int  // rows of shortcut hints under the login/register form (layoutBannerScreen)
 
 	// Multi-server connection management
 	connMgr    *ConnectionManager      // Manages all server connections

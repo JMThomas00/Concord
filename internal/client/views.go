@@ -220,11 +220,11 @@ func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
 	if g.grapes {
 		// The grapes sit left of the column with their bottom row level with
 		// the form's last row (the password box on the login screen). That
-		// row is 3 up from the bottom of the stable form block (form bottom
-		// padding, then the hints row), and error messages appear below it,
-		// so the grapes stay put along with the form.
+		// row is 2 + the hint rows up from the bottom of the stable form
+		// block (form bottom padding, then the hints), and error messages
+		// appear below it, so the grapes stay put along with the form.
 		grapeRows := grapeLogos[grapeLogoSize].rows
-		formLastRow := slot + bannerFormGap + stableBelow - 3
+		formLastRow := slot + bannerFormGap + stableBelow - 2 - max(1, a.formHintRows)
 		grapeTop := max(0, formLastRow-(grapeRows-1))
 		grapes := strings.Repeat("\n", grapeTop) + a.renderGrapeLogo()
 		group = lipgloss.JoinHorizontal(lipgloss.Top, grapes, strings.Repeat(" ", grapeLockupGap), column)
@@ -378,9 +378,17 @@ func (a *App) loginFormBlock() (string, int) {
 
 	loginForm := formStyle.Render(strings.TrimRight(b.String(), "\n"))
 
-	// Hints sit below the form, not inside its fixed 50-column box, so they
-	// stay on one row.
-	below := lipgloss.JoinVertical(lipgloss.Left, loginForm, formHintsIndent.Render(a.renderKeyHints(hints, a.width-4)))
+	// Hints sit below the form, not inside its fixed 50-column box. Six of
+	// them (the profile unlock) read best as two aligned rows of three.
+	hintBlock := a.renderKeyHints(hints, a.width-4)
+	if len(hints) == 6 {
+		grid := a.renderKeyHintGrid([][]keyHint{hints[:3], hints[3:]})
+		if lipgloss.Width(grid) <= a.width-4 {
+			hintBlock = grid
+		}
+	}
+	a.formHintRows = lipgloss.Height(hintBlock)
+	below := lipgloss.JoinVertical(lipgloss.Left, loginForm, formHintsIndent.Render(hintBlock))
 	return below, lipgloss.Height(below) - formErrorLines(a.loginError, formWidth)
 }
 
@@ -478,7 +486,9 @@ func (a *App) registerFormBlock() (string, int) {
 	registerForm := formStyle.Render(b.String())
 
 	hints := []keyHint{{"Tab", "Switch fields"}, {"Enter", "Create account"}, {"Esc", "Back"}, {"Ctrl+Q", "Quit"}}
-	below := lipgloss.JoinVertical(lipgloss.Left, registerForm, formHintsIndent.Render(a.renderKeyHints(hints, a.width-4)))
+	hintBlock := a.renderKeyHints(hints, a.width-4)
+	a.formHintRows = lipgloss.Height(hintBlock)
+	below := lipgloss.JoinVertical(lipgloss.Left, registerForm, formHintsIndent.Render(hintBlock))
 	return below, lipgloss.Height(below) - formErrorLines(a.loginError, formWidth)
 }
 
@@ -2686,4 +2696,39 @@ func (a *App) renderMemberContextMenuOverlay(baseView string) string {
 
 	// ── Overlay dialog on the live main view ─────────────────────────────────
 	return overlayCenter(baseView, modal, a.width, a.height)
+}
+
+// renderKeyHintGrid draws hints as rows with their columns lined up (the
+// login screen's two rows of three).
+func (a *App) renderKeyHintGrid(rows [][]keyHint) string {
+	keyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Background(lipgloss.Color(a.theme.Colors.Selection)).
+		Bold(true).
+		Padding(0, 1)
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	cells := make([][]string, len(rows))
+	var widths []int
+	for r, row := range rows {
+		for c, h := range row {
+			cell := keyStyle.Render(h.key) + " " + descStyle.Render(h.desc)
+			cells[r] = append(cells[r], cell)
+			if c >= len(widths) {
+				widths = append(widths, 0)
+			}
+			widths[c] = max(widths[c], lipgloss.Width(cell))
+		}
+	}
+	lines := make([]string, len(rows))
+	for r, row := range cells {
+		var b strings.Builder
+		for c, cell := range row {
+			b.WriteString(cell)
+			if c < len(row)-1 {
+				b.WriteString(strings.Repeat(" ", widths[c]-lipgloss.Width(cell)+3))
+			}
+		}
+		lines[r] = b.String()
+	}
+	return strings.Join(lines, "\n")
 }

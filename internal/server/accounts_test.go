@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/mail"
 	"regexp"
 	"strings"
@@ -21,10 +24,10 @@ type fakeMailer struct {
 
 type sentMail struct{ to, subject, body string }
 
-func (f *fakeMailer) Send(to, subject, body string) error {
+func (f *fakeMailer) Send(e Email) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sent = append(f.sent, sentMail{to, subject, body})
+	f.sent = append(f.sent, sentMail{e.To, e.Subject, e.Text})
 	return nil
 }
 
@@ -300,13 +303,53 @@ func isAdmin(t *testing.T, s *Server, email string) bool {
 }
 
 func TestCodeEmailAndMessageFormat(t *testing.T) {
-	subject, body := codeEmail("Café Server", "amy", purposeVerify, "ABC234")
-	if !strings.Contains(subject, "ABC 234") || !codeInMail.MatchString(body) {
-		t.Fatalf("subject %q body %q", subject, body)
+	e := codeEmail("Café <Server>", "amy", purposeVerify, "ABC234")
+	if !strings.Contains(e.Subject, "ABC 234") || !codeInMail.MatchString(e.Text) {
+		t.Fatalf("subject %q text %q", e.Subject, e.Text)
 	}
-	msg := string(buildMessage(mustAddr("Concord <chat@example.com>"), mustAddr("amy@example.com"), subject, body))
-	if !strings.Contains(msg, "Subject: =?utf-8?q?") || !strings.Contains(msg, "\r\n\r\nWelcome") || strings.Contains(strings.ReplaceAll(msg, "\r\n", ""), "\n") {
-		t.Fatalf("message:\n%s", msg)
+	// The HTML version: escaped, with the code, the prompt and the banner.
+	for _, want := range []string{"ABC234", "amy@caf-server:~$", "Café &lt;Server&gt;", "#verify", `\____/\____/_/ /_/`} {
+		if !strings.Contains(e.HTML, want) {
+			t.Fatalf("HTML lacks %q", want)
+		}
+	}
+	if strings.Contains(e.HTML, "<Server>") {
+		t.Fatal("server name not escaped")
+	}
+
+	raw := string(buildMessage(mustAddr("Concord <chat@example.com>"), mustAddr("amy@example.com"), e))
+	if !strings.Contains(raw, "Subject: =?utf-8?q?") || !strings.Contains(raw, "multipart/alternative") {
+		t.Fatalf("headers:\n%s", raw[:400])
+	}
+	for _, line := range strings.Split(raw, "\r\n") {
+		if len(line) > 998 || strings.Contains(line, "\n") {
+			t.Fatalf("line breaks the SMTP limit: %d bytes", len(line))
+		}
+	}
+	// Parse it back: two parts that decode to what went in.
+	msg, err := mail.ReadMessage(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, params, _ := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	r := multipart.NewReader(msg.Body, params["boundary"])
+	var kinds []string
+	for {
+		p, err := r.NextPart()
+		if err != nil {
+			break
+		}
+		body, _ := io.ReadAll(p) // NextPart undoes quoted-printable
+		kinds = append(kinds, p.Header.Get("Content-Type"))
+		if strings.HasPrefix(p.Header.Get("Content-Type"), "text/html") && !strings.Contains(string(body), "ABC234") {
+			t.Fatal("HTML part doesn't decode to the HTML")
+		}
+		if strings.HasPrefix(p.Header.Get("Content-Type"), "text/plain") && !strings.Contains(string(body), "    ABC 234") {
+			t.Fatal("text part doesn't decode to the text")
+		}
+	}
+	if len(kinds) != 2 {
+		t.Fatalf("parts: %v", kinds)
 	}
 }
 

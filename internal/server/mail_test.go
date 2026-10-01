@@ -70,22 +70,28 @@ func fakeSMTP(t *testing.T, starttls bool) (port int, data <-chan string) {
 func TestSMTPMailerSendsAMessage(t *testing.T) {
 	port, data := fakeSMTP(t, false)
 	m := &smtpMailer{cfg: MailConfig{SMTPHost: "127.0.0.1", SMTPPort: port, From: "Concord <chat@example.com>", Security: "none"}}
-	if err := m.Send("amy@example.com", "Your code: ABC 234", "Hi\n\n    ABC 234\n"); err != nil {
+	if err := m.Send(codeEmailTo("amy@example.com")); err != nil {
 		t.Fatal(err)
 	}
 	msg := <-data
-	for _, want := range []string{"From: \"Concord\" <chat@example.com>", "To: <amy@example.com>", "Subject: Your code: ABC 234", "    ABC 234"} {
+	for _, want := range []string{"From: \"Concord\" <chat@example.com>", "To: <amy@example.com>", "Subject: Your Home verification code: ABC 234", "    ABC 234", "text/html"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("message lacks %q:\n%s", want, msg)
 		}
 	}
 }
 
+func codeEmailTo(to string) Email {
+	e := codeEmail("Home", "amy", purposeVerify, "ABC234")
+	e.To = to
+	return e
+}
+
 // The default security setting refuses to send in the clear.
 func TestSMTPMailerRequiresSTARTTLSByDefault(t *testing.T) {
 	port, _ := fakeSMTP(t, false)
 	m := &smtpMailer{cfg: MailConfig{SMTPHost: "127.0.0.1", SMTPPort: port, From: "chat@example.com"}}
-	err := m.Send("amy@example.com", "s", "b")
+	err := m.Send(Email{To: "amy@example.com", Subject: "s", Text: "b"})
 	if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
 		t.Fatalf("err = %v", err)
 	}

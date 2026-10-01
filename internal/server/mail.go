@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/tls"
 	"fmt"
 	"net"
+	"mime/quotedprintable"
 	"net/mail"
 	"net/smtp"
 	"strconv"
@@ -49,9 +51,17 @@ func (m MailConfig) port() int {
 	return 587
 }
 
-// Mailer sends one plain-text email.
+// Email is one message: plain text, and optionally an HTML version.
+type Email struct {
+	To      string
+	Subject string
+	Text    string
+	HTML    string // "" for a plain-text-only message
+}
+
+// Mailer sends one email.
 type Mailer interface {
-	Send(to, subject, body string) error
+	Send(e Email) error
 }
 
 // smtpMailer sends through the configured SMTP server.
@@ -61,15 +71,15 @@ type smtpMailer struct {
 
 const smtpTimeout = 20 * time.Second
 
-func (s *smtpMailer) Send(to, subject, body string) error {
+func (s *smtpMailer) Send(e Email) error {
 	cfg := s.cfg
 	from, err := mail.ParseAddress(cfg.From)
 	if err != nil {
 		return fmt.Errorf("mail: bad from address %q: %w", cfg.From, err)
 	}
-	rcpt, err := mail.ParseAddress(to)
+	rcpt, err := mail.ParseAddress(e.To)
 	if err != nil {
-		return fmt.Errorf("mail: bad recipient %q: %w", to, err)
+		return fmt.Errorf("mail: bad recipient %q: %w", e.To, err)
 	}
 	host := strings.TrimSpace(cfg.SMTPHost)
 	addr := net.JoinHostPort(host, strconv.Itoa(cfg.port()))
@@ -119,7 +129,7 @@ func (s *smtpMailer) Send(to, subject, body string) error {
 	if err != nil {
 		return fmt.Errorf("mail: %w", err)
 	}
-	if _, err := w.Write(buildMessage(from, rcpt, subject, body)); err != nil {
+	if _, err := w.Write(buildMessage(from, rcpt, e)); err != nil {
 		return fmt.Errorf("mail: %w", err)
 	}
 	if err := w.Close(); err != nil {
@@ -128,8 +138,10 @@ func (s *smtpMailer) Send(to, subject, body string) error {
 	return c.Quit()
 }
 
-// buildMessage assembles a plain-text RFC 5322 message.
-func buildMessage(from, to *mail.Address, subject, body string) []byte {
+// buildMessage assembles an RFC 5322 message: plain text, or
+// multipart/alternative with an HTML version. Both parts are
+// quoted-printable, which keeps the HTML's long lines within SMTP's limit.
+func buildMessage(from, to *mail.Address, e Email) []byte {
 	domain := "concord.local"
 	if at := strings.LastIndex(from.Address, "@"); at >= 0 {
 		domain = from.Address[at+1:]
@@ -139,18 +151,40 @@ func buildMessage(from, to *mail.Address, subject, body string) []byte {
 	var b strings.Builder
 	b.WriteString("From: " + from.String() + "\r\n")
 	b.WriteString("To: " + to.String() + "\r\n")
-	b.WriteString("Subject: " + mime(subject) + "\r\n")
+	b.WriteString("Subject: " + encodeHeader(e.Subject) + "\r\n")
 	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString(fmt.Sprintf("Message-ID: <%x@%s>\r\n", id, domain))
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
-	b.WriteString(strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\n", "\r\n"))
+	if e.HTML == "" {
+		b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		b.WriteString(qp(e.Text))
+		return []byte(b.String())
+	}
+	boundary := fmt.Sprintf("concord-%x", id)
+	b.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n\r\n")
+	for _, part := range []struct{ kind, body string }{{"text/plain", e.Text}, {"text/html", e.HTML}} {
+		b.WriteString("--" + boundary + "\r\n")
+		b.WriteString("Content-Type: " + part.kind + "; charset=utf-8\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		b.WriteString(qp(part.body))
+		b.WriteString("\r\n")
+	}
+	b.WriteString("--" + boundary + "--\r\n")
 	return []byte(b.String())
 }
 
-// mime encodes a header value that isn't plain ASCII.
-func mime(s string) string {
+// qp quoted-printable encodes s with CRLF line endings.
+func qp(s string) string {
+	var b bytes.Buffer
+	w := quotedprintable.NewWriter(&b)
+	_, _ = w.Write([]byte(strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")))
+	_ = w.Close()
+	return b.String()
+}
+
+// encodeHeader encodes a header value that isn't plain ASCII.
+func encodeHeader(s string) string {
 	for _, r := range s {
 		if r > 126 {
 			return "=?utf-8?q?" + qEncode(s) + "?="
@@ -180,6 +214,5 @@ func SendTestMail(cfg MailConfig, serverName, to string) error {
 		return fmt.Errorf("no [mail] settings: set smtp_host and from in concord-server.toml, or run --reconfigure")
 	}
 	m := &smtpMailer{cfg: cfg}
-	return m.Send(to, "Concord test email from "+serverName,
-		"This is a test from your Concord server "+fmt.Sprintf("%q", serverName)+".\n\nIf you're reading it, verification and password reset emails will arrive too.\n")
+	return m.Send(testEmail(serverName, to))
 }

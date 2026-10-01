@@ -695,7 +695,8 @@ func (m setupModel) renderMailAsk() string {
 	b.WriteString("\n\n")
 	b.WriteString(bodyStyle.Render("With an SMTP account, new members confirm their email with a\n" +
 		"6-character code, and anyone who forgets their password can reset it.\n" +
-		"Without one, accounts work as before and only you can reset a password\n" +
+		"Without one, people sign up with just their email and password (no\n" +
+		"code to confirm it), and only you can reset a forgotten password\n" +
 		"(concord-server --reset-password <email>).\n\n" +
 		"Test the settings afterwards with: concord-server --test-mail <you@example.com>"))
 	b.WriteString("\n\n")
@@ -739,7 +740,7 @@ func (m setupModel) renderHubAsk() string {
 			"alongside your server helps the network stay resilient.\n\n"+
 			"Mirror Hub      — syncs the official Grapevine listing. Acts as a\n"+
 			"                  failover for clients who add your hub URL. Requires\n"+
-			"                  a public IP or Cloudflare Tunnel (see Obsidian note).\n\n"+
+			"                  a public IP or a Cloudflare Tunnel.\n\n"+
 			"Custom Hub      — standalone hub; no official sync by default.\n\n"+
 			"Not Interested  — skip. You can run concord-hub separately any time.",
 	))
@@ -749,7 +750,7 @@ func (m setupModel) renderHubAsk() string {
 		b.WriteString(warnStyle.Render(
 			"! Your hub URL will be publicly visible — your server's IP address\n"+
 				"  or domain name will be discoverable. On a home server, use a\n"+
-				"  Cloudflare Tunnel to hide your real IP (see CLOUDFLARE TUNNEL SETUP.md)."))
+				"  Cloudflare Tunnel to hide your real IP."))
 		b.WriteString("\n\n")
 	}
 
@@ -907,7 +908,7 @@ func writeHubConfig(choice hubChoice, serverName string) {
 		fmt.Println("This means your server's IP address or domain will be visible.")
 		fmt.Println()
 		fmt.Println("On a home server or LXC container, use a Cloudflare Tunnel to")
-		fmt.Println("hide your real IP address. See: CONCORD - CLOUDFLARE TUNNEL SETUP.md")
+		fmt.Println("hide your real IP address.")
 		fmt.Println()
 		fmt.Printf("Federation sync: every %d minutes from %s\n", hubCfg.FederationSync, defaultHubURL)
 		fmt.Println("Share your hub URL with users, or contact the official hub operator")

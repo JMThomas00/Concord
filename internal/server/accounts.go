@@ -226,33 +226,14 @@ func (s *Server) sendCode(user *models.User, purpose, address string, force bool
 	}); err != nil {
 		return err
 	}
-	subject, body := codeEmail(s.config.ServerName, user.Username, purpose, code)
-	if err := s.mailer.Send(address, subject, body); err != nil {
+	email := codeEmail(s.config.ServerName, user.Username, purpose, code)
+	email.To = address
+	if err := s.mailer.Send(email); err != nil {
 		AuthLog.Error("Failed to send account email", "user_id", user.ID, "purpose", purpose, "error", err)
 		return errors.New("the server couldn't send the email; try again later or ask its admin")
 	}
 	AuthLog.Info("Account code emailed", "user_id", user.ID, "purpose", purpose)
 	return nil
-}
-
-// codeEmail is the subject and text of a code email.
-func codeEmail(serverName, username, purpose, code string) (string, string) {
-	spaced := code[:3] + " " + code[3:]
-	switch purpose {
-	case purposeReset:
-		return fmt.Sprintf("Your %s password reset code: %s", serverName, spaced),
-			fmt.Sprintf("Hi %s,\n\nSomeone asked to reset your password on the Concord server %q.\n\n"+
-				"Your code is:\n\n    %s\n\nEnter it in Concord within 15 minutes. If this wasn't you, ignore this email; your password hasn't changed.\n",
-				username, serverName, spaced)
-	case purposeChangeEmail:
-		return fmt.Sprintf("Confirm your new email for %s: %s", serverName, spaced),
-			fmt.Sprintf("Hi %s,\n\nTo use this address for your account on the Concord server %q, enter this code in Concord within 15 minutes:\n\n    %s\n\nIf this wasn't you, ignore this email.\n",
-				username, serverName, spaced)
-	default:
-		return fmt.Sprintf("Your %s verification code: %s", serverName, spaced),
-			fmt.Sprintf("Welcome to %s, %s!\n\nYour verification code is:\n\n    %s\n\nEnter it in Concord within 15 minutes to finish creating your account. If you didn't sign up, ignore this email.\n",
-				serverName, username, spaced)
-	}
 }
 
 // checkCode verifies a typed code, counting wrong guesses; on success the
