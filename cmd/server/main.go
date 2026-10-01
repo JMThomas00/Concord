@@ -35,6 +35,8 @@ func main() {
 	hybridMode := flag.Bool("hybrid", false, "Enable hybrid dashboard with live logs")
 	dashboardOnlyMode := flag.Bool("dashboard", false, "Enable full-screen dashboard mode (no live logs)")
 	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
+	testMail := flag.String("test-mail", "", "Send a test email to this address with the [mail] settings, then exit")
+	resetPassword := flag.String("reset-password", "", "Give the account with this email a new temporary password, then exit")
 	flag.Parse()
 
 	// Parse and initialize logger early
@@ -118,6 +120,31 @@ func main() {
 	}
 	if *dbPath != "" {
 		config.DatabasePath = *dbPath
+	}
+
+	// One-off account tools that exit without starting the server.
+	if *testMail != "" {
+		if err := server.SendTestMail(config.Mail, config.ServerName, *testMail); err != nil {
+			fmt.Fprintf(os.Stderr, "Test email failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Test email sent to %s. Check its inbox (and spam folder).\n", *testMail)
+		return
+	}
+	if *resetPassword != "" {
+		db, err := database.New(config.DatabasePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to open database: %v\n", err)
+			os.Exit(1)
+		}
+		pw, err := server.ResetPasswordOffline(db, *resetPassword)
+		db.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Reset failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("New temporary password for %s: %s\nGive it to them: on the Concord login screen they press Ctrl+F (Forgot password), pick this server, and enter it as the temporary password.\n", *resetPassword, pw)
+		return
 	}
 
 	// Clear screen for clean server startup (only in normal mode -- either

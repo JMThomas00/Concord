@@ -117,6 +117,11 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to migrate plugin platform: %w", err)
 	}
 
+	if err := wrapper.MigrateAccountVerification(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate account verification: %w", err)
+	}
+
 	// Clear any stale voice state from a previous server run
 	if err := wrapper.ClearAllVoiceStates(); err != nil {
 		db.Close()

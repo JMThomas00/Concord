@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,8 +26,10 @@ type DefaultPreferences struct {
 	AutoConnectOnStartup bool   `json:"auto_connect_on_startup"`
 }
 
-// LocalIdentity stores the user's single identity used across all servers
+// LocalIdentity is one profile: who you are on every server you join.
+// A computer can hold several (a shared or family computer); one is active.
 type LocalIdentity struct {
+	ID       string `json:"id,omitempty"` // stable key; set when first saved
 	Alias    string `json:"alias"`
 	Email    string `json:"email"`
 	Password string `json:"password"` // plaintext in v0.1; will be encrypted in a future version
@@ -34,10 +37,53 @@ type LocalIdentity struct {
 
 // AppConfig represents UI preferences stored in ~/.concord/config.json
 type AppConfig struct {
-	Version       int            `json:"version"`
-	UI            UIConfig       `json:"ui"`
-	Identity      *LocalIdentity `json:"identity,omitempty"`
-	TermsAccepted bool           `json:"terms_accepted"` // Whether user has accepted Terms of Service
+	Version int      `json:"version"`
+	UI      UIConfig `json:"ui"`
+	// Identity is the active profile, kept for configs written before
+	// profiles (and read by older clients). Identities holds them all.
+	Identity       *LocalIdentity   `json:"identity,omitempty"`
+	Identities     []*LocalIdentity `json:"identities,omitempty"`
+	ActiveIdentity string           `json:"active_identity,omitempty"`
+	TermsAccepted  bool             `json:"terms_accepted"` // Whether user has accepted Terms of Service
+}
+
+// profiles returns the config's profiles and the active one's ID, folding
+// in a pre-profiles Identity.
+func (c *AppConfig) profiles() ([]*LocalIdentity, string) {
+	list := c.Identities
+	active := c.ActiveIdentity
+	if len(list) == 0 && c.Identity != nil {
+		list = []*LocalIdentity{c.Identity}
+	}
+	for _, p := range list {
+		if p.ID == "" {
+			p.ID = uuid.NewString()
+		}
+	}
+	if c.Identity != nil && active == "" {
+		for _, p := range list {
+			if strings.EqualFold(p.Email, c.Identity.Email) {
+				active = p.ID
+			}
+		}
+	}
+	if active == "" && len(list) > 0 {
+		active = list[0].ID
+	}
+	return list, active
+}
+
+// setProfiles stores the profiles and which one is active.
+func (c *AppConfig) setProfiles(list []*LocalIdentity, active string) {
+	c.Identities, c.ActiveIdentity, c.Identity = list, active, nil
+	for _, p := range list {
+		if p.ID == active {
+			c.Identity = p
+		}
+	}
+	if c.Identity == nil {
+		c.ActiveIdentity = ""
+	}
 }
 
 // UIConfig holds UI-related preferences
@@ -502,28 +548,145 @@ func (cm *ConfigManager) GetClientServers() []*ClientServerInfo {
 	return config.Servers
 }
 
-// SaveIdentity saves the user's local identity to config.json
+// profilesMu serializes read-modify-write of the profiles and of saved
+// server sign-ins, which several connections can finish at once.
+var profilesMu sync.Mutex
+
+// SaveIdentity saves a profile (adding it, or replacing the one with the
+// same ID) and makes it the active one.
 func (cm *ConfigManager) SaveIdentity(identity *LocalIdentity) error {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
 	config, err := cm.LoadAppConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load app config: %w", err)
 	}
-	config.Identity = identity
+	list, _ := config.profiles()
+	if identity.ID == "" {
+		identity.ID = uuid.NewString()
+	}
+	replaced := false
+	for i, p := range list {
+		if p.ID == identity.ID {
+			list[i], replaced = identity, true
+		}
+	}
+	if !replaced {
+		list = append(list, identity)
+	}
+	config.setProfiles(list, identity.ID)
 	return cm.SaveAppConfig(config)
 }
 
-// GetIdentity returns the stored local identity, or nil if not configured
+// GetIdentity returns the active profile, or nil if there is none.
 func (cm *ConfigManager) GetIdentity() *LocalIdentity {
-	config, err := cm.LoadAppConfig()
-	if err != nil {
-		return nil
+	list, active := cm.Profiles()
+	for _, p := range list {
+		if p.ID == active {
+			return p
+		}
 	}
-	return config.Identity
+	return nil
 }
 
-// SaveServerToken saves an auth token and userID for a server after successful auto-connect
+// Profiles returns every saved profile and the active one's ID. A config
+// from before profiles is converted (and saved) the first time, so each
+// profile's ID stays the same from then on.
+func (cm *ConfigManager) Profiles() ([]*LocalIdentity, string) {
+	config, err := cm.LoadAppConfig()
+	if err != nil {
+		return nil, ""
+	}
+	// profiles() fills in missing IDs, so decide whether to save first.
+	convert := config.ActiveIdentity == "" || len(config.Identities) == 0 || needsIDs(config.Identities)
+	list, active := config.profiles()
+	if convert && len(list) > 0 {
+		profilesMu.Lock()
+		config.setProfiles(list, active)
+		_ = cm.SaveAppConfig(config)
+		profilesMu.Unlock()
+	}
+	return list, active
+}
+
+func needsIDs(list []*LocalIdentity) bool {
+	for _, p := range list {
+		if p.ID == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// SetActiveProfile makes the profile with id the active one.
+func (cm *ConfigManager) SetActiveProfile(id string) error {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
+	config, err := cm.LoadAppConfig()
+	if err != nil {
+		return err
+	}
+	list, _ := config.profiles()
+	config.setProfiles(list, id)
+	return cm.SaveAppConfig(config)
+}
+
+// ForgetProfile removes a profile from this computer, along with its saved
+// server sign-ins. If it was active, the first remaining one (if any)
+// becomes active; the new active ID is returned ("" when none are left).
+func (cm *ConfigManager) ForgetProfile(id string) (string, error) {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
+	config, err := cm.LoadAppConfig()
+	if err != nil {
+		return "", err
+	}
+	list, active := config.profiles()
+	var kept []*LocalIdentity
+	var forgotten *LocalIdentity
+	for _, p := range list {
+		if p.ID == id {
+			forgotten = p
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	if active == id {
+		active = ""
+		if len(kept) > 0 {
+			active = kept[0].ID
+		}
+	}
+	config.setProfiles(kept, active)
+	if err := cm.SaveAppConfig(config); err != nil {
+		return "", err
+	}
+	if servers, err := cm.LoadServers(); err == nil && forgotten != nil {
+		changed := false
+		for _, s := range servers.Servers {
+			if s.SavedCredentials != nil && s.SavedCredentials.belongsTo(forgotten) {
+				s.SavedCredentials, s.UserID, changed = nil, uuid.Nil, true
+			}
+		}
+		if changed {
+			_ = cm.SaveServers(servers)
+		}
+	}
+	return active, nil
+}
+
+// SaveServerToken saves an auth token and userID for a server after
+// successful auto-connect, for the profile that signed in.
 func (cm *ConfigManager) SaveServerToken(serverID uuid.UUID, email, token string, userID uuid.UUID) error {
+	return cm.SaveServerSignIn(serverID, "", email, token, userID)
+}
+
+// SaveServerSignIn records that profileID signed in to a server as email.
+func (cm *ConfigManager) SaveServerSignIn(serverID uuid.UUID, profileID, email, token string, userID uuid.UUID) error {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
 	creds := &SavedCredentials{
+		ProfileID:           profileID,
 		Email:               email,
 		Token:               token,
 		AutoConnect:         true,

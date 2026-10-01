@@ -321,7 +321,7 @@ func (a *App) loginFormBlock() (string, int) {
 			b.WriteString("\n\n")
 		}
 
-		hints = []keyHint{{"Enter", "Unlock"}, {"Ctrl+S", "Settings"}, {"Ctrl+T", "Themes"}, {"Ctrl+Q", "Quit"}}
+		hints = []keyHint{{"Enter", "Unlock"}, {"Ctrl+P", "Not you?"}, {"Ctrl+F", "Forgot password"}, {"Ctrl+S", "Settings"}, {"Ctrl+T", "Themes"}, {"Ctrl+Q", "Quit"}}
 	} else {
 		// Standard login mode: email + password + register link
 		b.WriteString(subtitleStyle.Render("Terminal Chat - Login to continue"))
@@ -523,12 +523,17 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 			return nil
 		}
 		if password != a.localIdentity.Password {
-			a.loginError = "Incorrect password"
+			a.loginError = "Incorrect password (Ctrl+F if you've forgotten it)"
 			return nil
 		}
 		a.loginError = ""
 		a.view = ViewMain
 		a.focus = FocusServerIcons // Start on server icons (consistent with auto-login)
+		for serverID, email := range a.pendingVerify {
+			a.openCodeScreen(codeModeVerify, serverID, email)
+			a.codeState.Back = ViewMain
+			break
+		}
 
 		// Only auto-connect servers that aren't already connected
 		// (servers auto-connect in background during Init, so they may already be ready)

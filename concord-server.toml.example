@@ -41,3 +41,18 @@ public_port = 0
 # Hub→server signals are verified with an HMAC of the registration_secret.
 # server_id = ""
 # registration_secret = ""
+
+# Outgoing email — optional. With it, new accounts confirm their email with a
+# 6-character code and members can reset a forgotten password. Without it,
+# accounts work as before; reset a password with
+#   concord-server --reset-password someone@example.com
+# Check the settings with: concord-server --test-mail you@example.com
+# This file then holds a password: keep it readable only by the server.
+# [mail]
+# smtp_host = "smtp.gmail.com"
+# smtp_port = 587               # blank/0: 587 for starttls, 465 for tls
+# security = "starttls"         # "starttls", "tls" (port 465) or "none" (a local relay only)
+# smtp_username = "you@gmail.com"
+# smtp_password = "an app password"
+# from = "Concord <you@gmail.com>"
+# require_verification = true   # false: send reset codes only, never block sign-in

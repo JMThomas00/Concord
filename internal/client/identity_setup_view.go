@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 )
 
 // initIdentitySetupForm resets the identity setup form to its initial state
@@ -81,7 +82,13 @@ func (a *App) handleIdentitySetupKey(msg tea.KeyMsg) tea.Cmd {
 		a.cycleIdentityFocus(false)
 		return nil
 	case "esc":
-		// Nothing to go back to on first run
+		// Adding a profile goes back to the list; on first run there's
+		// nothing to go back to.
+		if a.addingProfile {
+			a.addingProfile = false
+			a.openProfiles()
+			a.profilesState.Back = ViewLogin
+		}
 		return nil
 	}
 	// Regular typing is handled by the component update section in Update()
@@ -117,9 +124,42 @@ func (a *App) handleIdentitySetupSubmit() tea.Cmd {
 	}
 
 	identity := &LocalIdentity{
+		ID:       uuid.NewString(),
 		Alias:    alias,
-		Email:    email,
+		Email:    strings.ToLower(email),
 		Password: password,
+	}
+
+	if a.addingProfile {
+		// Another person on this computer: sign the current one out, save
+		// the new profile as active, and sign in as it everywhere.
+		for _, p := range a.profileList() {
+			if strings.EqualFold(p.Email, identity.Email) {
+				a.identityError = "A profile with that email is already on this computer (Esc, then pick it)"
+				return nil
+			}
+		}
+		a.addingProfile = false
+		a.signOutAll()
+		a.localIdentity = identity
+		a.identityError = ""
+		if err := a.configMgr.SaveIdentity(identity); err != nil {
+			a.identityError = "Failed to save profile: " + err.Error()
+			return nil
+		}
+		if len(a.clientServers) == 0 {
+			a.view = ViewAddServer
+			a.initAddServerForm()
+			return nil
+		}
+		a.view = ViewMain
+		a.focus = FocusServerIcons
+		a.statusMessage, a.statusError = "Signing in as "+alias+"…", false
+		var cmds []tea.Cmd
+		for _, s := range a.clientServers {
+			cmds = append(cmds, a.autoConnectServer(s.ID))
+		}
+		return tea.Batch(cmds...)
 	}
 
 	a.localIdentity = identity
@@ -156,7 +196,11 @@ func (a *App) renderIdentitySetupView() string {
 		Align(lipgloss.Center).
 		Width(dialogWidth - 4)
 
-	content.WriteString(titleStyle.Render("Welcome to Concord"))
+	title, subtitle, help := "Welcome to Concord", "Set up your identity once. It will be used across all servers.", "[Tab] Next  [Shift+Tab] Prev  [Enter] Confirm"
+	if a.addingProfile {
+		title, subtitle, help = "Add a profile", "Someone else using this computer? Each profile signs in as its own person.", "[Tab] Next  [Shift+Tab] Prev  [Enter] Confirm  [Esc] Back"
+	}
+	content.WriteString(titleStyle.Render(title))
 	content.WriteString("\n\n")
 
 	subtitleStyle := lipgloss.NewStyle().
@@ -164,7 +208,7 @@ func (a *App) renderIdentitySetupView() string {
 		Align(lipgloss.Center).
 		Width(dialogWidth - 4)
 
-	content.WriteString(subtitleStyle.Render("Set up your identity once. It will be used across all servers."))
+	content.WriteString(subtitleStyle.Render(subtitle))
 	content.WriteString("\n\n")
 
 	if a.identityError != "" {
@@ -211,7 +255,7 @@ func (a *App) renderIdentitySetupView() string {
 		Width(dialogWidth - 4).
 		Align(lipgloss.Center)
 
-	content.WriteString(helpStyle.Render("[Tab] Next  [Shift+Tab] Prev  [Enter] Confirm"))
+	content.WriteString(helpStyle.Render(help))
 
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

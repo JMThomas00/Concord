@@ -42,6 +42,8 @@ const (
 	ViewServerManagement
 	ViewAddServer
 	ViewThemeBrowser
+	ViewProfiles    // the profiles saved on this computer
+	ViewAccountCode // enter an emailed code (verify, reset, confirm email)
 )
 
 // FocusArea represents which area of the UI has focus
@@ -90,8 +92,16 @@ type App struct {
 	channelScroll panelScroll
 	memberScroll  panelScroll
 
-	// Local identity (single identity across all servers)
+	// The active profile: who you are on every server (Ctrl+P switches)
 	localIdentity *LocalIdentity
+
+	// Account screens (account_screens.go): Profiles, and the emailed-code
+	// screen. pendingVerify holds servers whose new account is waiting for
+	// its verification code (server ID → the email it went to).
+	profilesState *ProfilesState
+	codeState     *AccountCodeState
+	pendingVerify map[uuid.UUID]string
+	addingProfile bool // the identity form is adding a profile, not the first one
 
 	// Multi-server connection management
 	connMgr    *ConnectionManager      // Manages all server connections
@@ -874,6 +884,7 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	identityPasswordConfirm.CharLimit = 128
 
 	app := &App{
+		pendingVerify:           map[uuid.UUID]string{},
 		view:                    startView,
 		focus:                   FocusServerIcons, // Start on server list; user navigates into a channel before typing
 		theme:                   theme,
@@ -1137,13 +1148,20 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 		}
 
 		// HTTP login/register only — WebSocket connection follows via connectServerAsync
-		result := a.connMgr.AutoConnectHTTP(serverID, id.Email, id.Alias, id.Password)
+		var saved *SavedCredentials
+		if s := a.serverByID(serverID); s != nil {
+			saved = s.SavedCredentials
+		}
+		result := a.connMgr.AutoConnectHTTP(serverID, id, saved)
 		return AutoConnectMsg{
-			ServerID: result.ServerID,
-			UserID:   result.UserID,
-			Email:    result.Email,
-			Token:    result.Token,
-			Err:      result.Err,
+			ServerID:          result.ServerID,
+			UserID:            result.UserID,
+			Username:          result.Username,
+			Email:             result.Email,
+			Token:             result.Token,
+			Err:               result.Err,
+			NeedsVerification: result.NeedsVerification,
+			ProfileID:         id.ID,
 		}
 	}
 }
@@ -1501,18 +1519,56 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.loginError = msg.Error
 		a.statusError = true
 
+	case accountCodeMsg:
+		if cmd := a.applyAccountCodeResult(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case profileEditResultMsg:
+		if cmd := a.applyProfileEditResult(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case passwordChangedMsg:
+		if cmd := a.applyPasswordChanged(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case AutoConnectMsg:
-		if msg.Err != nil {
+		if a.localIdentity == nil || msg.ProfileID != a.localIdentity.ID {
+			break // signed in as a profile that's since been switched away from
+		}
+		if msg.NeedsVerification {
+			if a.pendingVerify == nil {
+				a.pendingVerify = map[uuid.UUID]string{}
+			}
+			a.pendingVerify[msg.ServerID] = msg.Email
+			name := a.codeServerName(msg.ServerID)
+			a.statusMessage = fmt.Sprintf("%s sent a verification code to %s.", name, msg.Email)
+			a.statusError = false
+			// Straight to the code screen once unlocked; before that (the
+			// login screen) unlocking opens it.
+			if a.view == ViewMain && a.codeState == nil {
+				a.openCodeScreen(codeModeVerify, msg.ServerID, msg.Email)
+			}
+		} else if msg.Err != nil {
 			log.Printf("Auto-connect failed for server %s: %v", msg.ServerID, msg.Err)
-			a.statusMessage = fmt.Sprintf("Could not connect to server: %v", msg.Err)
+			a.statusMessage = fmt.Sprintf("Could not sign in to %s: %v", a.codeServerName(msg.ServerID), msg.Err)
 			a.statusError = true
 		} else if msg.Token != "" {
 			// Save token to disk for future sessions
 			go func() {
-				if err := a.configMgr.SaveServerToken(msg.ServerID, msg.Email, msg.Token, msg.UserID); err != nil {
+				if err := a.configMgr.SaveServerSignIn(msg.ServerID, msg.ProfileID, msg.Email, msg.Token, msg.UserID); err != nil {
 					log.Printf("Failed to save server token: %v", err)
 				}
 			}()
+			// The server's account for this email belongs to someone else
+			// by name: say so rather than quietly posting as them.
+			if msg.Username != "" && !strings.EqualFold(msg.Username, a.localIdentity.Alias) {
+				a.statusMessage = fmt.Sprintf("On %s you're signed in as %s, not %s: %s belongs to that account there. To be %s, use another email (Ctrl+P on the login screen).",
+					a.codeServerName(msg.ServerID), msg.Username, a.localIdentity.Alias, msg.Email, a.localIdentity.Alias)
+				a.statusError = true
+			}
 			// Select this server in UI if none is active yet (first to auth wins)
 			if a.activeConn == nil {
 				for i, cs := range a.clientServers {
@@ -1883,6 +1939,14 @@ func (a *App) View() string {
 		baseView = a.renderToSView()
 	case ViewIdentitySetup:
 		baseView = a.renderIdentitySetupView()
+	case ViewProfiles:
+		if a.profilesState != nil {
+			baseView = a.renderProfilesView()
+		}
+	case ViewAccountCode:
+		if a.codeState != nil {
+			baseView = a.renderAccountCodeView()
+		}
 	case ViewLogin:
 		baseView = a.renderLoginView()
 	case ViewRegister:
@@ -2008,6 +2072,12 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	if a.view == ViewIdentitySetup {
 		return a.handleIdentitySetupKey(msg)
 	}
+	if a.view == ViewProfiles && a.profilesState != nil {
+		return a.handleProfilesKey(msg)
+	}
+	if a.view == ViewAccountCode && a.codeState != nil {
+		return a.handleAccountCodeKey(msg)
+	}
 	if a.view == ViewThemeBrowser {
 		return a.handleThemeBrowserKey(msg)
 	}
@@ -2108,6 +2178,21 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Open theme browser from login or main view
 		if a.view == ViewLogin || a.view == ViewMain {
 			a.openThemeBrowser(a.view)
+			return nil
+		}
+
+	case "ctrl+p":
+		// Profiles: switch who's signing in, add, edit or forget one.
+		if a.view == ViewLogin && a.localIdentity != nil {
+			a.openProfiles()
+			return nil
+		}
+
+	case "ctrl+f":
+		// Forgot password: reset it with a code emailed by one of your
+		// servers, then use it everywhere.
+		if a.view == ViewLogin && a.localIdentity != nil {
+			a.openCodeScreen(codeModeForgot, uuid.Nil, a.localIdentity.Email)
 			return nil
 		}
 
@@ -2286,6 +2371,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				// Select the server and go to login if not connected
 				if a.serverIndex < len(a.clientServers) {
 					a.switchToClientServer(a.serverIndex)
+					// A new account waiting for its emailed code: enter it.
+					if email, ok := a.pendingVerify[a.clientServers[a.serverIndex].ID]; ok {
+						a.openCodeScreen(codeModeVerify, a.clientServers[a.serverIndex].ID, email)
+						return nil
+					}
 					if a.activeConn == nil || a.activeConn.GetState() != StateReady {
 						a.view = ViewLogin
 						a.initLoginView()
@@ -5592,11 +5682,14 @@ func (a *App) handleTabCompletion() {
 
 // AutoConnectMsg carries the result of an auto-connect attempt
 type AutoConnectMsg struct {
-	ServerID uuid.UUID
-	UserID   uuid.UUID
-	Email    string
-	Token    string
-	Err      error
+	ServerID          uuid.UUID
+	UserID            uuid.UUID
+	Username          string // the account's name on the server
+	Email             string
+	Token             string
+	Err               error
+	NeedsVerification bool   // the account must enter an emailed code first
+	ProfileID         string // the profile that signed in
 }
 
 // ConnectedMsg indicates successful connection
@@ -6488,6 +6581,33 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.mu.Unlock()
 
 		log.Printf("Nickname updated for user %s: %s", payload.UserID, payload.Nickname)
+
+		// Refresh so the member list (and any already-rendered messages from
+		// this user, next time they post) pick up the new name immediately.
+		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			a.updateChatContent()
+		}
+
+	case protocol.EventUserUpdate:
+		// Someone changed their username (account settings, or a typo
+		// fixed from another device).
+		var user models.User
+		if err := json.Unmarshal(msg.Data, &user); err != nil || user.ID == uuid.Nil {
+			log.Printf("Failed to parse USER_UPDATE payload: %v", err)
+			return nil
+		}
+		sc.mu.Lock()
+		for _, member := range sc.Members {
+			if member.User != nil && member.User.ID == user.ID {
+				member.User.Username = user.Username
+				member.User.Discriminator = user.Discriminator
+			}
+		}
+		if sc.User != nil && sc.User.ID == user.ID {
+			sc.User.Username = user.Username
+			sc.User.Discriminator = user.Discriminator
+		}
+		sc.mu.Unlock()
 
 		// Refresh so the member list (and any already-rendered messages from
 		// this user, next time they post) pick up the new name immediately.

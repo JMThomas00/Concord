@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -527,9 +528,13 @@ func (cm *ConnectionManager) Identify(serverID uuid.UUID, token string) error {
 type AutoConnectResult struct {
 	ServerID uuid.UUID
 	UserID   uuid.UUID
-	Email    string
+	Username string // the account's name on the server
+	Email    string // the email it signed in (or must verify) with
 	Token    string
 	Err      error
+	// NeedsVerification: the account exists but must enter the code the
+	// server emailed to Email before it can sign in.
+	NeedsVerification bool
 }
 
 // AutoConnect performs the full token→login→register flow for a server.
@@ -595,27 +600,69 @@ func (cm *ConnectionManager) AutoConnect(serverID uuid.UUID, savedToken, email, 
 // AutoConnectHTTP performs only the HTTP login→register flow (no WebSocket).
 // Use this when the WebSocket connection will be handled separately by connectServerAsync,
 // which correctly sets activeConn before calling Identify to prevent the READY race condition.
-func (cm *ConnectionManager) AutoConnectHTTP(serverID uuid.UUID, email, alias, password string) AutoConnectResult {
+//
+// It signs in as the profile: by the email this profile last used on the
+// server (saved), else the profile's email. It only registers a new account
+// on a server this profile has never signed in to, and only when the
+// server says the sign-in details are wrong: anywhere else a failure is
+// reported, so a changed password or email never quietly makes a second
+// account.
+func (cm *ConnectionManager) AutoConnectHTTP(serverID uuid.UUID, profile *LocalIdentity, saved *SavedCredentials) AutoConnectResult {
 	result := AutoConnectResult{ServerID: serverID}
-
-	// Try HTTP login first
-	user, token, err := cm.Login(serverID, email, password)
-	if err == nil {
-		result.UserID = user.ID
-		result.Email = email
-		result.Token = token
-		return result
+	email := profile.Email
+	known := saved.belongsTo(profile)
+	if known && saved.Email != "" {
+		email = saved.Email
 	}
-
-	// Login failed — try auto-register (server may not have this account yet)
-	user, token, err = cm.Register(serverID, alias, email, password)
-	if err != nil {
-		result.Err = fmt.Errorf("auto-connect failed: %w", err)
-		return result
-	}
-	result.UserID = user.ID
 	result.Email = email
-	result.Token = token
+
+	done := func(user *models.User, token string) AutoConnectResult {
+		result.UserID, result.Token = user.ID, token
+		result.Username = user.Username
+		return result
+	}
+	needsCode := func(err error) bool {
+		if e, ok := IsVerificationRequired(err); ok {
+			result.NeedsVerification = true
+			result.Err = e
+			if e.Email != "" {
+				result.Email = e.Email
+			}
+			return true
+		}
+		return false
+	}
+
+	user, token, err := cm.Login(serverID, email, profile.Password)
+	if err == nil {
+		return done(user, token)
+	}
+	if needsCode(err) {
+		return result
+	}
+	apiErr, isAPI := err.(*APIError)
+	if !isAPI || apiErr.Status != http.StatusUnauthorized {
+		result.Err = err
+		return result
+	}
+	if known {
+		result.Err = fmt.Errorf("couldn't sign in as %s: the password doesn't match (reset it with Forgot password on the login screen)", email)
+		return result
+	}
+
+	// Never signed in here as this profile: make the account.
+	user, token, err = cm.Register(serverID, profile.Alias, profile.Email, profile.Password)
+	if err == nil {
+		return done(user, token)
+	}
+	if needsCode(err) {
+		return result
+	}
+	if apiErr, ok := err.(*APIError); ok && apiErr.Status == http.StatusConflict {
+		result.Err = fmt.Errorf("%s already has an account on this server with a different password (Forgot password on the login screen resets it)", profile.Email)
+		return result
+	}
+	result.Err = err
 	return result
 }
 

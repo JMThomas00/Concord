@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"os/signal"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -39,6 +38,7 @@ type Config struct {
 	AdminEmail     string               `toml:"admin_email"`    // Admin email for auto-granting admin role
 	Grapevine      GrapevineConfig      `toml:"grapevine"`
 	PluginsDir     string               `toml:"plugins_dir"` // Folder scanned for plugin.toml subfolders at startup
+	Mail           MailConfig           `toml:"mail"`        // Outgoing email for verification and password reset (optional)
 }
 
 // MessagePruningConfig configures automatic message pruning
@@ -112,6 +112,11 @@ type Server struct {
 
 	// Plugin platform
 	plugins *plugins.Manager
+
+	// Accounts: outgoing mail (nil without [mail]) and the per-address
+	// limit on sign-in and account requests.
+	mailer        Mailer
+	accountLimits *accountLimiter
 }
 
 // New creates a new server instance
@@ -172,6 +177,7 @@ func New(config *Config) (*Server, error) {
 		db:              db,
 		stats:           stats,
 		grapevineTokens: newTokenStore(),
+		accountLimits:   newAccountLimiter(20, 20),
 		plugins:         pluginManager,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -180,6 +186,10 @@ func New(config *Config) (*Server, error) {
 				return true
 			},
 		},
+	}
+	if config.Mail.Enabled() {
+		s.mailer = &smtpMailer{cfg: config.Mail}
+		AuthLog.Info("Outgoing mail configured", "smtp_host", config.Mail.SMTPHost, "verification_required", config.Mail.VerificationRequired())
 	}
 
 	pluginsDir := config.PluginsDir
@@ -221,7 +231,7 @@ func (s *Server) saveConfig() error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(s.configPath, data, 0644)
+	return os.WriteFile(s.configPath, data, 0600)
 }
 
 // startGrapevine registers Grapevine routes on mux and starts the background client.
@@ -290,10 +300,7 @@ func (s *Server) Run() error {
 
 	// Set up HTTP routes
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.HandleFunc("/api/register", s.handleRegister)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/health", s.handleHealth)
+	s.registerAPIRoutes(mux)
 	if s.config.Grapevine.Enabled {
 		s.startGrapevine(mux)
 	}
@@ -569,6 +576,25 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)
 		return
 	}
+	if s.limited(w, r) {
+		return
+	}
+
+	// Emails are compared without case; store them that way.
+	email, validEmail := normalizeEmail(req.Email)
+	needsVerification := s.config.Mail.VerificationRequired()
+	if needsVerification && !validEmail {
+		writeAPIError(w, http.StatusBadRequest, "bad_email", "That doesn't look like an email address")
+		return
+	}
+	if req.Email != "" {
+		req.Email = email
+	}
+	if taken, _ := s.db.EmailInUse(req.Email, uuid.Nil); taken && req.Email != "" {
+		AuthLog.Warn("Registration for an email that's already in use (client will retry login)", "username", req.Username, "from", remoteIP(r))
+		http.Error(w, "Failed to create user (email or username may already exist)", http.StatusConflict)
+		return
+	}
 
 	// Hash password
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -642,14 +668,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Auto-grant admin to user matching configured admin email
-	if s.config.AdminEmail != "" && strings.EqualFold(user.Email, s.config.AdminEmail) {
-		if err := s.db.EnsureAdminRole(user.Email); err != nil {
-			AuthLog.Error("Failed to grant admin role to configured admin email", "email", user.Email, "error", err)
-		} else {
-			AuthLog.Info("Admin role granted to user matching configured admin email", "email", user.Email)
+	// A server that verifies emails holds the account until its code is
+	// entered: no session yet, and admin-by-email waits for proof.
+	if needsVerification {
+		if err := s.db.SetEmailVerified(user.ID, false); err != nil {
+			AuthLog.Error("Failed to mark new account unverified", "user_id", user.ID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
 		}
+		resp := map[string]interface{}{"verification_required": true, "user": user, "email": user.Email, "sent": true}
+		if err := s.sendCode(user, purposeVerify, user.Email, true); err != nil {
+			resp["sent"], resp["mail_error"] = false, capitalize(err.Error())+"."
+		}
+		AuthLog.Info("Account waiting for email verification", "user_id", user.ID, "from", remoteIP(r))
+		writeJSON(w, http.StatusAccepted, resp)
+		return
 	}
+	s.accountActivated(user)
 
 	// Generate auth token
 	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
@@ -686,11 +721,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.limited(w, r) {
+		return
+	}
+
 	// Look up user
-	AuthLog.Info("Login attempt", "email", req.Email)
-	user, passwordHash, err := s.db.GetUserByEmail(req.Email)
+	from := remoteIP(r)
+	AuthLog.Info("Login attempt", "email", req.Email, "from", from)
+	user, passwordHash, err := s.db.FindUserByEmail(req.Email)
 	if err != nil {
-		AuthLog.Warn("Login failed - user not found", "email", req.Email, "error", err)
+		AuthLog.Warn("Login failed - user not found", "email", req.Email, "from", from, "error", err)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
@@ -698,9 +738,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Check password
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		AuthLog.Warn("Login failed - wrong password", "user_id", user.ID, "from", from)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
+
+	// An account that hasn't confirmed its email can't sign in while the
+	// server requires it (turning verification off lets everyone in).
+	if s.config.Mail.VerificationRequired() {
+		if verified, _ := s.db.IsEmailVerified(user.ID); !verified {
+			AuthLog.Info("Login held for email verification", "user_id", user.ID, "from", from)
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "Check your email for a verification code from " + s.config.ServerName + ".",
+				"code":  errCodeVerificationRequired, "email": user.Email,
+			})
+			return
+		}
+	}
+	AuthLog.Info("Login succeeded", "user_id", user.ID, "username", user.Username, "from", from)
 
 	// Ensure user is a member of the default server
 	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer(s.config.ServerName)
@@ -812,10 +867,7 @@ func (s *Server) runWithDashboard() error {
 
 	// Set up HTTP routes
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.HandleFunc("/api/register", s.handleRegister)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/health", s.handleHealth)
+	s.registerAPIRoutes(mux)
 	if s.config.Grapevine.Enabled {
 		s.startGrapevine(mux)
 	}
@@ -1004,10 +1056,7 @@ func (s *Server) runWithHybridDashboard() error {
 
 	// Set up HTTP routes (needed for startup info)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.HandleFunc("/api/register", s.handleRegister)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/health", s.handleHealth)
+	s.registerAPIRoutes(mux)
 	if s.config.Grapevine.Enabled {
 		s.startGrapevine(mux)
 	}

@@ -29,7 +29,14 @@ The first time you launch Concord, an identity setup screen appears. Fill in:
 - **Email** — used for server registration (not shared publicly)
 - **Password** — stored locally in ` + "`~/.concord/config.json`" + `; used when auto-registering on new servers
 
-Your identity is global to your machine. Concord automatically registers you on each server you join using these credentials.
+Your identity (a **profile**) is used on every server. Concord registers you automatically the first time you join a server, and signs you in after that.
+
+### Profiles, Forgotten Passwords and Email Codes
+
+- **Several people on one computer?** On the login screen, **Ctrl+P** (*Not you?*) lists the profiles saved here. **Enter** switches, **A** adds one, **E** edits the alias or email (servers you're signed in to are updated too), **P** changes the password everywhere, **F** forgets one.
+- **Forgot your password?** On the login screen, press **Ctrl+F**, pick a server, and enter the code it emails you with a new password. Concord then sets that password on your other servers too. If the server can't send email, ask its admin for a temporary password and enter that instead of the code.
+- **Verifying your email:** servers that send email ask new accounts for a 6-character code first. Enter it on the screen that appears. **Ctrl+R** resends it, and **Ctrl+E** fixes a typo in your email or alias. **Esc** puts it off; select the server and press **Enter** to come back to it.
+- If a server signs you in under a different name than your profile's alias, the status bar says so: that server's account for your email belongs to someone else. Use another email (another profile) to be yourself there.
 
 ### Adding Your First Server
 
@@ -70,6 +77,8 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 - ` + "`Ctrl+S`" + ` — Open Settings
 - ` + "`Ctrl+B`" + ` — Open Server Management (admin)
 - ` + "`Ctrl+G`" + ` — Open Grapevine Hub Browser (login / add-server screens)
+- ` + "`Ctrl+P`" + ` — Switch, add or edit profiles (login screen)
+- ` + "`Ctrl+F`" + ` — Forgot password (login screen)
 - ` + "`Ctrl+T`" + ` — Open Theme Browser
 - ` + "`[`" + ` — Toggle server list panel (collapse / expand)
 - ` + "`]`" + ` — Toggle members list panel (collapse / expand)
@@ -305,7 +314,15 @@ interval_hours = 24
 
 [grapevine]
 enabled = false   # opt-in public listing — see the Grapevine section
+
+[mail]            # optional: verification and password reset codes
+smtp_host = "smtp.gmail.com"
+smtp_username = "you@gmail.com"
+smtp_password = "an app password"
+from = "Concord <you@gmail.com>"
 ` + "```" + `
+
+**Email (optional).** With a ` + "`[mail]`" + ` section (the wizard's email step sets it up), new accounts confirm their email with a 6-character code before they can sign in, and members can reset a forgotten password themselves. Set ` + "`require_verification = false`" + ` to keep resets but never hold up sign-in. Check it with ` + "`concord-server --test-mail you@example.com`" + `. Without mail, accounts work as before, and ` + "`concord-server --reset-password someone@example.com`" + ` gives a member a temporary password.
 
 ### Voice Across the Internet (NAT)
 

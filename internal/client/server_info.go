@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,10 +29,23 @@ type ClientServerInfo struct {
 
 // SavedCredentials stores login credentials for auto-connect
 type SavedCredentials struct {
+	ProfileID           string `json:"profile_id,omitempty"`          // The profile (LocalIdentity.ID) that signed in
 	Email               string `json:"email"`                         // User email
 	Token               string `json:"token"`                         // Auth token (plaintext in Phase 1)
 	AutoConnect         bool   `json:"auto_connect"`                  // Auto-connect on startup
 	RememberCredentials bool   `json:"remember_credentials"`          // Whether to save credentials
+}
+
+// belongsTo reports whether these sign-in details are p's: recorded for
+// its ID, or (saved before profiles existed) for its email.
+func (c *SavedCredentials) belongsTo(p *LocalIdentity) bool {
+	if c == nil || p == nil {
+		return false
+	}
+	if c.ProfileID != "" {
+		return c.ProfileID == p.ID
+	}
+	return c.Email != "" && strings.EqualFold(c.Email, p.Email)
 }
 
 // NewClientServerInfo creates a new ClientServerInfo with generated ID and defaults
