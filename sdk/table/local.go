@@ -257,7 +257,9 @@ func (m *localModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.chooseKey(msg)
 		}
-		if msg.String() == "tab" {
+		// M opens the menu, as in Concord; Tab does too here, where there's
+		// no Concord to move focus with it.
+		if k := msg.String(); (k == "m" || k == "M" || k == "tab") && !boardTyping(m.board) {
 			m.menuOpen, m.menuIdx = !m.menuOpen, 0
 			return m, nil
 		}
@@ -507,7 +509,7 @@ func (m *localModel) View() string {
 		header += "   " + dim.Render("thinking…")
 	}
 
-	footer := dim.Render("Tab: menu · Ctrl+C quit")
+	footer := dim.Render("M: menu · Ctrl+C quit")
 	if m.notice != "" {
 		footer = m.notice + " · " + footer
 	}

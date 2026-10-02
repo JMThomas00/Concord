@@ -212,11 +212,12 @@ func (a *App) answerConsent(p *PluginPaneState, answer string) tea.Cmd {
 }
 
 // handleConsentKey answers the prompt: A allows, N is "not now", D never.
+// (Esc leaves the pane, as everywhere; the question waits.)
 func (a *App) handleConsentKey(p *PluginPaneState, msg tea.KeyMsg) tea.Cmd {
 	switch strings.ToLower(msg.String()) {
 	case "a", "y":
 		return a.answerConsent(p, "allow")
-	case "n", "esc":
+	case "n":
 		return a.answerConsent(p, "notnow")
 	case "d":
 		return a.answerConsent(p, "never")

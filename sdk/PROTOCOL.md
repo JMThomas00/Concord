@@ -84,7 +84,9 @@ Messages you post yourself are never relayed back to you.
 `"down"`, `"left"`, `"right"`, `"home"`, `"end"`, `"pgup"`, `"pgdown"`,
 `"delete"`, `"f1"`..., and modifiers as `"ctrl+c"` and `"alt+left"`. You
 never receive **Ctrl+]**: Concord keeps it so a viewer can always get their
-keyboard back.
+keyboard back. **Esc, Tab and Shift+Tab** reach you only while the
+frame on screen claims them (`keys`, below); otherwise Concord uses them to
+move focus between panels, as in every channel.
 
 **Theme** (`theme`) holds the viewer's Concord colors so you can match them:
 
@@ -111,6 +113,11 @@ keyboard back.
 - **Broadcast.** Leave `viewer_id` out to send the same frame to everyone viewing the
   channel, as a shared terminal does.
 - **Who receives it.** Frames only reach users currently viewing one of *your* channels.
+- **Claiming keys.** Add `"keys": ["esc"]` (any of `"esc"`, `"tab"`,
+  `"shift+tab"`) to get those keys while this frame is on screen. Claim Esc
+  only while there's something to cancel, Tab and Shift+Tab while a form's
+  fields are open; unclaimed, Esc and Shift+Tab take the viewer back to the
+  channel list and Tab on to the member list.
 - **Pictures.** Add `"images": [{"asset", "col", "row", "cols", "rows"}]` to
   place pictures from your `client/` folder (below) over the frame, each in a
   box of cells (0-based, inside the pane). Each client draws them however its
@@ -181,6 +188,7 @@ Calls (`"fn"`):
 | `frame` | `text`, `images` | `pane` (`images` too for pictures) |
 | `clear_frame` | | `pane` |
 | `forward_keys` | `forward` (keys also go to you as pane input; default true) | `pane` |
+| `claim_keys` | `keys` (of `"esc"`, `"tab"`, `"shift+tab"`; empty gives them back) while the code's frame shows | `pane` |
 | `timer` | `id`, `ms` (16 ms to 1 h, 16 pending) | `pane` |
 | `play_sound` | `asset`, `volume` | `sound` |
 | `storage_get` | `key` → `{"value": string or null}` | `storage` |

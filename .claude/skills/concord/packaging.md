@@ -35,7 +35,7 @@ scaffolded README has this shape; keep it when rewriting):
 2. **On a Concord server:** Server Settings → Plugins → **I**, type
    `owner/repo`; then Server Settings → Channels → create a channel of the
    plugin's type (its `display_name`), and what each channel option does; then
-   how to use it (Tab into a pane, Ctrl+] back out; or chat for a bot).
+   how to use it (Tab into a pane, Esc back out; or chat for a bot).
    Updating is **U**, Enter.
 
 Then the rules or commands, the keys, and a short "Develop" section.

@@ -112,6 +112,14 @@ plugin.Run(ctx, cfg, h)
   resize, and `tea.KeyMsg` for keys. There's no mouse.
 - Returning `tea.Quit` hands that viewer's keyboard back to Concord (the
   pane stays visible). Concord itself always reserves **Ctrl+]** for this.
+- **Esc, Tab and Shift+Tab are Concord's** (they move focus between panels,
+  as in every channel) unless the model claims them: implement
+  `pane.KeyClaimer` (`ClaimedKeys() []string`, of `wire.PaneKeyEsc`,
+  `PaneKeyTab`, `PaneKeyShiftTab`). It's asked after every update and sent
+  with the frame, so the claim always matches what's on screen. Claim Esc
+  while there's something to cancel, Tab and Shift+Tab while a form's fields
+  are open, nothing otherwise. Without the pane host, `Conn.SendFrame` takes
+  `Keys` directly.
 - Frames are fitted to the pane (`pane.Fit`), rendered in true color and
   downsampled to each viewer's terminal. Cursor-blink commands are skipped.
 - `v.Color("red", fallback)` returns the viewer's Concord theme color, so

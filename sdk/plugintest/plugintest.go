@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -58,8 +59,9 @@ type Viewer struct {
 	ChannelID   uuid.UUID
 	Width       int
 	Height      int
-	LastFrame   string // the most recent frame this viewer received
+	LastFrame   string           // the most recent frame this viewer received
 	LastImages  []wire.PaneImage // the images placed on that frame
+	LastKeys    []string         // the navigation keys that frame claims
 	LastSeq     int64
 	frameEpochs int64
 }
@@ -207,6 +209,12 @@ func (s *Server) deliverFrame(f wire.PluginPaneFramePayload) {
 		}
 		v.LastSeq, v.LastFrame = f.Seq, f.Frame
 		v.LastImages = f.Images
+		v.LastKeys = f.Keys
+		for _, k := range f.Keys {
+			if !slices.Contains(wire.PaneNavigationKeys, k) {
+				s.t.Errorf("plugintest: frame claims %q; only esc, tab and shift+tab can be claimed", k)
+			}
+		}
 		for _, im := range f.Images {
 			if im.Col < 0 || im.Row < 0 || im.Cols <= 0 || im.Rows <= 0 || im.Col+im.Cols > v.Width || im.Row+im.Rows > v.Height {
 				s.t.Errorf("plugintest: image %q at %d,%d (%dx%d cells) doesn't fit %s's %dx%d pane", im.Asset, im.Col, im.Row, im.Cols, im.Rows, v.Name, v.Width, v.Height)
@@ -290,12 +298,27 @@ func (s *Server) Enter(channelID uuid.UUID, name string, width, height int) *Vie
 
 // Key sends one keypress from v, in Bubble Tea's KeyMsg.String() form:
 // "a", "enter", "up", "ctrl+c", "alt+x", " " (space)...
-func (s *Server) Key(v *Viewer, key string) {
+//
+// Like Concord, it doesn't deliver Esc, Tab or Shift+Tab unless the last
+// frame v received claims them (in Concord they'd move focus out of the
+// pane instead); it reports whether the key reached the plugin.
+func (s *Server) Key(v *Viewer, key string) bool {
+	if slices.Contains(wire.PaneNavigationKeys, key) && !slices.Contains(s.Claimed(v), key) {
+		return false
+	}
 	in := wire.PluginPaneInputPayload{ChannelID: v.ChannelID, ViewerID: v.ID, KeyString: key, ViewerName: v.Name, ViewerDisplayName: v.Name}
 	if r := []rune(key); len(r) == 1 {
 		in.Runes = r
 	}
 	s.dispatch(wire.EventPluginPaneInput, in)
+	return true
+}
+
+// Claimed returns the navigation keys the last frame v received claims.
+func (s *Server) Claimed(v *Viewer) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), v.LastKeys...)
 }
 
 // Type sends each character of text from v as its own keypress.

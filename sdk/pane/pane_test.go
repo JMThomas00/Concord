@@ -22,7 +22,8 @@ import (
 type moveMsg struct{ move string }
 
 // board is a small model: a text field for the viewer's move, the last
-// move anyone made, and its size. Esc quits (hands keys back).
+// move anyone made, and its size. Esc clears what's typed (it claims Esc only
+// while there's text to clear); Ctrl+D quits (hands keys back).
 type board struct {
 	name   string
 	input  textinput.Model
@@ -46,13 +47,24 @@ func (b *board) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case moveMsg:
 		b.last = msg.move
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyEsc {
+		switch msg.Type {
+		case tea.KeyCtrlD:
 			return b, tea.Quit
+		case tea.KeyEsc:
+			b.input.SetValue("")
+			return b, nil
 		}
 	}
 	var cmd tea.Cmd
 	b.input, cmd = b.input.Update(msg)
 	return b, cmd
+}
+
+func (b *board) ClaimedKeys() []string {
+	if b.input.Value() != "" {
+		return []string{wire.PaneKeyEsc}
+	}
+	return nil
 }
 
 func (b *board) View() string {
@@ -121,7 +133,24 @@ func TestQuitHandsKeysBackAndResizeReflows(t *testing.T) {
 	srv.FrameContaining(alice, "size=60x5")
 	srv.Resize(alice, 80, 10)
 	srv.FrameContaining(alice, "size=80x10")
-	srv.Key(alice, "esc")
+	// Esc is Concord's until the board has typed text to clear.
+	if srv.Key(alice, "esc") {
+		t.Fatal("an unclaimed Esc reached the plugin")
+	}
+	srv.Type(alice, "e4")
+	srv.FrameContaining(alice, "> e4")
+	if c := srv.Claimed(alice); len(c) != 1 || c[0] != wire.PaneKeyEsc {
+		t.Fatalf("claimed %v with text typed", c)
+	}
+	if !srv.Key(alice, "esc") {
+		t.Fatal("a claimed Esc didn't reach the plugin")
+	}
+	for strings.Contains(srv.NextFrame(alice), "e4") { // until the cleared frame
+	}
+	if c := srv.Claimed(alice); len(c) != 0 {
+		t.Fatalf("still claiming %v after clearing", c)
+	}
+	srv.Key(alice, "ctrl+d")
 	if e := srv.NextEvent(); e.Kind != wire.PluginEventLeavePane || e.ViewerID != alice.ID {
 		t.Fatalf("tea.Quit should hand alice's keys back, got %+v", e)
 	}

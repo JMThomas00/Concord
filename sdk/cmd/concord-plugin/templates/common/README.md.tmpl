@@ -45,7 +45,8 @@ You need to be the server owner, or have the **Manage Plugins** permission.
    **<% if eq .Kind "game" %><%.Name%> Table<% else %><%.Name%><% end %>** as its type. Its options appear there too.
 <% if eq .Kind "bot" %>5. Chat in that channel (or @mention the bot anywhere).
 <% else %>5. Select the channel, then press **Tab** (or click the pane) so your keys go
-   to it. **Ctrl+]** gives the keyboard back to Concord.
+   to it. **Esc** (or **Ctrl+]**) gives the keyboard back to Concord; **Tab**
+   moves on to the member list.<% if eq .Kind "game" %> **M** opens the table menu.<% end %>
 <% end %>
 To update later: select it in **Server Settings → Plugins**, press **U**, then
 Enter. A failed update rolls back by itself.

@@ -39,3 +39,7 @@ Rules:
   plugin's privileges. Prefer programs with no command execution at all.
 - `go run .` standalone can't show the passthrough; test on a Linux server
   (see [`testing.md`](testing.md)).
+
+**Keys.** A terminal program needs Esc and Tab (vim, shell completion), so
+`sdk/pty` claims Esc, Tab and Shift+Tab while the program runs. Viewers
+leave the pane with **Ctrl+]**, which Concord always keeps.

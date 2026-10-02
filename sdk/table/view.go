@@ -34,13 +34,13 @@ type viewerModel struct {
 	board   tea.Model
 	seat    *Seat
 
-	cursor   int // lobby / picker selection
+	cursor     int // lobby / picker selection
 	headerRows int // rows above the board in the last table view (for Images)
-	menuOpen bool
-	menuIdx  int
-	members  []wire.PluginMember
-	notice   string
-	pending  tea.Cmd // e.g. a newly opened board's Init, returned with the next Update
+	menuOpen   bool
+	menuIdx    int
+	members    []wire.PluginMember
+	notice     string
+	pending    tea.Cmd // e.g. a newly opened board's Init, returned with the next Update
 
 	width, height int
 }
@@ -133,7 +133,8 @@ func (m *viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *viewerModel) key(msg tea.KeyMsg) tea.Cmd {
 	switch m.screen {
 	case screenTable:
-		if msg.String() == "tab" {
+		// M opens the table menu, unless the board is taking typed text.
+		if k := msg.String(); (k == "m" || k == "M") && !boardTyping(m.board) {
 			m.menuOpen, m.menuIdx = !m.menuOpen, 0
 			return nil
 		}
@@ -421,12 +422,12 @@ func (m *viewerModel) tableView() string {
 		footer = strings.Join(parts, "  ")
 	} else {
 		mySeat := t.seatOf(m.v.ID)
-		hint := "Tab: menu"
+		hint := "M: menu"
 		switch {
 		case mySeat < 0 && m.room().mode() == ModeSeats && !t.full():
-			hint = "Tab: sit down"
+			hint = "M: sit down"
 		case mySeat < 0:
-			hint = "Spectating · Tab: menu"
+			hint = "Spectating · M: menu"
 		}
 		if m.notice != "" {
 			hint = m.notice + " · " + hint
@@ -435,6 +436,36 @@ func (m *viewerModel) tableView() string {
 	}
 	m.headerRows = lipgloss.Height(header)
 	return lipgloss.JoinVertical(lipgloss.Left, header, m.board.View(), footer)
+}
+
+// ClaimedKeys (pane.KeyClaimer) keeps Esc while the kit has something
+// open for it to close (the table menu, the member picker), and otherwise
+// passes on whatever the board claims. Unclaimed, Esc leaves the pane.
+func (m *viewerModel) ClaimedKeys() []string {
+	switch {
+	case m.screen == screenPicker:
+		return []string{wire.PaneKeyEsc}
+	case m.screen != screenTable:
+		return nil
+	case m.menuOpen:
+		return []string{wire.PaneKeyEsc}
+	}
+	if kc, ok := m.board.(pane.KeyClaimer); ok {
+		return kc.ClaimedKeys()
+	}
+	return nil
+}
+
+// Typer is implemented by a board that sometimes takes typed text, such as
+// a move in notation. While Typing is true, every key goes to the board:
+// M doesn't open the table menu. (Claim Esc too, so it can cancel.)
+type Typer interface {
+	Typing() bool
+}
+
+func boardTyping(b tea.Model) bool {
+	t, ok := b.(Typer)
+	return ok && t.Typing()
 }
 
 // Images passes on a board's images (pane.Imager), moved down past the

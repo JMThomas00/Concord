@@ -44,6 +44,11 @@ func main() {
 				_ = client.Frame(fmt.Sprint("denied: ", err))
 			case "local":
 				_ = client.ForwardKeys(false)
+			case "claim":
+				_ = client.ClaimKeys("esc", "tab")
+			case "badclaim":
+				err := client.ClaimKeys("enter")
+				_ = client.Frame(fmt.Sprint("badclaim: ", err))
 			case "clear":
 				_ = client.ClearFrame()
 			case "burst":

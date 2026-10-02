@@ -38,9 +38,13 @@ ev := srv.NextEvent()                               // notify, notify_user, pane
 rest := srv.DrainEvents()                           // anything else already sent, without waiting
 srv.AnswerMembers(ev, []wire.PluginMember{...})     // reply to a members request
 srv.DropConnection()                                // test reconnect: Enter is replayed
+srv.Claimed(alice)                                  // the navigation keys alice's last frame claims
 srv.Images(alice)                                   // pictures on alice's last frame
 snd, viewer := srv.NextSound()                      // the next sound (viewer uuid.Nil = everyone)
 ```
+
+Like Concord, `srv.Key` delivers Esc, Tab and Shift+Tab only while the last
+frame claims them, and returns whether the key reached the plugin.
 
 It fails the test on protocol mistakes: frames to non-viewers, frames taller
 than the pane, or a non-increasing `Seq`.

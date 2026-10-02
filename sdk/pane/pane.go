@@ -280,13 +280,30 @@ func (h *Host) render(v *Viewer) {
 	if im, ok := v.model.(Imager); ok {
 		images = clampImages(im.Images(), v.Width, v.Height)
 	}
-	key := frame + imagesKey(images)
+	var keys []string
+	if kc, ok := v.model.(KeyClaimer); ok {
+		keys = kc.ClaimedKeys()
+	}
+	key := frame + imagesKey(images) + "\x00" + strings.Join(keys, ",")
 	if key == v.lastSent || h.conn == nil {
 		return
 	}
-	if err := h.conn.FrameWithImages(v.ChannelID, v.ID, frame, images); err == nil {
+	if err := h.conn.SendFrame(wire.PluginPaneFramePayload{
+		ChannelID: v.ChannelID, ViewerID: v.ID, Frame: frame, Images: images, Keys: keys,
+	}); err == nil {
 		v.lastSent = key
 	}
+}
+
+// KeyClaimer is implemented by a pane model that sometimes needs Esc, Tab
+// or Shift+Tab (wire.PaneKeyEsc...). Concord uses those keys to move
+// between panels, so they reach a model only while it claims them:
+// ClaimedKeys is asked after every update, and its answer goes out with
+// the frame. Claim Esc while there's something to cancel (a selection, a
+// menu, a prompt, help), Tab and Shift+Tab while a form's fields are
+// open; claim nothing otherwise, so Esc leaves the pane and Tab moves on.
+type KeyClaimer interface {
+	ClaimedKeys() []string
 }
 
 // clampImages drops boxes outside the pane and trims those that overflow it.

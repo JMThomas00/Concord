@@ -85,3 +85,22 @@ func TestCapabilitiesAreEnforced(t *testing.T) {
 		t.Fatalf("errors %v", errs)
 	}
 }
+
+func TestClaimKeys(t *testing.T) {
+	var bad error
+	h := clienttest.New(t, client.Handler{
+		OnStart: func(client.Event) { _ = client.ClaimKeys("esc") },
+		OnKey: func(e client.Event) {
+			_ = client.ClaimKeys()
+			bad = client.ClaimKeys("enter")
+		},
+	}, "pane")
+	h.Start(10, 5)
+	if c := h.Claimed(); len(c) != 1 || c[0] != "esc" {
+		t.Fatalf("claimed %v", c)
+	}
+	h.Key("x")
+	if len(h.Claimed()) != 0 || bad != client.ErrBadRequest {
+		t.Fatalf("claimed %v, claiming enter: %v", h.Claimed(), bad)
+	}
+}

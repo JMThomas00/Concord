@@ -197,6 +197,14 @@ func (c *Conn) FrameWithImages(channelID, viewerID uuid.UUID, frame string, imag
 	})
 }
 
+// SendFrame sends a frame with every option (text, images, and the
+// navigation keys it claims: see wire.PluginPaneFramePayload.Keys). Seq is
+// filled in.
+func (c *Conn) SendFrame(f wire.PluginPaneFramePayload) error {
+	f.Seq = c.seq.Add(1)
+	return c.Send(wire.OpPluginPaneFrame, f)
+}
+
 // SendToClient sends data (anything that marshals to JSON, at most
 // wire.MaxClientMessageBytes) to one viewer's copy of the plugin's client
 // code, which receives it as a "server" event. It's dropped if they're no

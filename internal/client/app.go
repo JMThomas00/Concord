@@ -2076,10 +2076,12 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// it. Tab into FocusChat (the same deliberate step needed to scroll an
 	// ordinary channel's messages) before the pane starts capturing
 	// everything.
+	//
+	// Since 2026-10-02 Esc, Tab and Shift+Tab are Concord's too, unless the
+	// frame on screen claims them (paneNavigationKey): a pane is a stop in
+	// the Tab ring like any channel's messages.
 	if a.paneFocused() {
-		if msg.String() == paneLeaveKey {
-			a.releasePaneFocus()
-		}
+		a.paneNavigationKey(msg)
 		return nil
 	}
 
@@ -3004,6 +3006,10 @@ func (a *App) cycleFocus() {
 	case FocusChannelList:
 		a.focus = FocusChat
 	case FocusChat:
+		if a.onPaneChannel() {
+			a.focus = FocusUserList // a pane has no message box
+			return
+		}
 		a.focus = FocusInput
 		a.input.Focus()
 	case FocusInput:
@@ -3027,6 +3033,10 @@ func (a *App) cycleFocusReverse() {
 		a.focus = FocusChat
 		a.input.Blur()
 	case FocusUserList:
+		if a.onPaneChannel() {
+			a.focus = FocusChat // a pane has no message box
+			return
+		}
 		a.focus = FocusInput
 		a.input.Focus()
 	}

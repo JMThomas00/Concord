@@ -292,7 +292,24 @@ type PluginPaneFramePayload struct {
 	// each viewer's terminal. Asset is a path in the plugin's client/
 	// folder, e.g. "assets/pieces/white-king.png".
 	Images []PaneImage `json:"images,omitempty"`
+	// Keys claims Concord's navigation keys (PaneKeyEsc, PaneKeyTab,
+	// PaneKeyShiftTab) for as long as this frame is on screen. Unclaimed,
+	// Esc and Shift+Tab leave the pane for the channel list and Tab moves on
+	// to the member list, as in every other channel. Claim them only while
+	// they mean something: a selection or a menu to cancel, a form's fields
+	// to move between, a terminal program. Ctrl+] always leaves.
+	Keys []string `json:"keys,omitempty"`
 }
+
+// The navigation keys a frame can claim (PluginPaneFramePayload.Keys).
+const (
+	PaneKeyEsc      = "esc"
+	PaneKeyTab      = "tab"
+	PaneKeyShiftTab = "shift+tab"
+)
+
+// PaneNavigationKeys are every key a frame can claim.
+var PaneNavigationKeys = []string{PaneKeyEsc, PaneKeyTab, PaneKeyShiftTab}
 
 // PaneImage places one image in a pane frame. Col and Row are the
 // top-left cell (0-based, inside the pane); Cols and Rows its size in

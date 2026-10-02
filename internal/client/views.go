@@ -1335,6 +1335,15 @@ func (a *App) renderChatPanel(width, height int) string {
 		} else if a.currentChannel.Topic != "" {
 			channelTitle += topicStyle.Render(" — " + a.currentChannel.Topic)
 		}
+		// While a pane has the keyboard, say how to leave it: Esc, unless
+		// the plugin is using Esc right now (paneNavigationKey).
+		if a.paneFocused() {
+			hint := " · Esc leaves"
+			if a.paneClaims("esc") {
+				hint = " · Ctrl+] leaves"
+			}
+			channelTitle += topicStyle.Render(hint)
+		}
 	}
 
 	// Pinned messages header — shown above the chat viewport when pins exist

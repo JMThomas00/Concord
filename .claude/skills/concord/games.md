@@ -2,7 +2,7 @@
 
 Read this before building any game. The table kit supplies everything
 except the rules and the board: seats, spectators, three seating modes,
-the Tab menu (sit, stand, resign, rematch, add computer, lobby), "your turn"
+the table menu on M (sit, stand, resign, rematch, add computer, lobby), "your turn"
 notifications, saving and resuming, a computer opponent off the event loop,
 and standalone play in a terminal (hotseat, computer, and network play).
 
@@ -61,8 +61,15 @@ var Rules = table.Rules{
    - Until every seat is filled, `MyTurn()` is false for everyone; show a
      "waiting" state (`seat.Players()[i].Empty()`). `Players()[turn].Computer`
      tells you to show "thinking…".
-   - Every key except **Tab** (the kit's menu) reaches the board. `q`/`esc` →
+   - Every key except **M** (the kit's menu) reaches the board, apart from
+     Concord's navigation keys: **Esc, Tab and Shift+Tab reach the board only
+     while it claims them** (`ClaimedKeys() []string`, see [`sdk.md`](sdk.md)).
+     Claim Esc while there's something to cancel (a selected piece, the help
+     screen, a prompt) and nothing otherwise, so Esc leaves the pane. `q` →
      `tea.Quit` hands keys back to Concord (ignored standalone).
+   - A board that takes typed text (a move in notation) implements
+     `table.Typer`: while `Typing()` is true every key, M included, goes to
+     it. Claim Esc then too, to cancel the prompt.
 3. **`AI`** (optional): return a legal move for the side to move in `g` (a
    private copy, rebuilt with `Rules.New(options)` and the moves replayed, so
    channel options reach it). It runs in a goroutine; keep the hardest level
@@ -99,12 +106,13 @@ The kit owns the lines above and below the board. Tests match these strings:
   (`X: alice   ▸ O: Computer (hard)`). Then `waiting for players` until the
   table is full, or the result (`alice wins — <Outcome.Reason>`, `Draw — …`).
   Computers are `Computer (easy)`, `Computer`, `Computer (hard)`.
-- Footer: `Tab: sit down` (seats mode, not seated, table not full),
-  `Spectating · Tab: menu`, or `Tab: menu`.
+- Footer: `M: sit down` (seats mode, not seated, table not full),
+  `Spectating · M: menu`, or `M: menu`.
 - The header doesn't shorten itself; on very narrow panes long names are cut
   off at the right edge. That's the kit's, not your board's, to fix.
 
-**The Tab menu** is a row of items (←/→ to move, Enter to pick). Only items
+**The table menu** (M) is a row of items (←/→ to move, Enter to pick, Esc
+closes it: the kit claims Esc while it's open). Only items
 that apply appear, in this order:
 
 | Item | Shown when |
@@ -117,9 +125,9 @@ that apply appear, in this order:
 | `Back to lobby` | challenge and private modes |
 | `Close menu` | always |
 
-So in a fresh seats table: `tab`,`enter` sits you in the first empty seat;
-seated alone, `tab`,`enter` gives the next seat to the computer; after a
-game, `tab`,`right`,`enter` is Rematch.
+So in a fresh seats table: `m`,`enter` sits you in the first empty seat;
+seated alone, `m`,`enter` gives the next seat to the computer; after a
+game, `m`,`right`,`enter` is Rematch. (Standalone, Tab opens the menu too.)
 
 ## Board UX that has worked
 
@@ -144,7 +152,7 @@ game, `tab`,`right`,`enter` is Rematch.
   the computer takes a win in one and blocks a loss in one, at every level;
   the hardest level stays within time.
 - `game/`: the adapter (options, turn, illegal moves, game end), plus a
-  `plugintest` session: two viewers `Enter`, each presses `tab` then `enter`
+  `plugintest` session: two viewers `Enter`, each presses `m` then `enter`
   to sit, then play a few moves with keys and assert on `FrameContaining`
   (see [`testing.md`](testing.md)). This catches perspective and cursor bugs.
   Also test the board at small sizes: no frame taller than the pane, and the

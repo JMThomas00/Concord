@@ -18,8 +18,10 @@
 //
 //	table.RunLocal(rules, nil)
 //
-// Keys: Tab opens the table menu (sit, stand, resign, rematch, lobby...);
-// every other key goes to the board. In a lobby, arrows and Enter choose.
+// Keys: M opens the table menu (sit, stand, resign, rematch, lobby...);
+// every other key goes to the board. In Concord, Esc, Tab and Shift+Tab move
+// focus out of the pane unless the board claims them (pane.KeyClaimer);
+// a board taking typed text implements Typer. In a lobby, arrows and Enter choose.
 package table
 
 import (

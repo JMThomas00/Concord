@@ -40,7 +40,7 @@ func startKit(t *testing.T, cfg *plugin.Config, seating string) (*plugintest.Ser
 
 // menu opens the table menu and picks the nth item (0-based).
 func menu(srv *plugintest.Server, v *plugintest.Viewer, n int) {
-	srv.Key(v, "tab")
+	srv.Key(v, "m")
 	for i := 0; i < n; i++ {
 		srv.Key(v, "right")
 	}
@@ -50,7 +50,7 @@ func menu(srv *plugintest.Server, v *plugintest.Viewer, n int) {
 func TestSeatsModeSitPlayAndSpectate(t *testing.T) {
 	srv, ch, _ := startKit(t, nil, table.ModeSeats)
 	alice := srv.Enter(ch, "alice", 60, 12)
-	srv.FrameContaining(alice, "Tab: sit down")
+	srv.FrameContaining(alice, "M: sit down")
 
 	menu(srv, alice, 0) // Sit as X
 	srv.FrameContaining(alice, "X: alice")
@@ -78,7 +78,7 @@ func TestSeatsModeSitPlayAndSpectate(t *testing.T) {
 func TestComputerTakesTheOpenSeatAndPlays(t *testing.T) {
 	srv, ch, _ := startKit(t, nil, table.ModeSeats)
 	alice := srv.Enter(ch, "alice", 60, 12)
-	srv.FrameContaining(alice, "Tab: sit down")
+	srv.FrameContaining(alice, "M: sit down")
 	menu(srv, alice, 0) // Sit as X
 	srv.FrameContaining(alice, "X: alice")
 	menu(srv, alice, 0) // Computer plays O
@@ -106,8 +106,8 @@ func TestResignAndRematchSwapsSides(t *testing.T) {
 	srv, ch, _ := startKit(t, nil, table.ModeSeats)
 	alice := srv.Enter(ch, "alice", 60, 12)
 	bob := srv.Enter(ch, "bob", 60, 12)
-	srv.FrameContaining(alice, "Tab: sit down")
-	srv.FrameContaining(bob, "Tab: sit down")
+	srv.FrameContaining(alice, "M: sit down")
+	srv.FrameContaining(bob, "M: sit down")
 	menu(srv, alice, 0)
 	srv.FrameContaining(bob, "X: alice")
 	menu(srv, bob, 0)
@@ -192,7 +192,7 @@ func TestGamesSurviveARestart(t *testing.T) {
 	// Run again with a known data folder, play, then restart on it.
 	srv, ch, stop := startKit(t, &cfg, table.ModeSeats)
 	alice := srv.Enter(ch, "alice", 60, 12)
-	srv.FrameContaining(alice, "Tab: sit down")
+	srv.FrameContaining(alice, "M: sit down")
 	menu(srv, alice, 0)
 	srv.FrameContaining(alice, "X: alice")
 	stop()
@@ -215,5 +215,26 @@ func nextEvent(srv *plugintest.Server) wire.PluginEventPayload {
 		if e := srv.NextEvent(); e.Kind != wire.PluginEventPlaySound {
 			return e
 		}
+	}
+}
+
+// The table menu claims Esc while it's open (Esc closes it); otherwise Esc
+// is Concord's, to leave the pane.
+func TestMenuClaimsEscOnlyWhileOpen(t *testing.T) {
+	srv, ch, _ := startKit(t, nil, table.ModeSeats)
+	alice := srv.Enter(ch, "alice", 60, 12)
+	srv.FrameContaining(alice, "M: sit down")
+	if len(srv.Claimed(alice)) != 0 || srv.Key(alice, "esc") {
+		t.Fatalf("Esc claimed with nothing open: %v", srv.Claimed(alice))
+	}
+	srv.Key(alice, "m")
+	srv.FrameContaining(alice, "Sit as X")
+	if c := srv.Claimed(alice); len(c) != 1 || c[0] != wire.PaneKeyEsc {
+		t.Fatalf("open menu claims %v", c)
+	}
+	srv.Key(alice, "esc")
+	srv.FrameContaining(alice, "M: sit down")
+	if len(srv.Claimed(alice)) != 0 {
+		t.Fatalf("closed menu still claims %v", srv.Claimed(alice))
 	}
 }

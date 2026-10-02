@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,7 +76,7 @@ const (
 // codeCapability is the capability each host function needs ("" = none).
 var codeCapability = map[string]string{
 	"log": "", "frame": "pane", "clear_frame": "pane", "forward_keys": "pane", "timer": "pane",
-	"play_sound": "sound", "storage_get": "storage", "storage_set": "storage", "send_server": "server",
+	"claim_keys": "pane", "play_sound": "sound", "storage_get": "storage", "storage_set": "storage", "send_server": "server",
 }
 
 // codeHost owns the WebAssembly runtime and every running instance.
@@ -119,6 +120,10 @@ type (
 		asset  string
 		volume float64
 	}
+	codeClaimMsg struct {
+		r    *codeRunner
+		keys []string
+	}
 	codeSendMsg struct {
 		r    *codeRunner
 		data json.RawMessage
@@ -133,6 +138,7 @@ func (m codeFrameMsg) codeRunnerOf() *codeRunner   { return m.r }
 func (m codeForwardMsg) codeRunnerOf() *codeRunner { return m.r }
 func (m codeSoundMsg) codeRunnerOf() *codeRunner   { return m.r }
 func (m codeSendMsg) codeRunnerOf() *codeRunner    { return m.r }
+func (m codeClaimMsg) codeRunnerOf() *codeRunner   { return m.r }
 func (m codeExitMsg) codeRunnerOf() *codeRunner    { return m.r }
 
 // listen waits for the next codeMsg. Exactly one is outstanding once the
@@ -529,6 +535,7 @@ type codeRequest struct {
 	Key     string               `json:"key"`
 	Value   *string              `json:"value"`
 	Data    json.RawMessage      `json:"data"`
+	Keys    []string             `json:"keys"`
 }
 
 // handle runs one host call.
@@ -565,6 +572,13 @@ func (r *codeRunner) handle(raw []byte) ([]byte, int32) {
 		r.setFrame(&codeFrame{})
 	case "forward_keys":
 		r.emit(codeForwardMsg{r: r, forward: req.Forward})
+	case "claim_keys":
+		for _, k := range req.Keys {
+			if !slices.Contains(protocol.PaneNavigationKeys, k) {
+				return nil, codeErrBadRequest
+			}
+		}
+		r.emit(codeClaimMsg{r: r, keys: append([]string(nil), req.Keys...)})
 	case "timer":
 		return nil, r.setTimer(req.ID, time.Duration(req.MS)*time.Millisecond)
 	case "play_sound":

@@ -1051,5 +1051,15 @@ const (
 	PluginEventClientMessage = wire.PluginEventClientMessage
 )
 
+// The navigation keys a pane frame can claim; see sdk/wire.
+const (
+	PaneKeyEsc      = wire.PaneKeyEsc
+	PaneKeyTab      = wire.PaneKeyTab
+	PaneKeyShiftTab = wire.PaneKeyShiftTab
+)
+
+// PaneNavigationKeys are every key a pane frame can claim.
+var PaneNavigationKeys = wire.PaneNavigationKeys
+
 // MaxClientMessageBytes caps a client_message's Data; see sdk/wire.
 const MaxClientMessageBytes = wire.MaxClientMessageBytes

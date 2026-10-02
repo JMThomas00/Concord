@@ -28,10 +28,13 @@ type PluginPaneState struct {
 	ChannelID uuid.UUID
 	Frame     string // already passed through sanitizePaneFrame
 	LastSeq   int64
-	Epoch     int64  // the plugin connection LastSeq belongs to
-	Title     string // plugin-set border title (pane_title); "" = channel name
-	PluginID  string // the plugin (or instance) that owns the channel
+	Epoch     int64                // the plugin connection LastSeq belongs to
+	Title     string               // plugin-set border title (pane_title); "" = channel name
+	PluginID  string               // the plugin (or instance) that owns the channel
 	Images    []protocol.PaneImage // the frame's images (plugin_images.go)
+	// Keys are the navigation keys the frame on screen claims (Esc, Tab,
+	// Shift+Tab): those go to the plugin instead of moving focus.
+	Keys []string
 
 	conn       *ServerConnection // the server this pane belongs to
 	selectedAt time.Time
@@ -51,6 +54,7 @@ type PluginPaneState struct {
 	code        *codeRunner  // the running code
 	local       *codeFrame   // what it drew, shown instead of Frame
 	keysLocal   bool         // it asked for keys not to go to the server
+	localKeys   []string     // navigation keys it claims while its frame shows
 	codeW       int
 	codeH       int
 	codeTheme   string
@@ -103,6 +107,51 @@ func (a *App) leavePluginPane() {
 	}
 	p.stopPaneCode()
 	a.pluginPane = nil
+}
+
+// onPaneChannel reports whether the channel on screen is a plugin pane.
+func (a *App) onPaneChannel() bool {
+	return a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID
+}
+
+// paneClaims reports whether the frame on screen claims navigation key k:
+// the client code's frame if it drew one, else the server's.
+func (a *App) paneClaims(k string) bool {
+	p := a.pluginPane
+	if p == nil || p.consent != nil {
+		return false // Concord's own question is on screen
+	}
+	keys := p.Keys
+	if p.local != nil && p.local.text != nil {
+		keys = p.localKeys
+	}
+	for _, c := range keys {
+		if c == k {
+			return true
+		}
+	}
+	return false
+}
+
+// paneNavigationKey moves focus out of a focused pane, as in every other
+// channel, unless the frame on screen claims the key: Esc and Shift+Tab go
+// back to the channel list, Tab on to the member list. Ctrl+] always
+// leaves, claimed or not. Anything else (and claimed keys) is left for
+// forwardPluginPaneInput.
+func (a *App) paneNavigationKey(msg tea.KeyMsg) {
+	switch k := msg.String(); k {
+	case paneLeaveKey:
+		a.releasePaneFocus()
+	case protocol.PaneKeyEsc, protocol.PaneKeyTab, protocol.PaneKeyShiftTab:
+		if a.paneClaims(k) {
+			return
+		}
+		if k == protocol.PaneKeyTab {
+			a.cycleFocus()
+		} else {
+			a.releasePaneFocus()
+		}
+	}
 }
 
 // releasePaneFocus stops the pane capturing keys and returns focus to the
@@ -274,6 +323,7 @@ func (a *App) applyPluginPaneFrame(payload protocol.PluginPaneFramePayload) tea.
 	a.pluginPane.LastSeq = payload.Seq
 	a.pluginPane.Epoch = payload.Epoch
 	a.pluginPane.Images = payload.Images
+	a.pluginPane.Keys = payload.Keys
 	if r := a.paneCode("pane"); r != nil {
 		r.push(map[string]any{"type": "server_frame", "text": a.pluginPane.Frame, "images": payload.Images})
 	}

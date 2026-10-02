@@ -163,6 +163,12 @@ func TestClientCodeRunsSandboxed(t *testing.T) {
 	frameText(t, h, `server {"n":1}`)
 	r.push(map[string]any{"type": "server_frame", "text": "board"})
 	frameText(t, h, "saw board")
+	key(r, "claim")
+	if m := nextCode[codeClaimMsg](t, h); len(m.keys) != 2 || m.keys[0] != "esc" {
+		t.Fatalf("claimed %v", m.keys)
+	}
+	key(r, "badclaim")
+	frameText(t, h, "badclaim: concord: bad request")
 	key(r, "local")
 	if m := nextCode[codeForwardMsg](t, h); m.forward {
 		t.Fatal("forward_keys(false) arrived as true")

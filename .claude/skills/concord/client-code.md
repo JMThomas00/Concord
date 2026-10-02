@@ -93,6 +93,10 @@ func main() {
   `e.Theme.Palette` from the start event to match the viewer's theme.
 - `client.ForwardKeys(false)` stops keys going to the server half too. By
   default both get every key.
+- `client.ClaimKeys("esc")` takes Esc (or Tab, Shift+Tab) while the client
+  code's frame is on screen; `client.ClaimKeys()` gives them back. Unclaimed,
+  they move focus out of the pane as in every channel. Claim only while
+  there's something to cancel or a form to move through.
 - `client.After(id, d)` gives a timer event: at least 16ms, 16 pending at most.
 - `client.Send(v)` sends to the server half, which receives it in
   `plugin.Handler.OnClientMessage(c, viewer, m)` (with `m.ViewerName`). It

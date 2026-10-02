@@ -308,7 +308,13 @@ func (h *host) redraw(s *session) {
 		if f == v.lastFrame {
 			continue
 		}
-		if err := h.conn.Frame(s.channelID, v.id, f); err == nil {
+		// A terminal program needs Esc and Tab (vim, shell completion), so
+		// they're claimed while it runs; Ctrl+] still leaves the pane.
+		var keys []string
+		if !s.exited {
+			keys = wire.PaneNavigationKeys
+		}
+		if err := h.conn.SendFrame(wire.PluginPaneFramePayload{ChannelID: s.channelID, ViewerID: v.id, Frame: f, Keys: keys}); err == nil {
 			v.lastFrame = f
 		}
 	}

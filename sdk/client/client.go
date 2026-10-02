@@ -192,6 +192,19 @@ func ForwardKeys(on bool) error {
 	return invoke("forward_keys", map[string]any{"forward": on}, nil)
 }
 
+// ClaimKeys takes Esc, Tab or Shift+Tab (wire.PaneKeyEsc...) for the client
+// code while its frame is on screen; with no keys, it gives them back.
+// Unclaimed, Concord uses them to move focus out of the pane, as in every
+// other channel (Esc and Shift+Tab to the channels, Tab to the members).
+// Claim them only while they mean something here, such as Esc while there's
+// a selection to cancel. Ctrl+] always leaves. Needs "pane".
+func ClaimKeys(keys ...string) error {
+	if keys == nil {
+		keys = []string{}
+	}
+	return invoke("claim_keys", map[string]any{"keys": keys}, nil)
+}
+
 // After asks for a "timer" event with this id after d (at least 16ms; at
 // most 16 pending at once). Needs "pane".
 func After(id string, d time.Duration) error {

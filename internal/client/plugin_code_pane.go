@@ -80,6 +80,7 @@ func (p *PluginPaneState) stopPaneCode() {
 		p.code = nil
 		p.local = nil
 		p.keysLocal = false
+		p.localKeys = nil
 	}
 }
 
@@ -111,7 +112,7 @@ func (a *App) handleCodeMsg(m codeMsg) tea.Cmd {
 	switch m := m.(type) {
 	case codeExitMsg:
 		if current {
-			p.code, p.local, p.keysLocal = nil, nil, false
+			p.code, p.local, p.keysLocal, p.localKeys = nil, nil, false, nil
 		}
 		if m.err != nil {
 			name := r.src.Name
@@ -135,6 +136,10 @@ func (a *App) handleCodeMsg(m codeMsg) tea.Cmd {
 	case codeForwardMsg:
 		if current {
 			p.keysLocal = !m.forward
+		}
+	case codeClaimMsg:
+		if current {
+			p.localKeys = m.keys
 		}
 	case codeSoundMsg:
 		if current {

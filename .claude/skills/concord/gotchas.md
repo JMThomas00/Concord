@@ -37,8 +37,12 @@ the viewer enters, often before they sit down. Anything derived from
 like the background, disappear. Use `Color(name, fallback)` with theme
 names, and test with a light theme too.
 
-**Keys Concord keeps.** Ctrl+] always leaves the pane. The table kit keeps
-Tab. Mouse events aren't forwarded.
+**Keys Concord keeps.** Ctrl+] always leaves the pane. Esc, Tab and Shift+Tab
+move focus between panels (Esc and Shift+Tab to the channels, Tab to the
+members), so a pane gets them only while its frame claims them (`ClaimedKeys`,
+`SendFrame` with `Keys`, or `client.ClaimKeys`). Claiming Esc all the time
+traps people: claim it only while there's something to cancel. The table kit
+keeps M for its menu. Mouse events aren't forwarded.
 
 **Settings arrive late and change live.** `OnConfig`/`OnChannel` run after
 connect and again whenever an admin saves. Don't read settings once at

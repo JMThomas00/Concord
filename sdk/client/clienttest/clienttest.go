@@ -14,6 +14,7 @@ package clienttest
 
 import (
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +53,7 @@ type Host struct {
 	frames   []Frame
 	cleared  bool
 	forward  bool
+	claimed  []string
 	sounds   []Sound
 	sent     []json.RawMessage
 	timers   map[string]time.Duration
@@ -220,6 +222,13 @@ func (h *Host) Storage() map[string]string {
 	return out
 }
 
+// Claimed returns the navigation keys the client code claims (ClaimKeys).
+func (h *Host) Claimed() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.claimed...)
+}
+
 // ForwardingKeys reports the last ForwardKeys setting (true by default).
 func (h *Host) ForwardingKeys() bool {
 	h.mu.Lock()
@@ -266,12 +275,13 @@ func (h *Host) Call(raw []byte) ([]byte, int32) {
 		Key     string           `json:"key"`
 		Value   *string          `json:"value"`
 		Data    json.RawMessage  `json:"data"`
+		Keys    []string         `json:"keys"`
 	}
 	if json.Unmarshal(raw, &req) != nil {
 		return nil, -1
 	}
 	need := map[string]string{
-		"frame": "pane", "clear_frame": "pane", "forward_keys": "pane", "timer": "pane",
+		"frame": "pane", "clear_frame": "pane", "forward_keys": "pane", "timer": "pane", "claim_keys": "pane",
 		"play_sound": "sound", "storage_get": "storage", "storage_set": "storage", "send_server": "server",
 	}
 	if c, ok := need[req.Fn]; ok && !h.caps[c] {
@@ -291,6 +301,13 @@ func (h *Host) Call(raw []byte) ([]byte, int32) {
 		h.cleared = true
 	case "forward_keys":
 		h.forward = req.Forward
+	case "claim_keys":
+		for _, k := range req.Keys {
+			if !slices.Contains(wire.PaneNavigationKeys, k) {
+				return nil, -1
+			}
+		}
+		h.claimed = append([]string(nil), req.Keys...)
 	case "timer":
 		if len(h.timers) >= 16 {
 			return nil, -4
