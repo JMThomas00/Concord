@@ -77,19 +77,19 @@ func TestPluginPicturesOnTheDisplayPage(t *testing.T) {
 func TestPluginSoundsOnTheAudioPage(t *testing.T) {
 	a := settingsTestApp()
 	s := a.settingsState
-	s.AudioFocusField = 12
+	s.AudioFocusField = 13
 	view := ansi.Strip(a.renderAudioContent(100, 30))
 	if !strings.Contains(view, "Plugin Sound Volume") {
 		t.Fatalf("the focused last field isn't visible on a short page:\n%s", view)
 	}
 
-	s.AudioFocusField = 11
+	s.AudioFocusField = 12
 	a.handleAudioFieldActivate(s)
 	if !a.audioConfig.PluginSoundsMuted {
 		t.Fatal("Enter on Play Plugin Sounds should mute them")
 	}
 
-	s.AudioFocusField = 12
+	s.AudioFocusField = 13
 	a.handleAudioFieldActivate(s) // slider mode
 	for i := 0; i < 100; i++ {
 		a.adjustAudioSlider(s, -1)

@@ -149,12 +149,13 @@ Parsed and handled in `internal/client/commands.go`.
 ## Voice Architecture
 
 - **Transport:** WebRTC DataChannels (SCTP, unreliable+unordered — UDP-like) via `pion/webrtc/v3`
-- **Codec:** Opus via `hraban/opus` — 20ms frames, 16-bit PCM captured by malgo
-- **Sample rates:** low=8kHz, medium=16kHz, high=24kHz, ultra=48kHz (configurable in Audio Settings)
+- **Codec:** Opus via `hraban/opus` — 20ms frames, 16-bit mono PCM at **48 kHz always** (`voiceSampleRate`), complexity 10, full band, in-band FEC. The Codec Quality preset only sets the bitrate: low 24k, medium 48k (default), high 64k, ultra 96k (`bitrateForPreset`).
+- **Microphone chain (2026-10-02, `sendFrame` + `voice_dsp.go`):** echo cancellation → input gain → 80 Hz low-cut (two biquads) → **RNNoise** noise suppression (`internal/rnnoise`, Xiph v0.1.1 vendored C, cgo; strength blends back (1-s)² of the original) → automatic levelling (speech-only, ±12 dB, soft limiter; `AutoLevelOff` turns it off). Settings from before were migrated once to noise suppression on at 80% (`AudioConfig.ProcessingVersion`).
+- **Packets and loss:** tag `0xC1` + big-endian uint16 sequence + Opus (`voicePacketHeader`). Receivers track sequences per sender (`rxSequence`): a gap of up to 5 frames is filled with PLC plus FEC from the next packet, late/duplicate packets are dropped. The old `0xC0` format (no sequence) is still played, but old clients drop `0xC1` packets, so everyone in a call needs this version.
 - **Signaling:** Server relays SDP offer/answer and ICE candidates via `OpVoiceSignal` (op 45)
 - **Collision resolution:** Peer with lexicographically lower UUID string sends the Offer
 - **Audio I/O:** `gen2brain/malgo` (miniaudio) with WASAPI on Windows
-- **VAD:** Voice Activity Detection with 300ms hold duration and adjustable sensitivity (no push-to-talk mode -- removed 2026-09-28, see git history)
+- **VAD:** Voice Activity Detection with 300ms hold duration and adjustable sensitivity; with noise suppression on, it uses RNNoise's speech probability (`speechThreshold`) instead of loudness, so keyboards and coughs don't open the mic (no push-to-talk mode -- removed 2026-09-28, see git history)
 - **Build:** Default build includes voice (`!novoice` tag). Use `-tags novoice` for CGO-free build.
 
 ---

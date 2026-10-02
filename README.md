@@ -617,6 +617,7 @@ MIT License — see LICENSE file for details.
 - [pion/webrtc](https://github.com/pion/webrtc) — pure-Go WebRTC
 - [miniaudio / malgo](https://github.com/gen2brain/malgo) — cross-platform audio I/O
 - [hraban/opus](https://github.com/hraban/opus) — Opus codec bindings
+- [RNNoise](https://github.com/xiph/rnnoise) (Xiph.Org, BSD-3-Clause) — noise suppression for voice, vendored in `internal/rnnoise`
 - [beeep](https://github.com/gen2brain/beeep) — cross-platform desktop notifications
 - [sqweek/dialog](https://github.com/sqweek/dialog) — native Save As dialog for `/download`
 - [atotto/clipboard](https://github.com/atotto/clipboard) — clipboard copy in message navigation mode

@@ -6,10 +6,13 @@
 // Codec:      github.com/hraban/opus      (CGO wrapper for libopus)
 // Transport:  github.com/pion/webrtc/v3   (pure-Go WebRTC, no CGO)
 //
-// Audio format: 16-bit PCM, captured at a sample rate determined by the codec
-// preset (8/16/24/48 kHz). Each 20 ms PCM frame is Opus-encoded before being
-// sent over the WebRTC SCTP data channel (unreliable, unordered — behaves like
-// UDP so stale packets are dropped rather than blocking newer audio).
+// Audio format: 16-bit mono PCM at 48 kHz (voiceSampleRate). Each 20 ms frame
+// goes through the processing chain in sendFrame (echo cancellation, low-cut,
+// RNNoise, levelling; see voice_dsp.go), is Opus-encoded with in-band FEC, and
+// is sent with a sequence number over the WebRTC SCTP data channel
+// (unreliable, unordered — behaves like UDP so stale packets are dropped
+// rather than blocking newer audio). Receivers conceal lost packets with
+// Opus FEC and PLC (onAudioData).
 //
 // Offer/answer collision resolution:
 //   The peer whose UUID string sorts lexicographically LOWER sends the Offer.
@@ -33,6 +36,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/hraban/opus"
 	"github.com/pion/webrtc/v3"
+
+	"github.com/concord-chat/concord/internal/rnnoise"
 )
 
 // ── Audio constants ───────────────────────────────────────────────────────────
@@ -43,59 +48,23 @@ const (
 	vadHoldDuration = 300 * time.Millisecond
 )
 
-// sampleRateForPreset maps a codec preset name to a capture/playback sample rate in Hz.
-// Opus supports 8000, 12000, 16000, 24000, and 48000 Hz; all presets use valid values.
-//
-//	low    →  8 000 Hz  (telephone quality)
-//	medium → 16 000 Hz  (standard voice)
-//	high   → 24 000 Hz  (HD voice)
-//	ultra  → 48 000 Hz  (studio-grade, full audio bandwidth)
-func sampleRateForPreset(preset string) uint32 {
-	switch preset {
-	case "low":
-		return 8000
-	case "high":
-		return 24000
-	case "ultra":
-		return 48000
-	default: // "medium" or unset
-		return 16000
-	}
-}
-
-// bitrateForPreset maps a codec preset name to an Opus target bitrate in bps.
-//
-//	low    →   8 000 bps  (highly compressed, minimal bandwidth)
-//	medium →  32 000 bps  (clear voice, good compression)
-//	high   →  64 000 bps  (high clarity)
-//	ultra  → 128 000 bps  (near-transparent quality)
-func bitrateForPreset(preset string) int {
-	switch preset {
-	case "low":
-		return 8000
-	case "high":
-		return 64000
-	case "ultra":
-		return 128000
-	default: // "medium" or unset
-		return 32000
-	}
-}
-
 // maxOpusPacketBytes is a safe upper bound for an encoded Opus frame buffer.
-// A 20 ms frame at 128 kbps is at most 320 bytes; 4000 gives ample headroom.
+// A 20 ms frame at 96 kbps is at most 240 bytes; 4000 gives ample headroom.
 const maxOpusPacketBytes = 4000
 
-// opusFrameTag is prepended to every outgoing Opus packet so receivers can
-// distinguish Opus frames from any other data on the channel. Peers that
-// receive a frame without this tag drop it and log a warning.
-const opusFrameTag byte = 0xC0
+// opusFECLossPercent is the packet loss Opus's in-band FEC is tuned for:
+// each packet carries a low-bitrate copy of the one before, so a single
+// lost packet can be rebuilt from the next.
+const opusFECLossPercent = 10
 
 // opusAppVoIP is OPUS_APPLICATION_VOIP (2048) expressed as a plain Go constant
 // so that gopls can evaluate it without running the C preprocessor. Using
 // opus.AppVoIP directly causes a "constant unknown with invalid type" IDE error
 // because gopls cannot resolve CGO-defined constants at analysis time.
 const opusAppVoIP opus.Application = 2048
+
+// opusFullband is OPUS_BANDWIDTH_FULLBAND (1105), for the same reason.
+const opusFullband opus.Bandwidth = 1105
 
 // ── peerConn ─────────────────────────────────────────────────────────────────
 
@@ -228,12 +197,25 @@ type VoiceEngine struct {
 	enc            *opus.Encoder
 	pendingBitrate int32 // target bps; 0 = no pending change
 
-	// opusBuf is the reusable encode output buffer. Index 0 holds opusFrameTag;
-	// the encoder writes into opusBuf[1:]. Owned by processCapture goroutine only.
-	opusBuf [maxOpusPacketBytes + 1]byte
+	// opusBuf is the reusable packet buffer: a 3-byte header (tag and
+	// sequence number, voicePacketHeader) and the encoded frame after it.
+	// Owned by processCapture goroutine only, as are txSeq and the
+	// processing stages below.
+	opusBuf [maxOpusPacketBytes + 3]byte
+	txSeq   uint16
 
-	// Opus decoders — one per remote peer, created in touchIncoming().
+	// The microphone processing chain (voice_dsp.go): low-cut filter,
+	// RNNoise, and automatic levelling. work is the frame as float32.
+	lowCut   *lowCut
+	denoiser *rnnoise.Denoiser
+	leveler  *autoLevel
+	work     []float32
+	original []float32
+
+	// Opus decoders — one per remote peer, created in touchIncoming() —
+	// and each peer's packet sequence, for concealing losses.
 	decoders   map[uuid.UUID]*opus.Decoder
+	rxSeq      map[uuid.UUID]*rxSequence
 	decodersMu sync.RWMutex
 
 	// sampleRate is set once in Start() and read from pion goroutines; atomic so
@@ -243,11 +225,6 @@ type VoiceEngine struct {
 	// VAD state (used in processCapture goroutine only — no lock needed)
 	isSpeaking bool
 	speakUntil time.Time
-
-	// noiseGateGain is the current smoothed attenuation factor (1.0 = fully
-	// open) applied by the noise gate in sendFrame. processCapture goroutine
-	// only — no lock needed, same as the VAD state above.
-	noiseGateGain float32
 
 	// Echo cancellation. aecFarEnd is written by mixPCM (playback callback
 	// goroutine) and read by sendFrame (processCapture goroutine) -- it has
@@ -291,11 +268,11 @@ func NewVoiceEngine(
 		peers:         make(map[uuid.UUID]*peerConn),
 		incoming:      make(map[uuid.UUID]*incomingBuffer),
 		decoders:      make(map[uuid.UUID]*opus.Decoder),
+		rxSeq:         make(map[uuid.UUID]*rxSequence),
 		captureC:      make(chan []byte, 32),
 		sigOut:        sigOut,
 		eventOut:      eventOut,
 		quit:          make(chan struct{}),
-		noiseGateGain: 1.0, // start fully open, not attenuated
 	}
 }
 
@@ -330,8 +307,8 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 		ctx.Free()
 	}
 
-	// Choose sample rate and Opus bitrate from the user's codec preset.
-	sampleRate := sampleRateForPreset(e.cfg.CodecPreset)
+	// Always 48 kHz (RNNoise needs it); the preset only sets the bitrate.
+	sampleRate := uint32(voiceSampleRate)
 	bitrate := bitrateForPreset(e.cfg.CodecPreset)
 	log.Printf("voice: codec preset=%q → %d Hz / %d bps (Opus)", e.cfg.CodecPreset, sampleRate, bitrate)
 
@@ -351,8 +328,28 @@ func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) er
 	if err := enc.SetBitrate(bitrate); err != nil {
 		log.Printf("voice: opus SetBitrate: %v", err)
 	}
+	// Best quality the encoder can do (a 20 ms mono voice frame is cheap at
+	// any setting), full band, and a low-bitrate copy of each frame in the
+	// next one, so a single lost packet can be rebuilt (onAudioData).
+	for name, err := range map[string]error{
+		"SetComplexity":     enc.SetComplexity(10),
+		"SetMaxBandwidth":   enc.SetMaxBandwidth(opusFullband),
+		"SetInBandFEC":      enc.SetInBandFEC(true),
+		"SetPacketLossPerc": enc.SetPacketLossPerc(opusFECLossPercent),
+	} {
+		if err != nil {
+			log.Printf("voice: opus %s: %v", name, err)
+		}
+	}
 	e.enc = enc
 	e.sampleRate.Store(sampleRate)
+
+	// ── Microphone processing (voice_dsp.go) ─────────────────────────────────
+	e.lowCut = newLowCut(80, voiceSampleRate)
+	e.denoiser = rnnoise.New()
+	e.leveler = newAutoLevel()
+	e.work = make([]float32, 0, voiceSampleRate*voiceFrameMs/1000)
+	e.original = make([]float32, 0, voiceSampleRate*voiceFrameMs/1000)
 
 	// ── Echo cancellation ────────────────────────────────────────────────────
 	// Always allocated (usage is still gated per-frame on cfg.EchoCancellation)
@@ -508,8 +505,11 @@ func (e *VoiceEngine) Stop() {
 	// Wait for processCapture to exit before nilling the encoder it owns.
 	e.procWg.Wait()
 	e.enc = nil
+	e.denoiser.Close()
+	e.denoiser = nil
 	e.decodersMu.Lock()
 	e.decoders = make(map[uuid.UUID]*opus.Decoder)
+	e.rxSeq = make(map[uuid.UUID]*rxSequence)
 	e.decodersMu.Unlock()
 
 	log.Printf("voice: engine stopped")
@@ -803,45 +803,71 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 		samples = e.aecFilt.process(samples, farHistory, aecMuForStrength(e.cfg.EchoCancellationStrength))
 	}
 
-	// Apply input gain.
-	if e.cfg.InputGain != 0 && e.cfg.InputGain != 1.0 {
-		for i, s := range samples {
-			v := float64(s) * e.cfg.InputGain
-			if v > 32767 {
-				v = 32767
-			} else if v < -32768 {
-				v = -32768
-			}
-			samples[i] = int16(v)
-		}
-		raw = int16ToBytes(samples)
+	// The rest of the chain works in float32 on the int16 scale (voice_dsp.go).
+	work := e.work[:0]
+	for _, s := range samples {
+		work = append(work, float32(s))
+	}
+	gain := float32(1)
+	if e.cfg.InputGain != 0 {
+		gain = float32(e.cfg.InputGain)
+	}
+	for i := range work {
+		work[i] *= gain
 	}
 
-	// Adaptive noise gate: attenuate frames whose RMS falls below a floor
-	// derived from NoiseSuppressStrength. Smoothed with a fast attack / slow
-	// release so it fades rather than clicks, and applied before the VU meter
-	// reads the level so the meter reflects what's actually being sent.
-	if e.cfg.NoiseSuppress {
-		e.applyNoiseGate(samples)
+	// Low-cut: rumble, desk bumps and mains hum.
+	e.lowCut.process(work)
+
+	// Noise suppression (RNNoise, in 10 ms pieces): removes background
+	// noise while someone talks, and says how likely the frame is speech.
+	// Strength blends some of the original back (mixDenoised).
+	speechProb := float32(-1) // -1: not measured
+	if e.cfg.NoiseSuppress && rnnoise.Available && e.denoiser != nil {
+		original := append(e.original[:0], work...)
+		speechProb = 0
+		for off := 0; off+rnnoise.FrameSize <= len(work); off += rnnoise.FrameSize {
+			if p := e.denoiser.Process(work[off : off+rnnoise.FrameSize]); p > speechProb {
+				speechProb = p
+			}
+		}
+		mixDenoised(work, original, clampF(e.cfg.NoiseSuppressStrength, 0, 1))
+	}
+
+	// Automatic levelling, measured on speech only.
+	isSpeech := speechProb >= 0.5 || (speechProb < 0 && rmsAmplitude(samples) >= 0.02)
+	if e.cfg.AutoLevelOff {
+		for i, s := range work {
+			work[i] = softLimit(float64(s))
+		}
 	} else {
-		e.noiseGateGain = 1.0 // stay open so re-enabling doesn't start attenuated
+		e.leveler.process(work, isSpeech)
+	}
+	for i, s := range work {
+		samples[i] = int16(s)
 	}
 
 	// Track local mic level for the VU meter — always, regardless of the VAD gate.
 	micRMS := float32(rmsAmplitude(samples))
 	atomic.StoreUint32(&e.localLevel, *(*uint32)(unsafe.Pointer(&micRMS)))
 
-	// VAD / gate decision.
+	// VAD / gate decision. With RNNoise running, it decides what's speech
+	// (keyboards and coughs don't open the mic); without it, loudness does.
 	var shouldSend bool
 	switch {
 	case e.cfg.VADEnabled:
-		rms := rmsAmplitude(samples)
 		now := time.Now()
-		threshold := e.cfg.VADThreshold
-		if threshold == 0 {
-			threshold = 0.02 // sensible default if unset
+		var open bool
+		if speechProb >= 0 {
+			open = speechProb >= speechThreshold(vadSensitivityFromThreshold(e.cfg.VADThreshold))
+		} else {
+			threshold := e.cfg.VADThreshold
+			if threshold == 0 {
+				threshold = 0.02 // sensible default if unset
+			}
+			open = rmsAmplitude(samples) >= threshold
 		}
-		if rms >= threshold {
+		if open {
 			e.speakUntil = now.Add(vadHoldDuration)
 		}
 		shouldSend = now.Before(e.speakUntil)
@@ -872,15 +898,16 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 		}
 	}
 
-	// Encode PCM → Opus. opusBuf[0] is the frame tag; encoder writes into [1:].
+	// Encode PCM → Opus after the packet header (tag and sequence number).
 	// The pre-allocated array avoids a per-frame heap allocation.
-	e.opusBuf[0] = opusFrameTag
-	n, err := e.enc.Encode(samples, e.opusBuf[1:])
+	e.txSeq++
+	h := voicePacketHeader(e.opusBuf[:], e.txSeq)
+	n, err := e.enc.Encode(samples, e.opusBuf[h:])
 	if err != nil {
 		log.Printf("voice: opus encode: %v", err)
 		return
 	}
-	opusPacket := e.opusBuf[:n+1]
+	opusPacket := e.opusBuf[:h+n]
 
 	e.peersMu.RLock()
 	defer e.peersMu.RUnlock()
@@ -897,49 +924,6 @@ func (e *VoiceEngine) sendFrame(raw []byte) {
 	}
 }
 
-// noiseGateFloorMax is the RMS floor at NoiseSuppressStrength=1.0, below which
-// a frame is treated as background noise rather than speech. Chosen well
-// under normal speech RMS (see vadThresholdMax in audio_settings_view.go)
-// so suppression targets hiss/hum/room noise without also eating quiet speech.
-const noiseGateFloorMax = 0.12
-
-// noiseGateAttack/Release control how fast the gate opens/closes, expressed
-// as an EMA weight applied once per ~20ms frame. Attack is fast so speech
-// isn't clipped at onset; release is slower so trailing syllables don't get
-// chopped to silence.
-const (
-	noiseGateAttack  = 0.5
-	noiseGateRelease = 0.15
-)
-
-// applyNoiseGate attenuates samples in place when their RMS falls below a
-// floor scaled by NoiseSuppressStrength, smoothing the transition so the gate
-// fades rather than clicks. Called from the processCapture goroutine only.
-func (e *VoiceEngine) applyNoiseGate(samples []int16) {
-	strength := clampF(e.cfg.NoiseSuppressStrength, 0.0, 1.0)
-	floor := noiseGateFloorMax * strength
-
-	target := float32(1.0)
-	if rmsAmplitude(samples) < floor {
-		// At strength=1.0 this fully mutes; lower strengths leave a residual
-		// so suppression eases in gradually rather than snapping to silent.
-		target = float32(1.0 - strength)
-	}
-
-	if target > e.noiseGateGain {
-		e.noiseGateGain += (target - e.noiseGateGain) * noiseGateAttack
-	} else {
-		e.noiseGateGain += (target - e.noiseGateGain) * noiseGateRelease
-	}
-
-	if e.noiseGateGain >= 0.999 {
-		return // fully open -- skip the multiply
-	}
-	for i, s := range samples {
-		samples[i] = int16(float32(s) * e.noiseGateGain)
-	}
-}
-
 // onAudioData is called from pion goroutines when an Opus packet arrives from a peer.
 func (e *VoiceEngine) onAudioData(fromUserID uuid.UUID, data []byte) {
 	e.incomingMu.RLock()
@@ -949,24 +933,58 @@ func (e *VoiceEngine) onAudioData(fromUserID uuid.UUID, data []byte) {
 		return
 	}
 
-	e.decodersMu.RLock()
+	// Validate and split the packet written by sendFrame (or by a client from
+	// before sequence numbers, which is played without loss concealment).
+	payload, seq, hasSeq, okPacket := parseVoicePacket(data)
+	if !okPacket {
+		tag := byte(0)
+		if len(data) > 0 {
+			tag = data[0]
+		}
+		log.Printf("voice: dropping unrecognized frame from %s (len=%d, tag=%#x)", fromUserID, len(data), tag)
+		return
+	}
+
+	// Decoding is serialized per sender under decodersMu: pion can deliver a
+	// peer's packets on more than one goroutine, and an Opus decoder (and the
+	// sequence it follows) isn't safe for concurrent use.
+	e.decodersMu.Lock()
+	defer e.decodersMu.Unlock()
 	dec, hasDec := e.decoders[fromUserID]
-	e.decodersMu.RUnlock()
 	if !hasDec {
 		return
 	}
+	frameSize := int(e.sampleRate.Load()) * voiceFrameMs / 1000
 
-	// Validate and strip the frame tag written by sendFrame.
-	if len(data) < 2 || data[0] != opusFrameTag {
-		log.Printf("voice: dropping unrecognized frame from %s (len=%d, tag=%#x)", fromUserID, len(data), data[0])
-		return
+	if hasSeq {
+		rx := e.rxSeq[fromUserID]
+		if rx == nil {
+			rx = &rxSequence{}
+			e.rxSeq[fromUserID] = rx
+		}
+		lost, late := rx.next(seq)
+		if late {
+			return // a duplicate, or overtaken by newer audio: already concealed
+		}
+		if lost > 0 && lost <= maxConcealedFrames {
+			// Fill all but the last lost frame with packet loss concealment,
+			// then rebuild the last from the copy carried in this packet.
+			for i := 0; i < lost-1; i++ {
+				pcm := make([]int16, frameSize)
+				if err := dec.DecodePLC(pcm); err == nil {
+					buf.push(pcm)
+				}
+			}
+			pcm := make([]int16, frameSize)
+			if err := dec.DecodeFEC(payload, pcm); err == nil {
+				buf.push(pcm)
+			}
+		}
 	}
-	data = data[1:]
 
 	// Decode Opus → PCM. frameSize = sampleRate × 20ms / 1000.
-	frameSize := int(e.sampleRate.Load()) * voiceFrameMs / 1000
 	pcm := make([]int16, frameSize)
-	n, err := dec.Decode(data, pcm)
+	n, err := dec.Decode(payload, pcm)
 	if err != nil {
 		log.Printf("voice: opus decode from %s: %v", fromUserID, err)
 		return
@@ -1089,6 +1107,7 @@ func (e *VoiceEngine) dropIncoming(userID uuid.UUID) {
 
 	e.decodersMu.Lock()
 	delete(e.decoders, userID)
+	delete(e.rxSeq, userID)
 	e.decodersMu.Unlock()
 }
 

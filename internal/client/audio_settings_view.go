@@ -37,7 +37,7 @@ func (a *App) renderAudioContent(width, height int) string {
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
 		Render("Audio Settings"))
 	top.writeLine(dimStyle.Render("Voice channel audio devices, volume, and codec options"))
-	top.writeLine(dimStyle.Render("Note: changing Input/Output Device or Codec Quality while in a voice channel needs a leave+rejoin to fully apply"))
+	top.writeLine(dimStyle.Render("Note: changing Input/Output Device while in a voice channel needs a leave+rejoin to fully apply"))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
@@ -175,15 +175,18 @@ func (a *App) renderAudioContent(width, height int) string {
 		codec = "medium"
 	}
 	codecDesc := map[string]string{
-		"low":    "Low    ( 8 kHz, telephone quality)",
-		"medium": "Medium (16 kHz, standard voice)",
-		"high":   "High   (24 kHz, HD voice)",
-		"ultra":  "Ultra  (48 kHz, studio quality)",
+		"low":    "Low    (24 kbps, for poor connections)",
+		"medium": "Medium (48 kbps, full-band voice)",
+		"high":   "High   (64 kbps)",
+		"ultra":  "Ultra  (96 kbps, music-grade)",
 	}[codec]
 	if codecDesc == "" {
 		codecDesc = codec
 	}
 	writeField(10, "Codec Quality", codecDesc+" ◀▶")
+
+	// Field 11: automatic levelling (autoLevel, voice_dsp.go)
+	writeToggle(11, "Automatic Levelling (evens out quiet and loud talkers)", !cfg.AutoLevelOff)
 
 	// Plugin sounds: games and other plugins can play short sounds (moves,
 	// chimes) on this computer. Voice isn't affected.
@@ -193,8 +196,8 @@ func (a *App) renderAudioContent(width, height int) string {
 		middle.writeLine(dimStyle.Render("  This build has no audio, so plugins can't play sounds."))
 	}
 	middle.writeBlank()
-	writeToggle(11, "Play Plugin Sounds", !cfg.PluginSoundsMuted)
-	writeField(12, "Plugin Sound Volume", progressBar(12, cfg.PluginSoundVolume, 1.0, 20))
+	writeToggle(12, "Play Plugin Sounds", !cfg.PluginSoundsMuted)
+	writeField(13, "Plugin Sound Volume", progressBar(13, cfg.PluginSoundVolume, 1.0, 20))
 
 	middle.pad()
 
@@ -252,12 +255,12 @@ func vadThresholdFromSensitivity(sens float64) float64 {
 }
 
 // audioFieldCount is the number of fields on the Audio page.
-const audioFieldCount = 13
+const audioFieldCount = 14
 
 // isAudioSliderField reports whether field idx is a continuous-value field
 // that uses the ←/→ slider mode (as opposed to a toggle or device picker).
 func isAudioSliderField(idx int) bool {
-	return idx == 2 || idx == 3 || idx == 5 || idx == 7 || idx == 9 || idx == 12 // Input Gain, Output Volume, VAD Sensitivity, Noise Suppression Strength, Echo Cancellation Strength, Plugin Sound Volume
+	return idx == 2 || idx == 3 || idx == 5 || idx == 7 || idx == 9 || idx == 13 // Input Gain, Output Volume, VAD Sensitivity, Noise Suppression Strength, Echo Cancellation Strength, Plugin Sound Volume
 }
 
 // adjustAudioSlider nudges the value for the currently-active slider field.
@@ -281,7 +284,7 @@ func (a *App) adjustAudioSlider(s *SettingsState, delta int) {
 		cfg.NoiseSuppressStrength = clampF(cfg.NoiseSuppressStrength+d, 0.0, 1.0)
 	case 9: // Echo Cancellation Strength  0.0–1.0
 		cfg.EchoCancellationStrength = clampF(cfg.EchoCancellationStrength+d, 0.0, 1.0)
-	case 12: // Plugin Sound Volume  0.0–1.0 (0 is stored as 0.01: 0 means "unset")
+	case 13: // Plugin Sound Volume  0.0–1.0 (0 is stored as 0.01: 0 means "unset")
 		cfg.PluginSoundVolume = clampF(cfg.PluginSoundVolume+d, 0.01, 1.0)
 	}
 	a.saveAudioConfig()
@@ -337,7 +340,9 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 		cfg.NoiseSuppress = !cfg.NoiseSuppress
 	case 8: // Echo Cancellation toggle
 		cfg.EchoCancellation = !cfg.EchoCancellation
-	case 11: // Plugin Sounds toggle
+	case 11: // Automatic Levelling toggle
+		cfg.AutoLevelOff = !cfg.AutoLevelOff
+	case 12: // Plugin Sounds toggle
 		cfg.PluginSoundsMuted = !cfg.PluginSoundsMuted
 	case 10: // Codec Preset: cycle low → medium → high → ultra → low
 		switch cfg.CodecPreset {

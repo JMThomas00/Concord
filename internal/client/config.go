@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,14 @@ func defaultAudioConfig(c AudioConfig) AudioConfig {
 	if c.PluginSoundVolume == 0 {
 		c.PluginSoundVolume = 0.8
 	}
+	// Version 1 (2026-10-02): noise suppression became RNNoise. The old
+	// gate's settings don't carry over, so it's switched on for everyone,
+	// at a strength that removes most noise; people can turn it down.
+	if c.ProcessingVersion < 1 {
+		c.NoiseSuppress = true
+		c.NoiseSuppressStrength = math.Max(c.NoiseSuppressStrength, 0.8)
+		c.ProcessingVersion = 1
+	}
 	return c
 }
 
@@ -139,8 +148,10 @@ type AudioConfig struct {
 	OutputVolume             float64            `json:"output_volume"`              // 0.0–1.0, default 1.0
 	VADEnabled               bool               `json:"vad_enabled"`                // Voice Activity Detection
 	VADThreshold             float64            `json:"vad_threshold"`              // raw RMS gate, default 0.08 -- see vadThresholdMin/Max in audio_settings_view.go for the realistic range the UI exposes as "Sensitivity"
-	NoiseSuppress            bool               `json:"noise_suppress"`             // Noise suppression (adaptive noise gate, see VoiceEngine.sendFrame)
-	NoiseSuppressStrength    float64            `json:"noise_suppress_strength"`    // 0.0–1.0, default 0.5 -- how aggressively below-floor audio is attenuated
+	NoiseSuppress            bool               `json:"noise_suppress"`             // Noise suppression (RNNoise, see VoiceEngine.sendFrame and internal/rnnoise)
+	NoiseSuppressStrength    float64            `json:"noise_suppress_strength"`    // 0.0–1.0, default 0.8 -- the noise left is (1-strength)², see mixDenoised
+	AutoLevelOff             bool               `json:"auto_level_off"`             // turn off automatic levelling (autoLevel, voice_dsp.go), on by default
+	ProcessingVersion        int                `json:"processing_version"`         // which voice processing these settings were last migrated for
 	EchoCancellation         bool               `json:"echo_cancellation"`          // Echo cancellation (adaptive NLMS filter, see VoiceEngine.aecFilt / voice_aec.go)
 	EchoCancellationStrength float64            `json:"echo_cancellation_strength"` // 0.0–1.0, default 0.5 -- NLMS adaptation aggressiveness (see aecMuForStrength)
 	CodecPreset              string             `json:"codec_preset"`               // "low" / "medium" / "high"
@@ -183,8 +194,8 @@ type DisplayConfig struct {
 	// VoiceLevelStyle is how voice levels show in the members panel:
 	// "bar", "slider", "wave", "ring" or "off" (voice_level.go). "" means
 	// "bar", or "off" when MembersHideVUMeter is set.
-	VoiceLevelStyle string `json:"voice_level_style,omitempty"`
-	MembersHideQuality bool `json:"members_hide_quality"`  // hide the connection quality bar
+	VoiceLevelStyle    string `json:"voice_level_style,omitempty"`
+	MembersHideQuality bool   `json:"members_hide_quality"` // hide the connection quality bar
 
 	// Animation options
 	DisablePanelAnimations bool   `json:"disable_panel_animations"` // skip slide-in/out for settings and server panels
