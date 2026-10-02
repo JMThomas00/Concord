@@ -3,7 +3,7 @@ module github.com/JMThomas00/Concord/sdk/pty
 go 1.24.2
 
 require (
-	github.com/JMThomas00/Concord/sdk v0.1.0
+	github.com/JMThomas00/Concord/sdk v0.7.0
 	github.com/charmbracelet/x/vt v0.0.0-20260927004216-9c77d672503d
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0

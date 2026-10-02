@@ -76,7 +76,7 @@ func main() {
 	name := fs.String("name", "", "display name (default from <name>)")
 	sdk := fs.String("sdk", "", "path to a local Concord sdk/ checkout to build against (adds a replace)")
 	sdkVersion := fs.String("sdk-version", "v0.7.0", "SDK version to require")
-	ptyVersion := fs.String("pty-version", "v0.1.1", "sdk/pty version to require (pty template)")
+	ptyVersion := fs.String("pty-version", "v0.1.2", "sdk/pty version to require (pty template)")
 	_ = fs.Parse(reorder(os.Args[2:]))
 	if fs.NArg() != 1 {
 		usage()
