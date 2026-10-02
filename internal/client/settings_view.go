@@ -2329,11 +2329,15 @@ func (a *App) renderDisplayContent(width, height int) string {
 	addBlank()
 
 	// Field 9: Voice level bar (VU meter)
-	vuVal := "[✓] On   (↑[████░░] input/output level bar)"
-	if a.uiConfig != nil && a.uiConfig.Display.MembersHideVUMeter {
-		vuVal = "[ ] Off"
+	// Field 9: how voice levels show (voice_level.go), with a preview of each.
+	vuPreviews := map[string]string{
+		"bar":    "Bar      ↓[██████░░░░]  a level bar on its own row",
+		"slider": "Slider   ↓ ━━━━●────── 100%  level, plus volume to click, drag or scroll",
+		"wave":   "Wave     ⣀⣤⣶⣿⣦  beside the name, no extra row",
+		"ring":   "Ring     ◉ the dot lights up while they talk, no extra row",
+		"off":    "Off",
 	}
-	writeField(9, "Voice Level Bar", vuVal)
+	writeField(9, "Voice Level", vuPreviews[a.voiceLevelStyle()]+"  ◀▶")
 
 	// Field 10: Connection quality
 	qualVal := "[✓] On   (◆◆◆◇ connection quality)"
@@ -2560,8 +2564,9 @@ func (a *App) handleDisplayFieldActivate(s *SettingsState) {
 		} else {
 			a.membersAnimWidth = 30
 		}
-	case 9: // Voice Level Bar toggle
-		cfg.MembersHideVUMeter = !cfg.MembersHideVUMeter
+	case 9: // Voice Level: cycle bar → slider → wave → ring → off
+		cfg.VoiceLevelStyle = nextVoiceLevelStyle(a.voiceLevelStyle())
+		cfg.MembersHideVUMeter = cfg.VoiceLevelStyle == "off" // for older clients
 	case 10: // Connection Quality toggle
 		cfg.MembersHideQuality = !cfg.MembersHideQuality
 	case 11: // Panel Animations toggle

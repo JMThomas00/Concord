@@ -179,7 +179,11 @@ type DisplayConfig struct {
 	MembersListCollapsed bool   `json:"members_list_collapsed"` // false = expanded (default), true = collapsed
 
 	// Members panel display options (false = show, true = hide — matches Go zero value = show by default)
-	MembersHideVUMeter bool `json:"members_hide_vu_meter"` // hide the voice level bar row
+	MembersHideVUMeter bool `json:"members_hide_vu_meter"` // hide the voice level bar row (superseded by VoiceLevelStyle; kept in step for older clients)
+	// VoiceLevelStyle is how voice levels show in the members panel:
+	// "bar", "slider", "wave", "ring" or "off" (voice_level.go). "" means
+	// "bar", or "off" when MembersHideVUMeter is set.
+	VoiceLevelStyle string `json:"voice_level_style,omitempty"`
 	MembersHideQuality bool `json:"members_hide_quality"`  // hide the connection quality bar
 
 	// Animation options

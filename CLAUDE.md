@@ -321,7 +321,7 @@ Because there's no server storage, **the sender must stay online for anyone to d
 | View | Access | Status |
 |---|---|---|
 | Theme Browser | Settings > Theme | ✅ Full |
-| Display Settings | Settings > Display | ✅ Full (live preview; Plugin Pictures) |
+| Display Settings | Settings > Display | ✅ Full (live preview; Plugin Pictures; **Voice Level** style for the members panel: bar, slider, wave, ring or off, `voice_level.go`) |
 | Notification Settings | Settings > Notifications | ✅ Full — two sections: **Desktop Notifications** (OS-native popup mode off/mentions/all, scope all-servers/current-server — `notifications.go`, `beeep.Notify`) and **Audio Notifications** (sound/bell alerts, per-server overrides) |
 | Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, noise suppression, echo cancellation, codec, plugin sounds; scrolls) |
 | Help & Guide | Settings > Help | ✅ Full (glamour markdown, theme-derived style — `buildThemedGlamourStyle`) |
@@ -363,6 +363,7 @@ Selected themes: dracula, alucard-dark, alucard-light, catppuccin-mocha, gruvbox
 
 ### Server
 - **Hub pattern:** Single goroutine owns client map; sends/receives via Go channels (thread-safe)
+- **Per-user voice volume in the members panel (2026-10-02):** with a voice member selected (Tab to the members, ↑/↓), ←/→ change their volume by 5% (0–200%, `PerUserVolumes`); in the slider style, click, drag or scroll the slider. Styles are drawn in `voice_level.go`; the Audio page and the member menu's volume use the same slider look.
 - **Multiple connections per account** (2026-09-28): `Hub.clients` maps a user to **all** their live connections. Anything sent to a user, server or channel reaches every one; a user is announced offline only when their last connection closes; voice belongs to the connection that joined (`voiceUserEntry.conn`), so closing another device doesn't drop the call. Replies to a request (plugin action results, the plugin list) go to the requesting connection via `Handlers.dispatchTo`, not `SendToUser`. `Client.Send` is safe after close (`sendMu`/`sendClosed`, closed through `closeSend`), since slow work can finish after its connection is gone. Kick/ban/timeout use `DisconnectUser`, which closes every connection.
 - **Per-client goroutine:** Each WebSocket connection gets isolated goroutines for read/write
 - **Auth flow:** HTTP POST /login → session token → OpIdentify → OpReady

@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -93,8 +94,10 @@ func (a *App) renderAudioContent(width, height int) string {
 		if pct > 1 {
 			pct = 1
 		}
-		filled := int(pct * float64(barWidth))
-		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled) + "]"
+		// A slider in the style of the members panel's (voice_level.go): the
+		// line up to the ● knob is the value.
+		knob := int(math.Round(pct * float64(barWidth-1)))
+		bar := strings.Repeat("━", knob) + "●" + strings.Repeat("─", barWidth-1-knob)
 		text := fmt.Sprintf("%s %d%%", bar, int(pct*100))
 
 		isFieldSelected := focused && focusField == fieldIdx

@@ -56,6 +56,22 @@ func (a *App) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 // just re-pointed at the "chat-panel" zone instead of the old hand-derived
 // isCursorOverChatViewport).
 func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
+	// A voice member's slider: click or drag along it to set their volume
+	// (voice_level.go). Other styles' volume badge is just a label to click
+	// through to the member's menu.
+	if msg.Button == tea.MouseButtonLeft && (msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionMotion) &&
+		a.voiceLevelStyle() == "slider" {
+		if id, frac, ok := a.resolveVolumeZone(msg.X, msg.Y); ok {
+			a.setFocus(FocusUserList)
+			for i, m := range a.buildFlatMemberList() {
+				if m.User != nil && m.User.ID == id {
+					a.selectedMemberIndex = i
+				}
+			}
+			a.setMemberVolume(id, frac*maxMemberVolume)
+			return nil
+		}
+	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return nil
 	}

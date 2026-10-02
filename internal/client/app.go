@@ -242,6 +242,7 @@ type App struct {
 	voiceQuit     chan struct{}       // closed by stopVoiceEngine to unblock waiting cmds
 	voiceQuality  map[uuid.UUID]int     // userID → latest ICE RTT ms (-1 = unknown)
 	voiceLevels   map[uuid.UUID]float32 // userID → latest RMS output level (0.0–1.0)
+	voiceHistory  map[uuid.UUID][]float32 // recent levels per user, for the wave style (voice_level.go)
 
 	// File transfer engine state — lazily created on first use and kept alive
 	// for the app's lifetime (unlike voice, transfers aren't tied to joining
@@ -1505,6 +1506,13 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			} else if z := zone.Get("channel-list"); z != nil && z.InBounds(msg) {
 				a.channelScroll.wheel(up)
+			} else if id, _, ok := a.resolveVolumeZone(msg.X, msg.Y); ok {
+				// Over someone's volume slider or badge: turn it up or down.
+				step := memberVolumeStep
+				if !up {
+					step = -step
+				}
+				a.setMemberVolume(id, a.memberVolume(id)+step)
 			} else if z := zone.Get("user-list"); z != nil && z.InBounds(msg) {
 				a.memberScroll.wheel(up)
 			}
@@ -1702,6 +1710,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.voiceLevels = make(map[uuid.UUID]float32)
 		}
 		a.voiceLevels[msg.UserID] = msg.Level
+		a.recordVoiceLevel(msg.UserID, msg.Level)
 		if a.voiceEngine != nil {
 			cmds = append(cmds, a.waitForVoiceEvent())
 		}
@@ -2868,6 +2877,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorInMessage(-1, 0, true) // dx = -1 (left), clear selection
 		}
+		// Members panel: turn the selected voice member down (voice_level.go).
+		if a.focus == FocusUserList && a.adjustSelectedMemberVolume(-memberVolumeStep) {
+			return nil
+		}
 		if a.focus == FocusChannelList {
 			a.handleCollapseCategory()
 		}
@@ -2890,6 +2903,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Level 2: Move cursor right one character
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorInMessage(1, 0, true) // dx = 1 (right), clear selection
+		}
+		// Members panel: turn the selected voice member up (voice_level.go).
+		if a.focus == FocusUserList && a.adjustSelectedMemberVolume(memberVolumeStep) {
+			return nil
 		}
 		if a.focus == FocusChannelList {
 			a.handleExpandCategory()

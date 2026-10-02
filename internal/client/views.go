@@ -1924,8 +1924,16 @@ func (a *App) memberListLines(innerWidth int) ([]string, int, int, string) {
 			}
 
 			dot, dotColor := presenceDot(m.User.Status, a.theme)
-			dotStr := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render(dot)
 			_, inVoice := voiceUserSet[m.User.ID]
+			if inVoice && a.voiceLevelStyle() == "ring" && a.voiceLevels != nil && scaledLevel(a.voiceLevels[m.User.ID]) >= speakingLevel {
+				dot, dotColor = "◉", a.theme.Colors.Green // talking
+			}
+			dotStr := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render(dot)
+			waveExtra := 0 // the wave style's waveform takes the dot's place, wider
+			if inVoice && a.voiceLevelStyle() == "wave" {
+				dotStr = a.renderVoiceWave(m.User.ID)
+				waveExtra = lipgloss.Width(dotStr) - 1
+			}
 
 			// Offline members are dimmed throughout.
 			offline := !inVoice && !isOnlineStatus(m.User.Status)
@@ -1936,15 +1944,21 @@ func (a *App) memberListLines(innerWidth int) ([]string, int, int, string) {
 			}
 			avatar := a.renderMemberAvatar(m.GetDisplayName(), avatarColor)
 
-			hideVU := a.uiConfig != nil && a.uiConfig.Display.MembersHideVUMeter
+			levelStyle := a.voiceLevelStyle() // voice_level.go
 			hideQuality := a.uiConfig != nil && a.uiConfig.Display.MembersHideQuality
+			var level float32
+			if a.voiceLevels != nil {
+				level = a.voiceLevels[m.User.ID]
+			}
+			isLocal := m.User.ID == localUID
+
+			// ── Row 1 (voice members only): the slider ────────────────────────
+			if inVoice && levelStyle == "slider" {
+				mb.WriteString(a.renderVoiceSlider(m.User.ID, level, innerWidth, isLocal, isSelected) + "\n")
+			}
 
 			// ── Row 1 (voice members only): full-width level bar ──────────────
-			if inVoice && !hideVU {
-				var level float32
-				if a.voiceLevels != nil {
-					level = a.voiceLevels[m.User.ID]
-				}
+			if inVoice && levelStyle == "bar" {
 				scaled := level * 4
 				if scaled > 1.0 {
 					scaled = 1.0
@@ -2021,6 +2035,15 @@ func (a *App) memberListLines(innerWidth int) ([]string, int, int, string) {
 					nameMaxLen -= len([]rune(roleName)) + 2
 				}
 			}
+			// The volume badge sits after the name (voice_level.go).
+			extras := ""
+			nameMaxLen -= waveExtra
+			if inVoice && !isLocal && levelStyle != "slider" {
+				extras += a.volumeBadge(m.User.ID, isSelected)
+			}
+			if extras != "" {
+				nameMaxLen -= lipgloss.Width(extras)
+			}
 			if nameMaxLen < 4 {
 				nameMaxLen = 4
 			}
@@ -2031,7 +2054,7 @@ func (a *App) memberListLines(innerWidth int) ([]string, int, int, string) {
 			}
 			nameStr := baseStyle.Render(name)
 
-			mb.WriteString(prefix + avatar + " " + dotStr + " " + nameStr + roleLabel + qualStr + "\n")
+			mb.WriteString(prefix + avatar + " " + dotStr + " " + nameStr + extras + roleLabel + qualStr + "\n")
 
 			// ── Rows 3 & 4 (optional): title, status ──────────────────────────
 			if m.Member != nil && m.Member.CustomTitle != "" {
@@ -2621,15 +2644,15 @@ func (a *App) renderMemberContextMenuOverlay(baseView string) string {
 
 	if vs := a.memberContextMenu.VolumeSlider; vs != nil {
 		title := titleStyleFull.Render(fmt.Sprintf("Volume: @%s", a.memberContextMenu.TargetMember.User.Username))
-		const barWidth = 20
-		filled := int(vs.Volume / 2.0 * barWidth)
-		if filled > barWidth {
-			filled = barWidth
+		// The same slider as the members panel's (voice_level.go), lit by
+		// their voice as you adjust it.
+		var level float32
+		if a.voiceLevels != nil {
+			level = a.voiceLevels[a.memberContextMenu.TargetMember.User.ID]
 		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
 		pct := int(vs.Volume*100 + 0.5)
-		barStr := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-			Render(fmt.Sprintf("[%s] %d%%", bar, pct))
+		barStr := a.volumeTrack(21, vs.Volume, scaledLevel(level), true, true) +
+			lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground)).Render(fmt.Sprintf(" %d%%", pct))
 		barLine := lipgloss.NewStyle().Width(targetW - 2).Align(lipgloss.Center).Render(barStr)
 		hints := hintStyleFull.Render("← −1%  Enter: Save  Esc: Back  +1% →")
 		fullLines = []string{title, "", barLine, "", hints}
