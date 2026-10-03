@@ -19,9 +19,17 @@ Write-Host "Fetching the Concord installer..." -ForegroundColor Magenta
 $dir = Join-Path ([IO.Path]::GetTempPath()) 'concord-install'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $exe = Join-Path $dir $asset
-try {
-    Invoke-WebRequest -Uri "$base/$asset" -OutFile $exe -UseBasicParsing
-} catch {
+$downloaded = $false
+foreach ($try in 1..3) { # GitHub sometimes answers 5xx for a moment
+    try {
+        Invoke-WebRequest -Uri "$base/$asset" -OutFile $exe -UseBasicParsing
+        $downloaded = $true
+        break
+    } catch {
+        Start-Sleep -Seconds 2
+    }
+}
+if (-not $downloaded) {
     Write-Host "Couldn't download $asset (is there a published release yet? https://github.com/$repo/releases)" -ForegroundColor Red
     return
 }
