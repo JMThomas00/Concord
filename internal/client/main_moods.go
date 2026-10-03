@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/google/uuid"
 )
 
@@ -326,4 +327,26 @@ func eggParty(g *fxGrid, t float64, pal loadingPalette) {
 	for i, l := range ball {
 		g.text(1+i, g.w-9, l, sgrFor(cols[(i+int(t*4))%len(cols)], "", true))
 	}
+}
+
+// onGameResult counts a finished game from a plugin's table kit towards
+// the game achievements, with a little party for a win.
+func (a *App) onGameResult(p protocol.PluginGameResultPayload) {
+	a.count("games_played")
+	if p.Result != "win" {
+		return
+	}
+	wins := a.count("game_wins")
+	a.count("wins:" + strings.ToLower(p.Game))
+	a.unlock("first_win")
+	if p.Computer {
+		a.unlock("beat_computer")
+	}
+	switch {
+	case wins >= 50:
+		a.unlock("wins_50")
+	case wins >= 10:
+		a.unlock("wins_10")
+	}
+	a.celebrateHere()
 }

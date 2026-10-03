@@ -30,6 +30,9 @@ type Collection struct {
 	// VoiceSeen: people this client has seen in voice, for "first time in
 	// voice" (user ID → date).
 	VoiceSeen map[string]string `json:"voice_seen,omitempty"`
+
+	// Cellar: every legendary seen, with the mood it came in (About).
+	Cellar []CellarBottle `json:"cellar,omitempty"`
 }
 
 func newCollection() *Collection {
@@ -248,3 +251,36 @@ func (a *App) launched() {
 
 // toastTime is how long an achievement toast stays up.
 const toastTime = 4 * time.Second
+
+// CellarBottle is one legendary sighting: what it was, the mood code it
+// came in (so it can be uncorked again), and when.
+type CellarBottle struct {
+	Layer  string `json:"layer"`
+	Option string `json:"option"`
+	Code   string `json:"code"`
+	Date   string `json:"date"`
+}
+
+// cellarLegendaries adds this launch's legendaries to the cellar.
+func (a *App) cellarLegendaries() {
+	c := a.coll()
+	added := false
+	for _, l := range moodLayers {
+		id := a.pick(l.id)
+		o, ok := findOption(l.id, id)
+		if !ok || o.rarity != legendary {
+			continue
+		}
+		dup := false
+		for _, b := range c.Cellar {
+			dup = dup || (b.Code == a.mood.code() && b.Option == id)
+		}
+		if !dup {
+			c.Cellar = append(c.Cellar, CellarBottle{Layer: string(l.id), Option: id, Code: a.mood.code(), Date: today()})
+			added = true
+		}
+	}
+	if added {
+		a.saveCollection()
+	}
+}

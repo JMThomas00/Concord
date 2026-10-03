@@ -37,6 +37,20 @@ func (a *App) handleAboutKey(msg tea.KeyMsg) bool {
 		a.toggleMoodLock()
 	case "n", "N":
 		a.rerollMood()
+	case "c", "C": // choose a bottle in the cellar (newest first)
+		if n := len(a.coll().Cellar); n > 0 {
+			if s.AboutCellar <= 0 || s.AboutCellar >= n {
+				s.AboutCellar = n - 1
+			} else {
+				s.AboutCellar--
+			}
+		}
+	case "u", "U": // uncork it: that mood next launch
+		if c := a.coll().Cellar; s.AboutCellar >= 0 && s.AboutCellar < len(c) && a.uiConfig != nil {
+			a.uiConfig.Display.MoodLock = c[s.AboutCellar].Code
+			a.saveDisplayConfig()
+			a.toasts = append(a.toasts, &toast{label: "🍾 Uncorked", title: c[s.AboutCellar].Code + " is your mood next launch"})
+		}
 	default:
 		return false
 	}
@@ -133,6 +147,29 @@ func (a *App) renderAboutContent(width, height int) string {
 	right = append(right, fmt.Sprintf("  %s %s", dim.Render(fmt.Sprintf("%-16s", "Launches")),
 		normal.Render(fmt.Sprint(coll.Launches))))
 
+	// The cellar: every legendary seen, newest first.
+	if len(coll.Cellar) > 0 {
+		right = append(right, "", purple.Render(fmt.Sprintf("Cellar  %d", len(coll.Cellar)))+dim.Render("   C choose · U uncork"), "")
+		sel := -1
+		if a.settingsState != nil {
+			sel = a.settingsState.AboutCellar
+		}
+		for i := len(coll.Cellar) - 1; i >= 0; i-- {
+			b := coll.Cellar[i]
+			name := b.Option
+			if o, ok := findOption(moodLayer(b.Layer), b.Option); ok {
+				name = o.name
+			}
+			mark := "  🍾 "
+			line := normal.Render(fmt.Sprintf("%-20s", name)) + dim.Render(fmt.Sprintf("  %s  %s", b.Code, b.Date))
+			if i == sel {
+				mark = "  ▸ "
+				line = purple.Render(fmt.Sprintf("%-20s", name)) + dim.Render(fmt.Sprintf("  %s  %s", b.Code, b.Date))
+			}
+			right = append(right, mark+line)
+		}
+	}
+
 	earned := 0
 	for _, ach := range achievements {
 		if coll.Achievements[ach.id] != "" {
@@ -189,6 +226,9 @@ func (a *App) renderAboutContent(width, height int) string {
 	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
 	help := "L lock mood · N new mood · Tab back to menu · Esc close"
+	if len(coll.Cellar) > 0 {
+		help = "C/U cellar · " + help
+	}
 	if maxScroll > 0 {
 		help = "↑↓ scroll · " + help
 	}

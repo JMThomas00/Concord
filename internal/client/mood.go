@@ -104,6 +104,7 @@ var moodLayers = []layerInfo{
 		{"dotmatrix", "Dot matrix", rare},
 		{"wireframe", "Wireframe", legendary},
 		{"golden", "Golden grapes", legendary},
+		{"photo", "Photo grapes", legendary},
 	}},
 	{layerBanner, "Banner colours", []moodOption{
 		{"solid", "Solid", common},
@@ -177,7 +178,7 @@ func moodFromSeed(seed uint32) mood {
 // about four launches in five; the other styles are the surprise.
 var optionWeights = map[string]int{
 	"logo/shaded": 16,
-	"moment/none":  12, // a moment about one launch in four
+	"moment/none": 12, // a moment about one launch in four
 }
 
 func pickOption(seed uint32, l layerInfo) string {
@@ -339,6 +340,9 @@ func (a *App) pick(layer moodLayer) string {
 			return "none"
 		}
 	}
+	if layer == layerLogo && id == "photo" && !a.canShowPhoto() {
+		return "shaded" // this terminal can't show pictures
+	}
 	if layer == layerLight && id == "orbit" && a.moment() == "jazz" {
 		return "breathe" // jazz moves slower
 	}
@@ -389,6 +393,7 @@ func (a *App) toggleMoodLock() {
 // recordMood adds what the login stage shows in this mood to the
 // collection. Loading screens and transitions are added when they play.
 func (a *App) recordMood() {
+	a.cellarLegendaries()
 	for _, l := range moodLayers {
 		if l.id == layerLoading || l.id == layerTransition {
 			continue // recorded when they play

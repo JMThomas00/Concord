@@ -367,6 +367,10 @@ const (
 	// client code sends it to the plugin, and Concord fills in ViewerID
 	// and the viewer's names.
 	PluginEventClientMessage = "client_message"
+	// Plugin → one player (PluginGameResultPayload): how a game ended for
+	// them, so their client can count wins (Settings > About achievements).
+	// The table kit sends it; ViewerID is the player.
+	PluginEventGameResult = "game_result"
 )
 
 // PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
@@ -483,4 +487,12 @@ type PluginInfo struct {
 // PluginConfigListPayload is EventPluginConfigUpdate's data.
 type PluginConfigListPayload struct {
 	Plugins []PluginInfo `json:"plugins"`
+}
+
+// PluginGameResultPayload is the Payload for Kind "game_result".
+type PluginGameResultPayload struct {
+	Game     string `json:"game"`               // the game's name, e.g. "Chess"
+	Result   string `json:"result"`             // "win", "loss" or "draw"
+	Computer bool   `json:"computer,omitempty"` // against the computer
+	Reason   string `json:"reason,omitempty"`   // e.g. "checkmate"
 }

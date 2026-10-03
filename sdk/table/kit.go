@@ -260,6 +260,7 @@ func (k *Kit) play(r *Room, t *Table, seat int, move string) error {
 // afterMove starts the computer if it's next, or tells the next player.
 func (k *Kit) afterMove(r *Room, t *Table, mover int) {
 	if t.outcome().Over {
+		k.reportResult(t)
 		return
 	}
 	next := t.game.Turn()
@@ -340,6 +341,7 @@ func (k *Kit) stand(r *Room, t *Table, userID uuid.UUID) {
 func (k *Kit) resign(r *Room, t *Table, seat int) {
 	if seat >= 0 && t.full() && !t.outcome().Over {
 		t.Resigned = seat
+		k.reportResult(t)
 		k.changed(r, t, "")
 	}
 }
@@ -468,5 +470,32 @@ func (k *Kit) moveSound(r *Room, t *Table, move string) {
 		if k.watching(id, t.ID) {
 			_ = k.conn.PlaySound(r.ChannelID, id, sound, 1)
 		}
+	}
+}
+
+// reportResult tells each person at a finished table how it went for them,
+// so their client can count the win (or loss) towards its achievements.
+func (k *Kit) reportResult(t *Table) {
+	o := t.outcome()
+	if k.conn == nil || !o.Over {
+		return
+	}
+	computer := false
+	for _, p := range t.Seats {
+		computer = computer || p.Computer
+	}
+	for i, p := range t.Seats {
+		if p.Computer || p.UserID == uuid.Nil {
+			continue
+		}
+		result := "draw"
+		switch {
+		case o.Winner == i:
+			result = "win"
+		case o.Winner >= 0:
+			result = "loss"
+		}
+		_ = k.conn.Event(wire.PluginEventGameResult, p.UserID, wire.PluginGameResultPayload{
+			Game: k.rules.Name, Result: result, Computer: computer, Reason: o.Reason})
 	}
 }

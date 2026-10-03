@@ -164,7 +164,7 @@ func saverFlyers(g *fxGrid, el float64, seed uint64, pal loadingPalette) {
 		case d > .5:
 			g.set(int(y), int(x), "•", sgrFor(pal.fg, "", false), 1)
 		default:
-			g.set(int(y), int(x), "·", sgrFor(faint(pal.fg, pal, .2+d), "", false), 1)
+			g.set(int(y), int(x), "·", sgrFor(faint(pal.fg, pal, .8-.8*d), "", false), 1)
 		}
 	}
 }

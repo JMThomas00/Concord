@@ -45,6 +45,10 @@ var achievements = []achievement{
 	{"voice_100", "Radio Host", "Spend a hundred hours in voice", false},
 	{"launch_500", "Grand Cru", "Start Concord 500 times", false},
 	{"banners_150", "Font Fancier", "See 150 different banners", false},
+	{"first_win", "First Victory", "Win a game in a plugin channel", false},
+	{"wins_10", "Seasoned Player", "Win ten games", false},
+	{"wins_50", "Grandmaster of the Vineyard", "Win fifty games", false},
+	{"beat_computer", "Beat the Machine", "Beat the computer at a game", false},
 	{"night_owl", "Night Owl", "Start Concord between 2 and 5 a.m.", false},
 	{"egg_hunter", "Egg Hunter", "Find five easter eggs", false},
 	{"egg_konami", "Up Up Down Down", "", true},
@@ -189,4 +193,5 @@ var achievementTiers = map[string]string{
 	"msgs_100": "🥉", "msgs_1000": "🥈", "msgs_10000": "🥇",
 	"voice_1": "🥉", "voice_10": "🥈", "voice_100": "🥇",
 	"streak_3": "🥉", "streak_7": "🥈", "streak_30": "🥇",
+	"first_win": "🥉", "wins_10": "🥈", "wins_50": "🥇",
 }

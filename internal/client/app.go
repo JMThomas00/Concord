@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"image"
 	"log"
 	"os"
 	"os/exec"
@@ -32,7 +33,7 @@ type View int
 
 const (
 	ViewToS           View = iota // First-run: Terms of Service acceptance
-	ViewIdentitySetup               // First-run: set up local identity
+	ViewIdentitySetup             // First-run: set up local identity
 	ViewLogin
 	ViewRegister
 	ViewMain
@@ -55,7 +56,7 @@ const (
 	FocusChat
 	FocusInput
 	FocusUserList
-	FocusMessageNav                   // Message navigation mode
+	FocusMessageNav // Message navigation mode
 )
 
 // App represents the main application state
@@ -71,8 +72,8 @@ type App struct {
 	focus FocusArea
 
 	// Theme
-	theme  *themes.Theme
-	styles *themes.Styles
+	theme       *themes.Theme
+	styles      *themes.Styles
 	banner      Banner // chosen at startup; Ctrl+R on login/register shuffles it
 	bannerIndex int    // index of banner in banners, for no-repeat shuffling
 
@@ -102,10 +103,12 @@ type App struct {
 	grapeClicks []time.Time // recent clicks on the grapes
 	discoNow    bool        // this launch is the disco party (armed by typing "disco" on About)
 	nameBanner  string      // this launch's banner is the profile's name (banner_name.go), or ""
+	photoCache  image.Image // the picture grapes (logo_photo.go)
+	photoKey    string      // the theme colour they were drawn in
 	saver       *saverState
 	lastInput   time.Time
-	grapeReact *grapeReaction // the grapes reacting to a problem or a success (stage.go)
-	connecting *connectingState // the screen after unlocking while servers connect
+	grapeReact  *grapeReaction   // the grapes reacting to a problem or a success (stage.go)
+	connecting  *connectingState // the screen after unlocking while servers connect
 
 	// Scroll positions for the channel list and members panels (see
 	// panel_scroll.go).
@@ -126,8 +129,8 @@ type App struct {
 	stageStable   int  // the last stage page's reserved height (stage.go), for currentLockup
 
 	// Multi-server connection management
-	connMgr    *ConnectionManager      // Manages all server connections
-	connEvents chan tea.Msg           // Event channel for async connection events
+	connMgr    *ConnectionManager // Manages all server connections
+	connEvents chan tea.Msg       // Event channel for async connection events
 
 	// Client-side server list (from servers.json)
 	clientServers       []*ClientServerInfo
@@ -138,14 +141,14 @@ type App struct {
 	activeConn *ServerConnection
 
 	// Protocol server state (from READY message)
-	currentServer *models.Server  // Currently selected protocol server
-	protocolServerIndex int        // Index in activeConn.Servers
+	currentServer       *models.Server // Currently selected protocol server
+	protocolServerIndex int            // Index in activeConn.Servers
 
 	// Channel state
 	currentChannel      *models.Channel
 	channelIndex        int
-	channelTree         *ChannelTree          // Hierarchical channel tree
-	collapsedCategories map[uuid.UUID]bool    // Per-server collapsed category state
+	channelTree         *ChannelTree       // Hierarchical channel tree
+	collapsedCategories map[uuid.UUID]bool // Per-server collapsed category state
 
 	// Default user preferences
 	defaultPreferences *DefaultPreferences
@@ -188,9 +191,9 @@ type App struct {
 	addServerError   string
 
 	// Manage Servers (Settings sub-page)
-	pingResults         map[uuid.UUID]*PingResult
-	editingServerID     *uuid.UUID // Set when editing an existing server
-	editingServerIndex  int        // Index in clientServers of the server being edited
+	pingResults           map[uuid.UUID]*PingResult
+	editingServerID       *uuid.UUID // Set when editing an existing server
+	editingServerIndex    int        // Index in clientServers of the server being edited
 	deleteConfirmServerID *uuid.UUID // Server awaiting delete confirmation
 
 	// Status message
@@ -258,11 +261,11 @@ type App struct {
 
 	// Voice engine state (nil when not in a voice channel)
 	voiceEngine   *VoiceEngine
-	voiceSigOut   chan VoiceSignalOut // engine → server: WebRTC signals
-	voiceEventOut chan interface{}    // engine → bubbletea: state events
-	voiceQuit     chan struct{}       // closed by stopVoiceEngine to unblock waiting cmds
-	voiceQuality  map[uuid.UUID]int     // userID → latest ICE RTT ms (-1 = unknown)
-	voiceLevels   map[uuid.UUID]float32 // userID → latest RMS output level (0.0–1.0)
+	voiceSigOut   chan VoiceSignalOut     // engine → server: WebRTC signals
+	voiceEventOut chan interface{}        // engine → bubbletea: state events
+	voiceQuit     chan struct{}           // closed by stopVoiceEngine to unblock waiting cmds
+	voiceQuality  map[uuid.UUID]int       // userID → latest ICE RTT ms (-1 = unknown)
+	voiceLevels   map[uuid.UUID]float32   // userID → latest RMS output level (0.0–1.0)
 	voiceHistory  map[uuid.UUID][]float32 // recent levels per user, for the wave style (voice_level.go)
 
 	// File transfer engine state — lazily created on first use and kept alive
@@ -279,12 +282,12 @@ type App struct {
 	pendingFileTransferCmd tea.Cmd
 
 	// Server list panel animation
-	serverListAnimWidth int  // current animated width (22 expanded, 8 collapsed)
-	serverListAnimating  bool
+	serverListAnimWidth int // current animated width (22 expanded, 8 collapsed)
+	serverListAnimating bool
 
 	// Members panel animation
-	membersAnimWidth int  // current animated width (30 expanded, 8 collapsed)
-	membersAnimating  bool
+	membersAnimWidth int // current animated width (30 expanded, 8 collapsed)
+	membersAnimating bool
 
 	// Full-panel slide animations
 	settingsAnimFrame   int  // 0=hidden, panelAnimMaxFrames=fully visible
@@ -391,8 +394,8 @@ type App struct {
 	replyQuote  string          // Ellipsized first line for display
 
 	// Edit message state
-	editingMessageID  *uuid.UUID // Message being edited
-	editingChannelID  *uuid.UUID // Channel of message being edited
+	editingMessageID *uuid.UUID // Message being edited
+	editingChannelID *uuid.UUID // Channel of message being edited
 
 	// Delete message state (confirmation)
 	deleteConfirmMessageID *uuid.UUID // Message awaiting delete confirmation
@@ -426,8 +429,8 @@ type App struct {
 	codeHost      *codeHost
 	codeDecisions *codeDecisions
 	codeNotNow    map[string]bool
-	paneRasters  []rasterImage
-	rasterState  rasterState
+	paneRasters   []rasterImage
+	rasterState   rasterState
 }
 
 // Position represents a cursor position in a message (for Level 2 navigation)
@@ -779,7 +782,7 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	input.Placeholder = "Type a message..."
 	input.CharLimit = 2000
 	input.SetWidth(50)
-	input.SetHeight(4)  // 4 rows of text (matches layout slot: 2 borders + 4 content = 6 rows)
+	input.SetHeight(4) // 4 rows of text (matches layout slot: 2 borders + 4 content = 6 rows)
 	input.ShowLineNumbers = false
 	input.Prompt = "" // remove the default "> " prompt gutter character
 	// Configure keybindings: Enter sends the message (handled in handleKeyPress).
@@ -2027,6 +2030,9 @@ func (a *App) View() string {
 		return a.renderConnecting(time.Now())
 	}
 	out := a.applyFx(a.view0())
+	if a.photoGrapes() {
+		out = a.placePhoto(out) // after the effects, which would drop its escape codes
+	}
 	overlay := a.showHubBrowser || a.linkBrowserState != nil || a.helpFinderState != nil || a.memberContextMenu != nil
 	return a.paintRasterImages(out, a.paneRasters, overlay)
 }
@@ -2706,7 +2712,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				a.replyQuote = extractFirstLineWithEllipsis(msg.Content, 60)
 
 				// Clear input and return command to exit nav mode AFTER component updates
-				a.input.SetValue("")  // Clear any stray input
+				a.input.SetValue("") // Clear any stray input
 				return func() tea.Msg {
 					return exitNavModeMsg{setFocus: true}
 				}
@@ -2731,7 +2737,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				}
 
 				// Pre-fill input with message content
-				a.input.SetValue(msg.Content)  // This replaces any content, so should be clean
+				a.input.SetValue(msg.Content) // This replaces any content, so should be clean
 
 				// Track editing state
 				a.editingMessageID = &msg.ID
@@ -7140,7 +7146,6 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 		}
 
-
 	case protocol.EventRoleUpdate:
 		// Parse role update payload
 		var roleData models.Role
@@ -7246,7 +7251,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 							}
 						}
 						a.serverManagementState.RoleList = roleList
-					a.statusMessage = "Role deleted successfully"
+						a.statusMessage = "Role deleted successfully"
 
 						// Adjust selection if needed
 						if a.serverManagementState.SelectedRole >= len(roleList) {
@@ -7489,9 +7494,9 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 		return nil
 	}
 
-	a.voiceSigOut   = make(chan VoiceSignalOut, 64)
+	a.voiceSigOut = make(chan VoiceSignalOut, 64)
 	a.voiceEventOut = make(chan interface{}, 64)
-	a.voiceQuit     = make(chan struct{})
+	a.voiceQuit = make(chan struct{})
 
 	engine := NewVoiceEngine(a.audioConfig, sc.User.ID, a.voiceSigOut, a.voiceEventOut)
 	a.voiceEngine = engine
@@ -7506,9 +7511,9 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 	}
 	sc.mu.RUnlock()
 
-	serverID  := payload.ServerID
+	serverID := payload.ServerID
 	channelID := payload.ChannelID
-	stunURLs  := payload.STUNUrls
+	stunURLs := payload.STUNUrls
 
 	startCmd := func() (result tea.Msg) {
 		// Recover from any CGO/malgo panics (e.g. nil audio backend on some
@@ -7539,7 +7544,7 @@ func (a *App) stopVoiceEngine() {
 	engine := a.voiceEngine
 	a.voiceEngine = nil
 	a.voiceQuality = nil // stale data is useless after engine stops
-	a.voiceLevels  = nil
+	a.voiceLevels = nil
 	if a.voiceQuit != nil {
 		close(a.voiceQuit)
 		a.voiceQuit = nil
@@ -7550,7 +7555,7 @@ func (a *App) stopVoiceEngine() {
 // waitForVoiceEvent returns a Cmd that blocks until the engine pushes an event
 // (speaking state, peer connect/disconnect, ready, etc.) or the engine stops.
 func (a *App) waitForVoiceEvent() tea.Cmd {
-	ch   := a.voiceEventOut
+	ch := a.voiceEventOut
 	quit := a.voiceQuit
 	if ch == nil {
 		return nil
@@ -7572,7 +7577,7 @@ func (a *App) waitForVoiceEvent() tea.Cmd {
 // outbound WebRTC signal (offer / answer / ICE candidate) to forward to the
 // server, or the engine stops.
 func (a *App) waitForVoiceSignal() tea.Cmd {
-	ch   := a.voiceSigOut
+	ch := a.voiceSigOut
 	quit := a.voiceQuit
 	if ch == nil {
 		return nil

@@ -403,6 +403,12 @@ func (a *App) handlePluginEvent(serverID uuid.UUID, sc *ServerConnection, ev pro
 			a.pluginPane.Title = sanitizePaneTitle(p.Title)
 		}
 
+	case protocol.PluginEventGameResult:
+		var p protocol.PluginGameResultPayload
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			a.onGameResult(p) // main_moods.go
+		}
+
 	case protocol.PluginEventPlaySound:
 		var p protocol.PluginPlaySoundPayload
 		if json.Unmarshal(ev.Payload, &p) != nil {

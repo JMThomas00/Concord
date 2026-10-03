@@ -137,3 +137,26 @@ func TestLifeSettlesAndStartsOver(t *testing.T) {
 		t.Fatal("never settled")
 	}
 }
+
+// The picture grapes need a terminal that shows pictures; elsewhere they
+// fall back to the shaded ones.
+func TestPhotoGrapesFallBack(t *testing.T) {
+	a := eggApp(t)
+	a.mood.picks[layerLogo] = "photo"
+	SetTerminalGraphics(TerminalGraphics{})
+	a.uiConfig.Display.Images = "blocks"
+	if a.pick(layerLogo) != "shaded" || a.photoGrapes() {
+		t.Fatal("photo grapes without picture support")
+	}
+	a.uiConfig.Display.Images = "sixel"
+	if !a.photoGrapes() {
+		t.Fatal("no photo grapes on a Sixel terminal")
+	}
+	img := a.grapePhoto()
+	if b := img.Bounds(); b.Dx() < 300 || b.Dy() < 400 {
+		t.Fatalf("picture is %v", b)
+	}
+	if strings.TrimSpace(ansi.Strip(a.renderGrapeLogo())) != "" {
+		t.Fatal("the characters still draw under the picture")
+	}
+}

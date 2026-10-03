@@ -76,6 +76,7 @@ type SettingsState struct {
 	// Help & Guide category state
 	HelpScrollOffset  int      // current scroll position in lines
 	AboutScroll       int      // About page scroll position in lines (about.go)
+	AboutCellar       int      // the cellar bottle chosen on About (index into Collection.Cellar; C moves it)
 	HelpRenderedLines []string // cached glamour output lines; nil = not yet rendered
 	HelpRenderWidth   int      // content width used for the cached render
 	HelpRenderTheme   string   // theme name used for the cached render -- glamour styling is theme-derived, so a theme switch must invalidate the cache too, not just a width change

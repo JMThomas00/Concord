@@ -129,7 +129,7 @@ func synthGrid(g *fxGrid, now time.Time, pal loadingPalette) {
 	cx := float64(g.w) / 2
 	for r := top; r < g.h; r++ {
 		depth := float64(r-top+1) / float64(g.h-top) // 0 far, 1 near
-		col := faint(mix("#ff4fd8", "#9b5cff", depth), pal, .3+.5*depth)
+		col := faint(mix("#ff4fd8", "#9b5cff", depth), pal, .8-.5*depth)
 		// Horizontal lines, closer together towards the horizon, sliding forward.
 		if math.Mod(depth*4+scroll, 1) < .25 {
 			g.text(r, 0, strings.Repeat("─", g.w), sgrFor(col, "", false))
@@ -182,13 +182,13 @@ func (a *App) seasonAtmosphere(g *fxGrid, t float64, pal loadingPalette) {
 			y := cellHash(seed, i, 11, 2)*float64(g.h) + 2*math.Cos(t*.3+float64(i))
 			glow := (math.Sin(t*2.2+float64(i)*2.1) + 1) / 2
 			if glow > .45 {
-				g.set(int(y), int(x), "•", sgrFor(faint("#f6ff7a", pal, glow), "", glow > .85), 1)
+				g.set(int(y), int(x), "•", sgrFor(faint("#f6ff7a", pal, 1-glow), "", glow > .85), 1)
 			}
 		}
 	case "autumn": // the harvest moon
 		moon := []string{" ▄████▄ ", "████████", "████████", " ▀████▀ "}
 		for i, l := range moon {
-			g.text(4+i, g.w-14, l, sgrFor(faint("#ffcf70", pal, .85), "", false))
+			g.text(4+i, g.w-14, l, sgrFor(faint("#ffcf70", pal, .15), "", false))
 		}
 	case "winter": // frost creeping in at the edges
 		for i := 0; i < (g.w+g.h)*2/3; i++ {
@@ -203,7 +203,7 @@ func (a *App) seasonAtmosphere(g *fxGrid, t float64, pal loadingPalette) {
 				r, c = int(cellHash(seed, i, 12, 2)*float64(g.h)), g.w-1-int(cellHash(seed, i, 12, 3)*3)
 			}
 			twinkle := (math.Sin(t*1.5+float64(i)) + 1) / 2
-			g.set(r, c, []string{"❄", "·", "*", "⁂"}[i%4], sgrFor(faint("#dff4ff", pal, .2+.4*twinkle), "", false), 1)
+			g.set(r, c, []string{"❄", "·", "*", "⁂"}[i%4], sgrFor(faint("#dff4ff", pal, .6-.4*twinkle), "", false), 1)
 		}
 	}
 }

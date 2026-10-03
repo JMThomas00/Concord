@@ -75,8 +75,8 @@ func atmosGrapes(w, h int, t float64, seed uint32) *fxGrid {
 	return g
 }
 
-// faint mixes a colour most of the way into the dark, so backgrounds stay
-// in the background.
+// faint mixes a colour into the dark, so backgrounds stay in the
+// background. k is how faint: 0 is the colour itself, 1 is the dark.
 func faint(col string, pal loadingPalette, k float64) string { return mix(pal.dark, col, k) }
 
 // atmosStars: a slow warp through a braille starfield, stars brightening
@@ -100,7 +100,7 @@ func atmosStars(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
 		if d > .85 {
 			ch = "•"
 		}
-		g.set(int(y), int(x), ch, sgrFor(faint(pal.fg, pal, .15+.6*d), "", false), 1)
+		g.set(int(y), int(x), ch, sgrFor(faint(pal.fg, pal, .75-.6*d), "", false), 1)
 	}
 	return g
 }

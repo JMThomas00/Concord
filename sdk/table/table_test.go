@@ -238,3 +238,45 @@ func TestMenuClaimsEscOnlyWhileOpen(t *testing.T) {
 		t.Fatalf("closed menu still claims %v", srv.Claimed(alice))
 	}
 }
+
+// A finished game tells each player how it went, for their client's
+// achievements.
+func TestFinishedGameReportsEachPlayersResult(t *testing.T) {
+	srv, ch, _ := startKit(t, nil, table.ModeSeats)
+	alice := srv.Enter(ch, "alice", 60, 12)
+	bob := srv.Enter(ch, "bob", 60, 12)
+	srv.FrameContaining(alice, "M: sit down")
+	srv.FrameContaining(bob, "M: sit down")
+	menu(srv, alice, 0)
+	srv.FrameContaining(bob, "X: alice")
+	menu(srv, bob, 0)
+	srv.FrameContaining(alice, "your move")
+	srv.DrainEvents()
+
+	for i, m := range []string{"1", "4", "2", "5", "3"} { // X takes the top row
+		v := alice
+		if i%2 == 1 {
+			v = bob
+		}
+		srv.Key(v, m)
+		if i < 4 {
+			srv.FrameContaining(map[bool]*plugintest.Viewer{true: bob, false: alice}[i%2 == 0], "your move")
+		}
+	}
+	srv.FrameContaining(bob, "alice wins")
+
+	results := map[uuid.UUID]string{}
+	for _, e := range srv.DrainEvents() {
+		if e.Kind != wire.PluginEventGameResult {
+			continue
+		}
+		var p wire.PluginGameResultPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		results[e.ViewerID] = p.Result
+	}
+	if results[alice.ID] != "win" || results[bob.ID] != "loss" {
+		t.Fatalf("results %v", results)
+	}
+}

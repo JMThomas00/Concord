@@ -1033,6 +1033,7 @@ type (
 	PluginMember               = wire.PluginMember
 	PluginPaneTitlePayload     = wire.PluginPaneTitlePayload
 	PluginPlaySoundPayload     = wire.PluginPlaySoundPayload
+	PluginGameResultPayload    = wire.PluginGameResultPayload
 	PluginClientMessagePayload = wire.PluginClientMessagePayload
 	PaneImage                  = wire.PaneImage
 	PluginField                = wire.PluginField
@@ -1049,6 +1050,7 @@ const (
 	PluginEventPaneTitle     = wire.PluginEventPaneTitle
 	PluginEventPlaySound     = wire.PluginEventPlaySound
 	PluginEventClientMessage = wire.PluginEventClientMessage
+	PluginEventGameResult    = wire.PluginEventGameResult
 )
 
 // The navigation keys a pane frame can claim; see sdk/wire.

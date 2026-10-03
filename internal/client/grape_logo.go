@@ -366,6 +366,9 @@ func (a *App) renderGrapeLogo() string {
 	if a.grapeLight != nil {
 		light = a.grapeLight.cur
 	}
+	if a.photoGrapes() {
+		return blankLogo() // the picture goes here (logo_photo.go)
+	}
 	if a.pick(layerLight) == "disco" {
 		return zone.Mark("grape-logo", a.renderLogoStyle("disco", light)) // mirror balls
 	}

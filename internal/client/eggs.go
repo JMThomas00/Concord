@@ -391,7 +391,7 @@ func (a *App) paintDoze(g *fxGrid, now time.Time) {
 		r := z.StartY + 3 - int(p*4)
 		c := z.EndX - 6 + i*2 + int(math.Sin(p*6)*1.5)
 		if r >= 0 && r < g.h && c >= 0 && c < g.w && g.rows[r][c].isEmpty() {
-			g.set(r, c, ch, sgrFor(faint(pal.fg, pal, .3+.5*(1-p)), "", false), 1)
+			g.set(r, c, ch, sgrFor(faint(pal.fg, pal, .3+.5*p), "", false), 1)
 		}
 	}
 }

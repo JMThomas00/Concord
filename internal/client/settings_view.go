@@ -374,7 +374,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 	// About: scrolling (in the page), and L/N for the mood (anywhere on it)
 	if s.SelectedCategory == settingsCatAbout {
 		switch msg.String() {
-		case "l", "L", "n", "N":
+		case "l", "L", "n", "N", "c", "C", "u", "U":
 			a.handleAboutKey(msg)
 			return nil
 		}
