@@ -111,7 +111,7 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 		).WithHideFunc(fresh(installer.Server)),
 		b.group(
 			huh.NewInput().Title("Your email, to make you its admin").
-				Description("Optional. The first person to sign up becomes the owner anyway;\nthe account with this email is made an admin too.").
+				Description("Optional. The first person to sign up becomes the owner\nanyway; the account with this email is made an admin too.").
 				Placeholder("you@example.com").Value(&pl.AdminEmail).Validate(check(installer.ValidateEmail)),
 		).WithHideFunc(fresh(installer.Server)),
 		b.group(startQuestion(p, "server", &pl.ServerStart)).WithHideFunc(notChosen(installer.Server)),
@@ -147,7 +147,7 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 		b.group(startQuestion(p, "hub", &pl.HubStart)).WithHideFunc(notChosen(installer.Hub)),
 		b.group(
 			huh.NewConfirm().Title("Connect your hub to the official Concord hub?").
-				Description("Connected hubs share their listings: your servers show up across\nthe Grapevine, and theirs show up on yours.").
+				Description("Connected hubs share their listings: your servers show\nup across the Grapevine, and theirs show up on yours.").
 				Affirmative("Connect").Negative("Stand alone").Value(&pl.HubFederate),
 		).WithHideFunc(fresh(installer.Hub)),
 	)

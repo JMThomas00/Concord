@@ -400,12 +400,12 @@ func (m *model) toAfter() tea.Cmd {
 	b.group(
 		huh.NewConfirm().
 			Title("Join the official Concord server?").
-			Description(fmt.Sprintf("%s: where the Concord community hangs out. News, help, people to play games with.\nIt'll be waiting in your server list.", official.ServerHost)).
+			Description(fmt.Sprintf("%s: where the Concord community hangs out.\nNews, help, and people to play games with.\nIt'll be waiting in your server list.", official.ServerHost)).
 			Affirmative("Yes, count me in").Negative("Not now").
 			Value(&m.join),
 		huh.NewConfirm().
 			Title("Open Concord now?").
-			Description("It'll ask who you are first: a name, your email and a password.\nThat one profile signs you in to every server you join.").
+			Description("It'll ask who you are first: a name, your email and\na password. That one profile signs you in to every\nserver you join.").
 			Affirmative("Let's go").Negative("Later").
 			Value(&m.openNow),
 	)
