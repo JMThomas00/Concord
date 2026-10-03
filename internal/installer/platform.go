@@ -139,3 +139,18 @@ func osRelease() map[string]string {
 	}
 	return out
 }
+
+// InstallerName is the release asset of concord-install for this platform,
+// as .github/workflows/release.yml names it.
+func (p Platform) InstallerName() string {
+	switch p.OS {
+	case Windows:
+		return "concord-install-windows-amd64.exe"
+	case MacOS:
+		if p.Arch == "amd64" {
+			return "concord-install-macos-x86_64"
+		}
+		return "concord-install-macos-arm64"
+	}
+	return "concord-install-linux-" + p.Arch
+}

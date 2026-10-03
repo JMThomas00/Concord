@@ -132,10 +132,14 @@ type ClientServer struct {
 	TLS     bool
 }
 
-// ClientConfigDir is where the client keeps its settings (~/.concord).
+// ConfigDir is where the client keeps its settings (~/.concord) for the
+// person whose home folder this is.
+func ConfigDir(home string) string { return filepath.Join(home, ".concord") }
+
+// ClientConfigDir is ConfigDir for whoever is running this.
 func ClientConfigDir() string {
 	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".concord")
+	return ConfigDir(h)
 }
 
 // AddClientServers adds servers to the client's list in dir

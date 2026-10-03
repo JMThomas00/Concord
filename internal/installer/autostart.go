@@ -183,6 +183,10 @@ try {
 
 // BootTaskRemoval is the PowerShell that undoes BootTaskScript.
 func (pl *Plan) BootTaskRemoval(component string) string {
-	name := "'" + strings.ReplaceAll(windowsName(component), "'", "''") + "'"
-	return fmt.Sprintf("Stop-ScheduledTask -TaskName %[1]s -ErrorAction SilentlyContinue\nUnregister-ScheduledTask -TaskName %[1]s -Confirm:$false -ErrorAction SilentlyContinue\nRemove-NetFirewallRule -DisplayName %[1]s -ErrorAction SilentlyContinue\nexit 0\n", name)
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	bin := pl.Binary(component)
+	return fmt.Sprintf("Stop-ScheduledTask -TaskName %[1]s -ErrorAction SilentlyContinue\n"+
+		"Get-Process | Where-Object { $_.Path -in @(%[2]s, %[3]s) } | Stop-Process -Force -ErrorAction SilentlyContinue\n"+
+		"Unregister-ScheduledTask -TaskName %[1]s -Confirm:$false -ErrorAction SilentlyContinue\n"+
+		"Remove-NetFirewallRule -DisplayName %[1]s -ErrorAction SilentlyContinue\nexit 0\n", q(windowsName(component)), q(bin), q(bin+".old"))
 }

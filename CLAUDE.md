@@ -92,6 +92,19 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
   - **Group height:** a group measures its height when created, before it knows the width, so a wrapped description pushed the last field (the admin email) out of view while typing still went to it. Build forms with `formBuilder` (`style.go`), which sizes each group after the width is set.
   - **Going back:** an Input checks itself on Shift+Tab, on blur and before leaving the group, so an invalid entry trapped you. `model.back` turns the checks off until the next key that isn't Shift+Tab.
   - `TestEmailIsVisibleAndBackAlwaysWorks` drives the real form for both.
+- **The install record and the client's Updates page (2026-10-03):**
+  - **The record:** after each install the installer writes `~/.concord/install.json` (`internal/installer/record.go`: each component's folder, start mode and version). It's keyed on the *plan's* home, never `os.UserHomeDir`, so tests can't touch your real settings.
+  - **Modes for that record:**
+    - `--update` goes straight to the checklist, keeping settings;
+    - `--configure` asks every question again from the current settings (`LoadSettings`), and installing changes only those keys in the existing TOML (`reconfigure.go`), so the Grapevine registration and mail survive;
+    - `--uninstall` asks you to type "uninstall" (unless `--yes`), then removes everything (`uninstall.go`): services and start-up entries, PATH, the Windows Terminal profile, every folder including the server's database, and `~/.concord`.
+    - Files that are still in use on Windows (the running client) are deleted by a hidden PowerShell once its parent process exits.
+  - **Ctrl+U on the login screen** (`internal/client/updates.go`) shows what's installed and the latest release:
+    - **U/C/X** fetch `concord-install-<os>-<arch>` from the release (checked against its checksum) and run it with `--return` through `tea.ExecProcess`;
+    - X first asks you to type "uninstall";
+    - after a client update, Enter restarts into the new version (`App.RestartPath`, run by `cmd/client/main.go`);
+    - for trying it without a release: `CONCORD_INSTALLER=<path>` and `CONCORD_INSTALL_FROM=<folder>`.
+  - **Verified:** `TestRealInstall` now installs, updates and uninstalls on Windows and on VM 113 and finds nothing left.
 - **Never capture the output of something that starts a background process** (`Runner.launch`): it inherits the pipe, and `CombinedOutput` then waits forever. This hung the first Windows test.
 - **Official server and hub addresses** are `internal/official` (placeholders until the official VPS exists); the client's and server wizard's default hub use it too.
 - **The installer's grapes** are `internal/grapes`, a copy of the client's renderer (`TestInstallerGrapesMatchTheClients` keeps them identical; `go run ./tools/grapelogo -pkg grapes -out internal/grapes/logo_data.go`).

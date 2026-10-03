@@ -27,6 +27,7 @@ const (
 	stFailed        // a step failed: retry, change answers or quit
 	stParty         // a moment of celebration
 	stAfter         // next steps: join the official server, open Concord
+	stConfirm       // type "uninstall" to remove everything
 )
 
 const (
@@ -75,11 +76,18 @@ type model struct {
 	confetti []confetto
 
 	aborted bool
+	done    bool // every step finished
+
+	mode      string  // modeInstall, modeUpdate, modeConfigure or modeUninstall
+	confirmed bool    // uninstall: already confirmed in Concord
+	initCmd   tea.Cmd // what the first screen starts with
 }
 
 func newModel(plan *installer.Plan, intro bool) *model {
-	m := &model{plan: plan, light: grapes.Dark, join: true, openNow: true, w: 100, h: 34}
-	m.plan.Components = []string{installer.Client}
+	m := &model{plan: plan, light: grapes.Dark, join: true, openNow: true, w: 100, h: 34, mode: modeInstall}
+	if len(m.plan.Components) == 0 {
+		m.plan.Components = []string{installer.Client}
+	}
 	m.st = stIntro
 	if !intro {
 		m.light = grapes.Light
@@ -90,6 +98,9 @@ func newModel(plan *installer.Plan, intro bool) *model {
 }
 
 func (m *model) Init() tea.Cmd {
+	if m.initCmd != nil {
+		return tea.Batch(tick(), m.initCmd)
+	}
 	if m.form != nil {
 		return tea.Batch(tick(), m.form.Init())
 	}
@@ -141,6 +152,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case stAfter:
 		return m.updateAfter(msg)
+	case stConfirm:
+		return m.updateConfirm(msg)
 	}
 	return m, nil
 }
@@ -159,7 +172,7 @@ func (m *model) animate(now time.Time) {
 	m.light = grapes.Ease(m.light, to)
 	if m.st == stInstall && now.Sub(m.quipAt) > 2600*time.Millisecond {
 		m.quipAt = now
-		m.quip = quips[rand.Intn(len(quips))]
+		m.quip = m.nextQuip()
 	}
 	if m.st == stParty {
 		m.stepConfetti()
@@ -291,7 +304,7 @@ func (m *model) startInstall() tea.Cmd {
 	m.cancel = cancel
 	m.events = make(chan tea.Msg, 64)
 	m.failed, m.logs, m.cur, m.frac, m.detail = nil, nil, 0, 0, ""
-	m.quip, m.quipAt = quips[rand.Intn(len(quips))], time.Now()
+	m.quip, m.quipAt = m.nextQuip(), time.Now()
 	events := m.events
 	r := &installer.Runner{
 		Plan:     m.plan,
@@ -301,6 +314,9 @@ func (m *model) startInstall() tea.Cmd {
 	}
 	m.runner = r
 	m.steps = r.Steps()
+	if m.mode == modeUninstall {
+		m.steps = r.UninstallSteps()
+	}
 	m.go_(stInstall)
 	go func() {
 		for i, s := range m.steps {
@@ -359,7 +375,10 @@ func (m *model) updateInstall(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.go_(stFailed)
 		return m, nil
 	case doneMsg:
-		m.cur = len(m.steps)
+		m.cur, m.done = len(m.steps), true
+		if m.mode == modeUninstall {
+			return m, tea.Quit
+		}
 		m.startConfetti()
 		m.go_(stParty)
 		return m, nil
@@ -392,7 +411,7 @@ func (m *model) clientReady() bool {
 }
 
 func (m *model) toAfter() tea.Cmd {
-	if !m.clientReady() {
+	if !m.clientReady() || m.mode != modeInstall {
 		m.openNow = false
 		return tea.Quit
 	}

@@ -367,6 +367,7 @@ type App struct {
 	// per-connection, not per-app, since each connected server reports its
 	// own build info at Ready time -- see ServerConnection.
 	clientVersion   string
+	restartPath     string // set when an update wants Concord restarted (updates.go)
 	clientGitCommit string
 	clientBuildTime string
 
@@ -1255,6 +1256,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateCheckedMsg:
 		a.handleUpdateChecked(m)
 		return a, nil
+	case installerReadyMsg:
+		return a, a.runInstaller(m)
+	case installerDoneMsg:
+		return a, a.installerDone(m)
 	case codeAcceptedMsg:
 		// Falls through, so the page change gets its transition.
 		if a.codeState == m.st {

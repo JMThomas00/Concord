@@ -74,6 +74,7 @@ func (r *Runner) Steps() []Step {
 				Step{"Waking the " + c, func(ctx context.Context) error { return r.autostart(ctx, c) }})
 		}
 	}
+	steps = append(steps, Step{"Writing down what went where", func(ctx context.Context) error { return r.recordInstall() }})
 	return steps
 }
 
@@ -448,9 +449,22 @@ func (r *Runner) configure(c string) error {
 	if !r.available(c) {
 		return nil
 	}
-	if r.Result.Updated[c] {
+	if r.Result.Updated[c] && !pl.Reconfigure {
 		r.log("kept your existing settings")
 		return nil
+	}
+	if r.Result.Updated[c] {
+		// Configuring again: change only what the form asked about.
+		path, merge := filepath.Join(pl.ServerDir, ServerConfigFile), func() ([]byte, error) { return pl.mergeServerConfig(official.HubURL) }
+		if c == Hub {
+			path, merge = filepath.Join(pl.HubDir, HubConfigFile), func() ([]byte, error) { return pl.mergeHubConfig(official.HubName, official.HubURL) }
+		}
+		data, err := merge()
+		if err != nil {
+			return err
+		}
+		r.log("updated your settings; everything else in them is as it was")
+		return r.change("update "+path, func() error { return writeFile(path, string(data), 0o600) })
 	}
 	path := filepath.Join(pl.Dir(c), ServerConfigFile)
 	var data []byte

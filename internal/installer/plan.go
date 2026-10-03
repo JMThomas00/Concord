@@ -52,6 +52,11 @@ type Plan struct {
 	// archive or folder of binaries to install instead of downloading.
 	Release string
 	Source  string
+	// Reconfigure asks every question again for what's installed, starting
+	// from its current settings, and changes only those settings.
+	Reconfigure               bool
+	oldServerPort, oldHubPort string
+
 	// DryRun does everything except changing the computer: the steps
 	// describe what they'd do.
 	DryRun bool

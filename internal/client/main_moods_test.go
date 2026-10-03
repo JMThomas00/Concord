@@ -162,7 +162,7 @@ func TestUpdatesPageAndHiddenCommands(t *testing.T) {
 	a.updates = &updateState{}
 	a.clientVersion = "0.1.0"
 	a.handleUpdateChecked(updateCheckedMsg{latest: "v9.9.9", url: "https://example.com/r"})
-	if out := ansi.Strip(a.View()); !strings.Contains(out, "v9.9.9") || !strings.Contains(out, "newer Concord is out") {
+	if out := ansi.Strip(a.View()); !strings.Contains(out, "v9.9.9") || !strings.Contains(out, "new!") {
 		t.Fatalf("updates page:\n%s", out)
 	}
 	a.handleUpdatesKey(keyOf("esc"))

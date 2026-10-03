@@ -3,6 +3,9 @@
 package installer
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -72,4 +75,46 @@ func broadcastEnvironmentChange() {
 	const hwndBroadcast, wmSettingChange, smtoAbortIfHung = 0xffff, 0x001A, 0x0002
 	var result uintptr
 	send.Call(hwndBroadcast, wmSettingChange, 0, uintptr(unsafe.Pointer(env)), smtoAbortIfHung, 2000, uintptr(unsafe.Pointer(&result)))
+}
+
+// removeFromUserPath takes dir off your PATH.
+func removeFromUserPath(dir string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return nil
+	}
+	defer k.Close()
+	cur, kind, err := k.GetStringValue("Path")
+	if err != nil {
+		return nil
+	}
+	var keep []string
+	for _, p := range strings.Split(cur, ";") {
+		if p != "" && !strings.EqualFold(strings.TrimRight(p, `\`), strings.TrimRight(dir, `\`)) {
+			keep = append(keep, p)
+		}
+	}
+	next := strings.Join(keep, ";")
+	if next == strings.Trim(cur, ";") {
+		return nil
+	}
+	if kind == registry.EXPAND_SZ {
+		err = k.SetExpandStringValue("Path", next)
+	} else {
+		err = k.SetStringValue("Path", next)
+	}
+	broadcastEnvironmentChange()
+	return err
+}
+
+// removeWhenParentExits deletes dir after the program that started the
+// installer (the client, whose own files are in use) has closed, from a
+// hidden PowerShell that outlives the installer.
+func removeWhenParentExits(dir string) error {
+	script := fmt.Sprintf("Wait-Process -Id %d -Timeout 3600 -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Remove-Item -LiteralPath '%s' -Recurse -Force -ErrorAction SilentlyContinue",
+		os.Getppid(), strings.ReplaceAll(dir, "'", "''"))
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script)
+	const detachedProcess, newProcessGroup = 0x00000008, 0x00000200
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess | newProcessGroup, HideWindow: true}
+	return cmd.Start()
 }

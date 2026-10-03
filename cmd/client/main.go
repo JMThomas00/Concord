@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -137,6 +138,21 @@ func main() {
 	// Run
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
+	}
+
+	// Updated from Settings' Updates page: start the new version in this
+	// terminal, as if it had been typed again.
+	if path := app.RestartPath(); path != "" {
+		log.Printf("Restarting into %s", path)
+		cmd := exec.Command(path, os.Args[1:]...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			if exit, ok := err.(*exec.ExitError); ok {
+				os.Exit(exit.ExitCode())
+			}
+			fmt.Fprintln(os.Stderr, "Concord couldn't restart:", err)
+			os.Exit(1)
+		}
 	}
 }
 

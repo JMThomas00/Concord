@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -26,6 +27,11 @@ func main() {
 	release := flag.String("release", "", "install this release tag instead of the latest")
 	noIntro := flag.Bool("no-intro", false, "skip the grapes' entrance")
 	showVersion := flag.Bool("version", false, "print the installer's version and exit")
+	update := flag.Bool("update", false, "update everything installed here to the latest release, keeping its settings")
+	configure := flag.Bool("configure", false, "go through the questions again for what's installed, starting from its settings")
+	uninstall := flag.Bool("uninstall", false, "remove everything Concord installed here, settings and data included")
+	yes := flag.Bool("yes", false, "with --uninstall: don't ask again (Concord's Updates page already did)")
+	ret := flag.Bool("return", false, "wait for Enter at the end (when Concord itself started this)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("concord-install", Version)
@@ -48,25 +54,57 @@ func main() {
 		plan.Source = abs
 	}
 
-	m := newModel(plan, !*noIntro)
+	mode := modeInstall
+	switch {
+	case *update:
+		mode = modeUpdate
+	case *configure:
+		mode = modeConfigure
+	case *uninstall:
+		mode = modeUninstall
+	}
+	if !prepare(plan, mode) {
+		fmt.Println("Nothing here was installed with the Concord installer, so there's nothing to " + map[string]string{modeUpdate: "update", modeConfigure: "configure", modeUninstall: "remove"}[mode] + ".")
+		fmt.Println("Run it without flags to install Concord.")
+		finish(*ret, 1)
+	}
+
+	m := newModel(plan, !*noIntro && mode == modeInstall)
+	m.mode, m.confirmed = mode, *yes
+	m.begin()
 	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "concord-install:", err)
-		os.Exit(1)
+		finish(*ret, 1)
 	}
 	fm := final.(*model)
 	if fm.aborted {
-		fmt.Println(sDim.Render("No changes made after that point. Run the installer again any time. 🍇"))
-		os.Exit(1)
+		fmt.Println(sDim.Render("Nothing more was changed. Run the installer again any time. 🍇"))
+		finish(*ret, 1)
 	}
 	if fm.failed != nil {
 		fmt.Println(fm.failureReport())
-		os.Exit(1)
+		finish(*ret, 1)
+	}
+	if mode == modeUninstall {
+		fmt.Println(fm.farewell())
+		finish(*ret, 0)
 	}
 	fmt.Println(fm.summary())
-	if fm.openNow && !plan.DryRun {
+	if fm.openNow && !plan.DryRun && !*ret {
 		launchClient(plan)
 	}
+	finish(*ret, 0)
+}
+
+// finish exits, first waiting for Enter when Concord started the installer
+// (so what it printed can be read before Concord takes the screen back).
+func finish(wait bool, code int) {
+	if wait {
+		fmt.Print(sDim.Render("\n   Press Enter to go back to Concord. "))
+		bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+	os.Exit(code)
 }
 
 // launchClient opens Concord in this terminal, as if you'd typed it.
@@ -76,4 +114,22 @@ func launchClient(plan *installer.Plan) {
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "Concord didn't start:", err)
 	}
+}
+
+// prepare points the plan at what's installed, for every mode but
+// install; it reports false when nothing is recorded as installed.
+func prepare(plan *installer.Plan, mode string) bool {
+	if mode == modeInstall {
+		return true
+	}
+	rec := installer.LoadRecord(plan.Platform.Home)
+	if len(rec.Components) == 0 {
+		return false
+	}
+	plan.ApplyRecord(rec)
+	if mode == modeConfigure {
+		plan.Reconfigure = true
+		plan.LoadSettings()
+	}
+	return true
 }

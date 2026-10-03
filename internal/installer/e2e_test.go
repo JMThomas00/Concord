@@ -94,6 +94,51 @@ func TestRealInstall(t *testing.T) {
 		t.Fatal("the server didn't come back after the update")
 	}
 	t.Logf("result: %+v", r2.Result)
+
+	// The record says what's where, so Updates can update or remove it.
+	rec := LoadRecord(p.Home)
+	for _, c := range pl.Components {
+		if rec.Components[c].Dir != pl.Dir(c) {
+			t.Fatalf("the record lost the %s: %+v", c, rec)
+		}
+	}
+
+	// Uninstalling leaves nothing behind.
+	again := NewPlan(p)
+	again.ApplyRecord(rec)
+	r3 := &Runner{Plan: again, Log: func(l string) { t.Log("  " + l) }}
+	for _, s := range r3.UninstallSteps() {
+		t.Log(s.Title)
+		if err := s.Run(context.Background()); err != nil {
+			t.Fatalf("uninstall, %s: %v", s.Title, err)
+		}
+	}
+	for _, c := range pl.Components {
+		if _, err := os.Stat(pl.Dir(c)); err == nil {
+			t.Fatalf("the %s's folder is still there", c)
+		}
+	}
+	if _, err := os.Stat(RecordPath(p.Home)); err == nil {
+		t.Fatal("the record is still there")
+	}
+	if runtime.GOOS == "linux" {
+		for _, c := range []string{Server, Hub} {
+			if _, err := os.Stat(pl.UnitPath(c, false)); err == nil {
+				t.Fatalf("the %s's service is still there", c)
+			}
+		}
+	}
+	if runtime.GOOS == "windows" {
+		out, _ := exec.Command("reg", "query", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).CombinedOutput()
+		if strings.Contains(string(out), "Concord") {
+			t.Fatalf("a sign-in entry is still there:\n%s", out)
+		}
+	}
+	if pl.ServerStart != StartNever {
+		if err := waitHealthy(context.Background(), r2.HealthURL(Server), 2*time.Second); err == nil {
+			t.Fatal("the server still answers after uninstalling")
+		}
+	}
 }
 
 func freePort(t *testing.T) string {

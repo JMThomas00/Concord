@@ -94,7 +94,11 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 			}, dir).
 			Value(dir).Validate(check(installer.ValidateDir))
 	}
-	fresh := func(c string) func() bool { return func() bool { return !pl.Has(c) || pl.Existing(c) } }
+	// fresh hides a component's settings when it's already set up, except
+	// when configuring again.
+	fresh := func(c string) func() bool {
+		return func() bool { return !pl.Has(c) || (pl.Existing(c) && !pl.Reconfigure) }
+	}
 	notChosen := func(c string) func() bool { return func() bool { return !pl.Has(c) } }
 
 	// The client.
@@ -107,7 +111,7 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 			huh.NewInput().Title("What's your server called?").Description("People see this when they join. You can change it later.").
 				Value(&pl.ServerName).Validate(check(required("give it a name"))),
 			huh.NewInput().Title("Which port should it listen on?").Description("8080 suits most people.").
-				Value(&pl.ServerPort).Validate(check(portFree(func() string { return pl.HubPort }, pl.Has, installer.Hub))),
+				Value(&pl.ServerPort).Validate(check(portFree(pl, installer.Server))),
 		).WithHideFunc(fresh(installer.Server)),
 		b.group(
 			huh.NewInput().Title("Your email, to make you its admin").
@@ -142,7 +146,7 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 		b.group(
 			huh.NewInput().Title("What's your hub called?").Value(&pl.HubName).Validate(check(required("give it a name"))),
 			huh.NewInput().Title("Which port should it listen on?").Description("7777 unless something else uses it.").
-				Value(&pl.HubPort).Validate(check(portFree(func() string { return pl.ServerPort }, pl.Has, installer.Server))),
+				Value(&pl.HubPort).Validate(check(portFree(pl, installer.Hub))),
 		).WithHideFunc(fresh(installer.Hub)),
 		b.group(startQuestion(p, "hub", &pl.HubStart)).WithHideFunc(notChosen(installer.Hub)),
 		b.group(
@@ -177,15 +181,19 @@ func required(msg string) func(string) error {
 
 // portFree checks a port is a port, differs from the other component's,
 // and nothing on this computer is already using it.
-func portFree(other func() string, has func(string) bool, otherComponent string) func(string) error {
+func portFree(pl *installer.Plan, component string) func(string) error {
+	other, otherPort := installer.Hub, &pl.HubPort
+	if component == installer.Hub {
+		other, otherPort = installer.Server, &pl.ServerPort
+	}
 	return func(s string) error {
 		if err := installer.ValidatePort(s); err != nil {
 			return err
 		}
-		if has(otherComponent) && strings.TrimSpace(s) == strings.TrimSpace(other()) {
-			return fmt.Errorf("the %s already uses that port", otherComponent)
+		if pl.Has(other) && strings.TrimSpace(s) == strings.TrimSpace(*otherPort) {
+			return fmt.Errorf("the %s already uses that port", other)
 		}
-		if !installer.PortFree(strings.TrimSpace(s)) {
+		if !pl.PortUnchanged(component, s) && !installer.PortFree(strings.TrimSpace(s)) {
 			return fmt.Errorf("something on this computer already uses port %s", strings.TrimSpace(s))
 		}
 		return nil
@@ -280,6 +288,8 @@ func (m *model) View() string {
 		body = m.viewInstall()
 	case stAfter:
 		body = m.viewAfter()
+	case stConfirm:
+		body = m.viewConfirm()
 	}
 	content := lipgloss.NewStyle().Width(m.contentWidth()).Render(m.header() + "\n\n" + body)
 	top := max(1, (m.h-lipgloss.Height(content))/2) // centred on the screen
@@ -441,7 +451,7 @@ var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "
 
 func (m *model) viewInstall() string {
 	var b strings.Builder
-	title := "Installing Concord"
+	title := map[string]string{modeInstall: "Installing Concord", modeUpdate: "Updating Concord", modeConfigure: "Configuring Concord", modeUninstall: "Removing Concord"}[m.mode]
 	if r := m.runner; r != nil && r.Result.Tag != "" {
 		title += " " + r.Result.Tag
 	}
