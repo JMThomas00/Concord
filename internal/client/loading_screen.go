@@ -17,8 +17,8 @@ import (
 // first launch gets a longer welcome sequence instead.
 
 const (
-	loadingDur      = 2600 * time.Millisecond
-	firstLoadingDur = 3800 * time.Millisecond
+	loadingDur      = 5 * time.Second // long enough to read; any key skips
+	firstLoadingDur = 6 * time.Second
 )
 
 type loadingState struct {

@@ -206,8 +206,8 @@ type DisplayConfig struct {
 	// instead of a random one ("" = random).
 	Surprise string `json:"surprise,omitempty"`
 	MoodLock string `json:"mood_lock,omitempty"`
-	// Disco is the login stage's disco party ("disco" typed on Settings >
-	// About, until it's typed again).
+	// Disco arms a disco party for the next launch ("disco" typed on Settings >
+	// About; used up by that launch).
 	Disco bool `json:"disco,omitempty"`
 
 	// Images says how plugin images are drawn: "" or "auto" (the best this

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"time"
@@ -18,6 +19,8 @@ type transition struct {
 
 func (t *transition) duration() time.Duration {
 	switch t.kind {
+	case "modem":
+		return 1600 * time.Millisecond
 	case "baud":
 		return 700 * time.Millisecond
 	case "crt", "teletext":
@@ -33,6 +36,8 @@ func (t *transition) render(from, to *fxGrid, p float64) *fxGrid {
 		return transDecode(from, to, p, t.seed)
 	case "teletext":
 		return transTeletext(from, to, p)
+	case "modem":
+		return transModem(to, p)
 	case "baud":
 		return transBaud(from, to, p)
 	case "crt":
@@ -249,4 +254,36 @@ func repeatRune(r rune, n int) string {
 		b[i] = r
 	}
 	return string(b)
+}
+
+// transModem: the whole page comes down a dial-up line, the way web pages
+// did in 1996: the screen clears, then fills from the top left, character
+// by character behind a cursor, with the browser's status line along the
+// bottom.
+func transModem(to *fxGrid, p float64) *fxGrid {
+	out := newGrid(to.w, to.h)
+	type pos struct{ r, c int }
+	var cells []pos
+	for r := 0; r < to.h; r++ {
+		for c := 0; c < to.w; c++ {
+			if cell := to.rows[r][c]; cell.w != 0 && !cell.isEmpty() {
+				cells = append(cells, pos{r, c})
+			}
+		}
+	}
+	shown := min(len(cells), int(p*1.1*float64(len(cells))))
+	for _, q := range cells[:shown] {
+		putCell(out, q.r, q.c, to.rows[q.r][q.c])
+	}
+	if shown < len(cells) {
+		q := cells[shown]
+		out.set(q.r, q.c, "█", to.rows[q.r][q.c].sgr, 1)
+		// The status bar, if the page leaves the bottom row free.
+		if first, _ := to.contentSpan(to.h - 1); first < 0 {
+			kb := float64(len(cells)) / 1024 * 3
+			status := fmt.Sprintf(" Document: %d%% of %.1fK  ·  Transferring data from concord...", shown*100/max(1, len(cells)), kb)
+			out.text(to.h-1, 1, status, sgrFor("#8a8a9a", "", false))
+		}
+	}
+	return out
 }

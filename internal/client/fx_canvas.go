@@ -258,20 +258,3 @@ func (g *fxGrid) clone() *fxGrid {
 	return out
 }
 
-// underlayRows is underlay for solid backgrounds (the lava strip): it
-// keeps whole rows clear near the page's content rather than cutting
-// holes around the text, which show up as boxes in a solid fill.
-func (g *fxGrid) underlayRows(bg *fxGrid, padRows int) {
-	for r := 0; r < g.h && r < bg.h; r++ {
-		near := false
-		for d := -padRows; d <= padRows && !near; d++ {
-			if rr := r + d; rr >= 0 && rr < g.h {
-				first, _ := g.contentSpan(rr)
-				near = first >= 0
-			}
-		}
-		if !near {
-			g.rows[r] = append([]fxCell(nil), bg.rows[r]...)
-		}
-	}
-}

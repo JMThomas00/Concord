@@ -13,7 +13,7 @@ import (
 
 // After unlocking, a short connecting screen shows each server's real
 // handshake (a packet running down a line of dots, then connected or
-// offline), and the main window bursts open from the middle. It lasts
+// offline), then the main window arrives behind a sweeping scan line. It lasts
 // until every server has settled or a few seconds pass; any key skips it.
 
 const (
@@ -21,7 +21,7 @@ const (
 	connectingMax    = 3 * time.Second
 	connectingStep   = 250 * time.Millisecond  // between one server's row and the next
 	connectingGiveUp = 2200 * time.Millisecond // a server still trying by then shows as still trying
-	burstDur         = 450 * time.Millisecond
+	burstDur         = 550 * time.Millisecond
 )
 
 type connectingState struct {
@@ -77,7 +77,7 @@ func (a *App) connectingSettled(el time.Duration) bool {
 	return true
 }
 
-// endConnecting opens the main window with the burst.
+// endConnecting brings in the main window (landing).
 func (a *App) endConnecting() {
 	a.connecting = nil
 	if a.surprise() == surpriseFull {
@@ -170,22 +170,22 @@ func (a *App) renderConnecting(now time.Time) string {
 	return g.String()
 }
 
-// burst opens the main window from the middle outwards: the left half
-// slides in from the left edge, the right half from the right.
-func burst(main *fxGrid, p float64) *fxGrid {
+// landing draws the main window arriving: a glowing scan line sweeps down
+// the screen with the window already there behind it, like an old monitor
+// drawing a fresh frame. pal colours the line.
+func landing(main *fxGrid, p float64, pal loadingPalette) *fxGrid {
 	out := newGrid(main.w, main.h)
-	off := int(math.Round((1 - easeOutCubic(p)) * float64(main.w) / 2))
-	half := main.w / 2
-	for r := 0; r < main.h; r++ {
+	edge := int(easeOutCubic(p) * float64(main.h+1))
+	for r := 0; r < min(edge, main.h); r++ {
+		out.rows[r] = append([]fxCell(nil), main.rows[r]...)
+	}
+	if edge < main.h {
+		// The line itself, brightest in the middle, and a faint glow under it.
 		for c := 0; c < main.w; c++ {
-			cell := main.rows[r][c]
-			if cell.w == 0 {
-				continue
-			}
-			if c < half {
-				putCell(out, r, c-off, cell)
-			} else {
-				putCell(out, r, c+off, cell)
+			d := math.Abs(float64(c)/float64(max(1, main.w-1))*2 - 1)
+			out.set(edge, c, "━", sgrFor(mix(pal.purple, "#ffffff", d*.8+.2), "", true), 1)
+			if edge+1 < main.h && c%2 == 0 {
+				out.set(edge+1, c, "·", sgrFor(faint(pal.purple, pal, .35), "", false), 1)
 			}
 		}
 	}

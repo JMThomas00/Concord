@@ -100,6 +100,7 @@ type App struct {
 	egg         *eggState
 	eggKeys     []string    // the last few keys, for typed eggs
 	grapeClicks []time.Time // recent clicks on the grapes
+	discoNow    bool        // this launch is the disco party (armed by typing "disco" on About)
 	saver       *saverState
 	lastInput   time.Time
 	grapeReact *grapeReaction // the grapes reacting to a problem or a success (stage.go)

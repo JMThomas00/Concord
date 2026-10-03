@@ -78,6 +78,7 @@ var moodLayers = []layerInfo{
 		{"decode", "Decode", common},
 		{"teletext", "Teletext rows", common},
 		{"baud", "2400 baud", common},
+		{"modem", "Dial-up page load", common},
 		{"crt", "Channel change", rare},
 		{"plasma", "Plasma wipe", rare},
 	}},
@@ -87,7 +88,6 @@ var moodLayers = []layerInfo{
 		{"dots", "Dot grid", common},
 		{"leaves", "Falling leaves", common},
 		{"none", "Plain", common},
-		{"lava", "Lava strip", rare},
 	}},
 	{layerLogo, "Grape styles", []moodOption{
 		{"shaded", "Shaded", common},
@@ -287,7 +287,7 @@ func noColour() bool {
 func (a *App) pick(layer moodLayer) string {
 	id := a.mood.picks[layer]
 	lvl := a.surprise()
-	if layer == layerLight && a.uiConfig != nil && a.uiConfig.Display.Disco && lvl != surpriseOff {
+	if layer == layerLight && a.discoNow && lvl != surpriseOff {
 		return "disco" // typed "disco" on Settings > About
 	}
 	if noColour() && lvl == surpriseFull {
@@ -326,6 +326,12 @@ func (a *App) pick(layer moodLayer) string {
 
 // startMood chooses this launch's mood: the locked one if there is one.
 func (a *App) startMood() {
+	// "disco" typed on About last time: this launch is the party, once.
+	if a.uiConfig != nil && a.uiConfig.Display.Disco {
+		a.discoNow = true
+		a.uiConfig.Display.Disco = false
+		a.saveDisplayConfig()
+	}
 	if a.uiConfig != nil && a.uiConfig.Display.MoodLock != "" {
 		if m, ok := parseMoodCode(a.uiConfig.Display.MoodLock); ok {
 			a.mood = m

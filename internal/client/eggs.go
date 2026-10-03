@@ -60,10 +60,10 @@ func (a *App) watchEggKeys(msg tea.Msg) {
 			d := &a.uiConfig.Display
 			d.Disco = !d.Disco
 			a.saveDisplayConfig()
-			msg := "Disco's over. Back to the orbit."
+			msg := "Party's off. Next launch is back to normal."
 			if d.Disco {
 				a.findEgg("disco")
-				msg = "The login grapes are mirror balls now. Type disco again to stop."
+				msg = "Next time you open Concord, the login's a disco."
 			}
 			a.toasts = append(a.toasts, &toast{label: "🪩 Disco party", title: msg})
 		}

@@ -46,8 +46,6 @@ func (a *App) baseAtmosphere(kind string, t float64, pal loadingPalette) *fxGrid
 		return atmosDots(a.width, a.height, pal)
 	case "leaves":
 		return atmosLeaves(a.width, a.height, t, a.mood.seed, pal)
-	case "lava":
-		return atmosLava(a.width, a.height, t, a.mood.seed, pal)
 	}
 	return nil
 }
@@ -130,46 +128,6 @@ func atmosLeaves(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
 	return g
 }
 
-// atmosLava: a lava lamp's glow along the bottom of the screen.
-func atmosLava(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
-	g := newGrid(w, h)
-	const rows = 6
-	top := h - rows
-	H := float64(rows * 2)
-	type blob struct{ x, y, r float64 }
-	var blobs []blob
-	for i := 0; i < 5+w/25; i++ {
-		x := float64(w)*cellHash(uint64(seed), i, 2, 1) + math.Sin(t*.3+float64(i))*6
-		y := H*.55 + math.Sin(t*(.25+.2*cellHash(uint64(seed), i, 2, 2))+float64(i)*2)*H*.45
-		blobs = append(blobs, blob{x, y, 2 + cellHash(uint64(seed), i, 2, 3)*2.5})
-	}
-	lit := func(x, y float64) bool {
-		f := 0.0
-		if y > H-2 {
-			f += (y - (H - 2)) / 1.5
-		}
-		for _, b := range blobs {
-			dx, dy := x-b.x, y-b.y
-			f += b.r * b.r / (dx*dx + dy*dy + .01)
-		}
-		return f > 1
-	}
-	colour := func(y float64) string { return faint(mix(pal.pink, pal.purple, y/H), pal, .45) }
-	for r := 0; r < rows; r++ {
-		for c := 0; c < w; c++ {
-			tp, bt := lit(float64(c), float64(r*2)), lit(float64(c), float64(r*2+1))
-			switch {
-			case tp && bt:
-				g.set(top+r, c, "▀", sgrFor(colour(float64(r*2)), colour(float64(r*2+1)), false), 1)
-			case tp:
-				g.set(top+r, c, "▀", sgrFor(colour(float64(r*2)), "", false), 1)
-			case bt:
-				g.set(top+r, c, "▄", sgrFor(colour(float64(r*2+1)), "", false), 1)
-			}
-		}
-	}
-	return g
-}
 
 // drawAccents adds the mood's frame accents: faint hairlines along the top
 // and bottom, or HUD corner brackets with the mood code. Only empty cells

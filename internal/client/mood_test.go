@@ -154,7 +154,8 @@ func TestTransitionsKeepSharedRows(t *testing.T) {
 			if g.w != 10 || g.h != 3 {
 				t.Fatalf("%s: size %dx%d", o.id, g.w, g.h)
 			}
-			if o.id != "crt" && ansi.Strip(g.String())[:10] != "  GRAPES  " {
+			// The CRT and dial-up ones redraw the whole screen on purpose.
+			if o.id != "crt" && o.id != "modem" && ansi.Strip(g.String())[:10] != "  GRAPES  " {
 				t.Fatalf("%s at %.1f moved the shared row: %q", o.id, p, g.String())
 			}
 		}

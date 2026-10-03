@@ -160,8 +160,8 @@ func TestTenClicksMakeWine(t *testing.T) {
 	}
 }
 
-// "disco" on About turns the login grapes into mirror balls, saved until
-// it's typed again.
+// "disco" on About makes the next launch's login a disco party (mirror-ball
+// grapes), once.
 func TestDiscoParty(t *testing.T) {
 	a := eggApp(t)
 	a.view = ViewSettings
@@ -169,8 +169,15 @@ func TestDiscoParty(t *testing.T) {
 	for _, r := range "disco" {
 		a.watchEggKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if !a.uiConfig.Display.Disco || a.pick(layerLight) != "disco" || a.coll().Eggs["disco"] == "" {
-		t.Fatal("no party")
+	if !a.uiConfig.Display.Disco || a.coll().Eggs["disco"] == "" {
+		t.Fatal("not armed")
+	}
+	if a.pick(layerLight) == "disco" {
+		t.Fatal("the party should wait for the next launch")
+	}
+	a.startMood() // the next launch
+	if a.pick(layerLight) != "disco" || a.uiConfig.Display.Disco {
+		t.Fatal("next launch isn't the party, or the party didn't get used up")
 	}
 	a.view = ViewLogin
 	a.fx.stageAt = time.Now().Add(-2 * time.Second)

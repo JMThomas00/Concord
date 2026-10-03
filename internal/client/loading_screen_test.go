@@ -122,12 +122,14 @@ func TestConnectingScreen(t *testing.T) {
 	}
 }
 
-func TestBurstEndsOnTheMainWindow(t *testing.T) {
-	main := parseFrame("left      right", 15, 1)
-	if got := burst(main, 1).String(); got != main.String() {
+func TestLandingEndsOnTheMainWindow(t *testing.T) {
+	main := parseFrame("top\nmiddle\nbottom", 10, 3)
+	pal := (&App{theme: newLoginTestApp(t, 10, 3, true).theme}).loadingPalette()
+	if got := landing(main, 1, pal).String(); got != main.String() {
 		t.Fatalf("got %q", got)
 	}
-	if got := ansi.Strip(burst(main, 0).String()); strings.Contains(got, "left") {
-		t.Fatalf("the left half hasn't moved off screen: %q", got)
+	mid := ansi.Strip(landing(main, .3, pal).String())
+	if !strings.Contains(mid, "top") || strings.Contains(mid, "bottom") || !strings.Contains(mid, "━") {
+		t.Fatalf("mid-sweep: %q", mid)
 	}
 }

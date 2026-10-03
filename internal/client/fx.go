@@ -33,7 +33,7 @@ type fxState struct {
 	prevKey  string    // stageKey at the last Update, so steps within a page transition too
 	stageAt  time.Time // when the login stage was last arrived at
 	last     string    // the last login-stage frame drawn, for transitions
-	burstAt  time.Time // when the main window started bursting open
+	burstAt  time.Time // when the main window started arriving (landing)
 	shakeAt  time.Time // when the form started shaking (stage.go)
 	lastErr  string    // the problem shown at the last Update
 	trans    *transition
@@ -126,11 +126,7 @@ func (a *App) applyFx(out string) string {
 			a.eggPlaying(now) || a.calendar() != "" || a.dozing() {
 			g := parseFrame(out, a.width, a.height)
 			if bg != nil {
-				if a.pick(layerAtmosphere) == "lava" && a.calendar() == "" {
-					g.underlayRows(bg, 1)
-				} else {
-					g.underlay(bg, 3, 1)
-				}
+				g.underlay(bg, 3, 1)
 			}
 			a.drawAccents(g)
 			a.paintCalendarText(g, now)
@@ -161,7 +157,7 @@ func (a *App) applyFx(out string) string {
 	}
 	if a.view == ViewMain && a.bursting(now) {
 		p := float64(now.Sub(a.fx.burstAt)) / float64(burstDur)
-		out = burst(parseFrame(out, a.width, a.height), p).String()
+		out = landing(parseFrame(out, a.width, a.height), p, a.loadingPalette()).String()
 	}
 	if t := a.currentToast(now); t != nil {
 		out = a.paintToast(out, t, now)
@@ -199,7 +195,7 @@ var (
 	sgrCache = map[string]string{}
 )
 
-// bursting reports whether the main window is still bursting open.
+// bursting reports whether the main window is still arriving (landing).
 func (a *App) bursting(now time.Time) bool {
 	return !a.fx.burstAt.IsZero() && now.Sub(a.fx.burstAt) < burstDur
 }
