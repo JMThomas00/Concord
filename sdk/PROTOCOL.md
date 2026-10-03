@@ -135,6 +135,7 @@ move focus between panels, as in every channel.
 | `leave_pane` | `{"channel_id"}` + `viewer_id` | hand that viewer's keyboard back to Concord. The pane stays open and keeps updating |
 | `play_sound` | `{"channel_id", "asset", "volume"}` | plays a WAV (8/16-bit PCM) or Ogg Opus file from your `client/` folder for `viewer_id`, or everyone viewing the channel if it's omitted. `volume` is 0 to 1 (0 means 1), scaled by the member's own setting |
 | `client_message` | `{"channel_id", "data"}` + `viewer_id` | sends `data` (any JSON, at most 64 KB) to that viewer's copy of your client code (below) |
+| `game_result` | `{"game", "result", "computer", "reason"}` + `viewer_id` | how a finished game went for that player (`result` is `win`, `loss` or `draw`; `computer` if they played the computer). Their client counts wins towards its achievements. Sent while they're viewing your pane; the Go table kit sends it for you |
 | anything else | anything | relayed as-is to `viewer_id`'s client, if they're viewing your pane |
 
 **Chat**:

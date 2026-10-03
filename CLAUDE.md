@@ -346,6 +346,17 @@ Chat messages themselves render markdown too (bold/italic/inline code/fenced cod
 - **Stage pages (`stage.go`):** `stagePage` lays a page under the grapes and banner with the site's typography. Every page reserves `stageRows` (12) with hints at the bottom, and `formHintRows` is pinned to 2, so the grapes stay put (`TestStagePagesKeepTheGrapesPinned`). Page and step changes play a transition (`stageKey`). Errors shake the form (zone `stage-form`) and flush the grapes red; successes glow the leaf.
 - **Screens:** loading screens on every launch (`loading_screen.go`; the first launch gets a welcome), the connecting screen after unlock and the main window's burst (`connecting.go`), code boxes (`code_boxes.go`), grape styles (`logo_styles.go`), backgrounds (`atmosphere.go`), banner colourings (`banner_colours.go`), easter eggs (`eggs.go`) and screensavers after 90 s idle (`screensaver.go`).
 - **Collection:** `~/.concord/collection.json` (`collection.go`): options seen per layer, banners, eggs, achievements (`achievements.go`, toasts top right). Nothing is sent anywhere.
+- **Second round (2026-10-02/03):**
+  - **More layers and screens:** moments (`moments.go`: jazz, arcade, noir, synthwave), seasons, glitches, name banners from a pixel font (`banner_name.go`), wine labels, fortunes, streaks and the almanac (`vintage.go`), and more loading screens (`loading_cartridges.go`: DOS, Concord 64, happy grapes, vine). Hold space for slow motion.
+  - **More transitions and screensavers:** dial-up, page curl, blinds and dissolve; Life, maze, flying bottles and Falling Bunches (`screensaver_more.go`).
+  - **Disco:** "disco" typed on About arms a disco login for the next launch (`DisplayConfig.Disco`, used up by that launch).
+  - **Photo grapes** (`logo_photo.go`, legendary): a real picture on Kitty/Sixel/iTerm2, placed in `View` *after* `applyFx`, because the cell parser drops picture escapes.
+  - **Main window** (`main_moods.go`): grape empty channels, grape typing verbs, `/grape` `/disco` `/mood` `/vintage` `/collection`, celebrations, a quiet-hours moon, and chat, voice and game achievements with tiers. Games report `game_result` (`sdk/table` → `wire.PluginGameResultPayload`).
+  - **The Cellar** on About lists the legendaries you've seen.
+- **Gotchas:**
+  - **Backgrounds must be sparse:** dense fills (plasma, mosaic, the lava strip were all removed) show the gaps kept around text as dark boxes.
+  - **`faint(col, pal, k)`:** `k` is how faint (0 = the colour, 1 = the dark).
+  - The main window's landing is a scan line (`landing`, `connecting.go`), not the old edges-meeting burst.
 - **No sounds,** by decision, so nothing needs the audio device.
 
 ---
