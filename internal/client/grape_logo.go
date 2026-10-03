@@ -228,7 +228,15 @@ func (a *App) handleGrapeTick(msg grapeTickMsg) tea.Cmd {
 	now := time.Now()
 	if now.Sub(gl.steered) > grapeIdleAfter {
 		t := float64(now.Sub(gl.started)) / float64(grapeOrbitPeriod)
-		gl.to = norm3([3]float64{grapeLight0[0] + .32*math.Cos(t), grapeLight0[1] + .22*math.Sin(t), grapeLight0[2]})
+		switch a.pick(layerLight) {
+		case "breathe": // a slow rise and fall
+			gl.to = norm3([3]float64{grapeLight0[0], grapeLight0[1] + .38*math.Sin(t*.6), grapeLight0[2] + .15*math.Cos(t*.6)})
+		case "disco": // jumping about to the beat
+			beat := uint64(now.UnixMilli() / 320)
+			gl.to = norm3([3]float64{cellHash(beat, 0, 0, 1)*1.6 - .8, cellHash(beat, 0, 0, 2)*1.4 - .7, .6})
+		default: // orbit
+			gl.to = norm3([3]float64{grapeLight0[0] + .32*math.Cos(t), grapeLight0[1] + .22*math.Sin(t), grapeLight0[2]})
+		}
 	}
 	for i := range gl.cur {
 		gl.cur[i] += (gl.to[i] - gl.cur[i]) * grapeEase
@@ -321,14 +329,10 @@ func (a *App) grapeToneColors() map[string]lipgloss.Style {
 	c := a.theme.Colors
 	// Reacting (stage.go): the grapes flush red at a problem; the leaf
 	// glows at a success.
-	tint, success := a.reactionTint(time.Now())
-	if tint > 0 {
-		if success {
-			if m, ok := mixHex(c.Foreground, c.Green, tint*.55); ok {
-				c.Green = m
-			}
-		} else if m, ok := mixHex(c.Red, c.Purple, tint*.8); ok {
-			c.Purple = m
+	c.Purple = a.grapePurple()
+	if tint, success := a.reactionTint(time.Now()); tint > 0 && success {
+		if m, ok := mixHex(c.Foreground, c.Green, tint*.55); ok {
+			c.Green = m
 		}
 	}
 	pick := func(fallback string, mixA, mixB string, t float64) lipgloss.Style {
@@ -337,6 +341,20 @@ func (a *App) grapeToneColors() map[string]lipgloss.Style {
 			col = m
 		}
 		return lipgloss.NewStyle().Foreground(lipgloss.Color(col))
+	}
+	if a.pick(layerLogo) == "golden" {
+		t := a.grapeTones()
+		return map[string]lipgloss.Style{
+			"p3": lipgloss.NewStyle().Foreground(lipgloss.Color(t[3])).Bold(true),
+			"p2": lipgloss.NewStyle().Foreground(lipgloss.Color(t[2])),
+			"p1": lipgloss.NewStyle().Foreground(lipgloss.Color(t[1])),
+			"p0": lipgloss.NewStyle().Foreground(lipgloss.Color(t[0])),
+			"g2": lipgloss.NewStyle().Foreground(lipgloss.Color(c.Green)),
+			"g1": pick(c.Green, c.Green, c.Background, .60),
+			"o2": lipgloss.NewStyle().Foreground(lipgloss.Color(c.Orange)),
+			"o1": pick(c.Orange, c.Orange, c.Background, .60),
+			"sp": lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true),
+		}
 	}
 	return map[string]lipgloss.Style{
 		"p3": pick(c.Foreground, c.Purple, c.Foreground, .30).Bold(true),
@@ -357,9 +375,17 @@ func (a *App) renderGrapeLogo() string {
 	if a.grapeLight != nil {
 		light = a.grapeLight.cur
 	}
+	switch style := a.pick(layerLogo); style {
+	case "pixel", "braille", "dotmatrix", "wireframe":
+		return zone.Mark("grape-logo", a.renderLogoStyle(style, light))
+	}
 	styles := a.grapeToneColors()
+	shaded := shadeGrapeLogo(grapeLogoSize, light)
+	if a.pick(layerLogo) == "golden" {
+		sparkle(shaded)
+	}
 	var b strings.Builder
-	for i, row := range shadeGrapeLogo(grapeLogoSize, light) {
+	for i, row := range shaded {
 		if i > 0 {
 			b.WriteByte('\n')
 		}

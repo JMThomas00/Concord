@@ -7,8 +7,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 // The login experience's moving parts (Concord - Login Experience Plan in
@@ -118,11 +118,13 @@ func (a *App) applyFx(out string) string {
 	if isStageView(a.view) {
 		bg := a.renderAtmosphere(now)
 		t := a.fx.trans
-		if bg != nil || t != nil || a.shaking(now) {
+		accents := a.pick(layerAccent)
+		if bg != nil || t != nil || a.shaking(now) || (accents != "" && accents != "none") {
 			g := parseFrame(out, a.width, a.height)
 			if bg != nil {
 				g.underlay(bg, 3, 1)
 			}
+			a.drawAccents(g)
 			if a.shaking(now) {
 				if z := zone.Get("stage-form"); z != nil && !z.IsZero() {
 					shake(g, z.StartY, z.EndY, z.StartX-2, float64(now.Sub(a.fx.shakeAt))/float64(shakeDur))

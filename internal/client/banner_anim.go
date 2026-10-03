@@ -159,6 +159,9 @@ func (a *App) renderBanner() string {
 	art := trimBannerArt(a.banner.Art)
 	base := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
 	if a.bannerAnim == nil {
+		if coloured, ok := a.colourBanner(art, time.Now()); ok {
+			return coloured
+		}
 		return base.Render(art)
 	}
 	p := easeOutCubic(float64(a.bannerAnim.frame+1) / float64(bannerAnimFrames))
