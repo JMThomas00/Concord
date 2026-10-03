@@ -37,6 +37,7 @@ var achievements = []achievement{
 	{"egg_konami", "Up Up Down Down", "", true},
 	{"egg_wine", "Sommelier", "", true},
 	{"egg_burst", "Grape Burst", "", true},
+	{"egg_disco", "Saturday Night Grapes", "", true},
 	{"egg_corner", "Right in the Corner", "", true},
 	{"egg_screensaver", "Away From Keyboard", "", true},
 	{"egg_bbs", "Carrier Detected", "", true},
@@ -58,6 +59,7 @@ func findAchievement(id string) (achievement, bool) {
 
 // toast is an achievement announcement in the top-right corner.
 type toast struct {
+	label string // the first line; "" for an achievement
 	title string
 	shown time.Time // zero until it reaches the front of the queue
 }
@@ -104,6 +106,9 @@ func (a *App) paintToast(frame string, t *toast, now time.Time) string {
 		accent = "#bd93f9"
 	}
 	label := "🏆 Achievement unlocked"
+	if t.label != "" {
+		label = t.label
+	}
 	w := max(runewidth.StringWidth(label), runewidth.StringWidth(t.title)) + 4
 	if w > a.width-2 {
 		w = a.width - 2

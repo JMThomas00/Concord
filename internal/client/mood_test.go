@@ -164,3 +164,17 @@ func TestTransitionsKeepSharedRows(t *testing.T) {
 		}
 	}
 }
+
+// The shaded grapes are the default: about four launches in five.
+func TestShadedGrapesAreTheDefault(t *testing.T) {
+	const n = 50000
+	shaded := 0
+	for s := uint32(0); s < n; s++ {
+		if moodFromSeed(s*7919).picks[layerLogo] == "shaded" {
+			shaded++
+		}
+	}
+	if frac := float64(shaded) / n; frac < .75 || frac > .85 {
+		t.Fatalf("shaded on %.0f%% of launches, want about 80%%", frac*100)
+	}
+}

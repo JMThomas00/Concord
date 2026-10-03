@@ -70,7 +70,7 @@ func (a *App) stagePageWith(label, beside, headline, accent, body string, hints 
 		top.WriteString(a.stageHeadline(headline, accent) + "\n")
 	}
 	top.WriteString("\n" + strings.TrimRight(body, "\n"))
-	hintBlock := a.renderKeyHints(hints, stageWidth)
+	hintBlock := a.renderKeyHintsAligned(hints, stageWidth, lipgloss.Left)
 	content := top.String()
 	used := lipgloss.Height(content) + 1 + lipgloss.Height(hintBlock)
 	gap := max(1, stageRows-used+1)

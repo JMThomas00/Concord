@@ -126,7 +126,11 @@ func (a *App) applyFx(out string) string {
 			a.eggPlaying(now) || a.calendar() != "" || a.dozing() {
 			g := parseFrame(out, a.width, a.height)
 			if bg != nil {
-				g.underlay(bg, 3, 1)
+				if a.pick(layerAtmosphere) == "lava" && a.calendar() == "" {
+					g.underlayRows(bg, 1)
+				} else {
+					g.underlay(bg, 3, 1)
+				}
 			}
 			a.drawAccents(g)
 			a.paintCalendarText(g, now)

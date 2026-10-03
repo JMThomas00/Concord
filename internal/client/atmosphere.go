@@ -12,6 +12,9 @@ import (
 
 // atmosphereMoving reports whether this launch's background animates.
 func (a *App) atmosphereMoving() bool {
+	if a.pick(layerLight) == "disco" {
+		return true // the reflections sweep round
+	}
 	switch a.pick(layerAtmosphere) {
 	case "", "none", "dots":
 		return false
@@ -21,9 +24,19 @@ func (a *App) atmosphereMoving() bool {
 
 // renderAtmosphere draws the background for now, or nil for none.
 func (a *App) renderAtmosphere(now time.Time) *fxGrid {
-	kind := a.pick(layerAtmosphere)
 	t := now.Sub(a.fx.stageAt).Seconds()
 	pal := a.loadingPalette()
+	bg := a.baseAtmosphere(a.pick(layerAtmosphere), t, pal)
+	if a.pick(layerLight) == "disco" {
+		if bg == nil {
+			bg = newGrid(a.width, a.height)
+		}
+		discoReflections(bg, t, pal)
+	}
+	return bg
+}
+
+func (a *App) baseAtmosphere(kind string, t float64, pal loadingPalette) *fxGrid {
 	switch kind {
 	case "grapes":
 		return atmosGrapes(a.width, a.height, t, a.mood.seed)
@@ -33,10 +46,6 @@ func (a *App) renderAtmosphere(now time.Time) *fxGrid {
 		return atmosDots(a.width, a.height, pal)
 	case "leaves":
 		return atmosLeaves(a.width, a.height, t, a.mood.seed, pal)
-	case "mosaic":
-		return atmosMosaic(a.width, a.height, t, a.mood.seed, pal)
-	case "plasma":
-		return atmosPlasma(a.width, a.height, t, pal)
 	case "lava":
 		return atmosLava(a.width, a.height, t, a.mood.seed, pal)
 	}
@@ -121,56 +130,6 @@ func atmosLeaves(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
 	return g
 }
 
-// atmosMosaic: teletext block graphics, slowly reshaping, in teletext's
-// own colours turned right down.
-func atmosMosaic(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
-	g := newGrid(w, h)
-	quad := []string{" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"}
-	cols := []string{"#0000ff", "#ff00ff", "#00ffff", "#ff0000"}
-	off := float64(seed%97) * 1.7
-	field := func(x, y float64) float64 {
-		return math.Sin(x*.11+t*.25+off) + math.Sin(y*.29-t*.18) + math.Sin((x+y*2)*.07+t*.13)
-	}
-	for r := 0; r < h; r++ {
-		for c := 0; c < w; c++ {
-			bits := 0
-			for k, d := range [][2]float64{{0, 0}, {.5, 0}, {0, .5}, {.5, .5}} {
-				if field(float64(c)+d[0], float64(r)+d[1]) > 1.6 {
-					bits |= 1 << k
-				}
-			}
-			if bits == 0 {
-				continue
-			}
-			col := cols[int(math.Abs(field(float64(c)*.3, float64(r)*.3)))%len(cols)]
-			g.set(r, c, quad[bits], sgrFor(faint(col, pal, .22), "", false), 1)
-		}
-	}
-	return g
-}
-
-// atmosPlasma: the demoscene plasma, as faint shaded blobs.
-func atmosPlasma(w, h int, t float64, pal loadingPalette) *fxGrid {
-	g := newGrid(w, h)
-	for r := 0; r < h; r++ {
-		for c := 0; c < w; c++ {
-			x, y := float64(c)*.09, float64(r)*.18
-			v := (math.Sin(x+t*.6) + math.Sin(y-t*.4) + math.Sin((x+y)*.7+t*.3) +
-				math.Sin(math.Hypot(x-3, y-2)*1.3-t*.5)) / 4
-			if v < .15 {
-				continue
-			}
-			col := mix(pal.pink, pal.purple, (math.Sin(v*6+t)+1)/2)
-			ch := "░"
-			if v > .45 {
-				ch = "▒"
-			}
-			g.set(r, c, ch, sgrFor(faint(col, pal, .18+.2*v), "", false), 1)
-		}
-	}
-	return g
-}
-
 // atmosLava: a lava lamp's glow along the bottom of the screen.
 func atmosLava(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
 	g := newGrid(w, h)
@@ -242,5 +201,23 @@ func (a *App) drawAccents(g *fxGrid) {
 		put(g.h-1, 1, "└"+arm)
 		put(g.h-1, g.w-6, arm+"┘")
 		put(1, 3, "CONCORD // "+a.mood.code())
+	}
+}
+
+// discoReflections: spots of coloured light thrown off the mirror balls,
+// sweeping round the room.
+func discoReflections(g *fxGrid, t float64, pal loadingPalette) {
+	cx, cy := float64(g.w)*.3, float64(g.h)*.45
+	cols := []string{pal.pink, pal.cyan, pal.yellow, pal.green, pal.purple, "#ffffff"}
+	for i := 0; i < 64; i++ {
+		ang := float64(i)*2.399 + t*.55 // golden-angle spread, turning
+		rad := 6 + float64(i%9)*float64(g.w)/14
+		x := cx + math.Cos(ang)*rad
+		y := cy + math.Sin(ang)*rad*.45
+		ch := []string{"•", "✦", "✦", "∙"}[i%4]
+		col := cols[(i+int(t*2))%len(cols)]
+		if r, c := int(y), int(x); r >= 0 && r < g.h && c >= 0 && c < g.w && g.rows[r][c].isEmpty() {
+			g.set(r, c, ch, sgrFor(col, "", i%4 == 1), 1)
+		}
 	}
 }

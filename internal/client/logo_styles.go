@@ -139,6 +139,8 @@ func (a *App) renderLogoStyle(style string, light [3]float64) string {
 				cell = dotCell(L, x0, y0, light, tones)
 			case "wireframe":
 				cell = wireCell(L, x0, y0, now, a.theme.Colors)
+			case "disco":
+				cell = discoCell(L, x0, y0, light, now, a.theme.Colors)
 			}
 			if cell == "" {
 				cell = a.leafCell(L, r, c)
@@ -287,4 +289,46 @@ func (a *App) grapePurple() string {
 		}
 	}
 	return purple
+}
+
+// discoCell: under the disco light each grape is a mirror ball. Its
+// tiles turn with the ball, each catching the light (or a coloured glint)
+// on its own beat; the grout between them stays dark.
+func discoCell(L grapeLogoData, x0, y0 float64, light [3]float64, now time.Time, c themes.ThemeColors) string {
+	x, y := x0+L.cw/2, y0+L.ch/2
+	n, which := grapeNormal(L, x, y)
+	if which < 0 {
+		return ""
+	}
+	lum, spec, _ := grapeSample(L, x, y, light)
+	spin := float64(now.UnixMilli()%6000) / 6000 * 2 * math.Pi
+	lon := math.Atan2(n[0], n[2]) + spin + float64(which)*.7
+	lat := math.Asin(math.Max(-1, math.Min(1, n[1])))
+	const tileLon, tileLat = math.Pi / 7, math.Pi / 9
+	fu, fv := lon/tileLon, lat/tileLat
+	// Each ball keeps its round shading, so the grapes still read as
+	// grapes: grout and the rim are just darker tiles.
+	silver := mixOr("#f0f0ff", "#2a2a38", math.Min(1, .15+lum*.9))
+	if fu-math.Floor(fu) < .1 || fv-math.Floor(fv) < .1 || n[2] < .25 {
+		return fg(mixOr(silver, "#1a1a24", .45)).Render("■")
+	}
+	tile := int(math.Floor(fu))*31 + int(math.Floor(fv))*17 + which*101
+	beat := uint64(now.UnixMilli() / 180)
+	glint := cellHash(beat, tile, 0, 11)
+	switch {
+	case spec > .6 || glint > .978:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true).Render("✦")
+	case glint > .9:
+		cols := []string{c.Pink, c.Cyan, c.Yellow, c.Green, c.Purple}
+		return fg(cols[int(cellHash(beat, tile, 0, 12)*float64(len(cols)))]).Bold(true).Render("■")
+	}
+	return fg(silver).Render("■")
+}
+
+// mixOr mixes two colours, or gives the first if they can't be mixed.
+func mixOr(a, b string, t float64) string {
+	if m, ok := mixHex(a, b, t); ok {
+		return m
+	}
+	return a
 }

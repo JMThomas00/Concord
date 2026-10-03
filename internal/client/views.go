@@ -59,6 +59,12 @@ type keyHint struct{ key, desc string }
 // description. Stays on one row unless that row is wider than maxWidth, then
 // splits whole hints into the fewest evenly-filled centered rows that fit.
 func (a *App) renderKeyHints(hints []keyHint, maxWidth int) string {
+	return a.renderKeyHintsAligned(hints, maxWidth, lipgloss.Center)
+}
+
+// renderKeyHintsAligned is renderKeyHints with wrapped rows lined up at pos
+// (the login stage lines them up on the left).
+func (a *App) renderKeyHintsAligned(hints []keyHint, maxWidth int, pos lipgloss.Position) string {
 	keyStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
 		Background(lipgloss.Color(a.theme.Colors.Selection)).
@@ -92,7 +98,7 @@ func (a *App) renderKeyHints(hints []keyHint, maxWidth int) string {
 			break
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Center, rows...)
+	return lipgloss.JoinVertical(pos, rows...)
 }
 
 // maxBannerHeight is the tallest banner's line count. The login/register

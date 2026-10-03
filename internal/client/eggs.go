@@ -54,6 +54,21 @@ func (a *App) watchEggKeys(msg tea.Msg) {
 	if len(a.eggKeys) > len(konamiCode) {
 		a.eggKeys = a.eggKeys[len(a.eggKeys)-len(konamiCode):]
 	}
+	if a.aboutShowing() && strings.HasSuffix(strings.Join(a.eggKeys, ""), "disco") {
+		a.eggKeys = nil
+		if a.uiConfig != nil {
+			d := &a.uiConfig.Display
+			d.Disco = !d.Disco
+			a.saveDisplayConfig()
+			msg := "Disco's over. Back to the orbit."
+			if d.Disco {
+				a.findEgg("disco")
+				msg = "The login grapes are mirror balls now. Type disco again to stop."
+			}
+			a.toasts = append(a.toasts, &toast{label: "🪩 Disco party", title: msg})
+		}
+		return
+	}
 	if a.aboutShowing() && strings.HasSuffix(strings.Join(a.eggKeys, ""), "grape") {
 		a.eggKeys = nil
 		a.startEgg("burst", 1800*time.Millisecond)
@@ -254,7 +269,14 @@ func (a *App) calendarAtmosphere(now time.Time, t float64) *fxGrid {
 	w, h := a.width, a.height
 	switch a.calendar() {
 	case "halloween":
-		g := atmosPlasma(w, h, t*.5, pal) // purple fog
+		// Wisps of purple fog drifting across (sparse, so the form never
+		// sits in a cut-out of it).
+		g := newGrid(w, h)
+		for i := 0; i < w*h/90; i++ {
+			x := math.Mod(cellHash(uint64(a.mood.seed), i, 7, 1)*float64(w)+t*(1+cellHash(uint64(a.mood.seed), i, 7, 2)*2), float64(w))
+			y := cellHash(uint64(a.mood.seed), i, 7, 3) * float64(h)
+			g.set(int(y), int(x), []string{"~", "∽", "≈"}[i%3], sgrFor(faint(pal.purple, pal, .35), "", false), 1)
+		}
 		spooky := atmosGrapes(w, h, t, a.mood.seed)
 		for i, row := range spooky.rows {
 			for c, cell := range row {

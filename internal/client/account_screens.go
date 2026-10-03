@@ -440,6 +440,11 @@ func (a *App) profileCards(list []*LocalIdentity, active string, cursor int) str
 	}
 	row := lipgloss.JoinHorizontal(lipgloss.Top, cards...)
 	more := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	// Scroll arrows go after the cards, so the cards line up with the
+	// headline above them.
+	if first == 0 && first+fit >= n {
+		return row
+	}
 	left, right := " ", " "
 	if first > 0 {
 		left = "‹"
@@ -447,8 +452,7 @@ func (a *App) profileCards(list []*LocalIdentity, active string, cursor int) str
 	if first+fit < n {
 		right = "›"
 	}
-	pad := strings.Repeat("\n", 2)
-	return lipgloss.JoinHorizontal(lipgloss.Top, more.Render(pad+left)+" ", row, " "+more.Render(pad+right))
+	return lipgloss.JoinHorizontal(lipgloss.Top, row, more.Render("\n\n "+left+" "+right))
 }
 
 // avatarColours are the colours a profile's initial can sit on.

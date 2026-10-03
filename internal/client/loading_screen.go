@@ -49,13 +49,22 @@ func (a *App) startLoading() {
 }
 
 var loadingJokes = []string{
-	"ripening grapes", "untangling the vines", "counting seeds", "chilling the wine",
-	"reticulating stems", "aligning the grapevine", "warming up the CRT",
-	"dusting off the modem", "teaching grapes to type", "pressing the grapes",
-	"consulting the vintner", "polishing the bloom", "calibrating purple",
-	"negotiating with the raisins", "rehearsing the banners", "defragmenting the vineyard",
-	"tuning the light", "feeding the hamsters", "blowing on the cartridge",
-	"reversing the polarity", "rolling the dice", "picking a mood",
+	// the vineyard
+	"mashing grapes", "connecting the vines", "trellising the vineyard", "ripening grapes",
+	"untangling the vines", "counting seeds", "pruning the vines", "checking the harvest",
+	"stomping grapes (barefoot)", "watering the vineyard", "polishing the bloom",
+	"sorting grapes by purpleness", "growing a new branch", "grafting the rootstock",
+	"shooing the starlings", "tasting for sweetness", "calibrating purple",
+	"negotiating with the raisins", "chilling the wine", "uncorking the servers",
+	"pressing the grapes", "consulting the vintner", "aging in oak barrels",
+	"letting it breathe", "decanting messages", "labelling the bottles",
+	"swirling, sniffing, sipping", "following the grapevine", "hearing it through the grapevine",
+	"bunching the grapes", "fermenting ideas", "rinsing the grapes", "plucking the stems",
+	"keeping the raisins out of the sun", "picking only the ripe ones", "squashing bugs (not grapes)",
+	"rehearsing the banners", "tuning the light",
+	// the old days
+	"warming up the CRT", "dusting off the modem", "defragmenting the vineyard",
+	"blowing on the cartridge", "reversing the polarity", "rolling the dice", "picking a mood",
 }
 
 // loadingLines is what the status line says, in order: what really

@@ -159,3 +159,29 @@ func TestTenClicksMakeWine(t *testing.T) {
 		}
 	}
 }
+
+// "disco" on About turns the login grapes into mirror balls, saved until
+// it's typed again.
+func TestDiscoParty(t *testing.T) {
+	a := eggApp(t)
+	a.view = ViewSettings
+	a.settingsState = &SettingsState{SelectedCategory: settingsCatAbout}
+	for _, r := range "disco" {
+		a.watchEggKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if !a.uiConfig.Display.Disco || a.pick(layerLight) != "disco" || a.coll().Eggs["disco"] == "" {
+		t.Fatal("no party")
+	}
+	a.view = ViewLogin
+	a.fx.stageAt = time.Now().Add(-2 * time.Second)
+	if !strings.Contains(ansi.Strip(a.renderGrapeLogo()), "■") {
+		t.Fatal("the grapes aren't mirror balls")
+	}
+	if lines := strings.Split(a.View(), "\n"); len(lines) != 40 {
+		t.Fatalf("%d lines", len(lines))
+	}
+	a.uiConfig.Display.Surprise = "off"
+	if a.pick(layerLight) == "disco" {
+		t.Fatal("disco with Surprise Me off")
+	}
+}

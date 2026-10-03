@@ -22,6 +22,9 @@ import (
 // for solid (or a theme whose colours can't be mixed).
 func (a *App) colourBanner(art string, now time.Time) (string, bool) {
 	style := a.pick(layerBanner)
+	if a.pick(layerLight) == "disco" {
+		style = "rainbow" // the party
+	}
 	pal := a.loadingPalette()
 	if _, ok := parseHex(a.theme.Colors.Purple); !ok || style == "" || style == "solid" {
 		return "", false

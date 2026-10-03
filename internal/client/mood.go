@@ -87,8 +87,6 @@ var moodLayers = []layerInfo{
 		{"dots", "Dot grid", common},
 		{"leaves", "Falling leaves", common},
 		{"none", "Plain", common},
-		{"mosaic", "Teletext mosaic", rare},
-		{"plasma", "Plasma", rare},
 		{"lava", "Lava strip", rare},
 	}},
 	{layerLogo, "Grape styles", []moodOption{
@@ -159,6 +157,13 @@ func moodFromSeed(seed uint32) mood {
 	return m
 }
 
+// optionWeights makes an option more likely than the others in its tier
+// (1 when not listed). The shaded grapes are the grapes, so they show
+// about four launches in five; the other styles are the surprise.
+var optionWeights = map[string]int{
+	"logo/shaded": 16,
+}
+
 func pickOption(seed uint32, l layerInfo) string {
 	h := fnv.New64a()
 	h.Write([]byte(l.id))
@@ -174,7 +179,9 @@ func pickOption(seed uint32, l layerInfo) string {
 	for ; len(choices) == 0; tier-- {
 		for _, o := range l.options {
 			if o.rarity == tier {
-				choices = append(choices, o.id)
+				for w := max(1, optionWeights[string(l.id)+"/"+o.id]); w > 0; w-- {
+					choices = append(choices, o.id)
+				}
 			}
 		}
 		if tier == common {
@@ -280,6 +287,9 @@ func noColour() bool {
 func (a *App) pick(layer moodLayer) string {
 	id := a.mood.picks[layer]
 	lvl := a.surprise()
+	if layer == layerLight && a.uiConfig != nil && a.uiConfig.Display.Disco && lvl != surpriseOff {
+		return "disco" // typed "disco" on Settings > About
+	}
 	if noColour() && lvl == surpriseFull {
 		lvl = surpriseCalm
 	}
