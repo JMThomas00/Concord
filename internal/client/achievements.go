@@ -195,3 +195,29 @@ var achievementTiers = map[string]string{
 	"streak_3": "🥉", "streak_7": "🥈", "streak_30": "🥇",
 	"first_win": "🥉", "wins_10": "🥈", "wins_50": "🥇",
 }
+
+// secretDone says what was done to earn a secret achievement, shown once
+// it's earned (until then it stays a secret).
+var secretDone = map[string]string{
+	"egg_konami":      "Entered the Konami code",
+	"egg_wine":        "Pressed the grapes into wine",
+	"egg_burst":       "Typed grape on the About page",
+	"egg_disco":       "Started a disco party",
+	"egg_name":        "Saw your own name as the banner",
+	"egg_corner":      "The bouncing logo hit a corner",
+	"egg_screensaver": "Waited long enough for a screensaver",
+	"egg_bbs":         "Dialled up the Concord BBS",
+	"egg_halloween":   "Opened Concord on Halloween",
+	"egg_december":    "Opened Concord in December",
+	"egg_newyear":     "Opened Concord at the new year",
+	"egg_april":       "Opened Concord on April Fools' Day",
+	"egg_birthday":    "Opened Concord on its birthday",
+}
+
+// description says what an achievement is for.
+func (ach achievement) description() string {
+	if d := secretDone[ach.id]; d != "" {
+		return d
+	}
+	return ach.hint
+}

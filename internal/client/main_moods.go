@@ -99,7 +99,7 @@ func (ch *CommandHandler) handleGrapeCommand() (string, error) {
 // handleDiscoCommand: /disco throws a short party on your own screen.
 func (ch *CommandHandler) handleDiscoCommand() (string, error) {
 	ch.app.startEgg("party", 6*time.Second)
-	return "🪩 Party time (only on your screen)", nil
+	return "🪩 " + discoQuips[rng.Intn(len(discoQuips))], nil
 }
 
 // handleMoodCommand: /mood shares today's mood in the channel; /mood #CODE
@@ -349,4 +349,36 @@ func (a *App) onGameResult(p protocol.PluginGameResultPayload) {
 		a.unlock("wins_10")
 	}
 	a.celebrateHere()
+}
+
+// isSystemDisplay reports a system line in the chat (not a message anyone
+// wrote), which message navigation steps over.
+func isSystemDisplay(m *MessageDisplay) bool {
+	return m != nil && (m.IsSystem || m.AuthorName == "System")
+}
+
+// lastSelectable is the newest message navigation can land on, or -1.
+func lastSelectable(messages []*MessageDisplay) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if !isSystemDisplay(messages[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// discoQuips: what /disco says in the status bar (only you see the party).
+var discoQuips = []string{
+	"Party of one. Only you can see this.",
+	"It's a personal party. Nobody else was invited.",
+	"Dance like nobody's watching. Nobody is.",
+	"The VIP list has exactly one name on it.",
+	"Your coworkers can't see this. Act natural.",
+	"Private disco: no cover charge, no other guests.",
+	"The DJ takes requests. The DJ is also you.",
+	"Mirror ball rented for one. The grapes are dancing.",
+	"Silent disco, extra silent edition.",
+	"This party is invisible to everyone but you. Very exclusive.",
+	"Someone had to start the party. It was you. Alone.",
+	"Grapes on the dance floor, and only you can see them.",
 }

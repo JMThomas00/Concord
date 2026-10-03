@@ -868,8 +868,8 @@ func (a *App) renderServerIcons(width, height int) string {
 
 // renderMainView renders the main chat interface with 4-column layout
 func (a *App) renderMainView() string {
-	// Use width-1 to account for potential terminal scrollbar or edge
-	availableWidth := a.width - 1
+	// The full width, so the members panel ends where the status bar does.
+	availableWidth := a.width
 
 	// Server list width animates between 22 (expanded) and 10 (collapsed)
 	serverIconsWidth := a.serverListAnimWidth
@@ -1337,9 +1337,10 @@ func (a *App) renderChatPanel(width, height int) string {
 	// The channel name sits in the chat box's own top border (see
 	// embedBorderTitle), so the box starts on the same row as the other
 	// panels' borders -- no separate header/spacer rows.
-	inputHeight := 6 // 4 textarea lines + top and bottom border
+	// The typing indicator sits in the chat box's bottom border
+	// (embedBorderBottom), so the input box starts right under it.
+	inputHeight := 7 // 5 textarea lines + top and bottom border
 	chatHeight := height - inputHeight
-	chatHeight -= 1 // Reserve space for typing indicator (always present, blank when inactive)
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
@@ -1494,7 +1495,7 @@ func (a *App) renderChatPanel(width, height int) string {
 
 	chat := embedBorderTitle(chatStyle.Render(chatContent), channelTitle, lipgloss.NewStyle().Foreground(chatBorderColor))
 
-	// Typing indicator — always reserve space (render blank when inactive to prevent layout shift).
+	// Typing indicator, in the chat box's bottom border.
 	// The animation style and tick rate are set via Settings > Display > Typing Animation.
 	typing := ""
 	if len(a.typingUsers) > 0 {
@@ -1528,15 +1529,13 @@ func (a *App) renderChatPanel(width, height int) string {
 		textStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 			Italic(true)
-		typingLine := "  " + spinnerStyle.Render(frame) + " " + textStyle.Render(who+"...")
-		typing = lipgloss.NewStyle().Width(width).Render(typingLine)
-	} else {
-		// Render blank line to maintain spacing (prevents border shift when typing starts/stops)
-		typing = lipgloss.NewStyle().Width(width).Height(1).Render("")
+		typing = spinnerStyle.Render(frame) + " " + textStyle.Render(who+"...")
 	}
+	// It sits in the chat box's bottom border, like the channel name in the top.
+	chat = embedBorderBottom(chat, typing, lipgloss.NewStyle().Foreground(chatBorderColor))
 
-	// Input area — full rounded border; textarea is 4 content lines so that
-	// 1 top border + 4 content + 1 bottom border = 6 rows total (same slot, no gap).
+	// Input area — full rounded border; textarea is 5 content lines so that
+	// 1 top border + 5 content + 1 bottom border = 7 rows total (same slot, no gap).
 	inputBorderColor := lipgloss.Color(a.theme.Colors.Comment)
 	if a.focus == FocusInput {
 		inputBorderColor = lipgloss.Color(a.theme.Colors.Purple)
@@ -1568,9 +1567,8 @@ func (a *App) renderChatPanel(width, height int) string {
 	}
 	input := zone.Mark("chat-input", inputStyle.Render(inputContent))
 
-	// Combine vertically — always include typing row (blank when inactive) to prevent border shift
-	// Note: pinnedHeader is now rendered INSIDE the chat border, not as a separate element
-	parts := []string{chat, typing, input}
+	// Note: pinnedHeader is rendered INSIDE the chat border, not as a separate element
+	parts := []string{chat, input}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
@@ -2787,5 +2785,26 @@ func (a *App) renderKeyHintGrid(rows [][]keyHint) string {
 		}
 		lines[r] = b.String()
 	}
+	return strings.Join(lines, "\n")
+}
+
+// embedBorderBottom puts text into a box's bottom border, the way
+// embedBorderTitle does the top: ╰─ text ───╯. Empty text leaves it plain.
+func embedBorderBottom(box, text string, borderStyle lipgloss.Style) string {
+	if text == "" {
+		return box
+	}
+	lines := strings.Split(box, "\n")
+	last := len(lines) - 1
+	width := lipgloss.Width(lines[last])
+	const chrome = 5 // "╰─ " + " " + "╯"
+	if width < chrome+2 {
+		return box
+	}
+	if maxText := width - chrome - 1; lipgloss.Width(text) > maxText {
+		text = ansi.Truncate(text, maxText, "…")
+	}
+	fill := width - chrome - lipgloss.Width(text)
+	lines[last] = borderStyle.Render("╰─ ") + text + borderStyle.Render(" "+strings.Repeat("─", fill)+"╯")
 	return strings.Join(lines, "\n")
 }

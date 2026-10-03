@@ -126,13 +126,16 @@ func (a *App) applyFx(out string) string {
 			if cal := a.calendarAtmosphere(now, now.Sub(a.fx.stageAt).Seconds()); cal != nil {
 				bg = cal
 			}
-			if bg != nil {
-				g.underlay(bg, 3, 1)
-			}
+			// The stage's own words go on before the background, so the
+			// background keeps clear of them like any text, rather than
+			// a drifting leaf hiding them for a frame.
 			a.drawAccents(g)
 			a.paintFortune(g)
 			a.paintMoment(g, now)
 			a.paintCalendarText(g, now)
+			if bg != nil {
+				g.underlay(bg, 3, 1)
+			}
 			a.paintDoze(g, now)
 			if a.shaking(now) {
 				if z := zone.Get("stage-form"); z != nil && !z.IsZero() {

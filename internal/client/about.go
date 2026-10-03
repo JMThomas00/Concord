@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Settings > About: the client's (and connected server's) build, this
@@ -123,6 +124,10 @@ func (a *App) renderAboutContent(width, height int) string {
 	}
 
 	// Right: the collection and achievements.
+	rightW := layout.interiorWidth
+	if layout.interiorWidth >= leftW+gap+50 {
+		rightW -= leftW + gap
+	}
 	coll := a.coll()
 	var right []string
 	right = append(right, purple.Render("Collection"), "")
@@ -149,7 +154,9 @@ func (a *App) renderAboutContent(width, height int) string {
 
 	// The cellar: every legendary seen, newest first.
 	if len(coll.Cellar) > 0 {
-		right = append(right, "", purple.Render(fmt.Sprintf("Cellar  %d", len(coll.Cellar)))+dim.Render("   C choose · U uncork"), "")
+		right = append(right, "", purple.Render(fmt.Sprintf("Cellar  %d", len(coll.Cellar))),
+			dim.Render("  Legendary moods you've seen, kept so you can see them again."),
+			dim.Render("  C picks a bottle; U uncorks it: that mood comes back next launch."), "")
 		sel := -1
 		if a.settingsState != nil {
 			sel = a.settingsState.AboutCellar
@@ -186,7 +193,14 @@ func (a *App) renderAboutContent(width, height int) string {
 			if medal := achievementTiers[ach.id]; medal != "" {
 				mark = medal // bronze, silver or gold
 			}
-			right = append(right, "  "+mark+normal.Render(ach.name)+dim.Render("  "+date))
+			// Name, what it was for, and when: the description gives way if
+			// the column is narrow.
+			desc := ach.description()
+			room := rightW - lipgloss.Width(mark) - len([]rune(ach.name)) - len(date) - 8
+			if len([]rune(desc)) > room {
+				desc = ansi.Truncate(desc, max(0, room), "…")
+			}
+			right = append(right, "  "+mark+normal.Render(ach.name)+"  "+dim.Render(desc)+"  "+dim.Italic(true).Render(date))
 		case ach.secret:
 			hidden++
 		default:

@@ -1,10 +1,13 @@
 package client
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/google/uuid"
 )
@@ -106,3 +109,35 @@ func TestMainWindowEggsDraw(t *testing.T) {
 		}
 	}
 }
+
+func TestTypingSitsInTheChatBorder(t *testing.T) {
+	box := "╭────────────────────╮\n│ hi                 │\n╰────────────────────╯"
+	out := embedBorderBottom(box, "amy is typing...", lipglossPlain())
+	last := strings.Split(out, "\n")[2]
+	if !strings.HasPrefix(last, "╰─ amy is typing...") || !strings.HasSuffix(last, "╯") {
+		t.Fatalf("bottom border %q", last)
+	}
+	if embedBorderBottom(box, "", lipglossPlain()) != box {
+		t.Fatal("an empty indicator changed the border")
+	}
+}
+
+func TestMessageNavigationSkipsSystemLines(t *testing.T) {
+	msgs := []*MessageDisplay{{AuthorName: "amy"}, {IsSystem: true}, {AuthorName: "System"}, {AuthorName: "ben"}, {IsSystem: true}}
+	if lastSelectable(msgs) != 3 {
+		t.Fatalf("lastSelectable = %d", lastSelectable(msgs))
+	}
+}
+
+func TestMoonPhases(t *testing.T) {
+	pal := (&App{theme: eggApp(t).theme}).loadingPalette()
+	for _, phase := range []float64{.5, math.Pi / 2, math.Pi, 3 * math.Pi / 2, 2*math.Pi - .5} {
+		g := newGrid(20, 10)
+		drawMoon(g, 0, 0, phase, pal)
+		if strings.TrimSpace(ansi.Strip(g.String())) == "" {
+			t.Fatalf("phase %.2f drew nothing", phase)
+		}
+	}
+}
+
+func lipglossPlain() lipgloss.Style { return lipgloss.NewStyle() }

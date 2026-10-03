@@ -782,7 +782,7 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	input.Placeholder = "Type a message..."
 	input.CharLimit = 2000
 	input.SetWidth(50)
-	input.SetHeight(4) // 4 rows of text (matches layout slot: 2 borders + 4 content = 6 rows)
+	input.SetHeight(5) // 5 rows of text (matches layout slot: 2 borders + 5 content = 7 rows)
 	input.ShowLineNumbers = false
 	input.Prompt = "" // remove the default "> " prompt gutter character
 	// Configure keybindings: Enter sends the message (handled in handleKeyPress).
@@ -1592,6 +1592,14 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				} else {
 					s.HelpScrollOffset++
+				}
+			}
+			// About scrolls the same way (its achievements run long).
+			if s != nil && s.SelectedCategory == settingsCatAbout {
+				if msg.Type == tea.MouseWheelUp {
+					s.AboutScroll = max(0, s.AboutScroll-3)
+				} else {
+					s.AboutScroll += 3 // clamped when drawn
 				}
 			}
 		}
@@ -2651,11 +2659,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewMain && (a.focus == FocusChat || a.focus == FocusInput) &&
 			a.activeConn != nil && a.currentChannel != nil {
 			messages := a.activeConn.GetMessages(a.currentChannel.ID)
-			if len(messages) > 0 {
+			if last := lastSelectable(messages); last >= 0 {
 				a.messageNavMode = true
 				a.inMessageEditMode = false // Start in Level 1 (message selection)
 				a.focus = FocusMessageNav
-				a.messageNavIndex = len(messages) - 1 // Start at newest message
+				a.messageNavIndex = last // the newest message (system lines are skipped)
 				a.messageSelectionStart = nil         // Clear any previous selection
 				a.messageSelectionEnd = nil
 				a.input.Blur()
@@ -3294,13 +3302,25 @@ func (a *App) navigateMessage(delta int) tea.Cmd {
 		return nil
 	}
 
-	// Update index with wrapping
-	a.messageNavIndex += delta
-	if a.messageNavIndex < 0 {
-		a.messageNavIndex = 0
-	} else if a.messageNavIndex >= len(messages) {
-		a.messageNavIndex = len(messages) - 1
+	// Step over system lines (plugin notices, moderation, /vintage): they
+	// aren't messages you can select, reply to or copy.
+	step := 1
+	if delta < 0 {
+		step = -1
 	}
+	idx := a.messageNavIndex
+	for moved := 0; moved < abs(delta); {
+		next := idx + step
+		for next >= 0 && next < len(messages) && isSystemDisplay(messages[next]) {
+			next += step
+		}
+		if next < 0 || next >= len(messages) {
+			break // nothing selectable further that way
+		}
+		idx = next
+		moved++
+	}
+	a.messageNavIndex = idx
 
 	// PRE-CALCULATE scroll position BEFORE updating content
 	linePos := a.calculateMessageLinePosition(a.messageNavIndex)
@@ -5104,17 +5124,22 @@ func (a *App) updateChatContent() {
 				maxMsgLen = 30
 			}
 
-			// Simple rune-based truncation
-			msgRunes := []rune(msgContent)
-			if len(msgRunes) > maxMsgLen {
-				msgContent = string(msgRunes[:maxMsgLen-1]) + "…"
+			// A long one (/vintage, a plugin's notice) wraps onto more
+			// centered lines rather than being cut off.
+			if len([]rune(msgContent)) > maxMsgLen {
+				wrapped := lipgloss.NewStyle().Width(maxMsgLen).Align(lipgloss.Center).Render(msgContent)
+				var lines []string
+				for _, l := range strings.Split(wrapped, "\n") {
+					lines = append(lines, lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, textStyle.Render(strings.TrimSpace(l))))
+				}
+				contentLine = strings.Join(lines, "\n")
+			} else {
+				// Build the line: bars + message + bars (with space padding)
+				line := barStyle.Render(leftBar) + textStyle.Render(msgContent) + barStyle.Render(rightBar)
+
+				// Center the line in the viewport
+				contentLine = lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, line)
 			}
-
-			// Build the line: bars + message + bars (with space padding)
-			line := barStyle.Render(leftBar) + textStyle.Render(msgContent) + barStyle.Render(rightBar)
-
-			// Center the line in the viewport
-			contentLine = lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, line)
 		} else if msg.IsWhisper {
 			// Whisper: render with alignment based on ownership
 			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(viewportWidth), msg.IsOwn)
@@ -5521,7 +5546,7 @@ func (a *App) clearTypingState() {
 // so that chatViewport.Width is correct before updateChatContent() is called.
 func (a *App) updateViewportSize() {
 	// Must match renderMainView exactly — use animated widths, not hardcoded defaults
-	availableWidth := a.width - 1
+	availableWidth := a.width
 	serverIconsWidth := a.serverListAnimWidth
 	if serverIconsWidth < 10 {
 		serverIconsWidth = 10
@@ -5546,15 +5571,14 @@ func (a *App) updateViewportSize() {
 
 	// Set textarea width — matches renderChatPanel line 919
 	a.input.SetWidth(interiorWidth - 2)
-	a.input.SetHeight(4)
+	a.input.SetHeight(5)
 
 	// Set viewport dimensions — must match renderChatPanel's chatHeight math
-	// (input box, then the always-present typing-indicator row; the channel
-	// title lives in the chat box's own top border, not a separate row).
+	// (the input box; the channel title and typing indicator live in the
+	// chat box's own top and bottom borders, not separate rows).
 	panelHeight := a.height - 2
-	inputHeight := 6
-	typingHeight := 1
-	chatHeight := panelHeight - inputHeight - typingHeight
+	inputHeight := 7
+	chatHeight := panelHeight - inputHeight
 	if interiorWidth > 0 {
 		a.chatViewport.Width = interiorWidth
 	}

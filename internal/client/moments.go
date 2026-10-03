@@ -186,10 +186,9 @@ func (a *App) seasonAtmosphere(g *fxGrid, t float64, pal loadingPalette) {
 			}
 		}
 	case "autumn": // the harvest moon
-		moon := []string{" ▄████▄ ", "████████", "████████", " ▀████▀ "}
-		for i, l := range moon {
-			g.text(4+i, g.w-14, l, sgrFor(faint("#ffcf70", pal, .15), "", false))
-		}
+		// A different phase each launch, from a thin crescent to full.
+		phase := .45 + cellHash(seed, 0, 0, 16)*(2*math.Pi-.9)
+		drawMoon(g, 2, g.w-20, phase, pal)
 	case "winter": // frost creeping in at the edges
 		for i := 0; i < (g.w+g.h)*2/3; i++ {
 			edge := cellHash(seed, i, 12, 1)
@@ -270,5 +269,54 @@ func glitch(g *fxGrid, age time.Duration, seed uint64) {
 	}
 	if r := 1 + int(cellHash(beat, 9, 0, 4)*float64(g.h-1)); r < g.h {
 		g.rows[r] = append([]fxCell(nil), g.rows[r-1]...) // the tear
+	}
+}
+
+// moonRadius is the moon's radius in pixels (half-block pixels are about
+// square: a cell is one wide and two tall).
+const moonRadius = 7.0
+
+var moonCraters = [][3]float64{{-.35, -.3, .18}, {.25, .1, .22}, {-.1, .45, .14}, {.45, -.4, .1}, {-.5, .25, .1}}
+
+// drawMoon draws the moon at phase (radians: 0 new, π full; waxing lit on
+// the right, waning on the left) with its top-left cell at row, col. The
+// lit side is shaded toward its edge and has a few craters; the dark side
+// shows faintly, the way earthshine shows it.
+func drawMoon(g *fxGrid, row, col int, phase float64, pal loadingPalette) {
+	r := moonRadius
+	k := math.Cos(phase)
+	pixel := func(px, py int) (string, bool) {
+		x, y := (float64(px)+.5-r)/r, (float64(py)+.5-r)/r
+		d := x*x + y*y
+		if d > 1 {
+			return "", false
+		}
+		s := math.Sqrt(1 - y*y)
+		lit := (phase <= math.Pi && x > s*k) || (phase > math.Pi && x < -s*k)
+		if !lit {
+			return faint("#8f93b8", pal, .78), true // earthshine
+		}
+		col := mixOr("#f6ecd0", "#c8b88e", 1-d*.6) // limb darkening
+		for _, c := range moonCraters {
+			if dx, dy := x-c[0], y-c[1]; dx*dx+dy*dy < c[2]*c[2] {
+				col = mixOr(col, "#a99a74", .55)
+			}
+		}
+		return col, true
+	}
+	size := int(2 * r)
+	for cy := 0; cy < size/2; cy++ {
+		for cx := 0; cx < size; cx++ {
+			top, okT := pixel(cx, cy*2)
+			bot, okB := pixel(cx, cy*2+1)
+			switch {
+			case okT && okB:
+				g.set(row+cy, col+cx, "▀", sgrFor(top, bot, false), 1)
+			case okT:
+				g.set(row+cy, col+cx, "▀", sgrFor(top, "", false), 1)
+			case okB:
+				g.set(row+cy, col+cx, "▄", sgrFor(bot, "", false), 1)
+			}
+		}
 	}
 }
