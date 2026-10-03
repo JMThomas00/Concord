@@ -1,47 +1,33 @@
 # Concord
 
-A terminal-based chat application inspired by Discord, built in Go with a beautiful TUI.
+A chat app for your terminal, inspired by Discord: servers, channels, voice, games and plugins, all keyboard-driven, all self-hostable. Built in Go on the [Charm](https://charm.sh) stack.
 
-**Website:** [concordchat.cc](https://concordchat.cc) (by [Anthoneyq](https://github.com/Anthoneyq)) · **Official server:** `server.concordchat.cc` · **Install:** [one line](#installation)
-
-```text
-   ____                              _
-  / ___|___  _ __   ___ ___  _ __ __| |
- | |   / _ \| '_ \ / __/ _ \| '__/ _' |
- | |__| (_) | | | | (_| (_) | | | (_| |
-  \____\___/|_| |_|\___\___/|_|  \__,_|
-
-  Terminal Chat — IRC-like, self-hosted, keyboard-driven
-```
+**Website:** [concordchat.cc](https://concordchat.cc) (by [Anthoneyq](https://github.com/Anthoneyq)) · **Official server:** `server.concordchat.cc` · **Install:** [one line](#install)
 
 <!--
-  Demo GIF placeholder. Regenerate with `vhs demo/concord-demo.tape`
-  (needs a real terminal + a running demo server — see that file's own
-  prerequisites comment) and uncomment the line below once recorded:
-  ![Concord demo](demo/concord-demo.gif)
+  Hero shot placeholder: a VHS recording of a seeded demo server goes here
+  (To Do, "hero shot"). Uncomment once recorded:
+  ![Concord](demo/concord-demo.gif)
 -->
 
 ## Features
 
-- **Self-hosted servers** — run your own server, share a host:port, done
-- **Server discovery** — optional Grapevine hub network for finding public servers
-- **Multi-server** — connect to as many servers as you want simultaneously
-- **Real-time messaging** — WebSocket-based chat with typing indicators, replies, edits, and soft-deletes
-- **Voice channels** — WebRTC P2P audio with Opus encoding; Voice Activity Detection with adjustable sensitivity
-- **Hierarchical channels** — collapsible categories, folder-explorer style
-- **Role-based permissions** — Admin, Moderator, and custom roles with fine-grained bit flags
-- **Moderation tools** — kick, ban, timeout, mute, title, force-move voice
-- **Whispers** — ephemeral private messages via `/whisper @user`
-- **Message pinning** — pin important messages per channel
-- **Unread tracking** — per-channel unread dots and `@mention` counters
-- **Theme browser** — 40+ built-in themes, real-time preview, hot-swap
-- **OS notifications** — desktop alerts for mentions and DMs (cross-platform)
-- **Auto-connect** — one-time identity setup, then the app just opens
-- **Keyboard-first, with mouse support** — click to focus a panel, select a channel, click a link, or pick a message; every mouse action has a keyboard equivalent too
+- **Your own servers.** Run one on a home PC, a Raspberry Pi or a VPS. Every server is independent, IRC-style, with no central account.
+- **Many servers at once.** One client and one profile; switch servers without dropping out of a voice call.
+- **Channels and groups** in collapsible categories, with roles, per-channel permission overwrites, nicknames and custom titles.
+- **Chat that feels modern:** markdown, clickable links, replies, edits, pins, `@mentions` with autocomplete, typing indicators, whispers, and toasts for new messages.
+- **Voice channels:** peer-to-peer WebRTC with Opus at 48 kHz, RNNoise noise suppression, echo cancellation, automatic levelling and per-person volume.
+- **File sharing** peer-to-peer (`/attach`, `/download`): nothing is stored on the server.
+- **Plugins:** chess, checkers, Tak and tic-tac-toe channels, a kanban board (Tukan), an AI persona (Mynah), with achievements and leaderboards. Install them from inside Concord, or build your own with the SDK.
+- **The Grapevine:** an optional, federated directory of public servers, browsable and joinable from the client.
+- **40+ themes**, switchable live, plus your own.
+- **Accounts done properly:** several profiles per computer, optional email verification and password reset, sign-in on every server at once.
+- **Keyboard-first, mouse-friendly.** Every mouse action has a key.
+- **Personality:** shaded ASCII grapes, loading screens, moods, screensavers, easter eggs and a collection to complete. 🍇
 
-## Installation
+## Install
 
-Paste one line into a terminal. A short, friendly form asks what you'd like (the client, a server, a hub, or any mix) and where, then installs everything and gets you chatting.
+Paste one line into a terminal. A short form asks what you'd like (the client, a server, a hub, or any mix) and where. It then installs everything and helps you take your first steps.
 
 **macOS and Linux**
 
@@ -58,578 +44,221 @@ irm https://github.com/JMThomas00/Concord/releases/latest/download/install.ps1 |
 The installer:
 
 - downloads the latest release for your computer and checks it against its published checksum;
-- installs what the client needs (on Linux, a couple of system libraries through your package manager, asking for your password once);
-- puts `concord` on your PATH (and, on Windows, adds Concord to Windows Terminal's new-tab menu);
-- writes a new server's or hub's settings, sets it to start when the computer starts or when you sign in, and checks it's running;
+- installs what the client needs (on Linux, GTK if it's missing, asking for your password once);
+- puts `concord` on your PATH (and on Windows adds Concord to Windows Terminal's new-tab menu);
+- sets up a server or hub: its settings, starting it in the background (from boot or when you sign in), and checking it's up;
 - can list your server on the Grapevine, connect your hub to the official one, and add the official Concord server to your client.
 
-**Updating:** run the same line again. It updates what's there and keeps your settings and data.
+**Updating, reconfiguring, uninstalling:** on Concord's login screen, **Ctrl+U** checks for a newer release and offers **U**pdate, **C**onfigure (the installer's questions again, starting from your current settings) and uninstall (**X**). Running the one-liner again also updates, and keeps your settings and data.
 
 **Just looking?** Add `--dry-run` to see every step without changing anything: `curl -fsSL …/install.sh | sh -s -- --dry-run`, or on Windows set `$env:CONCORD_INSTALL_ARGS = "--dry-run"` first.
 
-### Building from Source
+**Prefer to download?** Every [release](https://github.com/JMThomas00/Concord/releases) has the client, server and hub for Windows, macOS and Linux, the server and hub for Linux on ARM and Intel Macs, and `SHA256SUMS`.
 
-#### Prerequisites
+## Getting Started
 
-The **server** is pure Go (no CGO). The **client** requires CGO for voice (GCC/MSYS2 on Windows):
+1. **Open Concord:** type `concord` (in a new terminal, if the installer just put it on your PATH).
+2. **Make your profile:** a name, your email and a password. One profile signs you in to every server you join.
+3. **Join a server:**
+   - **The official server**, `server.concordchat.cc`, is already in your list if you said yes in the installer. Say hi!
+   - **Any other server:** press **+** in the server column or **Ctrl+B**, then enter its address and port (and turn on TLS for servers behind HTTPS, like the official one on port 443).
+   - **Browse the Grapevine:** **Ctrl+G** on the login screen, or **Settings → Manage Servers → B**. Pick a server and press **A** to join.
+4. **Chat:** type and press **Enter**. **Tab** moves between panels, `/help` finds every command, and **Settings → Help** has the full guide.
 
-- **Go 1.24.0+**
-- **Git**
-- **Make** (optional)
-- **GCC** (client with voice only — on Windows, use [MSYS2](https://www.msys2.org/) MinGW64)
+**Running your own server?** The first person to sign up on a new server becomes its owner. Give friends its address (on your network, the installer's summary shows it; across the internet, forward the port or put it behind a tunnel). Then manage channels, roles, members and plugins from **Ctrl+B → your server**.
 
-#### Windows
+## Plugins
 
-1. Install **Go 1.24.0+** from [go.dev/dl](https://go.dev/dl/) and run the installer.
-2. For the **voice client**, install **MSYS2**:
-   - Download and install from [msys2.org](https://www.msys2.org/)
-   - Open **MSYS2 MinGW64** and run: `pacman -S mingw-w64-x86_64-gcc make`
-   - Add `C:\msys64\mingw64\bin` to your Windows PATH
-3. Verify:
+Plugins are separate programs a server runs alongside itself. They add channels with games, boards or bots, and never need changes to Concord.
 
-   ```powershell
-   go version
-   gcc --version
-   ```
+- **Install one** (server admins): **Settings → Plugins → I**, then type its GitHub repo, like `JMThomas00/concord-chess`. Concord downloads the right build, checks it, and starts it with no restart. **U** updates it later.
+- **Plugins we've made:**
+  - games: [tic-tac-toe](https://github.com/JMThomas00/concord-tictactoe), [checkers](https://github.com/JMThomas00/concord-checkers), [Tak](https://github.com/JMThomas00/concord-tak) and [chess](https://github.com/JMThomas00/concord-chess). Each has seats, challenges, spectators, a computer opponent, achievements and a leaderboard, and each also plays standalone in a terminal, even over the network.
+  - **Tukan:** a kanban board.
+  - **Mynah:** AI personas that chat.
+- **Build your own:** the plugin SDK (`github.com/JMThomas00/Concord/sdk`) handles the connection, panes, game tables and testing. `concord-plugin new <name> --template game|pane|bot|pty` gives you a working repo with a release workflow. [`sdk/PROTOCOL.md`](sdk/PROTOCOL.md) covers other languages, and the `/concord` skill in `.claude/skills/concord/` teaches an AI agent to build one.
 
-#### Linux
+## Keyboard Shortcuts
 
-```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install golang git make gcc
+`/help` and **Settings → Help** have the complete list. The essentials:
 
-# Fedora/RHEL
-sudo dnf install golang git make gcc
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Move between panels |
+| `Esc` | Close, cancel, go back |
+| `Ctrl+S` | Settings |
+| `Ctrl+B` | Server management |
+| `Ctrl+T` | Theme browser |
+| `Ctrl+G` | Grapevine browser (login and Add Server screens) |
+| `Ctrl+P` / `Ctrl+F` / `Ctrl+U` | Profiles / forgot password / updates (login screen) |
+| `[` / `]` | Hide or show the server list / member list |
+| `Ctrl+M` / `Ctrl+D` | Mute / deafen yourself in voice |
+| `Alt+M` | Message navigation: reply, edit, delete, links, pin, copy |
+| `Ctrl+J` | New line in a message |
+| `Ctrl+Q` | Quit |
 
-# Arch
-sudo pacman -S go git make gcc
-```
+In a plugin channel the pane has your keys. Esc and Tab still move between panels unless the plugin needs them for something on screen, and **Ctrl+]** always hands focus back.
 
-#### macOS
+## Slash Commands
 
-```bash
-brew install go git make
-xcode-select --install   # provides GCC/Clang
-```
+Type `/` in the chat box. `/help` opens a searchable finder.
 
-#### Building
+**Everyone**
 
-```bash
-git clone https://github.com/JMThomas00/Concord.git
-cd Concord
-```
+| Command | What it does |
+| --- | --- |
+| `/whisper @user <msg>` (`/w`) | A private, ephemeral message |
+| `/links [N]` | Links from the last N messages |
+| `/theme [name]` | The theme browser, or a theme by name |
+| `/status <message>` | Set your status (`/status clear` removes it) |
+| `/nick <nickname>` | Your nickname on this server (`clear` removes it) |
+| `/attach <path> [caption]` | Share a file peer-to-peer (stay online so people can download it) |
+| `/download <attachment-id>` | Download a shared file |
+| `/mute` / `/unmute` | Mute or unmute the current channel |
+| `/join-voice [#channel]` / `/leave-voice` | Join or leave voice |
+| `/mood [#CODE]` | Share today's mood, or adopt someone's for your next launch |
+| `/vintage` | Your time on Concord as a wine-tasting note |
+| `/collection` | Share what you've collected |
 
-**Server** (pure Go, no CGO):
-```bash
-go build -o build/concord-server.exe ./cmd/server   # Windows
-go build -o build/concord-server ./cmd/server        # Linux/macOS
-```
+**Moderators**
 
-**Client with voice** (requires GCC):
-```bash
-# Windows (MSYS2 GCC must be in PATH)
-CGO_ENABLED=1 go build -o build/concord.exe ./cmd/client
+| Command | What it does |
+| --- | --- |
+| `/create-channel <name>`, `/create-group <name>` | Make a channel or group |
+| `/rename-channel <name>`, `/move-channel <group>` | Rename or move the current channel |
+| `/delete-channel`, `/delete-group <name>` | Delete the current channel, or an empty group |
+| `/lock` / `/unlock` | Only mods can post / everyone can |
+| `/pin [N]` / `/unpin [N]` | Pin or unpin a message |
+| `/kick @user [reason]`, `/timeout @user <minutes>` | Remove someone, for now or for a while |
+| `/mute @user [minutes]` / `/unmute @user` | Server-mute a member |
+| `/mute-voice`, `/deafen-voice`, `/unmute-voice @user` | Voice moderation |
 
-# Linux/macOS
-CGO_ENABLED=1 go build -o build/concord ./cmd/client
-```
+**Admins**
 
-**Client without voice** (pure Go, no CGO):
-```bash
-go build -tags novoice -o build/concord-novoice.exe ./cmd/client   # Windows
-go build -tags novoice -o build/concord-novoice ./cmd/client        # Linux/macOS
-```
+| Command | What it does |
+| --- | --- |
+| `/roles`, `/role assign\|remove @user <role>` | List roles, give or take one |
+| `/create-role <name> [text\|moderator\|admin]` | A new role, optionally from a preset |
+| `/title @user <title>` | A custom title (`clear` removes it) |
+| `/ban @user [reason]` / `/unban @user` | Ban or unban |
+| `/move-voice @user <channel>` | Move someone to another voice channel |
 
-**Grapevine hub** (pure Go, optional):
-```bash
-go build -o build/concord-hub.exe ./cmd/hub   # Windows
-go build -o build/concord-hub ./cmd/hub        # Linux/macOS
-```
+## Themes
 
-**Using Make:**
-```bash
-make build                  # Server + client (voice)
-make build-server           # Server only
-make build-client           # Client with voice
-make build-client-novoice   # Client without voice
-make build-hub              # Grapevine hub
-make build-windows-voice    # Windows client via MSYS2
-```
+More than 40 themes are built in: Dracula (the default), Alucard, Nord, Gruvbox, Catppuccin, Tokyo Night, Kanagawa, One Dark, Everforest, Solarized and many more. `terminal-default` follows your terminal's own colours, and changes with them. Browse and preview them live with **Ctrl+T** or `/theme`.
 
-### Pre-built Binaries
+**Your own:** put a `.toml` file in `~/.concord/themes/`. A file with a built-in theme's name replaces it. See [`internal/themes/themes/dracula.toml`](internal/themes/themes/dracula.toml) for every field.
 
-Every [release](https://github.com/JMThomas00/Concord/releases) carries the server, client and hub for Windows, macOS and Linux (plus the server and hub for Linux on ARM and Intel Macs), `SHA256SUMS`, and the installer itself. The one-line installer picks the right one for you.
+## Voice
 
----
+Voice goes directly between the people in a call (WebRTC), so a server only introduces them and never carries the audio.
 
-## Quick Start
+- **Opus** at 48 kHz with in-band error correction and loss concealment. Codec Quality in **Settings → Audio** sets the bitrate (24–96 kbps).
+- **On the way out:** echo cancellation, an 80 Hz low-cut, **RNNoise** noise suppression (keyboards, fans and coughs fade while you talk), and automatic levelling.
+- **Voice detection** opens your mic only when you speak.
+- **Each person's volume** can be set from the member list (select them, then **←/→**).
+- **Your call stays connected** while you look at other servers.
 
-### Step 1: Start the Server
+Everyone in a call needs a current client: older ones can't play the newer audio packets.
 
-The first time you run the server, an interactive setup wizard launches automatically:
+## The Grapevine
 
-```text
-Windows:   build\concord-server.exe
-Linux/mac: ./build/concord-server
-```
+The Grapevine is Concord's opt-in server directory. A **hub** lists the servers that register with it, and hubs can connect to share their listings. Anyone can run one; the official hub is `https://grapevine.concordchat.cc`.
 
-The wizard asks for:
+- **Listing a server:** the installer asks, or set `[grapevine]` in `concord-server.toml` (below). The server registers, reports how many people are online, and re-registers by itself if the hub restarts.
+- **Joining from a listing:** listings never show a server's address. When you join, the hub asks the server to accept a single-use token, and only then gives you its address.
+- **Running a hub:** the installer, or `concord-hub` (a setup wizard on first run; `--setup` runs it again, `--dashboard` shows live stats).
 
-- **Server name** (default: your hostname)
-- **Bind host** (default: `0.0.0.0`)
-- **Port** (default: `8080`)
-- **Database path** (default: `concord.db`)
+## Running a Server by Hand
 
-It writes `concord-server.toml` to the current directory and prints the address to share with users.
+The installer does all of this for you; here's what's underneath.
 
-**Re-run the wizard at any time:**
-```bash
-./build/concord-server --setup
-```
-
-**Server flags:**
-```bash
-./build/concord-server               # Normal mode (logs to stdout)
-./build/concord-server --hybrid      # Log + live dashboard side-by-side
-./build/concord-server --dashboard   # Dashboard only
-./build/concord-server --debug       # Verbose debug logging
-```
-
-The **first user to register** on a fresh server is automatically granted the Admin role.
-
-### Step 2: Start the Client
+The first run of `concord-server` walks through a setup wizard (terms, name, port, email, Grapevine) and writes `concord-server.toml` in the folder it runs from. Flags:
 
 ```text
-Windows:   build\concord.exe
-Linux/mac: ./build/concord
+--reconfigure            run the setup wizard again
+--hybrid / --dashboard   live dashboard beside the log / instead of it
+--debug                  verbose logging
+--test-mail <address>    send a test email with the [mail] settings
+--reset-password <email> give that account a temporary password (servers without mail)
 ```
 
-**First run:** the **Identity Setup** screen asks for your alias, email, and password. This is saved to `~/.concord/config.json` and reused automatically — you only set it once.
-
-**Adding your first server:**
-
-1. From the **Login** screen, press `A` to open **Add Server**
-2. Enter the server address and port (e.g. `localhost` / `8080`)
-3. Press `Enter` — the client connects, registers your identity (or logs in if already registered), and opens chat
-
-**Discovering servers (Grapevine hub browser):**
-
-1. Open **Settings → Manage Servers** and press `B`
-2. Browse public servers by category, search by name or tag
-3. Press `Enter` on a listing then `A` to join
-
-### Step 3: Start Chatting
-
-- Type your message and press `Enter` to send
-- Use `↑`/`↓` to navigate channels
-- Use `/help` to see all slash commands
-- Press `Ctrl+C` or `Ctrl+Q` to quit
-
----
-
-## Configuration
-
-### Server — `concord-server.toml`
-
-Generated by the first-run wizard. Edit by hand if needed:
+A typical `concord-server.toml`:
 
 ```toml
 host = "0.0.0.0"
 port = 8080
-server_name = "Concord Server"
+server_name = "My Concord"
 database_path = "concord.db"
-max_connections = 1000
-debug = false
-admin_email = ""
+plugins_dir = "Plugins"
+admin_email = "you@example.com"   # this account becomes an admin
+# real_ip_header = "CF-Connecting-IP"   # only behind a proxy such as a Cloudflare Tunnel
 
-[message_pruning]
-enabled = true
-interval_hours = 24
-
-# Optional: register with a Grapevine hub for public discovery
-[grapevine]
+[grapevine]                       # optional: list it on a hub
 enabled = true
 hub_url = "https://grapevine.concordchat.cc"
-server_name = "My Server"
-description = "A cool Concord server"
-category = "general"
-tags = ["friendly", "english"]
+public_host = "chat.example.com"  # the address people use to reach it
+public_port = 8080                # 443 means it's reached over https
+description = "Board games and bad puns"
+category = "Gaming"
+tags = ["Gaming", "Tabletop"]
+
+[mail]                            # optional: email verification and password reset
+smtp_host = "smtp.example.com"
+smtp_port = 587
+from = "Concord <concord@example.com>"
 ```
 
-### Client — `~/.concord/config.json`
+**Docker:** the `Dockerfile` and `docker-compose.yml` here run the server and hub (see the comment at the top of `docker-compose.yml`). The official server runs this way, behind a Cloudflare Tunnel.
 
-Managed automatically. Contains identity, UI preferences, audio settings, and hub URLs:
+## Building from Source
 
-```json
-{
-  "version": 1,
-  "identity": { "alias": "user", "email": "user@example.com", "password": "..." },
-  "ui": {
-    "theme": "dracula",
-    "hub_urls": ["https://grapevine.concordchat.cc"]
-  }
-}
+You need **Go 1.24+**. The server, hub and installer are pure Go. The client's voice needs a C compiler (**clang**) and the **Opus** libraries:
+
+| System | Install |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install golang clang make pkg-config libopus-dev libopusfile-dev libgtk-3-dev` |
+| Fedora | `sudo dnf install golang clang make pkgconf opus-devel opusfile-devel gtk3-devel` |
+| Arch | `sudo pacman -S go clang make pkgconf opus opusfile gtk3` |
+| macOS | `brew install go opus opusfile pkg-config` (and `xcode-select --install`) |
+| Windows | Go from [go.dev/dl](https://go.dev/dl/), then [MSYS2](https://www.msys2.org/) with `pacman -S mingw-w64-x86_64-clang mingw-w64-x86_64-opus mingw-w64-x86_64-opusfile mingw-w64-x86_64-pkg-config make`, and `C:\msys64\mingw64\bin` on your PATH. Use clang: MinGW's GCC 16.2 crashes building the audio library. |
+
+```sh
+git clone https://github.com/JMThomas00/Concord.git && cd Concord
+make build            # server, client and hub into build/
+make build-windows    # the same on Windows (the client with Opus built in)
+make build-installer  # concord-install; try it with: build/concord-install --from build --dry-run
+make test             # every test, the SDK's too
 ```
 
-### Client — `~/.concord/servers.json`
+`go build -tags novoice ./cmd/client` builds a client without voice and needs no C compiler.
 
-Managed automatically. Stores the list of known servers and cached auth tokens.
-
----
-
-## Keyboard Shortcuts
-
-### Global
-
-| Key | Action |
-| --- | --- |
-| `Tab` | Cycle focus forward (servers → channels → chat) |
-| `Shift+Tab` | Cycle focus backward |
-| `Ctrl+C` / `Ctrl+Q` | Quit |
-| `Ctrl+B` | Open **Manage Servers** |
-| `Ctrl+T` | Open **Theme Browser** |
-| `Ctrl+G` | Open **Hub Browser** (from Login / Add Server only) |
-| `?` | Show help overlay |
-
-### Mouse
-
-| Action | Effect |
-| --- | --- |
-| Click a panel (server icons, channels, chat, members) | Focus that panel |
-| Click a channel or category | Select it |
-| Click a message | Enter message-highlight mode on it (same as `Alt+M`) |
-| Click a link in a message | Open it |
-| Click a link in the Link Browser | Open it |
-| Scroll wheel over chat / Help page | Scroll |
-
-Every mouse action above has a keyboard equivalent — the terminal's own click-drag text selection still works if your terminal reserves a modifier for it (commonly Shift+drag).
-
-### Channel Navigation (channel panel focused)
-
-| Key | Action |
-| --- | --- |
-| `↑` / `↓` | Move selection |
-| `←` / `→` | Collapse / expand category |
-| `Enter` | Open selected channel |
-| `Shift+↑` / `Shift+↓` | Reorder channel |
-
-### Chat (input focused)
-
-| Key | Action |
-| --- | --- |
-| `Enter` | Send message |
-| `Tab` | Complete `@mention` suggestion |
-| `Esc` | Dismiss popup / return to sidebar |
-| `PgUp` / `PgDn` | Scroll message history |
-| `↑` / `↓` | Scroll message history (when input empty) |
-| `Alt+M` | Enter message-highlight mode |
-
-### Message Highlight Mode (`Alt+M`)
-
-| Key | Action |
-| --- | --- |
-| `↑` / `↓` | Move highlight |
-| `R` | Reply to highlighted message |
-| `E` | Edit own highlighted message |
-| `D` | Delete own highlighted message |
-| `L` | Open links in highlighted message |
-| `A` | Copy highlighted message's attachment ID (for `/download`) |
-| `P` | Pin / unpin highlighted message (mod+) |
-| `Esc` | Exit highlight mode |
-
-### Link Browser (`/links`, or `L` in Message Highlight Mode)
-
-| Key | Action |
-| --- | --- |
-| `↑` / `↓` | Move selection |
-| `1`-`9` | Jump to and open the link at that row on screen |
-| `Enter` | Open selected link |
-| `C` | Copy selected link |
-| `PgUp` / `PgDn` | Scroll a full page (list scrolls automatically past 10 links) |
-| `/` | Search — filters the list live as you type; `Enter` applies, `Esc` clears |
-| `A` / `D` | Sort ascending / descending |
-| `Esc` | Close (or cancel search, if searching) |
-
-### Manage Servers (`Ctrl+B`)
-
-| Key | Action |
-| --- | --- |
-| `↑` / `↓` | Select server |
-| `Shift+↑` / `Shift+↓` | Reorder server |
-| `N` | Add new server |
-| `E` | Edit selected server |
-| `D` | Delete selected server |
-| `P` | Ping selected server |
-| `B` | Open **Hub Browser** |
-| `Esc` | Close |
-
-### Hub Browser (Settings → Manage Servers → `B`)
-
-| Key | Action |
-| --- | --- |
-| `H` / `L` | Previous / next hub tab |
-| `Tab` | Cycle category filter |
-| `/` | Search |
-| `↑` / `↓` | Navigate listings |
-| `Enter` | View server details |
-| `A` | Join selected server |
-| `S` | Cycle sort (name / online / members) |
-| `R` | Refresh listings |
-| `+` / `↑↓` | Add hub (pick from discovered peers) |
-| `X` | Remove hub tab |
-| `Esc` | Return to previous screen |
-
----
-
-## Slash Commands
-
-Type `/` in the chat input to use commands. Tab-completion is available. Use `/help` for the full in-app reference.
-
-### Channel & Category
-
-| Command | Description |
-| --- | --- |
-| `/create-channel <name>` | Create a text channel |
-| `/create-group <name>` | Create a channel category |
-| `/delete-channel <name>` | Delete a channel |
-| `/rename-channel <old> <new>` | Rename a channel |
-| `/lock` / `/unlock` | Lock or unlock the current channel |
-
-### Messaging
-
-| Command | Description |
-| --- | --- |
-| `/whisper @user <message>` | Send an ephemeral private message |
-| `/pin` / `/unpin` | Pin or unpin the highlighted message |
-| `/links` | Show all links in the current channel |
-| `/status <text>` | Set your status text |
-
-### Voice
-
-| Command | Description |
-| --- | --- |
-| `/join-voice [#channel]` | Join a voice channel |
-| `/leave-voice` | Leave the current voice channel |
-
-### Theme
-
-| Command | Description |
-| --- | --- |
-| `/theme` | Open the interactive theme browser |
-| `/theme <name>` | Directly apply a theme (e.g. `/theme nord`) |
-
-### Notifications
-
-| Command | Description |
-| --- | --- |
-| `/mute` | Mute the current channel (suppress unread badges) |
-| `/unmute` | Unmute the current channel |
-
-### Moderation (requires appropriate role)
-
-| Command | Description |
-| --- | --- |
-| `/kick @user [reason]` | Kick a member from the server |
-| `/ban @user [reason]` | Ban a member |
-| `/unban <username>` | Unban a member |
-| `/timeout @user <minutes>` | Temporarily ban for N minutes |
-| `/mute @user [minutes]` | Server-mute a member |
-| `/unmute @user` | Remove server-mute |
-| `/role @user <role>` | Assign a role |
-| `/create-role <name>` | Create a new role |
-| `/title @user <title>` | Give a member a custom title |
-| `/mute-voice @user` | Server-mute a user in voice |
-| `/deafen-voice @user` | Server-deafen a user in voice |
-| `/move-voice @user <channel>` | Force-move user to a voice channel |
-
----
-
-## Themes
-
-Concord ships **40+ built-in themes** embedded directly in the binary. Switch themes in real time — no restart needed.
-
-### Selected Themes
-
-| Theme | Style |
-| --- | --- |
-| `dracula` | Classic dark — purple accents (default) |
-| `alucard-dark` | Dracula variant — dark |
-| `alucard-light` | Dracula variant — light |
-| `nord` | Cool blue-grey (Nord palette) |
-| `gruvbox` | Warm retro (Gruvbox Dark) |
-| `catppuccin-mocha` | Pastel dark (Catppuccin Mocha) |
-| `tokyo-night` | Dark blue (Tokyo Night) |
-| `kanagawa-wave` | Japanese ink aesthetic |
-| `onedark` | One Dark Pro |
-| `everforest-dark-hard` | Nature-inspired green |
-| `solarized-dark` | Solarized Dark |
-| `terminal-default` | System terminal colours |
-
-Use `/theme` or `Ctrl+T` to open the interactive browser and preview all themes live.
-
-### Custom Themes
-
-Place a `.toml` file in `~/.concord/themes/`. It overrides any built-in theme with the same name. See `internal/themes/themes/dracula.toml` for the full field reference.
-
----
-
-## Voice Channels
-
-Voice uses **WebRTC DataChannels** (P2P, SCTP) with **Opus** codec — no relay server required for LAN use.
-
-- **Sample rates:** 8 kHz / 16 kHz / 24 kHz / 48 kHz (configurable in Settings → Audio)
-- **VAD:** voice activity detection with 300 ms hold; press-to-talk mode also supported
-- **Codec:** Opus at 20 ms frames
-- **Platform:** WASAPI on Windows (via miniaudio); CoreAudio on macOS; ALSA/PulseAudio on Linux
-
-Join with `/join-voice <channel>` or navigate to a voice channel in the sidebar.
-
-> **Note:** WAN voice requires a STUN/TURN server. LAN and same-machine use works out of the box.
-
----
-
-## Grapevine — Server Discovery
-
-Grapevine is Concord's opt-in, decentralized server directory. A **hub** maintains a public listing of registered Concord servers; hubs can federate with each other. There is no central authority — anyone can run a hub.
-
-### For server owners
-
-Enable Grapevine in `concord-server.toml` under `[grapevine]` (see Configuration above), or run the setup wizard with `--setup`. The server registers with the hub, heartbeats its online/member counts, and automatically re-registers if the hub resets.
-
-### For users
-
-Open **Settings → Manage Servers → `B`** to launch the hub browser. Browse, search, filter by category, and join in one step. The client handles the full join-token handshake — host/port is never exposed in listings.
-
-### Running your own hub
-
-```bash
-build\concord-hub.exe              # First run: interactive setup wizard
-build\concord-hub.exe --dashboard  # Run with live TUI dashboard
-build\concord-hub.exe --setup      # Re-run setup wizard
-build\concord-hub.exe --debug      # Verbose per-heartbeat logging
-```
-
-The hub stores its config in `grapevine-hub.toml` and data in `grapevine.db`.
-
----
-
-## Project Structure
+## Project Layout
 
 ```text
-concord/
-├── cmd/
-│   ├── client/main.go          # Client entry point
-│   ├── hub/
-│   │   ├── main.go             # Grapevine hub entry point
-│   │   └── setup.go            # First-run setup wizard
-│   └── server/
-│       ├── main.go             # Server entry point
-│       ├── setup.go            # First-run TUI setup wizard
-│       └── tos_setup.go        # Terms of service acceptance
-├── internal/
-│   ├── client/                 # Full TUI application
-│   │   ├── app.go              # Central state machine (Init/Update)
-│   │   ├── views.go            # View() and all rendering functions
-│   │   ├── commands.go         # Slash command parser and handlers
-│   │   ├── connection.go       # WebSocket client, protocol handling
-│   │   ├── connection_manager.go # Multi-server connection management
-│   │   ├── config.go           # ~/.concord/ config R/W
-│   │   ├── voice_engine.go     # WebRTC+Opus voice engine (!novoice)
-│   │   ├── voice_engine_stub.go # No-op stub (novoice build)
-│   │   ├── hub_browser_view.go # Grapevine hub browser overlay
-│   │   ├── grapevine_http.go   # Hub REST API client
-│   │   ├── reconnect_strategy.go # Exponential backoff reconnection
-│   │   └── *_view.go           # Settings and UI panels
-│   ├── server/
-│   │   ├── server.go           # HTTP + WebSocket server
-│   │   ├── handlers.go         # All message and moderation handlers
-│   │   ├── grapevine.go        # Hub registration and heartbeats
-│   │   ├── hub.go              # Connection hub, broadcast, typing
-│   │   └── dashboard/          # --hybrid / --dashboard TUI
-│   ├── hub/                    # Grapevine hub service
-│   │   ├── server.go           # HTTP server and route setup
-│   │   ├── handlers.go         # REST handlers, HMAC auth, rate limiting
-│   │   ├── federation.go       # Peer hub sync
-│   │   └── dashboard.go        # Live stats TUI
-│   ├── database/sqlite.go      # All DB operations + migrations
-│   ├── models/                 # Shared data models
-│   ├── protocol/messages.go    # All OpCodes, EventTypes, payload structs
-│   └── themes/                 # 40+ embedded TOML themes
-├── go.mod
-├── Makefile
-└── README.md
+cmd/            client, server, hub, install (concord-install), testplugin
+internal/
+  client/       the terminal app (Bubble Tea): views, settings, voice, plugins' panes
+  server/       HTTP + WebSocket server, handlers, accounts, Grapevine, plugin host
+  hub/          the Grapevine hub
+  installer/    what concord-install does: releases, settings, auto-start, updates
+  plugins/      plugin manifests, install/update, process supervision
+  database/     SQLite (pure Go) and migrations
+  protocol/     every opcode, event and payload
+  themes/       the built-in themes
+sdk/            the plugin SDK (its own Go module): wire, plugin, pane, table, plugintest
+scripts/        install.sh and install.ps1, the one-line installers
 ```
 
----
-
-## WebSocket Protocol
-
-Connect to `/ws`. Full spec in [internal/protocol/messages.go](internal/protocol/messages.go).
-
-### OpCodes — Client to Server
-
-| Code | Name | Description |
-| --- | --- | --- |
-| `0` | IDENTIFY | Authenticate with token |
-| `1` | HEARTBEAT | Keep connection alive |
-| `2` | REQUEST_GUILD | Request server data |
-| `3` | SEND_MESSAGE | Send a chat message (optional reply_to_id) |
-| `4` | TYPING_START | Start typing indicator |
-| `5` | PRESENCE_UPDATE | Update status/status_text |
-| `6` | VOICE_STATE_UPDATE | Join / leave voice channel |
-| `7` | CHANNEL_CREATE | Create a channel |
-| `8` | CHANNEL_UPDATE | Rename, reorder, lock channel |
-| `9` | CHANNEL_DELETE | Delete a channel |
-| `16` | REQUEST_MESSAGES | Request message history (paginated) |
-| `17` | ROLE_ASSIGN | Assign a role to a member |
-| `18` | ROLE_REMOVE | Remove a role from a member |
-| `19` | KICK_MEMBER | Kick a member |
-| `20` | BAN_MEMBER | Ban a member |
-| `21` | MUTE_MEMBER | Server-mute a member |
-| `22` | WHISPER | Ephemeral private message |
-| `23` | PIN_MESSAGE | Pin a message |
-| `24` | UNPIN_MESSAGE | Unpin a message |
-| `25` | TIMEOUT_MEMBER | Temporary ban for N minutes |
-| `26` | UNBAN_MEMBER | Lift a ban |
-| `27–29` | ROLE_CRUD | Create / update / delete roles |
-| `30` | EDIT_MESSAGE | Edit own message |
-| `31` | DELETE_MESSAGE | Soft-delete a message |
-| `44` | ASSIGN_TITLE | Give member a custom title |
-| `45` | VOICE_SIGNAL | WebRTC SDP/ICE relay |
-| `46` | VOICE_SPEAKING | Report speaking state |
-| `47` | VOICE_SERVER_MUTE | Server-mute in voice |
-| `48` | MOVE_VOICE | Force-move user to voice channel |
-
-### OpCodes — Server to Client
-
-| Code | Name | Description |
-| --- | --- | --- |
-| `10` | DISPATCH | Event dispatch (carries event type) |
-| `11` | HEARTBEAT_ACK | Heartbeat acknowledgment |
-| `12` | HELLO | Initial handshake + heartbeat interval |
-| `13` | READY | Auth success + user/server data |
-| `14` | INVALID_SESSION | Auth failure |
-| `15` | RECONNECT | Server requests reconnect |
-
----
-
-## Development
-
-```bash
-make test          # Run all tests
-make fmt           # gofmt all packages
-make clean         # Remove build/
-```
-
----
+The wire protocol lives in [`internal/protocol/messages.go`](internal/protocol/messages.go). Plugins use [`sdk/PROTOCOL.md`](sdk/PROTOCOL.md).
 
 ## Contributing
 
-Contributions are welcome. Please open an issue before submitting large changes so we can discuss the approach.
+Contributions are welcome. Please open an issue before a large change, so we can talk about the approach.
 
 ## License
 
-MIT License — see LICENSE file for details.
+MIT. See LICENSE for details.
 
 ## A Huge Thank-You to Anthoneyq 🍇
 
@@ -638,22 +267,19 @@ Concord's website, [concordchat.cc](https://concordchat.cc), is the work of **[A
 ## Acknowledgments
 
 - [Anthoneyq](https://github.com/Anthoneyq): the website and the shaded grape logo (see above)
-- [Bubble Tea](https://github.com/charmbracelet/bubbletea) — TUI framework
-- [Lip Gloss](https://github.com/charmbracelet/lipgloss) — terminal styling
-- [Bubbles](https://github.com/charmbracelet/bubbles) — TUI components
-- [Glamour](https://github.com/charmbracelet/glamour) — markdown rendering (Help & Guide, chat messages, `/help`)
-- [goldmark](https://github.com/yuin/goldmark) — the markdown parser Glamour is built on; used directly for the chat message renderer's minimal-feature-set pipeline
-- [bubblezone](https://github.com/lrstanley/bubblezone) — mouse zone tracking that powers click-to-focus, click-to-select, and clickable links throughout the client
-- [charmbracelet/log](https://github.com/charmbracelet/log) — structured logging
-- [termenv](https://github.com/muesli/termenv) — terminal color profile detection
-- [modernc SQLite](https://gitlab.com/cznic/sqlite) — pure-Go SQLite (server, no CGO)
-- [go-toml](https://github.com/pelletier/go-toml) — server/hub/theme TOML configuration
-- [Gorilla WebSocket](https://github.com/gorilla/websocket) — WebSocket transport
-- [pion/webrtc](https://github.com/pion/webrtc) — pure-Go WebRTC
-- [miniaudio / malgo](https://github.com/gen2brain/malgo) — cross-platform audio I/O
-- [hraban/opus](https://github.com/hraban/opus) — Opus codec bindings
-- [RNNoise](https://github.com/xiph/rnnoise) (Xiph.Org, BSD-3-Clause) — noise suppression for voice, vendored in `internal/rnnoise`
-- [beeep](https://github.com/gen2brain/beeep) — cross-platform desktop notifications
-- [sqweek/dialog](https://github.com/sqweek/dialog) — native Save As dialog for `/download`
-- [atotto/clipboard](https://github.com/atotto/clipboard) — clipboard copy in message navigation mode
-- [Dracula Theme](https://draculatheme.com) — colour inspiration
+- [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Lip Gloss](https://github.com/charmbracelet/lipgloss), [Bubbles](https://github.com/charmbracelet/bubbles), [Huh](https://github.com/charmbracelet/huh) and [Glamour](https://github.com/charmbracelet/glamour) (Charm): the TUI, its styling, components, the installer's forms and markdown
+- [goldmark](https://github.com/yuin/goldmark): the markdown parser behind chat messages
+- [bubblezone](https://github.com/lrstanley/bubblezone): mouse support
+- [charmbracelet/log](https://github.com/charmbracelet/log) and [termenv](https://github.com/muesli/termenv): logging and terminal colour detection
+- [modernc SQLite](https://gitlab.com/cznic/sqlite): pure-Go SQLite
+- [go-toml](https://github.com/pelletier/go-toml): settings and themes
+- [Gorilla WebSocket](https://github.com/gorilla/websocket): the connection
+- [pion/webrtc](https://github.com/pion/webrtc): pure-Go WebRTC for voice and file sharing
+- [miniaudio / malgo](https://github.com/gen2brain/malgo): audio input and output
+- [hraban/opus](https://github.com/hraban/opus): the Opus codec
+- [RNNoise](https://github.com/xiph/rnnoise) (Xiph.Org, BSD-3-Clause): noise suppression, vendored in `internal/rnnoise`
+- [wazero](https://github.com/tetratelabs/wazero): the sandbox for plugins' client code
+- [beeep](https://github.com/gen2brain/beeep): desktop notifications
+- [sqweek/dialog](https://github.com/sqweek/dialog): the Save As dialog for `/download`
+- [atotto/clipboard](https://github.com/atotto/clipboard): copying
+- [Dracula Theme](https://draculatheme.com): the default colours
