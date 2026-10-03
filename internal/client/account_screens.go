@@ -407,14 +407,14 @@ func (a *App) renderProfilesView() string {
 		if s.Notice != "" {
 			b.WriteString("\n" + a.stageNotice(s.Notice, s.NoticeErr))
 		}
-		return a.stagePage("Profiles", "Edit your profile", "profile", b.String(),[]keyHint{{"Tab", "Next"}, {"Enter", "Save"}, {"Esc", "Cancel"}})
+		return a.stagePage("Profiles", "Edit your profile", "profile", b.String(), []keyHint{{"Tab", "Next"}, {"Enter", "Save"}, {"Esc", "Cancel"}})
 	}
 	b.WriteString(a.profileCards(list, active, s.Cursor) + "\n\n")
 	if s.Busy {
 		b.WriteString(a.dim("Working…") + "\n")
 	}
 	b.WriteString(a.stageNotice(s.Notice, s.NoticeErr))
-	return a.stagePage("Profiles", "Who's using Concord?", "Concord", b.String(),
+	return a.stagePageWith("Profiles", a.dim(a.almanac()), "Who's using Concord?", "Concord", b.String(),
 		[]keyHint{{"←→", "Choose"}, {"Enter", "Use"}, {"E", "Edit"}, {"P", "Password"}, {"F", "Forget"}, {"Esc", "Back"}})
 }
 
@@ -776,6 +776,7 @@ func (a *App) tokenFor(serverID uuid.UUID) string {
 	}
 	return ""
 }
+
 // syncTarget is a server whose password follows the profile's.
 type syncTarget struct {
 	id    uuid.UUID
@@ -1223,5 +1224,5 @@ func (a *App) renderPasswordChange() string {
 	if s.Notice != "" {
 		b.WriteString("\n" + a.stageNotice(s.Notice, s.NoticeErr))
 	}
-	return a.stagePage("Profiles", "Change your password", "password", b.String(),[]keyHint{{"Tab", "Next"}, {"Enter", "Change"}, {"Esc", "Cancel"}})
+	return a.stagePage("Profiles", "Change your password", "password", b.String(), []keyHint{{"Tab", "Next"}, {"Enter", "Change"}, {"Esc", "Cancel"}})
 }

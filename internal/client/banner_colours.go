@@ -24,6 +24,8 @@ func (a *App) colourBanner(art string, now time.Time) (string, bool) {
 	style := a.pick(layerBanner)
 	if a.pick(layerLight) == "disco" {
 		style = "rainbow" // the party
+	} else if a.moment() != "" {
+		style = "moment"
 	}
 	pal := a.loadingPalette()
 	if _, ok := parseHex(a.theme.Colors.Purple); !ok || style == "" || style == "solid" {
@@ -39,6 +41,9 @@ func (a *App) colourBanner(art string, now time.Time) (string, bool) {
 		x := float64(c) / float64(width)
 		y := float64(r) / float64(max(1, len(lines)-1))
 		switch style {
+		case "moment":
+			col, _ := a.momentBanner(r, len(lines), c, width, t, pal)
+			return col
 		case "gradient":
 			return mix(pal.pink, pal.purple, x)
 		case "shimmer":

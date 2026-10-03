@@ -47,6 +47,7 @@ type pipeHead struct {
 
 // handleIdleCheck starts a screensaver once the stage has sat idle.
 func (a *App) handleIdleCheck() tea.Cmd {
+	a.maybeGlitch(time.Now())
 	if a.saver == nil && a.loading == nil && a.connecting == nil && isStageView(a.view) &&
 		a.surprise() == surpriseFull && time.Since(a.lastInput) >= saverAfter && a.width > 30 && a.height > 10 {
 		kind := saverKinds[rng.Intn(len(saverKinds))]

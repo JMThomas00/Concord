@@ -20,6 +20,12 @@ type Collection struct {
 	Eggs         map[string]string            `json:"eggs"`
 	Achievements map[string]string            `json:"achievements"`
 	Counters     map[string]int               `json:"counters"`
+
+	// Launch days: the first, the last, and the run of consecutive days.
+	FirstLaunch string `json:"first_launch,omitempty"`
+	LastDay     string `json:"last_day,omitempty"`
+	Streak      int    `json:"streak,omitempty"`
+	BestStreak  int    `json:"best_streak,omitempty"`
 }
 
 func newCollection() *Collection {
@@ -219,6 +225,15 @@ func (a *App) launched() {
 	}
 	if h := moodClock().Hour(); h >= 2 && h < 5 {
 		a.unlock("night_owl")
+	}
+	c.updateStreak(moodClock())
+	for _, s := range []struct {
+		days int
+		id   string
+	}{{3, "streak_3"}, {7, "streak_7"}, {30, "streak_30"}} {
+		if c.Streak >= s.days {
+			a.unlock(s.id)
+		}
 	}
 	a.saveCollection()
 }

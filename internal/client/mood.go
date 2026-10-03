@@ -27,6 +27,7 @@ const (
 	layerBanner     moodLayer = "banner_colour"
 	layerLight      moodLayer = "light"
 	layerAccent     moodLayer = "accent"
+	layerMoment     moodLayer = "moment"
 )
 
 type rarity int
@@ -71,7 +72,11 @@ var moodLayers = []layerInfo{
 		{"teletext", "Teletext", common},
 		{"crt", "CRT warm-up", common},
 		{"calm", "Calm", common},
+		{"dos", "DOS prompt", common},
 		{"bbs", "BBS dial-up", rare},
+		{"c64", "Concord 64", rare},
+		{"mac", "Happy grapes", rare},
+		{"vine", "Growing vine", rare},
 	}},
 	{layerTransition, "Page transitions", []moodOption{
 		{"slide", "Slide and settle", common},
@@ -79,6 +84,9 @@ var moodLayers = []layerInfo{
 		{"teletext", "Teletext rows", common},
 		{"baud", "2400 baud", common},
 		{"modem", "Dial-up page load", common},
+		{"curl", "Page curl", common},
+		{"blinds", "Venetian blinds", common},
+		{"dissolve", "Grape dissolve", common},
 		{"crt", "Channel change", rare},
 		{"plasma", "Plasma wipe", rare},
 	}},
@@ -115,6 +123,13 @@ var moodLayers = []layerInfo{
 		{"none", "None", common},
 		{"hairlines", "Hairlines", common},
 		{"brackets", "HUD brackets", common},
+	}},
+	{layerMoment, "Moments", []moodOption{
+		{"none", "None", common},
+		{"jazz", "Midnight Jazz", common},
+		{"arcade", "Arcade", common},
+		{"noir", "Film Noir", common},
+		{"synthwave", "Synthwave", common},
 	}},
 }
 
@@ -162,6 +177,7 @@ func moodFromSeed(seed uint32) mood {
 // about four launches in five; the other styles are the surprise.
 var optionWeights = map[string]int{
 	"logo/shaded": 16,
+	"moment/none":  12, // a moment about one launch in four
 }
 
 func pickOption(seed uint32, l layerInfo) string {
@@ -306,6 +322,8 @@ func (a *App) pick(layer moodLayer) string {
 			if id == "disco" {
 				return "orbit"
 			}
+		case layerMoment:
+			return "none"
 		}
 	case surpriseOff:
 		switch layer {
@@ -317,9 +335,12 @@ func (a *App) pick(layer moodLayer) string {
 			return "solid"
 		case layerLight:
 			return "orbit"
-		case layerAccent:
+		case layerAccent, layerMoment:
 			return "none"
 		}
+	}
+	if layer == layerLight && id == "orbit" && a.moment() == "jazz" {
+		return "breathe" // jazz moves slower
 	}
 	return id
 }

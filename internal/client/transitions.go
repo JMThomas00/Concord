@@ -38,6 +38,12 @@ func (t *transition) render(from, to *fxGrid, p float64) *fxGrid {
 		return transTeletext(from, to, p)
 	case "modem":
 		return transModem(to, p)
+	case "curl":
+		return transCurl(from, to, p)
+	case "blinds":
+		return transBlinds(from, to, p)
+	case "dissolve":
+		return transDissolve(from, to, p, t.seed)
 	case "baud":
 		return transBaud(from, to, p)
 	case "crt":
@@ -283,6 +289,72 @@ func transModem(to *fxGrid, p float64) *fxGrid {
 			kb := float64(len(cells)) / 1024 * 3
 			status := fmt.Sprintf(" Document: %d%% of %.1fK  ·  Transferring data from concord...", shown*100/max(1, len(cells)), kb)
 			out.text(to.h-1, 1, status, sgrFor("#8a8a9a", "", false))
+		}
+	}
+	return out
+}
+
+// transCurl: the old page peels away from the bottom right corner, its
+// shaded back showing along the fold.
+func transCurl(from, to *fxGrid, p float64) *fxGrid {
+	out := to.clone()
+	const fold = 4.0
+	span := float64(to.w) + float64(to.h)*2 + fold
+	edge := p * span
+	back := sgrFor("#8a8a9a", "", false)
+	for r := 0; r < to.h; r++ {
+		for c := 0; c < to.w; c++ {
+			if sameCell(from.rows[r][c], to.rows[r][c]) {
+				continue
+			}
+			d := float64(to.w-1-c) + float64(to.h-1-r)*2
+			switch {
+			case d >= edge:
+				out.set(r, c, " ", "", 1)
+				putCell(out, r, c, from.rows[r][c])
+			case d >= edge-fold:
+				out.set(r, c, []string{"░", "▒", "▓", "▒"}[int(edge-d)%4], back, 1)
+			}
+		}
+	}
+	return out
+}
+
+// transBlinds: venetian blinds. The screen is in slats of four rows, and
+// every slat turns over at once, a row at a time.
+func transBlinds(from, to *fxGrid, p float64) *fxGrid {
+	out := to.clone()
+	const slat = 4
+	for r := 0; r < to.h; r++ {
+		if !rowsDiffer(from, to, r) {
+			continue
+		}
+		if float64(r%slat+1) > p*slat*1.05 {
+			out.rows[r] = append([]fxCell(nil), from.rows[r]...)
+		}
+	}
+	return out
+}
+
+// transDissolve: each changed cell turns grape purple for a moment, at its
+// own time, on its way from the old page to the new.
+func transDissolve(from, to *fxGrid, p float64, seed uint64) *fxGrid {
+	out := to.clone()
+	purple := sgrFor("#bd93f9", "", false)
+	for r := 0; r < to.h; r++ {
+		for c := 0; c < to.w; c++ {
+			src, dst := from.rows[r][c], to.rows[r][c]
+			if sameCell(src, dst) || dst.w == 0 {
+				continue
+			}
+			at := cellHash(seed, r, c, 21) * .8
+			switch {
+			case p < at:
+				out.set(r, c, " ", "", 1)
+				putCell(out, r, c, src)
+			case p < at+.15:
+				out.set(r, c, "▓", purple, 1)
+			}
 		}
 	}
 	return out

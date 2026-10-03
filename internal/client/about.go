@@ -51,6 +51,7 @@ func (a *App) renderAboutContent(width, height int) string {
 	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
 	// Bottom: separator + help line = 2 lines → pageBottomExtra = 0
 	layout := calculateSettingsLayout(width, height, 2, 0)
+	const leftW, gap = 44, 4 // the two columns, when there's room for both
 	c := a.theme.Colors
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Cyan)).Bold(true)
 	normal := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Foreground))
@@ -85,6 +86,12 @@ func (a *App) renderAboutContent(width, height int) string {
 		lock = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Green)).Render("  🔒 locked") + dim.Render(" · L unlock")
 	}
 	left = append(left, "    "+purple.Render(a.mood.code())+lock)
+	name, notes := a.mood.label(moodClock().Year())
+	left = append(left, "    "+normal.Render(name))
+	for _, l := range strings.Split(lipgloss.NewStyle().Width(leftW-6).Render(notes), "\n") {
+		left = append(left, "    "+dim.Italic(true).Render(strings.TrimRight(l, " ")))
+	}
+	left = append(left, "")
 	for _, l := range moodLayers {
 		if l.id == layerLoading || l.id == layerTransition {
 			continue // they've played already; the collection shows them
@@ -151,7 +158,6 @@ func (a *App) renderAboutContent(width, height int) string {
 	}
 
 	// Side by side when there's room, else one after the other.
-	const leftW, gap = 44, 4
 	var lines []string
 	if layout.interiorWidth >= leftW+gap+50 {
 		joined := lipgloss.JoinHorizontal(lipgloss.Top,

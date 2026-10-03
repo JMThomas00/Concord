@@ -15,6 +15,9 @@ func (a *App) atmosphereMoving() bool {
 	if a.pick(layerLight) == "disco" {
 		return true // the reflections sweep round
 	}
+	if a.moment() != "" || (a.surprise() == surpriseFull && a.calendar() == "" && season(moodClock()) != "autumn") {
+		return true // a moment, or the season, moves
+	}
 	switch a.pick(layerAtmosphere) {
 	case "", "none", "dots":
 		return false
@@ -33,6 +36,11 @@ func (a *App) renderAtmosphere(now time.Time) *fxGrid {
 		}
 		discoReflections(bg, t, pal)
 	}
+	if bg == nil {
+		bg = newGrid(a.width, a.height)
+	}
+	a.momentAtmosphere(bg, t, pal)
+	a.seasonAtmosphere(bg, t, pal)
 	return bg
 }
 
@@ -127,7 +135,6 @@ func atmosLeaves(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
 	}
 	return g
 }
-
 
 // drawAccents adds the mood's frame accents: faint hairlines along the top
 // and bottom, or HUD corner brackets with the mood code. Only empty cells

@@ -27,16 +27,18 @@ func fxTick(gen int) tea.Cmd {
 }
 
 type fxState struct {
-	gen      int
-	ticking  bool
-	prevView View
-	prevKey  string    // stageKey at the last Update, so steps within a page transition too
-	stageAt  time.Time // when the login stage was last arrived at
-	last     string    // the last login-stage frame drawn, for transitions
-	burstAt  time.Time // when the main window started arriving (landing)
-	shakeAt  time.Time // when the form started shaking (stage.go)
-	lastErr  string    // the problem shown at the last Update
-	trans    *transition
+	gen        int
+	ticking    bool
+	prevView   View
+	prevKey    string    // stageKey at the last Update, so steps within a page transition too
+	stageAt    time.Time // when the login stage was last arrived at
+	last       string    // the last login-stage frame drawn, for transitions
+	burstAt    time.Time // when the main window started arriving (landing)
+	shakeAt    time.Time // when the form started shaking (stage.go)
+	lastErr    string    // the problem shown at the last Update
+	glitchAt   time.Time // when the last glitch started (moments.go)
+	nextGlitch time.Time // when the next one's due
+	trans      *transition
 }
 
 // isStageView reports the views that make up the login stage.
@@ -85,7 +87,8 @@ func (a *App) fxMoving() bool {
 	}
 	a.trackCodeTyping(now)
 	if a.loading != nil || a.connecting != nil || a.fx.trans != nil || len(a.toasts) > 0 || a.bursting(now) ||
-		a.codeAnimating(now) || a.shaking(now) || a.grapeReact != nil || a.eggPlaying(now) || a.saver != nil {
+		a.codeAnimating(now) || a.shaking(now) || a.grapeReact != nil || a.eggPlaying(now) || a.saver != nil ||
+		a.glitching(now) {
 		return true
 	}
 	return isStageView(a.view) && (a.atmosphereMoving() || a.calendar() != "" || a.dozing())
@@ -96,7 +99,7 @@ func (a *App) handleFxTick(msg fxTickMsg) tea.Cmd {
 		return nil
 	}
 	var done tea.Cmd
-	if l := a.loading; l != nil && time.Since(l.start) >= l.dur {
+	if l := a.loading; l != nil && l.advance(time.Now()) >= l.dur {
 		done = a.endLoading()
 	}
 	if c := a.connecting; c != nil && a.connectingSettled(time.Since(c.start)) {
@@ -116,19 +119,19 @@ func (a *App) applyFx(out string) string {
 	}
 	now := time.Now()
 	if isStageView(a.view) {
-		bg := a.renderAtmosphere(now)
-		if cal := a.calendarAtmosphere(now, now.Sub(a.fx.stageAt).Seconds()); cal != nil {
-			bg = cal
-		}
 		t := a.fx.trans
-		accents := a.pick(layerAccent)
-		if bg != nil || t != nil || a.shaking(now) || (accents != "" && accents != "none") ||
-			a.eggPlaying(now) || a.calendar() != "" || a.dozing() {
+		if a.surprise() != surpriseOff || t != nil || a.shaking(now) {
 			g := parseFrame(out, a.width, a.height)
+			bg := a.renderAtmosphere(now)
+			if cal := a.calendarAtmosphere(now, now.Sub(a.fx.stageAt).Seconds()); cal != nil {
+				bg = cal
+			}
 			if bg != nil {
 				g.underlay(bg, 3, 1)
 			}
 			a.drawAccents(g)
+			a.paintFortune(g)
+			a.paintMoment(g, now)
 			a.paintCalendarText(g, now)
 			a.paintDoze(g, now)
 			if a.shaking(now) {
@@ -145,6 +148,9 @@ func (a *App) applyFx(out string) string {
 			}
 			if a.eggPlaying(now) {
 				a.paintEgg(g, now)
+			}
+			if a.glitching(now) {
+				glitch(g, now.Sub(a.fx.glitchAt), uint64(a.fx.glitchAt.UnixNano()))
 			}
 			out = g.String()
 		}

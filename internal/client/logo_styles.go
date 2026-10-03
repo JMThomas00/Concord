@@ -278,6 +278,7 @@ func (a *App) grapePurple() string {
 	if _, ok := parseHex(purple); ok && a.pick(layerLight) == "disco" {
 		purple = hsvHex(math.Mod(float64(time.Now().UnixMilli())/12, 360), .45, .97)
 	}
+	purple = a.momentPurple(purple)
 	if sunrise() && a.surprise() == surpriseFull {
 		if m, ok := mixHex(c.Orange, purple, .25); ok {
 			purple = m // the grapes catch the dawn

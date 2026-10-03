@@ -109,6 +109,7 @@ func (a *App) setBanner(idx int) {
 // shuffleBanner is the login-screen easter egg (Ctrl+R): a different banner
 // that fits the logo box at the current terminal size, animated in.
 func (a *App) shuffleBanner() tea.Cmd {
+	a.nameBanner = "" // back to the 327
 	if a.count("shuffles") == 25 {
 		a.unlock("shuffler")
 	}
@@ -157,6 +158,10 @@ func (a *App) handleBannerAnimTick(msg bannerAnimTickMsg) tea.Cmd {
 // renderBanner draws the current banner, mid-animation if one is running.
 func (a *App) renderBanner() string {
 	art := trimBannerArt(a.banner.Art)
+	if a.nameBannerFits() {
+		art = a.nameBanner // hello, you
+		a.findEgg("name")
+	}
 	if a.calendar() == "april" {
 		art = flipArt(art) // April 1st
 	}

@@ -101,6 +101,7 @@ type App struct {
 	eggKeys     []string    // the last few keys, for typed eggs
 	grapeClicks []time.Time // recent clicks on the grapes
 	discoNow    bool        // this launch is the disco party (armed by typing "disco" on About)
+	nameBanner  string      // this launch's banner is the profile's name (banner_name.go), or ""
 	saver       *saverState
 	lastInput   time.Time
 	grapeReact *grapeReaction // the grapes reacting to a problem or a success (stage.go)
@@ -1024,6 +1025,7 @@ func (a *App) initLoginView() {
 func (a *App) Init() tea.Cmd {
 	a.lastActivityTime = time.Now()
 	a.startMood()
+	a.pickNameBanner()
 	a.launched()
 	a.recordMood()
 	a.discoverBanner(a.bannerIndex)

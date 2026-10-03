@@ -27,6 +27,31 @@ type loadingState struct {
 	dur   time.Duration
 	seed  uint64
 	lines []string
+
+	// The loading clock: how far it has got, moving at a quarter speed
+	// while space is held (slow motion).
+	elapsed  time.Duration
+	lastTick time.Time
+	spaceAt  time.Time
+}
+
+// slowFor is how long a space press keeps slow motion going: longer than
+// a held key's first repeat takes to arrive.
+const slowFor = 650 * time.Millisecond
+
+// advance moves the loading clock on to now.
+func (ls *loadingState) advance(now time.Time) time.Duration {
+	if ls.lastTick.IsZero() {
+		ls.lastTick = ls.start
+	}
+	if dt := now.Sub(ls.lastTick); dt > 0 {
+		if now.Sub(ls.spaceAt) < slowFor {
+			dt /= 4
+		}
+		ls.elapsed += dt
+		ls.lastTick = now
+	}
+	return ls.elapsed
 }
 
 // startLoading begins this launch's loading screen, if it has one.
@@ -104,6 +129,10 @@ func (a *App) skipLoading(msg tea.Msg) (bool, tea.Cmd) {
 	}
 	switch m := msg.(type) {
 	case tea.KeyMsg:
+		if m.String() == " " || m.String() == "space" {
+			a.loading.spaceAt = time.Now() // hold for slow motion
+			return true, nil
+		}
 	case tea.MouseMsg:
 		if m.Action != tea.MouseActionPress {
 			return true, nil
@@ -166,7 +195,7 @@ func mix(a, b string, t float64) string {
 // renderLoading draws the loading screen at now.
 func (a *App) renderLoading(now time.Time) string {
 	ls := a.loading
-	el := now.Sub(ls.start).Seconds()
+	el := ls.advance(now).Seconds()
 	p := math.Min(1, el/ls.dur.Seconds())
 	g := newGrid(a.width, a.height)
 	pal := a.loadingPalette()
@@ -183,10 +212,23 @@ func (a *App) renderLoading(now time.Time) string {
 		loadCRT(g, el, p, ls, pal)
 	case "bbs":
 		loadBBS(g, el, p, ls, pal, a)
+	case "dos":
+		loadDOS(g, el, p, ls, pal, a)
+	case "c64":
+		loadC64(g, el, p, ls, pal, a)
+	case "mac":
+		loadMac(g, el, p, ls, pal)
+	case "vine":
+		a.loadVine(g, el, p, ls, pal)
 	case "boot":
 		loadBoot(g, el, p, ls, pal)
 	default:
 		loadCalm(g, el, p, ls, pal)
+	}
+	if hint := "any key skips · hold space for slow motion"; g.w > 60 {
+		if first, _ := g.contentSpan(g.h - 1); first < 0 {
+			g.text(g.h-1, g.w-len([]rune(hint))-2, hint, sgrFor(faint(pal.dim, pal, .6), "", false))
+		}
 	}
 	return g.String()
 }
