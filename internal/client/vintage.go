@@ -52,7 +52,7 @@ func (m mood) label(year int) (name, notes string) {
 
 // fortunes: one each launch on the login stage, real tips mixed with grape lore.
 var fortunes = []string{
-	"Ctrl+R on the login screen shuffles the banner. There are 327.",
+	"Ctrl+R on the login screen shuffles the banner. There are 326.",
 	"A grape a day keeps the lag away.",
 	"Alt+M highlights messages; A copies an attachment's ID.",
 	"Good things come to those who wait. Grapes become wine.",

@@ -93,7 +93,7 @@ func extractBanners(n *html.Node) []BannerData {
 					artText = strings.Join(artLines, "\n")
 
 					// Only add if we have valid data
-					if artText != "" {
+					if artText != "" && !skipFonts[fontName] {
 						banners = append(banners, BannerData{
 							Name: fontName,
 							Art:  artText,
@@ -160,3 +160,8 @@ func renderNode(w *strings.Builder, n *html.Node) {
 		renderNode(w, c)
 	}
 }
+
+// skipFonts are fonts left out of Concord's banners: ones that read as
+// broken text rather than as a style. Stacey draws its corners with 7 and
+// !, which looked like stray ? and ! in the logo (2026-10-04).
+var skipFonts = map[string]bool{"Stacey": true}

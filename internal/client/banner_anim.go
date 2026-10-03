@@ -109,7 +109,7 @@ func (a *App) setBanner(idx int) {
 // shuffleBanner is the login-screen easter egg (Ctrl+R): a different banner
 // that fits the logo box at the current terminal size, animated in.
 func (a *App) shuffleBanner() tea.Cmd {
-	a.nameBanner = "" // back to the 327
+	a.nameBanner = "" // back to the 326
 	if a.count("shuffles") == 25 {
 		a.unlock("shuffler")
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 // Now and then (about one launch in eight) the banner spells the profile's
-// own name instead of CONCORD, as if the machine is greeting you. The 327
+// own name instead of CONCORD, as if the machine is greeting you. The 326
 // banners are pre-drawn art of one word, so names are drawn from a small
 // pixel font, in one of several renderings.
 

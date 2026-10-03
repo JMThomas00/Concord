@@ -129,7 +129,7 @@ var formHintsIndent = lipgloss.NewStyle().PaddingLeft(formTextIndent)
 // move the form either; it only grows downward. The slot shrinks, clipping
 // the logo's top rows, only when the terminal is too short for it.
 const (
-	bannerBoxMaxWidth = 100 // fits 318 of the 327 banners; wider ones are skipped
+	bannerBoxMaxWidth = 100 // fits 317 of the 326 banners; wider ones are skipped
 	bannerBoxMinWidth = 60  // below this, the grapes give way so more banners fit
 	grapeLockupGap    = 4
 )
