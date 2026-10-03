@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/concord-chat/concord/internal/official"
 )
 
@@ -848,7 +849,7 @@ func (a *App) renderHubBrowserView() string {
 	if rightPad < 1 {
 		rightPad = 1
 	}
-	header := title + strings.Repeat(" ", rightPad) + headerRight
+	header := ansi.Truncate(title+strings.Repeat(" ", rightPad)+headerRight, innerW, "…") // one line, however many hubs
 
 	sep := lipgloss.NewStyle().Foreground(dim).Render(strings.Repeat("─", innerW))
 
@@ -916,7 +917,11 @@ func (a *App) renderHubBrowserView() string {
 	// Calculate how many rows fit
 	// Used lines so far: title(1) sep(1) catLine(1) searchLine(1) tableHeader(1) tableSep(1) = 6
 	// plus instructions at bottom (1) + border padding (2) = 9
-	listH := h - 2 - 2 - 6 - 1 // border(2) + padding(2) + fixed rows(6) + footer(1)
+	// All told: border (2) and padding (2), the 7 rows above the list
+	// (header, sep, categories, search, sep, table header, table sep) and
+	// the 2 below it (sep, footer). Counting 7 fixed rows instead of 9 made
+	// the page 2 lines taller than the screen, cutting off its border.
+	listH := h - 2 - 2 - 7 - 2
 	if listH < 1 {
 		listH = 1
 	}
@@ -1028,7 +1033,7 @@ func (a *App) renderHubBrowserView() string {
 		body.WriteString(row + "\n")
 	}
 	body.WriteString(sep + "\n")
-	body.WriteString(footer)
+	body.WriteString(ansi.Truncate(footer, innerW, "…")) // one line on a narrow screen
 
 	result := border.Padding(1, 2).Render(body.String())
 

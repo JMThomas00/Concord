@@ -67,9 +67,9 @@ func (a *App) renderAboutContent(width, height int) string {
 	if s := a.settingsState; s != nil && s.AboutAch {
 		return a.renderAchievementsPage(width, height)
 	}
-	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
+	// Top: header + subtitle + blank + separator: the 4 base lines, no extra.
 	// Bottom: separator + help line = 2 lines → pageBottomExtra = 0
-	layout := calculateSettingsLayout(width, height, 2, 0)
+	layout := calculateSettingsLayout(width, height, 0, 0)
 	const leftW, gap = 44, 4 // the two columns, when there's room for both
 	c := a.theme.Colors
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Cyan)).Bold(true)
@@ -85,8 +85,11 @@ func (a *App) renderAboutContent(width, height int) string {
 
 	// Left: build info and the mood.
 	var left []string
-	row := func(name, value string) { left = append(left, label.Render(name), normal.Render("    "+value), "") }
-	left = append(left, purple.Render("Concord Client"), "")
+	// One line per detail, so the mood below fits without scrolling.
+	row := func(name, value string) {
+		left = append(left, "  "+label.Render(fmt.Sprintf("%-11s", name))+" "+normal.Render(value))
+	}
+	left = append(left, purple.Render("Concord Client"))
 	row("Version", a.clientVersion)
 	row("Git Commit", a.clientGitCommit)
 	row("Build Time", a.clientBuildTime)
@@ -94,19 +97,21 @@ func (a *App) renderAboutContent(width, height int) string {
 		a.activeConn.mu.RLock()
 		v, g, b := a.activeConn.ServerVersion, a.activeConn.ServerGitCommit, a.activeConn.ServerBuildTime
 		a.activeConn.mu.RUnlock()
-		left = append(left, purple.Render("Connected Server"), "")
+		left = append(left, "", purple.Render("Connected Server"))
 		row("Version", v)
 		row("Git Commit", g)
 		row("Build Time", b)
 	}
-	left = append(left, purple.Render("Your Mood"), "")
+	left = append(left, "", dim.Render(strings.Repeat("─", leftW-2)), "", purple.Render("Your Mood"), "")
 	lock := dim.Render("  L lock it · N new one")
 	if a.uiConfig != nil && a.uiConfig.Display.MoodLock != "" {
 		lock = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Green)).Render("  🔒 locked") + dim.Render(" · L unlock")
 	}
 	left = append(left, "    "+purple.Render(a.mood.code())+lock)
 	name, notes := a.mood.label(moodClock().Year())
-	left = append(left, "    "+normal.Render(name))
+	for _, l := range strings.Split(lipgloss.NewStyle().Width(leftW-6).Render(name), "\n") {
+		left = append(left, "    "+normal.Render(strings.TrimRight(l, " "))) // a long name wraps inside the column
+	}
 	for _, l := range strings.Split(lipgloss.NewStyle().Width(leftW-6).Render(notes), "\n") {
 		left = append(left, "    "+dim.Italic(true).Render(strings.TrimRight(l, " ")))
 	}
@@ -134,7 +139,7 @@ func (a *App) renderAboutContent(width, height int) string {
 	}
 	coll := a.coll()
 	var right []string
-	right = append(right, purple.Render("Collection"), "")
+	right = append(right, purple.Render("Collection"))
 	bar := func(n, total int) string {
 		const w = 12
 		f := 0
