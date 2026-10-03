@@ -188,6 +188,9 @@ func grapeTick(gen int) tea.Cmd {
 // grapeLogoShowing reports whether a screen currently displays the grape
 // logo: login/register, or Settings > About.
 func (a *App) grapeLogoShowing() bool {
+	if a.loading != nil {
+		return false // it powers on when the loading screen ends
+	}
 	switch a.view {
 	case ViewLogin, ViewRegister:
 		return true

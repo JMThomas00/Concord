@@ -94,6 +94,8 @@ type App struct {
 	fx         fxState
 	collection *Collection
 	toasts     []*toast
+	loading    *loadingState // the launch's loading screen while it plays
+	connecting *connectingState // the screen after unlocking while servers connect
 
 	// Scroll positions for the channel list and members panels (see
 	// panel_scroll.go).
@@ -1017,6 +1019,7 @@ func (a *App) Init() tea.Cmd {
 	a.discoverBanner(a.bannerIndex)
 	a.fx.prevView = a.view
 	a.fx.stageAt = time.Now()
+	a.startLoading()
 	cmds := []tea.Cmd{
 		a.syncFx(),
 		textinput.Blink,
@@ -1024,7 +1027,7 @@ func (a *App) Init() tea.Cmd {
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
 		tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }),
 	}
-	if a.view == ViewLogin || a.view == ViewRegister {
+	if (a.view == ViewLogin || a.view == ViewRegister) && a.loading == nil {
 		if cmd := a.startBannerAnim(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -1198,6 +1201,12 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 // started and stopped here, after every message, so no individual
 // navigation path has to remember to do it.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if skipped, cmd := a.skipLoading(msg); skipped {
+		return a, cmd
+	}
+	if a.skipConnecting(msg) {
+		return a, nil
+	}
 	switch m := msg.(type) {
 	case grapeTickMsg:
 		return a, a.handleGrapeTick(m)
@@ -1975,6 +1984,12 @@ func isEmptyTextareaWordNavKey(msg tea.Msg, input textarea.Model) bool {
 // View implements tea.Model
 func (a *App) View() string {
 	a.paneRasters = nil
+	if a.loading != nil && a.width > 0 && a.height > 0 {
+		return a.renderLoading(time.Now())
+	}
+	if a.connecting != nil && a.view == ViewMain {
+		return a.renderConnecting(time.Now())
+	}
 	out := a.applyFx(a.view0())
 	overlay := a.showHubBrowser || a.linkBrowserState != nil || a.helpFinderState != nil || a.memberContextMenu != nil
 	return a.paintRasterImages(out, a.paneRasters, overlay)

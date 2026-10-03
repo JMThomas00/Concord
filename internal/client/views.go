@@ -558,6 +558,9 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 			}
 		}
 
+		if a.view == ViewMain {
+			a.startConnecting()
+		}
 		if allConnected {
 			a.statusMessage = "Ready"
 		} else {

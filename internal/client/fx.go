@@ -28,9 +28,9 @@ type fxState struct {
 	gen      int
 	ticking  bool
 	prevView View
-	started  bool      // the first frame has been drawn
 	stageAt  time.Time // when the login stage was last arrived at
 	last     string    // the last login-stage frame drawn, for transitions
+	burstAt  time.Time // when the main window started bursting open
 	trans    *transition
 }
 
@@ -73,7 +73,10 @@ func (a *App) fxMoving() bool {
 	if t := a.fx.trans; t != nil && now.Sub(t.start) >= t.duration() {
 		a.fx.trans = nil
 	}
-	if a.fx.trans != nil || len(a.toasts) > 0 {
+	if a.connecting != nil && a.view != ViewMain {
+		a.connecting = nil // something else came first (a code screen)
+	}
+	if a.loading != nil || a.connecting != nil || a.fx.trans != nil || len(a.toasts) > 0 || a.bursting(now) {
 		return true
 	}
 	return isStageView(a.view) && a.atmosphereMoving()
@@ -83,11 +86,18 @@ func (a *App) handleFxTick(msg fxTickMsg) tea.Cmd {
 	if msg.gen != a.fx.gen {
 		return nil
 	}
+	var done tea.Cmd
+	if l := a.loading; l != nil && time.Since(l.start) >= l.dur {
+		done = a.endLoading()
+	}
+	if c := a.connecting; c != nil && a.connectingSettled(time.Since(c.start)) {
+		a.endConnecting()
+	}
 	if !a.fxMoving() {
 		a.fx.ticking = false
-		return nil
+		return done
 	}
-	return fxTick(a.fx.gen)
+	return tea.Batch(done, fxTick(a.fx.gen))
 }
 
 // applyFx draws this frame's effects over the rendered frame.
@@ -114,6 +124,10 @@ func (a *App) applyFx(out string) string {
 			out = g.String()
 		}
 		a.fx.last = out
+	}
+	if a.view == ViewMain && a.bursting(now) {
+		p := float64(now.Sub(a.fx.burstAt)) / float64(burstDur)
+		out = burst(parseFrame(out, a.width, a.height), p).String()
 	}
 	if t := a.currentToast(now); t != nil {
 		out = a.paintToast(out, t, now)
@@ -150,3 +164,8 @@ var (
 	sgrMu    sync.Mutex
 	sgrCache = map[string]string{}
 )
+
+// bursting reports whether the main window is still bursting open.
+func (a *App) bursting(now time.Time) bool {
+	return !a.fx.burstAt.IsZero() && now.Sub(a.fx.burstAt) < burstDur
+}
