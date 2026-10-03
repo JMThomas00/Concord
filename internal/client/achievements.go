@@ -35,6 +35,16 @@ var achievements = []achievement{
 	{"streak_3", "Three Days on the Vine", "Open Concord three days running", false},
 	{"streak_7", "A Week of Wine", "Open Concord seven days running", false},
 	{"streak_30", "A Month in the Cellar", "Open Concord thirty days running", false},
+	{"first_words", "First Words", "Send a message", false},
+	{"msgs_100", "Chatterbox", "Send 100 messages", false},
+	{"msgs_1000", "Town Crier", "Send 1,000 messages", false},
+	{"msgs_10000", "The Whole Vineyard Heard", "Send 10,000 messages", false},
+	{"night_shift", "Night Shift", "Chat between 2 and 5 a.m.", false},
+	{"voice_1", "Warm Voice", "Spend an hour in voice", false},
+	{"voice_10", "Regular Caller", "Spend ten hours in voice", false},
+	{"voice_100", "Radio Host", "Spend a hundred hours in voice", false},
+	{"launch_500", "Grand Cru", "Start Concord 500 times", false},
+	{"banners_150", "Font Fancier", "See 150 different banners", false},
 	{"night_owl", "Night Owl", "Start Concord between 2 and 5 a.m.", false},
 	{"egg_hunter", "Egg Hunter", "Find five easter eggs", false},
 	{"egg_konami", "Up Up Down Down", "", true},
@@ -170,4 +180,13 @@ func achievementLine(ach achievement, date string) string {
 		return "☆ ???  (a secret)"
 	}
 	return fmt.Sprintf("☆ ???  %s", ach.hint)
+}
+
+// achievementTiers marks the counting achievements bronze, silver or gold.
+var achievementTiers = map[string]string{
+	"regular": "🥉", "vintner": "🥈", "launch_500": "🥇",
+	"banners_50": "🥉", "banners_150": "🥈", "banners_all": "🥇",
+	"msgs_100": "🥉", "msgs_1000": "🥈", "msgs_10000": "🥇",
+	"voice_1": "🥉", "voice_10": "🥈", "voice_100": "🥇",
+	"streak_3": "🥉", "streak_7": "🥈", "streak_30": "🥇",
 }

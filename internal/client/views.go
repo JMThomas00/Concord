@@ -1323,6 +1323,9 @@ func typingVerbPhrase(u typingDisplayUser) string {
 	if u.IsBot {
 		return u.Name + " is thinking"
 	}
+	if u.Verb != "" {
+		return u.Name + " " + u.Verb // main_moods.go
+	}
 	return u.Name + " is typing"
 }
 
@@ -1479,6 +1482,9 @@ func (a *App) renderChatPanel(width, height int) string {
 			Align(lipgloss.Center).
 			MarginTop((chatHeight - 2) / 3)
 		chatContent = emptyStyle.Render("No messages yet. Say hello!")
+		if a.fullSurprise() && a.currentChannel != nil && chatHeight > 14 {
+			chatContent = lipgloss.NewStyle().MarginTop((chatHeight-2)/3).Render(a.emptyChannelArt(a.currentChannel.ID, interiorWidth))
+		}
 	}
 
 	// Prepend pinned messages INSIDE the chat border (above the viewport content)
@@ -2196,6 +2202,9 @@ func (a *App) renderStatusBar() string {
 		leftContent = disconnectedStyle.Render(" ○ Disconnected")
 	}
 
+	if a.quietHours() {
+		leftContent += textStyle.Render("  ☾")
+	}
 	if currentUser != nil {
 		leftContent += textStyle.Render("  |  " + currentUser.FullUsername())
 	}

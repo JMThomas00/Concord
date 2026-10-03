@@ -1295,6 +1295,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case afkCheckMsg:
+		a.voiceTick(30 * time.Second) // voice achievements (main_moods.go)
 		// Check if the user has been idle for 10 minutes
 		if time.Since(a.lastActivityTime) >= 10*time.Minute && !a.isAFK && a.activeConn != nil {
 			a.isAFK = true
@@ -4752,6 +4753,7 @@ func (a *App) selectChannel(index int) {
 	}
 	a.channelIndex = index
 	a.currentChannel = channels[index]
+	a.channelBirthday(a.currentChannel) // main_moods.go
 
 	// Clear typing indicators from the previous channel
 	a.clearTypingState()
@@ -5462,6 +5464,7 @@ func (a *App) currentUserRoleLevel() roleLevel {
 type typingDisplayUser struct {
 	Name  string
 	IsBot bool
+	Verb  string // a grape verb instead of "is typing" (main_moods.go), or ""
 }
 
 // rebuildTypingUsers refreshes a.typingUsers from the current typingExpiry map,
@@ -5492,7 +5495,7 @@ func (a *App) rebuildTypingUsers() {
 		} else {
 			name = uid.String()[:8]
 		}
-		users = append(users, typingDisplayUser{Name: name, IsBot: a.typingIsBot[uid]})
+		users = append(users, typingDisplayUser{Name: name, IsBot: a.typingIsBot[uid], Verb: a.typingVerb(uid)})
 	}
 	sort.Slice(users, func(i, j int) bool { return users[i].Name < users[j].Name })
 	a.typingUsers = users
@@ -5640,6 +5643,7 @@ func (a *App) handleSendMessage() tea.Cmd {
 			a.replyQuote = ""
 		}
 
+		a.onMessageSent(serverID) // main_moods.go
 		return func() tea.Msg {
 			if err := a.connMgr.SendMessage(serverID, channelID, content, replyToID); err != nil {
 				return ErrorMsg{Error: fmt.Sprintf("Failed to send message: %v", err)}
@@ -6274,6 +6278,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			sc.VoiceStates[vs.UserID] = vs
 		}
 		sc.mu.Unlock()
+		for _, vs := range payload.VoiceStates {
+			a.onVoiceJoin(vs.UserID, "", false) // already in voice: noted quietly
+		}
 
 		log.Printf("Received SERVER_CREATE for %s: %d channels, %d members, %d roles",
 			payload.Server.Name, len(payload.Channels), len(displays), len(payload.Roles))
@@ -7374,9 +7381,18 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				IsServerMuted:    payload.IsServerMuted,
 				IsServerDeafened: payload.IsServerDeafened,
 			}
+			_, wasInVoice := sc.VoiceStates[payload.UserID]
 			sc.VoiceStates[payload.UserID] = vs
 			if sc.User != nil && payload.UserID == sc.User.ID {
 				sc.CurrentVoiceChannelID = *payload.ChannelID
+			} else if !wasInVoice {
+				joinedName := ""
+				for _, m := range sc.Members {
+					if m.User != nil && m.User.ID == payload.UserID {
+						joinedName = m.User.Username
+					}
+				}
+				defer a.onVoiceJoin(payload.UserID, joinedName, true) // after the lock (main_moods.go)
 			}
 		}
 		sc.mu.Unlock()

@@ -164,6 +164,16 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleAttach(cmd.Args)
 	case "download":
 		return ch.handleDownload(cmd.Args)
+	case "grape":
+		return ch.handleGrapeCommand()
+	case "disco":
+		return ch.handleDiscoCommand()
+	case "mood":
+		return ch.handleMoodCommand(cmd.Args)
+	case "vintage":
+		return ch.handleVintageCommand()
+	case "collection":
+		return ch.handleCollectionCommand()
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}

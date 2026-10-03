@@ -74,7 +74,10 @@ func TestAboutPageShowsMoodAndCollection(t *testing.T) {
 	a.configMgr = &ConfigManager{configFilePath: filepath.Join(t.TempDir(), "config.json")}
 	a.mood = moodFromSeed(12345)
 	a.unlock("first_light")
+	a.settingsState = &SettingsState{SelectedCategory: settingsCatAbout}
 	out := ansi.Strip(a.renderAboutContent(150, 50))
+	a.settingsState.AboutScroll = 999 // the end of the list
+	out += ansi.Strip(a.renderAboutContent(150, 50))
 	for _, want := range []string{a.mood.code(), "Collection", "Banners", "Achievements", "First Light", "secret ones"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("About page missing %q:\n%s", want, out)

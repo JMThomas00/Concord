@@ -145,8 +145,11 @@ func (a *App) renderAboutContent(width, height int) string {
 		date := coll.Achievements[ach.id]
 		switch {
 		case date != "":
-			right = append(right, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(c.Yellow)).Render("★ ")+
-				normal.Render(ach.name)+dim.Render("  "+date))
+			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Yellow)).Render("★ ")
+			if medal := achievementTiers[ach.id]; medal != "" {
+				mark = medal // bronze, silver or gold
+			}
+			right = append(right, "  "+mark+normal.Render(ach.name)+dim.Render("  "+date))
 		case ach.secret:
 			hidden++
 		default:

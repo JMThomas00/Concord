@@ -26,6 +26,10 @@ type Collection struct {
 	LastDay     string `json:"last_day,omitempty"`
 	Streak      int    `json:"streak,omitempty"`
 	BestStreak  int    `json:"best_streak,omitempty"`
+
+	// VoiceSeen: people this client has seen in voice, for "first time in
+	// voice" (user ID → date).
+	VoiceSeen map[string]string `json:"voice_seen,omitempty"`
 }
 
 func newCollection() *Collection {
@@ -184,6 +188,8 @@ func (a *App) discoverBanner(idx int) {
 	switch len(c.Banners) {
 	case 50:
 		a.unlock("banners_50")
+	case 150:
+		a.unlock("banners_150")
 	case len(banners):
 		a.unlock("banners_all")
 	}
@@ -222,6 +228,8 @@ func (a *App) launched() {
 		a.unlock("regular")
 	case 100:
 		a.unlock("vintner")
+	case 500:
+		a.unlock("launch_500")
 	}
 	if h := moodClock().Hour(); h >= 2 && h < 5 {
 		a.unlock("night_owl")

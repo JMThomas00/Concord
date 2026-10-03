@@ -50,6 +50,11 @@ func allSlashCommands() []slashCommandInfo {
 		{"unmute", "[@user]", "Unmute the current channel, or (mods) server-unmute a member", roleLevelMember},
 		{"join-voice", "[#channel]", "Join a voice channel", roleLevelMember},
 		{"leave-voice", "", "Leave the current voice channel", roleLevelMember},
+		{"grape", "", "Rain grapes down your screen (only you see it)", roleLevelMember},
+		{"disco", "", "A short disco party on your screen (only you see it)", roleLevelMember},
+		{"mood", "[#CODE]", "Share today's mood here, or adopt someone's code for your next launch", roleLevelMember},
+		{"vintage", "", "Your time on Concord as a wine-tasting note (only you see it)", roleLevelMember},
+		{"collection", "", "Share what you've collected (Settings > About) in this channel", roleLevelMember},
 
 		{"create-channel", "<name>", "Create a new text channel", roleLevelMod},
 		{"create-group", "<name>", "Create a new channel group", roleLevelMod},
