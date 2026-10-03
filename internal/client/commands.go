@@ -1375,6 +1375,7 @@ func (ch *CommandHandler) handleJoinVoice(args []string) (string, error) {
 		return "", errors.New("usage: /join-voice [#channel-name] (or select a voice channel first)")
 	}
 
+	a.leaveVoiceElsewhere() // only ever in one call
 	channelID := target.ID
 	payload := &protocol.VoiceStateUpdatePayload{
 		ServerID:  a.currentServer.ID,
@@ -1388,32 +1389,9 @@ func (ch *CommandHandler) handleJoinVoice(args []string) (string, error) {
 
 // handleLeaveVoice handles /leave-voice — leaves the current voice channel.
 func (ch *CommandHandler) handleLeaveVoice(_ []string) (string, error) {
-	a := ch.app
-	if a.activeConn == nil || a.currentServer == nil || a.currentClientServer == nil {
-		return "", errors.New("not connected to a server")
-	}
-
-	a.activeConn.mu.RLock()
-	var inVoice bool
-	var serverID uuid.UUID
-	if a.activeConn.User != nil {
-		if vs, ok := a.activeConn.VoiceStates[a.activeConn.User.ID]; ok {
-			inVoice = true
-			serverID = vs.ServerID
-		}
-	}
-	a.activeConn.mu.RUnlock()
-
-	if !inVoice {
+	// Leaves wherever your voice is, even from another server.
+	if !ch.app.leaveVoice() {
 		return "", errors.New("you are not in a voice channel")
-	}
-
-	payload := &protocol.VoiceStateUpdatePayload{
-		ServerID:  serverID,
-		ChannelID: nil, // nil = leave
-	}
-	if err := a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload); err != nil {
-		return "", fmt.Errorf("failed to leave voice: %w", err)
 	}
 	return "Left voice channel.", nil
 }

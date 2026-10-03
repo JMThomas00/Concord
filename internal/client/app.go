@@ -267,6 +267,7 @@ type App struct {
 	voiceEngine   *VoiceEngine
 	voiceSigOut   chan VoiceSignalOut     // engine → server: WebRTC signals
 	voiceEventOut chan interface{}        // engine → bubbletea: state events
+	voiceConn     *ServerConnection        // the server your voice is on, even while another is on screen (voice_follow.go)
 	voiceQuit     chan struct{}           // closed by stopVoiceEngine to unblock waiting cmds
 	voiceQuality  map[uuid.UUID]int       // userID → latest ICE RTT ms (-1 = unknown)
 	voiceLevels   map[uuid.UUID]float32   // userID → latest RMS output level (0.0–1.0)
@@ -1800,16 +1801,16 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case voiceLocalSpeakingMsg:
-		// Forward local speaking state to server so others see the indicator.
-		if a.activeConn != nil && a.activeConn.Connection != nil {
-			chID := a.activeConn.CurrentVoiceChannelID
+		// Forward local speaking state to the voice server so others see the indicator.
+		if vc := a.voiceServer(); vc != nil && vc.Connection != nil {
+			chID := vc.CurrentVoiceChannelID
 			if chID != uuid.Nil {
 				payload := &protocol.VoiceSpeakingPayload{
 					ChannelID:  chID,
 					IsSpeaking: msg.speaking,
 				}
 				if wsMsg, err := protocol.NewMessage(protocol.OpVoiceSpeaking, payload); err == nil {
-					_ = a.activeConn.Connection.Send(wsMsg)
+					_ = vc.Connection.Send(wsMsg)
 				}
 			}
 		}
@@ -1819,7 +1820,8 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case VoiceSignalOut:
 		// Forward WebRTC signal (offer/answer/candidate) to the target peer via server relay.
-		if a.activeConn != nil && a.activeConn.Connection != nil {
+		// ...over the voice server's connection, which needn't be the one on screen.
+		if vc := a.voiceServer(); vc != nil && vc.Connection != nil {
 			payload := &protocol.VoiceSignalPayload{
 				TargetUserID: msg.TargetUserID,
 				ChannelID:    msg.ChannelID,
@@ -1828,7 +1830,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Candidate:    msg.Candidate,
 			}
 			if wsMsg, err := protocol.NewMessage(protocol.OpVoiceSignal, payload); err == nil {
-				_ = a.activeConn.Connection.Send(wsMsg)
+				_ = vc.Connection.Send(wsMsg)
 			}
 		}
 		if a.voiceEngine != nil {
@@ -2255,37 +2257,19 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return tea.Quit
 
 	case "ctrl+m":
-		// Toggle self-mute in voice channel
-		if a.view == ViewMain && a.activeConn != nil && a.currentClientServer != nil {
-			a.activeConn.mu.RLock()
-			vs := a.activeConn.VoiceStates[a.activeConn.User.ID]
-			a.activeConn.mu.RUnlock()
-			if vs != nil {
-				payload := &protocol.VoiceStateUpdatePayload{
-					ServerID:       vs.ServerID,
-					ChannelID:      &vs.ChannelID,
-					IsSelfMuted:    !vs.IsSelfMuted,
-					IsSelfDeafened: vs.IsSelfDeafened,
-				}
-				_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+		// Toggle self-mute in voice, wherever your voice is.
+		if a.view == ViewMain {
+			if _, vs := a.myVoiceState(); vs != nil {
+				a.sendMyVoiceState(!vs.Muted, vs.Deafened)
 			}
 		}
 		return nil
 
 	case "ctrl+d":
-		// Toggle self-deafen in voice channel
-		if a.view == ViewMain && a.activeConn != nil && a.currentClientServer != nil {
-			a.activeConn.mu.RLock()
-			vs := a.activeConn.VoiceStates[a.activeConn.User.ID]
-			a.activeConn.mu.RUnlock()
-			if vs != nil {
-				payload := &protocol.VoiceStateUpdatePayload{
-					ServerID:       vs.ServerID,
-					ChannelID:      &vs.ChannelID,
-					IsSelfMuted:    vs.IsSelfMuted,
-					IsSelfDeafened: !vs.IsSelfDeafened,
-				}
-				_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+		// Toggle self-deafen in voice, wherever your voice is.
+		if a.view == ViewMain {
+			if _, vs := a.myVoiceState(); vs != nil {
+				a.sendMyVoiceState(vs.Muted, !vs.Deafened)
 			}
 		}
 		return nil
@@ -2558,7 +2542,9 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 					a.stopVoiceEngine()
 					a.statusMessage = "Left voice channel."
 				} else {
-					// Join voice
+					// Join voice (leaving a call on another server first:
+					// you're only ever in one).
+					a.leaveVoiceElsewhere()
 					chID := a.currentChannel.ID
 					payload := &protocol.VoiceStateUpdatePayload{
 						ServerID:  a.currentServer.ID,
@@ -4677,9 +4663,6 @@ func (a *App) switchToClientServer(index int) {
 		return
 	}
 
-	// Stop voice engine when leaving the current server.
-	a.stopVoiceEngine()
-
 	a.serverIndex = index
 	a.currentClientServer = a.clientServers[index]
 
@@ -6117,7 +6100,9 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 				a.statusMessage = fmt.Sprintf("Disconnected from %s", a.currentClientServer.Name)
 			}
 			a.statusError = true
-			a.stopVoiceEngine()
+		}
+		if a.voiceConn == sc {
+			a.stopVoiceEngine() // the call was on this server
 		}
 		// A dropped connection can't relay a leave_pane signal -- the plugin
 		// has no way to ask Concord to release the pane over a connection
@@ -6149,7 +6134,9 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 		if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
 			a.statusMessage = fmt.Sprintf("Error: %s", msg.Error)
 			a.statusError = true
-			a.stopVoiceEngine()
+		}
+		if a.voiceConn == sc {
+			a.stopVoiceEngine() // the call was on this server
 		}
 	}
 
@@ -7454,7 +7441,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.mu.Unlock()
 
 		// Keep the running engine's peer list in sync with the channel roster.
-		if a.voiceEngine != nil && sc.User != nil {
+		if a.voiceEngine != nil && sc == a.voiceConn && sc.User != nil {
 			if payload.UserID == sc.User.ID {
 				// We ourselves left (or were moved off) this channel — stop the engine.
 				if payload.ChannelID == nil {
@@ -7502,7 +7489,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("voice: VOICE_SIGNAL parse error: %v", err)
 			return nil
 		}
-		if a.voiceEngine != nil {
+		if a.voiceEngine != nil && sc == a.voiceConn {
 			a.voiceEngine.HandleSignal(sigPayload.SourceUserID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
 		}
 
@@ -7532,6 +7519,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 // skip the engine entirely and show a quiet status rather than a red error.
 func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServerUpdatePayload) tea.Cmd {
 	if !isVoiceSupported() {
+		a.voiceConn = sc
 		// Presence-only mode: user appears in the voice channel member list
 		// but no audio engine runs (stub build has no CGO audio).
 		a.statusMessage = "Joined voice channel (presence only — no mic/speaker in this build)"
@@ -7540,6 +7528,7 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 	}
 
 	a.stopVoiceEngine() // tear down any existing engine first
+	a.voiceConn = sc // voice stays with this server until you leave it
 
 	if sc.User == nil {
 		return nil
@@ -7589,6 +7578,7 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 // stopVoiceEngine tears down the running VoiceEngine and unblocks any pending
 // waitForVoiceEvent / waitForVoiceSignal commands via the quit channel.
 func (a *App) stopVoiceEngine() {
+	a.voiceConn = nil
 	if a.voiceEngine == nil {
 		return
 	}

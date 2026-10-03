@@ -2203,6 +2203,11 @@ func (a *App) renderStatusBar() string {
 	if a.quietHours() {
 		leftContent += textStyle.Render("  ☾")
 	}
+	if v := a.voiceStatus(); v != "" {
+		// You're in a call on another server: say where (voice_follow.go).
+		leftContent += lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Selection)).
+			Foreground(lipgloss.Color(a.theme.Colors.Green)).Render("  " + v)
+	}
 	if currentUser != nil {
 		leftContent += textStyle.Render("  |  " + currentUser.FullUsername())
 	}
