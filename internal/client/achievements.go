@@ -5,9 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mattn/go-runewidth"
 )
 
 // achievement is one entry on Settings > About. A locked one shows its hint;
@@ -78,13 +76,6 @@ func findAchievement(id string) (achievement, bool) {
 	return achievement{}, false
 }
 
-// toast is an achievement announcement in the top-right corner.
-type toast struct {
-	label string // the first line; "" for an achievement
-	title string
-	shown time.Time // zero until it reaches the front of the queue
-}
-
 // unlock earns an achievement, once, and queues its toast.
 func (a *App) unlock(id string) {
 	ach, ok := findAchievement(id)
@@ -97,62 +88,7 @@ func (a *App) unlock(id string) {
 	}
 	c.Achievements[id] = today()
 	a.saveCollection()
-	a.toasts = append(a.toasts, &toast{title: ach.name})
-}
-
-// currentToast is the toast to show now, retiring finished ones.
-func (a *App) currentToast(now time.Time) *toast {
-	for len(a.toasts) > 0 {
-		t := a.toasts[0]
-		if t.shown.IsZero() {
-			t.shown = now
-		}
-		if now.Sub(t.shown) < toastTime {
-			return t
-		}
-		a.toasts = a.toasts[1:]
-	}
-	return nil
-}
-
-// paintToast draws the toast over the top-right of a frame. Only the lines
-// it covers are touched, so the rest of the frame (links, pictures) is
-// left exactly as it was.
-func (a *App) paintToast(frame string, t *toast, now time.Time) string {
-	if a.width < 30 {
-		return frame
-	}
-	accent := a.theme.Colors.Purple
-	if accent == "" {
-		accent = "#bd93f9"
-	}
-	label := "🏆 Achievement unlocked"
-	if t.label != "" {
-		label = t.label
-	}
-	w := max(runewidth.StringWidth(label), runewidth.StringWidth(t.title)) + 4
-	if w > a.width-2 {
-		w = a.width - 2
-	}
-	// Slide in from the right over the first 250ms, out over the last.
-	age := now.Sub(t.shown)
-	slide := 1.0
-	if age < 250*time.Millisecond {
-		slide = easeOutCubic(float64(age) / float64(250*time.Millisecond))
-	} else if left := toastTime - age; left < 250*time.Millisecond {
-		slide = easeOutCubic(float64(left) / float64(250*time.Millisecond))
-	}
-	box := lipgloss.NewStyle().Width(w).Padding(0, 2).
-		Background(lipgloss.Color(a.theme.Colors.Background)).
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	lines := []string{
-		box.Render(""),
-		box.Foreground(lipgloss.Color(accent)).Bold(true).Render(label),
-		box.Render(t.title),
-		box.Render(""),
-	}
-	col := a.width - 1 - int(float64(w+1)*slide)
-	return overlayLines(frame, 1, col, a.width, lines)
+	a.toasts = append(a.toasts, &toast{title: ach.name, created: time.Now()})
 }
 
 // overlayLines draws lines over frame starting at row, col, touching only

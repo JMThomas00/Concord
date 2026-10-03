@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
 )
 
 // The collection is what this computer has discovered of the login
@@ -248,9 +247,6 @@ func (a *App) launched() {
 	}
 	a.saveCollection()
 }
-
-// toastTime is how long an achievement toast stays up.
-const toastTime = 4 * time.Second
 
 // CellarBottle is one legendary sighting: what it was, the mood code it
 // came in (so it can be uncorked again), and when.

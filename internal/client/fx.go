@@ -168,9 +168,7 @@ func (a *App) applyFx(out string) string {
 		p := float64(now.Sub(a.fx.burstAt)) / float64(burstDur)
 		out = landing(parseFrame(out, a.width, a.height), p, a.loadingPalette()).String()
 	}
-	if t := a.currentToast(now); t != nil {
-		out = a.paintToast(out, t, now)
-	}
+	out = a.paintToasts(out, now) // toasts.go
 	return out
 }
 

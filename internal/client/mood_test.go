@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,15 +117,23 @@ func TestCollectionAndAchievements(t *testing.T) {
 	}
 }
 
+// Toasts stack, newest at the bottom, a few at a time; the rest wait.
 func TestToastQueue(t *testing.T) {
 	a := &App{uiConfig: &UIConfig{}}
-	a.toasts = []*toast{{title: "One"}, {title: "Two"}}
-	now := time.Now()
-	if a.currentToast(now).title != "One" {
-		t.Fatal("first")
+	for i := 0; i < 6; i++ {
+		a.toasts = append(a.toasts, &toast{title: fmt.Sprint(i)})
 	}
-	if a.currentToast(now.Add(toastTime+time.Millisecond)).title != "Two" {
-		t.Fatal("second")
+	now := time.Now()
+	vis := a.visibleToasts(now)
+	if len(vis) != maxToasts || vis[0].title != "0" || vis[maxToasts-1].title != "3" {
+		t.Fatalf("visible %d, first %q", len(vis), vis[0].title)
+	}
+	if a.currentToast(now).title != "3" {
+		t.Fatal("the newest isn't the one at the bottom")
+	}
+	later := a.visibleToasts(now.Add(toastTime + time.Millisecond))
+	if len(later) != 2 || later[0].title != "4" {
+		t.Fatalf("after the first four: %d, %+v", len(later), later)
 	}
 	if a.currentToast(now.Add(3*toastTime)) != nil {
 		t.Fatal("toasts never finish")
@@ -171,7 +180,7 @@ func TestShadedGrapesAreTheDefault(t *testing.T) {
 	const n = 50000
 	shaded := 0
 	for s := uint32(0); s < n; s++ {
-		if moodFromSeed(s*7919).picks[layerLogo] == "shaded" {
+		if moodFromSeed(s * 7919).picks[layerLogo] == "shaded" {
 			shaded++
 		}
 	}

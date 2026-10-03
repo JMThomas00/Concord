@@ -479,6 +479,9 @@ func (a *App) notifyFromPlugin(serverID uuid.UUID, sc *ServerConnection, p proto
 		srvName = sc.ServerInfo.Name
 	}
 	a.triggerMessageNotification(channelName, srvName, channelName, content, true, isCurrentChannel, isCurrentServer)
+	if shouldToast(a.notifConfig.ToastMode, a.notifConfig.ToastScope, true, isCurrentChannel, isCurrentServer) {
+		a.toastMessage(serverID, p.ChannelID, channelName, srvName, channelName, content, true)
+	}
 }
 
 // sanitizePaneTitle reduces plugin-supplied one-line text (titles, toast

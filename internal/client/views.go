@@ -1147,7 +1147,7 @@ func (a *App) renderChannelRow(node *ChannelTreeNode, width int) string {
 		if mentions > 0 {
 			badge = fmt.Sprintf(" @%d", mentions)
 		} else if unreads > 0 {
-			badge = " ●"
+			badge = fmt.Sprintf(" ●%d", unreads) // how many you missed
 		}
 	}
 

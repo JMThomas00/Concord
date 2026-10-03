@@ -176,6 +176,12 @@ type NotificationConfig struct {
 	// surprise popups for users who never opted in.
 	DesktopNotifyMode  string `json:"desktop_notify_mode"`  // "" / "off" (default), "mentions", "all"
 	DesktopNotifyScope string `json:"desktop_notify_scope"` // "" / "all_servers" (default), "current_server"
+
+	// In-app toasts for new messages (toasts.go), on by default: ""
+	// (all messages), "mentions" or "off"; and from "" (all servers) or
+	// "current_server". The unread counts in the channel list show either way.
+	ToastMode  string `json:"toast_mode,omitempty"`
+	ToastScope string `json:"toast_scope,omitempty"`
 }
 
 // DisplayConfig holds display and appearance preferences

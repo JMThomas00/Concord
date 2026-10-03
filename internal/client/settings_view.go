@@ -489,7 +489,7 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 					a.previewTheme(s.AvailableThemes[s.SelectedTheme])
 				}
 			case 1: // Notifications category
-				if s.NotifFocusField < 7 {
+				if s.NotifFocusField < len(notifFieldLineStarts)-1 {
 					s.NotifFocusField++
 					a.updateNotifScroll(s)
 				}
@@ -797,6 +797,23 @@ func (a *App) handleNotifFieldActivate(s *SettingsState) {
 		s.NotifMuteTab = 0
 		s.NotifMuteServerIdx = 0
 		s.NotifMuteChanIdx = 0
+	case 8: // Message Toasts: all → mentions → off → all
+		switch a.notifConfig.ToastMode {
+		case ToastModeAll:
+			a.notifConfig.ToastMode = ToastModeMentions
+		case ToastModeMentions:
+			a.notifConfig.ToastMode = ToastModeOff
+		default:
+			a.notifConfig.ToastMode = ToastModeAll
+		}
+		a.saveNotifConfig()
+	case 9: // Toasts From: all servers ↔ current server
+		if a.notifConfig.ToastScope == DesktopNotifyScopeCurrentServer {
+			a.notifConfig.ToastScope = DesktopNotifyScopeAllServers
+		} else {
+			a.notifConfig.ToastScope = DesktopNotifyScopeCurrentServer
+		}
+		a.saveNotifConfig()
 	}
 }
 
@@ -1855,6 +1872,29 @@ func (a *App) renderNotificationsContent(width, height int) string {
 	addLine(parts7[0])
 	addLine(parts7[1])
 
+	// ── In-app Toasts section (toasts.go) ──
+	addBlank()
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addBlank()
+	addLine(sectionHeaderStyle.Render("  In-app Toasts"))
+	addBlank()
+
+	toastVal := "All Messages"
+	switch cfg.ToastMode {
+	case ToastModeMentions:
+		toastVal = "@Mentions Only"
+	case ToastModeOff:
+		toastVal = "Off (the channel list still counts what you missed)"
+	}
+	writeField(8, "Message Toasts", toastVal+" ◀▶")
+
+	toastScopeVal := "All Connected Servers"
+	if cfg.ToastScope == DesktopNotifyScopeCurrentServer {
+		toastScopeVal = "Current Server Only"
+	}
+	writeField(9, "Toasts From", toastScopeVal+" ◀▶")
+	addLine(dimStyle.Render("  Click a toast to go to its channel. None for the channel you're in."))
+
 	// Apply scroll window: clip allMiddleLines to layout.middleLines starting at NotifScrollOffset.
 	offset := 0
 	if s != nil {
@@ -2403,7 +2443,7 @@ func (a *App) renderDisplayContent(width, height int) string {
 // in the middle section. Layout: header+blank (2), fields 0-1 (3 lines
 // each), note+blank (2), divider+blank (2), header+blank (2), fields 2-6
 // (3 lines each), divider+blank (2), field 7 (2 lines, no trailing blank).
-var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31}
+var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31, 38, 41}
 
 // updateNotifScroll adjusts NotifScrollOffset so the focused field is visible.
 func (a *App) updateNotifScroll(s *SettingsState) {

@@ -96,6 +96,7 @@ type App struct {
 	fx         fxState
 	collection *Collection
 	toasts     []*toast
+	toastRects []toastRect // where the toasts were last drawn, for clicks (toasts.go)
 	loading    *loadingState // the launch's loading screen while it plays
 
 	// Easter eggs and screensavers (eggs.go, screensaver.go).
@@ -1266,6 +1267,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case tea.MouseMsg:
+		if a.clickToast(m) {
+			return a, nil // a click on a toast: it opened its channel, or just went away
+		}
 		// Plain hover motion (no button held) is handled -- and dropped --
 		// by MouseHoverFilter (grape_logo.go) before it ever reaches here,
 		// via tea.WithFilter in main.go. Anything that does reach this case
@@ -6443,6 +6447,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 			isCurrentServer := a.activeConn != nil && a.activeConn.ServerID == serverID
 			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention, isCurrentChannel, isCurrentServer)
+			if shouldToast(a.notifConfig.ToastMode, a.notifConfig.ToastScope, hasMention, isCurrentChannel, isCurrentServer) {
+				a.toastMessage(serverID, payload.Message.ChannelID, payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
+			}
 		}
 
 		log.Printf("MESSAGE_CREATE: channel=%s, author=%s, activeConn=%v, currentChannel=%v",
