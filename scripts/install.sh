@@ -25,7 +25,7 @@ dim() { printf '\033[38;2;98;114;164m%s\033[0m\n' "$1"; }
 fail() { printf '\033[38;2;255;85;85m%s\033[0m\n' "$1" >&2; exit 1; }
 
 # Questions need the keyboard even though this script arrives on stdin.
-if [ -r /dev/tty ]; then TTY=/dev/tty; else TTY=""; fi
+if (exec </dev/tty) 2>/dev/null; then TTY=/dev/tty; else TTY=""; fi
 
 case "$(uname -s)" in
   Linux) os=linux ;;
