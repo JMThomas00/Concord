@@ -366,7 +366,7 @@ func (h *Hub) proxyJoin(w http.ResponseWriter, serverID, originURL string) {
 // whitelist the incoming client. Synchronous: the caller must not reveal
 // connection details unless the server acknowledged the token.
 func (h *Hub) signalServer(srv *RegisteredServer, token string) error {
-	url := fmt.Sprintf("http://%s:%d/v1/grapevine/signal", srv.Host, srv.Port)
+	url := fmt.Sprintf("%s://%s:%d/v1/grapevine/signal", scheme(srv.Port), srv.Host, srv.Port)
 	payload := map[string]string{"join_token": token}
 	body, _ := json.Marshal(payload)
 	sig := SignBody(srv.RegistrationSecret, body)
@@ -447,4 +447,13 @@ func (h *Hub) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// scheme is how to reach a server on port: 443 is https (a server behind
+// Cloudflare or another TLS proxy), anything else plain http.
+func scheme(port int) string {
+	if port == 443 {
+		return "https"
+	}
+	return "http"
 }

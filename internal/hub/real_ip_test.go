@@ -21,3 +21,11 @@ func TestClientIP(t *testing.T) {
 		t.Fatalf("with the setting: %s", got)
 	}
 }
+
+// A server on 443 (behind Cloudflare or another TLS proxy) is called back
+// over https; anything else over plain http.
+func TestScheme(t *testing.T) {
+	if scheme(443) != "https" || scheme(8080) != "http" {
+		t.Fatal("wrong scheme")
+	}
+}

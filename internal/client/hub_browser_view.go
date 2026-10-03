@@ -699,6 +699,7 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			Name:        m.resp.DisplayName,
 			Address:     m.resp.Host,
 			Port:        m.resp.Port,
+			UseTLS:      grapevineScheme(m.resp.Port) == "https",
 			HubServerID: m.resp.ServerID,
 		}
 		// Try to add; on "already exists", record the hub listing ID on the

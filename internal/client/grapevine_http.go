@@ -122,7 +122,7 @@ func RedeemJoinToken(host string, port int, token string) error {
 	payload, _ := json.Marshal(map[string]string{"join_token": token})
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Post(
-		fmt.Sprintf("http://%s:%d/v1/grapevine/join", host, port),
+		fmt.Sprintf("%s://%s:%d/v1/grapevine/join", grapevineScheme(port), host, port),
 		"application/json", bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("server unreachable: %w", err)
@@ -169,4 +169,14 @@ type HubJoinResponse struct {
 	Host        string `json:"host"`
 	Port        int    `json:"port"`
 	JoinToken   string `json:"join_token"`
+}
+
+// grapevineScheme is how to reach a listed server on port: 443 is https (a
+// server behind Cloudflare or another TLS proxy), anything else plain http.
+// The hub follows the same rule when it calls the server.
+func grapevineScheme(port int) string {
+	if port == 443 {
+		return "https"
+	}
+	return "http"
 }
