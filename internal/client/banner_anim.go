@@ -97,6 +97,7 @@ func pickFittingBanner(last int, fits func(int) bool) (int, bool) {
 // won't open on the same one.
 func (a *App) setBanner(idx int) {
 	a.banner, a.bannerIndex = banners[idx], idx
+	a.discoverBanner(idx)
 	if a.configMgr != nil {
 		if cfg, err := a.configMgr.LoadAppConfig(); err == nil && cfg != nil {
 			cfg.UI.LastBannerIndex = idx
@@ -108,6 +109,9 @@ func (a *App) setBanner(idx int) {
 // shuffleBanner is the login-screen easter egg (Ctrl+R): a different banner
 // that fits the logo box at the current terminal size, animated in.
 func (a *App) shuffleBanner() tea.Cmd {
+	if a.count("shuffles") == 25 {
+		a.unlock("shuffler")
+	}
 	fits := func(int) bool { return true }
 	if g, ok := a.currentLockup(); ok {
 		fits = g.fits

@@ -2401,6 +2401,15 @@ func (a *App) renderDisplayContent(width, height int) string {
 	}
 	writeField(15, "Plugin Code Answers", forgetVal)
 
+	// Divider — Login screen section
+	addLine(dimStyle.Render(a.renderSeparator(layout.interiorWidth)))
+	addLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
+		Render("  Login Screen"))
+	addBlank()
+
+	// Field 16: how lively the login screen is (mood.go)
+	writeField(16, "Surprise Me", surpriseLabel(cfg.Surprise)+"  ◀▶")
+
 	// Notes go last, so the fields above keep fixed positions for scrolling.
 	for _, hint := range imagesSettingHints(cfg.Images) {
 		addLine(dimStyle.Render("    " + hint))
@@ -2480,7 +2489,7 @@ func (a *App) updateNotifScroll(s *SettingsState) {
 // divider+header+blank (3), fields 9-10 (3 lines each),
 // divider+header+blank (3), fields 11-12 (3 lines each),
 // divider+header+blank (3), fields 13-15 (3 lines each), then notes.
-var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44, 50, 53, 56}
+var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44, 50, 53, 56, 62}
 
 // updateDisplayScroll adjusts DisplayScrollOffset so the focused field is visible.
 func (a *App) updateDisplayScroll(s *SettingsState) {
@@ -2598,6 +2607,8 @@ func (a *App) handleDisplayFieldActivate(s *SettingsState) {
 		}
 	case 15: // forget saved answers
 		a.forgetCodeDecisions()
+	case 16: // Surprise Me: full → calm → off
+		cfg.Surprise = nextSurprise(cfg.Surprise)
 	}
 	a.saveDisplayConfig()
 	a.updateChatContent()

@@ -201,6 +201,12 @@ type DisplayConfig struct {
 	DisablePanelAnimations bool   `json:"disable_panel_animations"` // skip slide-in/out for settings and server panels
 	TypingAnimation        string `json:"typing_animation"`         // "" = "braille"; see typingAnimNames for valid values
 
+	// Surprise is how lively the login stage is (mood.go): "" (full),
+	// "calm" or "off". MoodLock is a mood code to use on every launch
+	// instead of a random one ("" = random).
+	Surprise string `json:"surprise,omitempty"`
+	MoodLock string `json:"mood_lock,omitempty"`
+
 	// Images says how plugin images are drawn: "" or "auto" (the best this
 	// terminal supports), "kitty", "sixel", "iterm2", "blocks" or "off".
 	Images string `json:"images,omitempty"`

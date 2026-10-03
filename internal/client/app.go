@@ -87,6 +87,14 @@ type App struct {
 	grapeLight *grapeLightState
 	grapeGen   int
 
+	// The login experience (fx.go, mood.go, collection.go): this launch's
+	// mood, the transitions and backgrounds drawn over frames, and the
+	// collection and achievement toasts.
+	mood       mood
+	fx         fxState
+	collection *Collection
+	toasts     []*toast
+
 	// Scroll positions for the channel list and members panels (see
 	// panel_scroll.go).
 	channelScroll panelScroll
@@ -1003,7 +1011,14 @@ func (a *App) initLoginView() {
 // Init implements tea.Model
 func (a *App) Init() tea.Cmd {
 	a.lastActivityTime = time.Now()
+	a.startMood()
+	a.launched()
+	a.recordMood()
+	a.discoverBanner(a.bannerIndex)
+	a.fx.prevView = a.view
+	a.fx.stageAt = time.Now()
 	cmds := []tea.Cmd{
+		a.syncFx(),
 		textinput.Blink,
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
@@ -1186,6 +1201,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case grapeTickMsg:
 		return a, a.handleGrapeTick(m)
+	case fxTickMsg:
+		return a, a.handleFxTick(m)
 	case paneCheckMsg:
 		return a, a.syncPluginPane()
 	case codeMsg:
@@ -1209,6 +1226,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, check)
 	}
 	if start := a.syncGrapeLight(); start != nil {
+		cmd = tea.Batch(cmd, start)
+	}
+	if start := a.syncFx(); start != nil {
 		cmd = tea.Batch(cmd, start)
 	}
 	if swap := a.ensureBannerFits(); swap != nil {
@@ -1955,7 +1975,7 @@ func isEmptyTextareaWordNavKey(msg tea.Msg, input textarea.Model) bool {
 // View implements tea.Model
 func (a *App) View() string {
 	a.paneRasters = nil
-	out := a.view0()
+	out := a.applyFx(a.view0())
 	overlay := a.showHubBrowser || a.linkBrowserState != nil || a.helpFinderState != nil || a.memberContextMenu != nil
 	return a.paintRasterImages(out, a.paneRasters, overlay)
 }
