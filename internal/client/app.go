@@ -214,6 +214,7 @@ type App struct {
 	typingUsernames map[uuid.UUID]string    // userID → username carried on the event itself, for typists (e.g. plugin service accounts) with no ServerMember row to resolve from
 	typingIsBot     map[uuid.UUID]bool      // userID → whether the typist is a plugin's own service account ("is thinking" vs. "is typing")
 	typingFrame     int                     // current animation frame index
+	typingTicking   bool                    // the typing animation's ticker is running (only while someone types)
 	lastTypingSent  time.Time               // when we last sent OpTypingStart
 
 	// lastKeystrokeAt is updated at the top of every handleKeyPress call,
@@ -1053,7 +1054,6 @@ func (a *App) Init() tea.Cmd {
 		textinput.Blink,
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
-		tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }),
 	}
 	if (a.view == ViewLogin || a.view == ViewRegister) && a.loading == nil {
 		if cmd := a.startBannerAnim(); cmd != nil {
@@ -1367,7 +1367,14 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.rebuildTypingUsers()
 			}
 		}
-		cmds = append(cmds, tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }))
+		// Keep ticking only while someone is typing: every tick redraws the
+		// screen, and ten redraws a second while idle kept a whole CPU core
+		// busy (unusable on 256-colour terminals). The next TYPING_START
+		// starts it again.
+		a.typingTicking = false
+		if len(a.typingExpiry) > 0 {
+			cmds = append(cmds, a.startTypingTick())
+		}
 
 	case serverListAnimTickMsg:
 		target := 22
@@ -6991,6 +6998,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		a.typingIsBot[typingPayload.UserID] = typingPayload.IsBot
 		a.rebuildTypingUsers()
+		return a.startTypingTick()
 
 	case protocol.EventTypingStop:
 		var stopPayload protocol.TypingStopEventPayload
@@ -7735,4 +7743,14 @@ func (a *App) waitForFileTransferSignal() tea.Cmd {
 		}
 		return sig
 	}
+}
+
+// startTypingTick runs the typing indicator's animation, unless it's
+// already running. It stops by itself once nobody is typing.
+func (a *App) startTypingTick() tea.Cmd {
+	if a.typingTicking {
+		return nil
+	}
+	a.typingTicking = true
+	return tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) })
 }
