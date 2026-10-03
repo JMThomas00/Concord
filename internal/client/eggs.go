@@ -409,3 +409,25 @@ func sunrise() bool {
 	h := moodClock().Hour()
 	return h >= 5 && h < 7
 }
+
+// moonUp reports the harvest moon over the login stage (seasonAtmosphere).
+func (a *App) moonUp() bool {
+	return moonHours() && season(moodClock()) == "autumn" && a.surprise() == surpriseFull && a.calendar() == ""
+}
+
+// noticeNight earns the night's achievements once their sights are on
+// screen: the moon (over the stage, or in the status bar) and the dozing
+// grapes.
+func (a *App) noticeNight() {
+	if a.loading != nil || a.saver != nil {
+		return
+	}
+	if (isStageView(a.view) && a.moonUp()) || (a.view == ViewMain && a.quietHours()) {
+		a.unlock("night_owl")
+	}
+	if isStageView(a.view) && a.dozing() {
+		if z := zone.Get("grape-logo"); z != nil && !z.IsZero() {
+			a.unlock("go_to_bed")
+		}
+	}
+}

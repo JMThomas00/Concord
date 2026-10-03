@@ -304,8 +304,12 @@ func (a *App) channelBirthday(ch *models.Channel) {
 
 // quietHours reports the small hours, when the status bar shows a moon.
 func (a *App) quietHours() bool {
-	h := moodClock().Hour()
-	return h >= 1 && h < 5 && a.fullSurprise()
+	return moonHours() && a.fullSurprise()
+}
+
+// moonHours is when the moon is out: after midnight, until 5 a.m.
+func moonHours() bool {
+	return moodClock().Hour() < 5
 }
 
 // --- the main window's own eggs --------------------------------------------------

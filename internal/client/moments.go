@@ -186,6 +186,9 @@ func (a *App) seasonAtmosphere(g *fxGrid, t float64, pal loadingPalette) {
 			}
 		}
 	case "autumn": // the harvest moon
+		if !moonHours() {
+			return
+		}
 		// A different phase each launch, from a thin crescent to full.
 		phase := .45 + cellHash(seed, 0, 0, 16)*(2*math.Pi-.9)
 		drawMoon(g, 2, g.w-moonCols-4, phase, pal)

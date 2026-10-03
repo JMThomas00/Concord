@@ -233,9 +233,6 @@ func (a *App) launched() {
 	case 500:
 		a.unlock("launch_500")
 	}
-	if h := moodClock().Hour(); h >= 2 && h < 5 {
-		a.unlock("night_owl")
-	}
 	c.updateStreak(moodClock())
 	for _, s := range []struct {
 		days int

@@ -192,3 +192,40 @@ func TestDiscoParty(t *testing.T) {
 		t.Fatal("disco with Surprise Me off")
 	}
 }
+
+// The moon is out from midnight until 5 a.m., and seeing it (or the
+// grapes dozing) earns the night's achievements.
+func TestMoonHoursAndNightAchievements(t *testing.T) {
+	a := eggApp(t)
+	defer func() { moodClock = time.Now }()
+	at := func(h, m int) { moodClock = func() time.Time { return time.Date(2026, 10, 4, h, m, 0, 0, time.Local) } }
+	for _, c := range []struct {
+		h, m int
+		up   bool
+	}{{23, 59, false}, {0, 0, true}, {4, 59, true}, {5, 0, false}, {12, 0, false}} {
+		at(c.h, c.m)
+		if a.moonUp() != c.up || a.quietHours() != c.up {
+			t.Errorf("%02d:%02d: moon up %v, want %v", c.h, c.m, a.moonUp(), c.up)
+		}
+	}
+	at(12, 0)
+	a.noticeNight()
+	if _, ok := a.coll().Achievements["night_owl"]; ok {
+		t.Fatal("Night Owl at noon")
+	}
+	at(0, 30)
+	a.noticeNight()
+	if _, ok := a.coll().Achievements["night_owl"]; !ok {
+		t.Fatal("no Night Owl under the moon")
+	}
+	at(3, 0)
+	for i := 0; i < 50; i++ { // the grapes' zone appears once a frame is drawn
+		a.View()
+		a.noticeNight()
+		if _, ok := a.coll().Achievements["go_to_bed"]; ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no Go to Bed! while the grapes doze")
+}

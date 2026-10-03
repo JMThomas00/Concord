@@ -55,6 +55,7 @@ func isStageView(v View) bool {
 func (a *App) syncFx() tea.Cmd {
 	fx := &a.fx
 	a.noticeReactions(time.Now())
+	a.noticeNight()
 	if key := a.stageKey(); a.view != fx.prevView || key != fx.prevKey {
 		if isStageView(a.view) && !isStageView(fx.prevView) {
 			fx.stageAt = time.Now()
