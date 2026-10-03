@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/google/uuid"
 )
 
@@ -28,5 +30,19 @@ func TestTypingTickerStopsWhenNobodyTypes(t *testing.T) {
 	a.Update(typingTickMsg(time.Now()))
 	if !a.typingTicking {
 		t.Fatal("stopped while someone is still typing")
+	}
+}
+
+// Typing with the messages panel focused starts a message instead of
+// vanishing (the viewport only scrolls).
+func TestTypingInTheMessagesStartsAMessage(t *testing.T) {
+	a := newLayoutTestApp(t, 160, 45)
+	a.view = ViewMain
+	a.focus = FocusChat
+	for _, r := range "hi" {
+		a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if a.focus != FocusInput || a.input.Value() != "hi" {
+		t.Fatalf("focus %v, input %q", a.focus, a.input.Value())
 	}
 }

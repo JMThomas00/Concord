@@ -1977,6 +1977,16 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 				a.updateMentionPopup()
 			}
+		} else if keyMsg, ok := msg.(tea.KeyMsg); ok && a.focus == FocusChat && keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
+			// Typing with the messages focused starts a message (as the
+			// Help guide says): the text went nowhere before, since the
+			// viewport only scrolls. Arrows and PgUp/PgDn still scroll.
+			a.focus = FocusInput
+			cmds = append(cmds, a.input.Focus())
+			var cmd tea.Cmd
+			a.input, cmd = a.input.Update(msg)
+			cmds = append(cmds, cmd)
+			a.updateMentionPopup()
 		} else if a.focus == FocusChat {
 			var cmd tea.Cmd
 			a.chatViewport, cmd = a.chatViewport.Update(msg)
