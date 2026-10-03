@@ -131,16 +131,6 @@ func TestLoginShowsGrapesBesideBannerWhenTheyFit(t *testing.T) {
 	}
 }
 
-func TestAboutPageShowsGrapes(t *testing.T) {
-	a := newLayoutTestApp(t, 200, 55)
-	if !strings.Contains(ansi.Strip(a.renderAboutContent(140, 50)), ";##:") {
-		t.Error("expected the grape logo on a roomy About page")
-	}
-	if strings.Contains(ansi.Strip(a.renderAboutContent(60, 50)), ";##:") {
-		t.Error("the grape logo should be left out of a narrow About page")
-	}
-}
-
 func TestMixHex(t *testing.T) {
 	if got, ok := mixHex("#ff0000", "#0000ff", .25); !ok || got != "#4000bf" {
 		t.Errorf("mixHex = %q %v, want #4000bf", got, ok)

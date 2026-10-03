@@ -85,10 +85,10 @@ func (a *App) fxMoving() bool {
 	}
 	a.trackCodeTyping(now)
 	if a.loading != nil || a.connecting != nil || a.fx.trans != nil || len(a.toasts) > 0 || a.bursting(now) ||
-		a.codeAnimating(now) || a.shaking(now) || a.grapeReact != nil {
+		a.codeAnimating(now) || a.shaking(now) || a.grapeReact != nil || a.eggPlaying(now) || a.saver != nil {
 		return true
 	}
-	return isStageView(a.view) && a.atmosphereMoving()
+	return isStageView(a.view) && (a.atmosphereMoving() || a.calendar() != "" || a.dozing())
 }
 
 func (a *App) handleFxTick(msg fxTickMsg) tea.Cmd {
@@ -117,14 +117,20 @@ func (a *App) applyFx(out string) string {
 	now := time.Now()
 	if isStageView(a.view) {
 		bg := a.renderAtmosphere(now)
+		if cal := a.calendarAtmosphere(now, now.Sub(a.fx.stageAt).Seconds()); cal != nil {
+			bg = cal
+		}
 		t := a.fx.trans
 		accents := a.pick(layerAccent)
-		if bg != nil || t != nil || a.shaking(now) || (accents != "" && accents != "none") {
+		if bg != nil || t != nil || a.shaking(now) || (accents != "" && accents != "none") ||
+			a.eggPlaying(now) || a.calendar() != "" || a.dozing() {
 			g := parseFrame(out, a.width, a.height)
 			if bg != nil {
 				g.underlay(bg, 3, 1)
 			}
 			a.drawAccents(g)
+			a.paintCalendarText(g, now)
+			a.paintDoze(g, now)
 			if a.shaking(now) {
 				if z := zone.Get("stage-form"); z != nil && !z.IsZero() {
 					shake(g, z.StartY, z.EndY, z.StartX-2, float64(now.Sub(a.fx.shakeAt))/float64(shakeDur))
@@ -137,9 +143,17 @@ func (a *App) applyFx(out string) string {
 					g = t.render(from, g, p)
 				}
 			}
+			if a.eggPlaying(now) {
+				a.paintEgg(g, now)
+			}
 			out = g.String()
 		}
 		a.fx.last = out
+	}
+	if !isStageView(a.view) && a.eggPlaying(now) {
+		g := parseFrame(out, a.width, a.height)
+		a.paintEgg(g, now)
+		out = g.String()
 	}
 	if a.view == ViewMain && a.bursting(now) {
 		p := float64(now.Sub(a.fx.burstAt)) / float64(burstDur)

@@ -371,6 +371,18 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		return a.handleServerSoundPageKey(msg)
 	}
 
+	// About: scrolling (in the page), and L/N for the mood (anywhere on it)
+	if s.SelectedCategory == settingsCatAbout {
+		switch msg.String() {
+		case "l", "L", "n", "N":
+			a.handleAboutKey(msg)
+			return nil
+		}
+		if s.FocusOnForm && a.handleAboutKey(msg) {
+			return nil
+		}
+	}
+
 	// Route notification sub-pages
 	if s.SelectedCategory == 1 && s.FocusOnForm {
 		if s.NotifSoundPickerOpen {
@@ -1690,89 +1702,6 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 }
 
 // renderNotificationsContent renders the main notifications settings panel.
-// renderAboutContent renders the About category: the client binary's own
-// build identity (always known, set once at startup via SetBuildInfo), plus
-// the currently-connected server's build identity if one is connected
-// (reported via ReadyPayload, cached on the active ServerConnection --
-// Server Settings has its own separate About category for the same server
-// info, reached via Ctrl+B instead of Ctrl+S).
-func (a *App) renderAboutContent(width, height int) string {
-	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
-	// Bottom: separator + blank + 1 help line = 3 lines → pageBottomExtra = 0
-	layout := calculateSettingsLayout(width, height, 2, 0)
-
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
-	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-
-	// ── TOP ──
-	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
-	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
-		Render("About"))
-	top.writeLine(dimStyle.Render("Build information"))
-	top.writeBlank()
-	top.writeLine(a.renderSeparator(layout.interiorWidth))
-
-	// ── MIDDLE ──
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
-
-	// Build info goes in a left column; the shaded grape logo sits to its
-	// right when the page is wide and tall enough to show it whole.
-	const infoWidth, grapeGap = 40, 4
-	grapeRows := grapeLogos[grapeLogoSize].rows
-	withGrape := layout.interiorWidth >= infoWidth+grapeGap+grapeLogoSize && layout.middleLines >= grapeRows
-	sepWidth := layout.interiorWidth
-	if withGrape {
-		sepWidth = infoWidth
-	}
-
-	var info []string
-	writeRow := func(label, value string) {
-		info = append(info, labelStyle.Render(label), normalStyle.Render("    "+value), "")
-	}
-
-	info = append(info, labelStyle.Render("Concord Client"), "")
-	writeRow("Version", a.clientVersion)
-	writeRow("Git Commit", a.clientGitCommit)
-	writeRow("Build Time", a.clientBuildTime)
-
-	if a.activeConn != nil {
-		a.activeConn.mu.RLock()
-		serverVersion := a.activeConn.ServerVersion
-		serverGitCommit := a.activeConn.ServerGitCommit
-		serverBuildTime := a.activeConn.ServerBuildTime
-		a.activeConn.mu.RUnlock()
-
-		info = append(info, a.renderSeparator(sepWidth), "", labelStyle.Render("Connected Server"), "")
-		writeRow("Version", serverVersion)
-		writeRow("Git Commit", serverGitCommit)
-		writeRow("Build Time", serverBuildTime)
-	}
-
-	if withGrape {
-		left := lipgloss.NewStyle().Width(infoWidth).Render(strings.Join(info, "\n"))
-		info = strings.Split(lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", grapeGap), a.renderGrapeLogo()), "\n")
-	}
-	for _, line := range info {
-		middle.writeLine(line)
-	}
-
-	middle.pad()
-
-	// ── BOTTOM ──
-	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
-	bottom.writeLine(helpStyle.Render("Tab back to menu · Esc close"))
-	bottom.pad()
-
-	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
-	return lipgloss.NewStyle().
-		Width(width).Height(height - 2).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Padding(0, 1).Render(content)
-}
 
 func (a *App) renderNotificationsContent(width, height int) string {
 	s := a.settingsState

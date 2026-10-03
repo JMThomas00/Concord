@@ -95,6 +95,13 @@ type App struct {
 	collection *Collection
 	toasts     []*toast
 	loading    *loadingState // the launch's loading screen while it plays
+
+	// Easter eggs and screensavers (eggs.go, screensaver.go).
+	egg         *eggState
+	eggKeys     []string    // the last few keys, for typed eggs
+	grapeClicks []time.Time // recent clicks on the grapes
+	saver       *saverState
+	lastInput   time.Time
 	grapeReact *grapeReaction // the grapes reacting to a problem or a success (stage.go)
 	connecting *connectingState // the screen after unlocking while servers connect
 
@@ -1022,8 +1029,13 @@ func (a *App) Init() tea.Cmd {
 	a.fx.prevView, a.fx.prevKey = a.view, a.stageKey()
 	a.fx.stageAt = time.Now()
 	a.startLoading()
+	a.lastInput = time.Now()
+	if cal := a.calendar(); cal != "" {
+		a.findEgg(cal)
+	}
 	cmds := []tea.Cmd{
 		a.syncFx(),
+		idleCheck(),
 		textinput.Blink,
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
@@ -1203,8 +1215,18 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 // started and stopped here, after every message, so no individual
 // navigation path has to remember to do it.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a.noteInput(msg) {
+		return a, nil // it woke the screen from its screensaver
+	}
 	if skipped, cmd := a.skipLoading(msg); skipped {
 		return a, cmd
+	}
+	a.watchEggKeys(msg)
+	if m, ok := msg.(tea.MouseMsg); ok {
+		a.watchGrapeClicks(m)
+	}
+	if _, ok := msg.(idleCheckMsg); ok {
+		return a, tea.Batch(a.handleIdleCheck(), a.syncFx())
 	}
 	if a.skipConnecting(msg) {
 		return a, nil
@@ -1993,6 +2015,9 @@ func (a *App) View() string {
 	a.paneRasters = nil
 	if a.loading != nil && a.width > 0 && a.height > 0 {
 		return a.renderLoading(time.Now())
+	}
+	if a.saver != nil && a.width > 0 && a.height > 0 {
+		return a.renderSaver(time.Now())
 	}
 	if a.connecting != nil && a.view == ViewMain {
 		return a.renderConnecting(time.Now())

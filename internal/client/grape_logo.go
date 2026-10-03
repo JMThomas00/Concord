@@ -191,16 +191,7 @@ func (a *App) grapeLogoShowing() bool {
 	if a.loading != nil {
 		return false // it powers on when the loading screen ends
 	}
-	if isStageView(a.view) {
-		return true
-	}
-	switch a.view {
-	case ViewSettings:
-		return a.settingsState != nil && a.settingsState.Categories != nil &&
-			a.settingsState.SelectedCategory < len(a.settingsState.Categories) &&
-			a.settingsState.Categories[a.settingsState.SelectedCategory] == "About"
-	}
-	return false
+	return isStageView(a.view)
 }
 
 // syncGrapeLight starts the light (powering on from dark) when the logo

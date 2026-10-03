@@ -157,6 +157,9 @@ func (a *App) handleBannerAnimTick(msg bannerAnimTickMsg) tea.Cmd {
 // renderBanner draws the current banner, mid-animation if one is running.
 func (a *App) renderBanner() string {
 	art := trimBannerArt(a.banner.Art)
+	if a.calendar() == "april" {
+		art = flipArt(art) // April 1st
+	}
 	base := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
 	if a.bannerAnim == nil {
 		if coloured, ok := a.colourBanner(art, time.Now()); ok {

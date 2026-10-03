@@ -276,6 +276,11 @@ func (a *App) grapePurple() string {
 	if _, ok := parseHex(purple); ok && a.pick(layerLight) == "disco" {
 		purple = hsvHex(math.Mod(float64(time.Now().UnixMilli())/12, 360), .45, .97)
 	}
+	if sunrise() && a.surprise() == surpriseFull {
+		if m, ok := mixHex(c.Orange, purple, .25); ok {
+			purple = m // the grapes catch the dawn
+		}
+	}
 	if tint, success := a.reactionTint(time.Now()); tint > 0 && !success {
 		if m, ok := mixHex(c.Red, purple, tint*.8); ok {
 			purple = m

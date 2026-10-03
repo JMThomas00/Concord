@@ -1,8 +1,12 @@
 package client
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TestRenderAboutContentShowsClientBuildInfo confirms the client Settings
@@ -60,5 +64,49 @@ func TestSettingsCategoriesIncludesAboutBeforeHelpGuide(t *testing.T) {
 	}
 	if s.Categories[len(s.Categories)-1] != "Help & Guide" {
 		t.Errorf("expected Help & Guide to remain the last category, got %q", s.Categories[len(s.Categories)-1])
+	}
+}
+
+// The About page shows the mood and the collection, and no longer the
+// grape art (moved to the login stage, 2026-10-02).
+func TestAboutPageShowsMoodAndCollection(t *testing.T) {
+	a := newLayoutTestApp(t, 200, 55)
+	a.configMgr = &ConfigManager{configFilePath: filepath.Join(t.TempDir(), "config.json")}
+	a.mood = moodFromSeed(12345)
+	a.unlock("first_light")
+	out := ansi.Strip(a.renderAboutContent(150, 50))
+	for _, want := range []string{a.mood.code(), "Collection", "Banners", "Achievements", "First Light", "secret ones"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("About page missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, ";##:") {
+		t.Error("the grape art is still on the About page")
+	}
+	if strings.Contains(out, "Up Up Down Down") {
+		t.Error("a secret achievement shows before it's earned")
+	}
+}
+
+func TestAboutKeysLockAndRerollTheMood(t *testing.T) {
+	a := newLayoutTestApp(t, 200, 55)
+	a.configMgr = &ConfigManager{configFilePath: filepath.Join(t.TempDir(), "config.json")}
+	a.uiConfig = &UIConfig{}
+	a.settingsState = &SettingsState{SelectedCategory: settingsCatAbout}
+	a.view = ViewSettings
+	a.mood = moodFromSeed(77)
+	a.handleAboutKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if a.uiConfig.Display.MoodLock != a.mood.code() {
+		t.Fatal("L didn't lock the mood")
+	}
+	a.handleAboutKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if a.uiConfig.Display.MoodLock != "" {
+		t.Fatal("a new mood should unlock")
+	}
+	for _, r := range "grape" {
+		a.watchEggKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if a.egg == nil || a.egg.kind != "burst" || a.coll().Eggs["burst"] == "" {
+		t.Fatal("typing grape on About didn't burst")
 	}
 }

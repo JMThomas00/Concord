@@ -257,16 +257,22 @@ func loadMatrix(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette) 
 // round). Blobs of wax rise, merge and split; one reaching the top pops
 // into a grape.
 func loadLava(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette) {
+	lavaLamp(g, el, ls.seed, pal)
+	caption(g, g.h/3-2, p, ls, pal)
+}
+
+// lavaLamp fills g with the lava lamp (the screensaver uses it too).
+func lavaLamp(g *fxGrid, el float64, seed uint64, pal loadingPalette) {
 	W, H := float64(g.w), float64(g.h*2)
 	type blob struct{ x, y, r float64 }
 	var blobs []blob
 	n := 7 + g.w/30
 	for i := 0; i < n; i++ {
-		speed := 2.5 + cellHash(ls.seed, i, 0, 1)*4 // pixels per second
-		r := 2.5 + cellHash(ls.seed, i, 0, 2)*3
+		speed := 2.5 + cellHash(seed, i, 0, 1)*4 // pixels per second
+		r := 2.5 + cellHash(seed, i, 0, 2)*3
 		travel := H * 1.15
-		y := H + r - math.Mod(el*speed+cellHash(ls.seed, i, 0, 3)*travel, travel)
-		x := W*(0.1+0.8*cellHash(ls.seed, i, 0, 4)) + math.Sin(el*0.7+float64(i)*1.9)*W*0.04
+		y := H + r - math.Mod(el*speed+cellHash(seed, i, 0, 3)*travel, travel)
+		x := W*(0.1+0.8*cellHash(seed, i, 0, 4)) + math.Sin(el*0.7+float64(i)*1.9)*W*0.04
 		if y < H*0.18 {
 			// Popped: a grape floats on up where the blob was.
 			g.set(int(y/2), int(x)-1, "🍇", "", 2)
@@ -302,7 +308,6 @@ func loadLava(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette) {
 			}
 		}
 	}
-	caption(g, g.h/3-2, p, ls, pal)
 }
 
 // --- 90s PC start-up ---------------------------------------------------------
