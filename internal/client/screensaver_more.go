@@ -441,3 +441,21 @@ func saverBunches(s *saverState, g *fxGrid, now time.Time, pal loadingPalette) {
 	g.text(top+2, left+bunchW*2+5, "FALLING BUNCHES", sgrFor(pal.purple, "", true))
 	g.text(top+4, left+bunchW*2+5, fmt.Sprintf("LINES  %d", b.lines), sgrFor(pal.fg, "", false))
 }
+
+// saverPlasma: the demoscene plasma, full screen and in full colour (too
+// busy for behind the login form, fine with nothing on top of it).
+func saverPlasma(g *fxGrid, t float64, pal loadingPalette) {
+	shades := []string{" ", "░", "▒", "▓", "█"}
+	for r := 0; r < g.h; r++ {
+		for c := 0; c < g.w; c++ {
+			x, y := float64(c)*.07, float64(r)*.14
+			v := (math.Sin(x+t*.9) + math.Sin(y-t*.6) + math.Sin((x+y)*.6+t*.4) +
+				math.Sin(math.Hypot(x-4+math.Sin(t*.3)*3, y-3)*1.6-t)) / 4 // -1..1
+			hue := math.Mod((v+1)*120+t*25+260, 360)
+			ch := shades[min(len(shades)-1, int((v+1)/2*float64(len(shades))))]
+			if ch != " " {
+				g.set(r, c, ch, sgrFor(hsvHex(hue, .55, .9), "", false), 1)
+			}
+		}
+	}
+}

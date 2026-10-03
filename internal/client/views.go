@@ -331,7 +331,7 @@ func (a *App) loginFormBlock() (string, int) {
 			b.WriteString("\n\n")
 		}
 
-		hints = []keyHint{{"Enter", "Unlock"}, {"Ctrl+P", "Not you?"}, {"Ctrl+F", "Forgot password"}, {"Ctrl+S", "Settings"}, {"Ctrl+T", "Themes"}, {"Ctrl+Q", "Quit"}}
+		hints = []keyHint{{"Enter", "Unlock"}, {"Ctrl+P", "Not you?"}, {"Ctrl+F", "Forgot password"}, {"Ctrl+S", "Settings"}, {"Ctrl+U", "Update"}, {"Ctrl+Q", "Quit"}}
 	} else {
 		// Standard login mode: email + password + register link
 		b.WriteString(subtitleStyle.Render("Terminal Chat - Login to continue"))
@@ -378,7 +378,7 @@ func (a *App) loginFormBlock() (string, int) {
 		}
 		b.WriteString("\n\n")
 
-		hints = []keyHint{{"Tab", "Switch fields"}, {"Enter", "Login/Register"}, {"Ctrl+G", "Discover servers"}, {"Ctrl+S", "Settings"}, {"Ctrl+T", "Themes"}, {"Ctrl+Q", "Quit"}}
+		hints = []keyHint{{"Tab", "Switch fields"}, {"Enter", "Login/Register"}, {"Ctrl+G", "Discover servers"}, {"Ctrl+S", "Settings"}, {"Ctrl+U", "Update"}, {"Ctrl+Q", "Quit"}}
 	}
 
 	// Create the form box with padding and fixed width

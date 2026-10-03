@@ -174,6 +174,8 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleVintageCommand()
 	case "collection":
 		return ch.handleCollectionCommand()
+	case "party": // hidden, like /grape and /disco
+		return ch.handlePartyCommand()
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}

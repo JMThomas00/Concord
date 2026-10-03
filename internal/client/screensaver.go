@@ -17,7 +17,7 @@ const (
 	idleCheckEvery = 5 * time.Second
 )
 
-var saverKinds = []string{"bounce", "flyers", "stars", "pipes", "lava", "life", "maze", "bottles", "bunches"}
+var saverKinds = []string{"bounce", "flyers", "stars", "pipes", "lava", "plasma", "life", "maze", "bottles", "bunches"}
 
 type idleCheckMsg struct{}
 
@@ -54,7 +54,8 @@ type pipeHead struct {
 // handleIdleCheck starts a screensaver once the stage has sat idle.
 func (a *App) handleIdleCheck() tea.Cmd {
 	a.maybeGlitch(time.Now())
-	if a.saver == nil && a.loading == nil && a.connecting == nil && isStageView(a.view) &&
+	saversOn := a.uiConfig == nil || !a.uiConfig.Display.NoScreensaver
+	if saversOn && a.saver == nil && a.loading == nil && a.connecting == nil && isStageView(a.view) &&
 		a.surprise() == surpriseFull && time.Since(a.lastInput) >= saverAfter && a.width > 30 && a.height > 10 {
 		kind := saverKinds[rng.Intn(len(saverKinds))]
 		a.saver = &saverState{kind: kind, start: time.Now(), last: time.Now(), seed: rng.Uint64(),
@@ -110,6 +111,8 @@ func (a *App) renderSaver(now time.Time) string {
 		saverMaze(s, g, now, pal)
 	case "bottles":
 		saverBottles(g, el, s.seed)
+	case "plasma":
+		saverPlasma(g, el, pal)
 	case "bunches":
 		saverBunches(s, g, now, pal)
 	}

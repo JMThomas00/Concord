@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -93,12 +94,14 @@ func (a *App) typingVerb(uid uuid.UUID) string {
 // handleGrapeCommand: /grape rains grapes down your own screen.
 func (ch *CommandHandler) handleGrapeCommand() (string, error) {
 	ch.app.startEgg("rain", 3500*time.Millisecond)
+	ch.app.findEgg("slash_grape") // a hidden command: not in /help
 	return "🍇", nil
 }
 
 // handleDiscoCommand: /disco throws a short party on your own screen.
 func (ch *CommandHandler) handleDiscoCommand() (string, error) {
 	ch.app.startEgg("party", 6*time.Second)
+	ch.app.findEgg("slash_disco")
 	return "🪩 " + discoQuips[rng.Intn(len(discoQuips))], nil
 }
 
@@ -381,4 +384,42 @@ var discoQuips = []string{
 	"This party is invisible to everyone but you. Very exclusive.",
 	"Someone had to start the party. It was you. Alone.",
 	"Grapes on the dance floor, and only you can see them.",
+}
+
+// handlePartyCommand: /party (hidden): confetti bursts out of the middle
+// of your screen.
+func (ch *CommandHandler) handlePartyCommand() (string, error) {
+	ch.app.startEgg("confetti_burst", 3500*time.Millisecond)
+	ch.app.findEgg("slash_party")
+	return "🎉 " + partyQuips[rng.Intn(len(partyQuips))], nil
+}
+
+var partyQuips = []string{
+	"Is it your birthday?",
+	"A very merry unbirthday to you!",
+	"Confetti cleanup is your responsibility.",
+	"Party! (Only you can see the confetti.)",
+	"Somebody bring the grape juice.",
+	"You've been to better parties. This one's yours, though.",
+	"Celebrating... something. Probably.",
+	"No reason. Just vibes.",
+	"Hooray for whatever this is!",
+	"Party poppers deployed. All of them.",
+	"Happy Tuesday! (Or whatever day it is.)",
+	"The confetti is free. The cleanup is not.",
+}
+
+// eggConfettiBurst: confetti thrown out of the middle of the screen,
+// falling back down (/party).
+func eggConfettiBurst(g *fxGrid, t float64, seed uint64, pal loadingPalette) {
+	colours := []string{pal.pink, pal.purple, pal.cyan, pal.green, pal.yellow, "#ffb86c"}
+	flecks := []string{"▪", "▫", "•", "◆", "▴", "✦", "*", "~"}
+	cx, cy := float64(g.w)/2, float64(g.h)/2
+	for i := 0; i < 160; i++ {
+		ang := cellHash(seed, i, 41, 1) * 2 * math.Pi
+		speed := 15 + cellHash(seed, i, 41, 2)*50
+		x := cx + math.Cos(ang)*speed*t
+		y := cy + math.Sin(ang)*speed*t*.45 + 9*t*t // and gravity
+		g.set(int(y), int(x), flecks[i%len(flecks)], sgrFor(colours[i%len(colours)], "", true), 1)
+	}
 }

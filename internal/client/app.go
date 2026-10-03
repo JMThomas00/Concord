@@ -45,6 +45,7 @@ const (
 	ViewThemeBrowser
 	ViewProfiles    // the profiles saved on this computer
 	ViewAccountCode // enter an emailed code (verify, reset, confirm email)
+	ViewUpdates     // Ctrl+U on the login screen: is there a newer Concord? (updates.go)
 )
 
 // FocusArea represents which area of the UI has focus
@@ -103,6 +104,8 @@ type App struct {
 	grapeClicks []time.Time // recent clicks on the grapes
 	discoNow    bool        // this launch is the disco party (armed by typing "disco" on About)
 	nameBanner  string      // this launch's banner is the profile's name (banner_name.go), or ""
+	fortune     string      // this launch's fortune (vintage.go)
+	updates     *updateState // the Updates page (updates.go)
 	photoCache  image.Image // the picture grapes (logo_photo.go)
 	photoKey    string      // the theme colour they were drawn in
 	saver       *saverState
@@ -1029,6 +1032,7 @@ func (a *App) Init() tea.Cmd {
 	a.lastActivityTime = time.Now()
 	a.startMood()
 	a.pickNameBanner()
+	a.pickFortune()
 	a.launched()
 	a.recordMood()
 	a.discoverBanner(a.bannerIndex)
@@ -1242,6 +1246,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleGrapeTick(m)
 	case fxTickMsg:
 		return a, a.handleFxTick(m)
+	case updateCheckedMsg:
+		a.handleUpdateChecked(m)
+		return a, nil
 	case codeAcceptedMsg:
 		// Falls through, so the page change gets its transition.
 		if a.codeState == m.st {
@@ -2103,6 +2110,10 @@ func (a *App) view0() string {
 				baseView = clipPanelRight(baseView, animWidth, a.width)
 			}
 		}
+	case ViewUpdates:
+		if a.updates != nil {
+			baseView = a.renderUpdatesView()
+		}
 	case ViewThemeBrowser:
 		baseView = a.renderThemeBrowserView()
 	default:
@@ -2207,6 +2218,9 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	if a.view == ViewProfiles && a.profilesState != nil {
 		return a.handleProfilesKey(msg)
 	}
+	if a.view == ViewUpdates && a.updates != nil {
+		return a.handleUpdatesKey(msg)
+	}
 	if a.view == ViewAccountCode && a.codeState != nil {
 		return a.handleAccountCodeKey(msg)
 	}
@@ -2307,10 +2321,16 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "ctrl+t":
-		// Open theme browser from login or main view
-		if a.view == ViewLogin || a.view == ViewMain {
+		// Open the theme browser from the main view (on the login screen
+		// themes are in Settings, and Ctrl+U is Updates).
+		if a.view == ViewMain {
 			a.openThemeBrowser(a.view)
 			return nil
+		}
+
+	case "ctrl+u":
+		if a.view == ViewLogin {
+			return a.openUpdates()
 		}
 
 	case "ctrl+p":

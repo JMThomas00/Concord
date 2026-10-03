@@ -56,6 +56,9 @@ func (ls *loadingState) advance(now time.Time) time.Duration {
 
 // startLoading begins this launch's loading screen, if it has one.
 func (a *App) startLoading() {
+	if a.uiConfig != nil && a.uiConfig.Display.NoLoadingScreen {
+		return // turned off on Settings > Display
+	}
 	kind := a.pick(layerLoading)
 	if kind == "" {
 		return

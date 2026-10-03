@@ -125,6 +125,8 @@ func (a *App) paintEgg(g *fxGrid, now time.Time) {
 		eggRain(g, now.Sub(e.start).Seconds(), e.seed)
 	case "party": // /disco
 		eggParty(g, now.Sub(e.start).Seconds(), pal)
+	case "confetti_burst": // /party
+		eggConfettiBurst(g, now.Sub(e.start).Seconds(), e.seed, pal)
 	}
 }
 

@@ -44,7 +44,7 @@ type fxState struct {
 // isStageView reports the views that make up the login stage.
 func isStageView(v View) bool {
 	switch v {
-	case ViewToS, ViewIdentitySetup, ViewLogin, ViewRegister, ViewAddServer, ViewProfiles, ViewAccountCode:
+	case ViewToS, ViewIdentitySetup, ViewLogin, ViewRegister, ViewAddServer, ViewProfiles, ViewAccountCode, ViewUpdates:
 		return true
 	}
 	return false

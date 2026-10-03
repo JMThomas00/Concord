@@ -2339,6 +2339,18 @@ func (a *App) renderDisplayContent(width, height int) string {
 	// Field 16: how lively the login screen is (mood.go)
 	writeField(16, "Surprise Me", surpriseLabel(cfg.Surprise)+"  ◀▶")
 
+	// Fields 17 and 18: the loading screen and the screensavers, each on or off
+	loadingVal := "[✓] On   (a few seconds at launch; any key skips)"
+	if cfg.NoLoadingScreen {
+		loadingVal = "[ ] Off"
+	}
+	writeField(17, "Loading Screen", loadingVal)
+	saverVal := "[✓] On   (after 90 seconds idle on the login screen)"
+	if cfg.NoScreensaver {
+		saverVal = "[ ] Off"
+	}
+	writeField(18, "Screensavers", saverVal)
+
 	// Notes go last, so the fields above keep fixed positions for scrolling.
 	for _, hint := range imagesSettingHints(cfg.Images) {
 		addLine(dimStyle.Render("    " + hint))
@@ -2418,7 +2430,7 @@ func (a *App) updateNotifScroll(s *SettingsState) {
 // divider+header+blank (3), fields 9-10 (3 lines each),
 // divider+header+blank (3), fields 11-12 (3 lines each),
 // divider+header+blank (3), fields 13-15 (3 lines each), then notes.
-var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44, 50, 53, 56, 62}
+var displayFieldLineStarts = []int{0, 3, 6, 9, 12, 15, 20, 23, 26, 32, 35, 41, 44, 50, 53, 56, 62, 65, 68}
 
 // updateDisplayScroll adjusts DisplayScrollOffset so the focused field is visible.
 func (a *App) updateDisplayScroll(s *SettingsState) {
@@ -2538,6 +2550,10 @@ func (a *App) handleDisplayFieldActivate(s *SettingsState) {
 		a.forgetCodeDecisions()
 	case 16: // Surprise Me: full → calm → off
 		cfg.Surprise = nextSurprise(cfg.Surprise)
+	case 17: // Loading Screen on/off
+		cfg.NoLoadingScreen = !cfg.NoLoadingScreen
+	case 18: // Screensavers on/off
+		cfg.NoScreensaver = !cfg.NoScreensaver
 	}
 	a.saveDisplayConfig()
 	a.updateChatContent()

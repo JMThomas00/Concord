@@ -334,8 +334,8 @@ func (a *App) selectMessageAtIndex(idx int) tea.Cmd {
 		return nil
 	}
 	messages := a.activeConn.GetMessages(a.currentChannel.ID)
-	if idx < 0 || idx >= len(messages) {
-		return nil
+	if idx < 0 || idx >= len(messages) || isSystemDisplay(messages[idx]) {
+		return nil // system lines (plugin notices) aren't selectable
 	}
 	a.messageNavMode = true
 	a.inMessageEditMode = false

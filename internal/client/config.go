@@ -209,6 +209,9 @@ type DisplayConfig struct {
 	// Disco arms a disco party for the next launch ("disco" typed on Settings >
 	// About; used up by that launch).
 	Disco bool `json:"disco,omitempty"`
+	// NoLoadingScreen and NoScreensaver turn those off (Settings > Display).
+	NoLoadingScreen bool `json:"no_loading_screen,omitempty"`
+	NoScreensaver   bool `json:"no_screensaver,omitempty"`
 
 	// Images says how plugin images are drawn: "" or "auto" (the best this
 	// terminal supports), "kitty", "sixel", "iterm2", "blocks" or "off".

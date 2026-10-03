@@ -79,7 +79,8 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 - ` + "`Ctrl+G`" + ` — Open Grapevine Hub Browser (login / add-server screens)
 - ` + "`Ctrl+P`" + ` — Switch, add or edit profiles (login screen)
 - ` + "`Ctrl+F`" + ` — Forgot password (login screen)
-- ` + "`Ctrl+T`" + ` — Open Theme Browser
+- ` + "`Ctrl+T`" + ` — Open Theme Browser (main window; on the login screen, Settings > Theme)
+- ` + "`Ctrl+U`" + ` — Check for a newer Concord (login screen)
 - ` + "`[`" + ` — Toggle server list panel (collapse / expand)
 - ` + "`]`" + ` — Toggle members list panel (collapse / expand)
 - ` + "`Tab`" + ` — Switch focus between panels

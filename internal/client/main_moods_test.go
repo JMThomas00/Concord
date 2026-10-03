@@ -141,3 +141,41 @@ func TestMoonPhases(t *testing.T) {
 }
 
 func lipglossPlain() lipgloss.Style { return lipgloss.NewStyle() }
+
+func TestNewerVersion(t *testing.T) {
+	for _, c := range []struct {
+		have, latest string
+		newer        bool
+	}{
+		{"v0.1.0", "v0.1.1", true}, {"0.1.0", "v0.2.0", true}, {"v0.1.0", "v0.1.0", false},
+		{"v0.2.0", "v0.1.9", false}, {"dev", "v0.1.0", false}, {"v1.0.0", "v1.0.1-rc1", true},
+	} {
+		if got := newerVersion(c.have, c.latest); got != c.newer {
+			t.Errorf("%s → %s: %v", c.have, c.latest, got)
+		}
+	}
+}
+
+func TestUpdatesPageAndHiddenCommands(t *testing.T) {
+	a := eggApp(t)
+	a.view = ViewUpdates
+	a.updates = &updateState{}
+	a.clientVersion = "0.1.0"
+	a.handleUpdateChecked(updateCheckedMsg{latest: "v9.9.9", url: "https://example.com/r"})
+	if out := ansi.Strip(a.View()); !strings.Contains(out, "v9.9.9") || !strings.Contains(out, "newer Concord is out") {
+		t.Fatalf("updates page:\n%s", out)
+	}
+	a.handleUpdatesKey(keyOf("esc"))
+	if a.view != ViewLogin {
+		t.Fatal("Esc didn't go back")
+	}
+	ch := NewCommandHandler(a)
+	if _, err := ch.Execute(&Command{Name: "party"}); err != nil || a.egg == nil || a.coll().Eggs["slash_party"] == "" {
+		t.Fatal("/party")
+	}
+	for _, c := range allSlashCommands() {
+		if c.Name == "grape" || c.Name == "disco" || c.Name == "party" {
+			t.Fatalf("/%s is listed in /help", c.Name)
+		}
+	}
+}

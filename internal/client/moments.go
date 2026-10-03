@@ -188,7 +188,7 @@ func (a *App) seasonAtmosphere(g *fxGrid, t float64, pal loadingPalette) {
 	case "autumn": // the harvest moon
 		// A different phase each launch, from a thin crescent to full.
 		phase := .45 + cellHash(seed, 0, 0, 16)*(2*math.Pi-.9)
-		drawMoon(g, 2, g.w-20, phase, pal)
+		drawMoon(g, 2, g.w-moonCols-4, phase, pal)
 	case "winter": // frost creeping in at the edges
 		for i := 0; i < (g.w+g.h)*2/3; i++ {
 			edge := cellHash(seed, i, 12, 1)
@@ -272,51 +272,78 @@ func glitch(g *fxGrid, age time.Duration, seed uint64) {
 	}
 }
 
-// moonRadius is the moon's radius in pixels (half-block pixels are about
-// square: a cell is one wide and two tall).
-const moonRadius = 7.0
+// The moon is ASCII art: shaded with characters like the grapes, craters
+// drawn as o's, its rim softened with the partial-coverage characters an
+// artist would use, and the dark side just a faint dotted outline.
+const (
+	moonRows = 8  // tall
+	moonCols = 18 // wide (cells are about twice as tall as wide)
+)
 
-var moonCraters = [][3]float64{{-.35, -.3, .18}, {.25, .1, .22}, {-.1, .45, .14}, {.45, -.4, .1}, {-.5, .25, .1}}
+var moonRamp = []rune(".:-=+*#%")
+
+var moonCraters = [][3]float64{{-.35, -.3, .17}, {.28, .12, .2}, {-.08, .5, .13}, {.48, -.38, .1}, {-.55, .2, .1}}
 
 // drawMoon draws the moon at phase (radians: 0 new, π full; waxing lit on
-// the right, waning on the left) with its top-left cell at row, col. The
-// lit side is shaded toward its edge and has a few craters; the dark side
-// shows faintly, the way earthshine shows it.
+// the right, waning on the left) with its top-left cell at row, col.
 func drawMoon(g *fxGrid, row, col int, phase float64, pal loadingPalette) {
-	r := moonRadius
 	k := math.Cos(phase)
-	pixel := func(px, py int) (string, bool) {
-		x, y := (float64(px)+.5-r)/r, (float64(py)+.5-r)/r
-		d := x*x + y*y
-		if d > 1 {
-			return "", false
-		}
-		s := math.Sqrt(1 - y*y)
-		lit := (phase <= math.Pi && x > s*k) || (phase > math.Pi && x < -s*k)
-		if !lit {
-			return faint("#8f93b8", pal, .78), true // earthshine
-		}
-		col := mixOr("#f6ecd0", "#c8b88e", 1-d*.6) // limb darkening
-		for _, c := range moonCraters {
-			if dx, dy := x-c[0], y-c[1]; dx*dx+dy*dy < c[2]*c[2] {
-				col = mixOr(col, "#a99a74", .55)
-			}
-		}
-		return col, true
+	lit := func(x, y float64) bool {
+		s := math.Sqrt(math.Max(0, 1-y*y))
+		return (phase <= math.Pi && x > s*k) || (phase > math.Pi && x < -s*k)
 	}
-	size := int(2 * r)
-	for cy := 0; cy < size/2; cy++ {
-		for cx := 0; cx < size; cx++ {
-			top, okT := pixel(cx, cy*2)
-			bot, okB := pixel(cx, cy*2+1)
-			switch {
-			case okT && okB:
-				g.set(row+cy, col+cx, "▀", sgrFor(top, bot, false), 1)
-			case okT:
-				g.set(row+cy, col+cx, "▀", sgrFor(top, "", false), 1)
-			case okB:
-				g.set(row+cy, col+cx, "▄", sgrFor(bot, "", false), 1)
+	for cy := 0; cy < moonRows; cy++ {
+		for cx := 0; cx < moonCols; cx++ {
+			inside, litN, lum := 0, 0, 0.0
+			for j := 0; j < 3; j++ {
+				for i := 0; i < 2; i++ {
+					x := (float64(cx)+(float64(i)+.5)/2)/moonCols*2 - 1
+					y := (float64(cy)+(float64(j)+.5)/3)/moonRows*2 - 1
+					if d := x*x + y*y; d <= 1 {
+						inside++
+						if lit(x, y) {
+							litN++
+							lum += math.Sqrt(1 - d) // brighter in the middle
+						}
+					}
+				}
 			}
+			if inside == 0 {
+				continue
+			}
+			x := (float64(cx)+.5)/moonCols*2 - 1
+			y := (float64(cy)+.5)/moonRows*2 - 1
+			edge := inside < 4
+			if litN*2 < inside {
+				// The dark side: a faint dotted rim, the way earthshine shows it.
+				if edge || (cx+cy)%3 == 0 {
+					g.set(row+cy, col+cx, ".", sgrFor(faint("#9aa0c8", pal, .72), "", false), 1)
+				}
+				continue
+			}
+			lum /= float64(litN)
+			ch := moonRamp[min(len(moonRamp)-1, int(lum*float64(len(moonRamp))))]
+			colour := mixOr("#f6ecd0", "#a8996f", .35+lum*.65)
+			for _, c := range moonCraters {
+				if dx, dy := x-c[0], (y-c[1])*.9; dx*dx+dy*dy < c[2]*c[2] {
+					ch = 'o'
+					if dx*dx+dy*dy < c[2]*c[2]/3 {
+						ch = 'O'
+					}
+					colour = mixOr(colour, "#8a7d5c", .5)
+				}
+			}
+			if edge {
+				switch {
+				case y < -.5:
+					ch = '.'
+				case y > .5:
+					ch = '\''
+				default:
+					ch = ':'
+				}
+			}
+			g.set(row+cy, col+cx, string(ch), sgrFor(colour, "", false), 1)
 		}
 	}
 }

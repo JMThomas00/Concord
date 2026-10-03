@@ -45,10 +45,6 @@ func TestLabelAndFortune(t *testing.T) {
 	if !strings.Contains(name, "2026") || !strings.Contains(name, moodFromSeed(77).code()) || !strings.HasPrefix(notes, "Notes of") {
 		t.Fatalf("label %q / %q", name, notes)
 	}
-	d := time.Date(2026, 5, 5, 0, 0, 0, 0, time.Local)
-	if fortuneOf(d) != fortuneOf(d.Add(20*time.Hour)) {
-		t.Fatal("the fortune changed within a day")
-	}
 	if commas(1204) != "1,204" || commas(12) != "12" || commas(1234567) != "1,234,567" {
 		t.Fatal("commas")
 	}
@@ -158,5 +154,18 @@ func TestPhotoGrapesFallBack(t *testing.T) {
 	}
 	if strings.TrimSpace(ansi.Strip(a.renderGrapeLogo())) != "" {
 		t.Fatal("the characters still draw under the picture")
+	}
+}
+
+// A new fortune each launch, never the same twice running.
+func TestFortunePerLaunch(t *testing.T) {
+	a := eggApp(t)
+	prev := ""
+	for i := 0; i < 50; i++ {
+		a.pickFortune()
+		if a.fortune == "" || a.fortune == prev {
+			t.Fatalf("launch %d: %q after %q", i, a.fortune, prev)
+		}
+		prev = a.fortune
 	}
 }

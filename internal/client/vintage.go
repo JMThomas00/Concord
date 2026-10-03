@@ -50,7 +50,7 @@ func (m mood) label(year int) (name, notes string) {
 	return name, notes
 }
 
-// fortunes: one a day on the login stage, real tips mixed with grape lore.
+// fortunes: one each launch on the login stage, real tips mixed with grape lore.
 var fortunes = []string{
 	"Ctrl+R on the login screen shuffles the banner. There are 327.",
 	"A grape a day keeps the lag away.",
@@ -84,10 +84,16 @@ var fortunes = []string{
 	"There are secrets on the About page.",
 }
 
-// fortuneOf is the fortune for a day.
-func fortuneOf(day time.Time) string {
-	n := day.Year()*400 + day.YearDay()
-	return fortunes[(n*7919)%len(fortunes)]
+// pickFortune chooses this launch's fortune, never the last launch's.
+func (a *App) pickFortune() {
+	c := a.coll()
+	i := rng.Intn(len(fortunes))
+	if last := c.Counters["fortune"] - 1; i == last {
+		i = (i + 1 + rng.Intn(len(fortunes)-1)) % len(fortunes)
+	}
+	c.Counters["fortune"] = i + 1
+	a.saveCollection()
+	a.fortune = fortunes[i]
 }
 
 // paintFortune puts today's fortune (and the launch streak) along the
@@ -101,7 +107,10 @@ func (a *App) paintFortune(g *fxGrid) {
 		return
 	}
 	pal := a.loadingPalette()
-	line := "🍇 " + fortuneOf(moodClock())
+	if a.fortune == "" {
+		return
+	}
+	line := "🍇 " + a.fortune
 	if s := a.coll().Streak; s >= 2 {
 		line += fmt.Sprintf("   ·   %d-day streak", s)
 	}
