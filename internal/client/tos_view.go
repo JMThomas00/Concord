@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"github.com/concord-chat/concord/legal"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,7 +102,9 @@ func (a *App) initToSView() error {
 func renderToSMarkdown(mdPath string, width int) (string, error) {
 	mdContent, err := os.ReadFile(mdPath)
 	if err != nil {
-		return "", fmt.Errorf("cannot read ToS file: %w", err)
+		// Release downloads and installs have no legal folder beside the
+		// program: use the copy built into it.
+		mdContent, err = []byte(strings.ReplaceAll(legal.ClientTerms, "\r", "")), nil
 	}
 
 	r, err := glamour.NewTermRenderer(

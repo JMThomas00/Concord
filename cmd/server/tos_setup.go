@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/concord-chat/concord/legal"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,7 +100,9 @@ func findToSFile(filename string) string {
 func renderServerToS(mdPath string, width int) (string, error) {
 	mdContent, err := os.ReadFile(mdPath)
 	if err != nil {
-		return "", fmt.Errorf("cannot read ToS file: %w", err)
+		// Release downloads and the Docker image have no legal folder
+		// beside the program: use the copy built into it.
+		mdContent, err = []byte(strings.ReplaceAll(legal.ServerTerms, "\r", "")), nil
 	}
 
 	r, err := glamour.NewTermRenderer(
