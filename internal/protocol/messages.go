@@ -184,6 +184,7 @@ const (
 	EventPluginConfigUpdate   EventType = "PLUGIN_CONFIG_UPDATE"   // S→C: plugin list/config changed
 	EventPluginManageResult   EventType = "PLUGIN_MANAGE_RESULT"   // S→C: outcome of an OpPluginManage/OpPluginConfigSet
 	EventPluginRegistryUpdate EventType = "PLUGIN_REGISTRY_UPDATE" // S→C: installed channel kinds changed live
+	EventPluginRecords        EventType = "PLUGIN_RECORDS"         // S→C: your plugin records (achievements, stats), on sign-in and when one changes
 )
 
 // Message represents a WebSocket message envelope
@@ -495,6 +496,9 @@ type ReadyPayload struct {
 	// PluginClients lists the client-side parts (images, sounds, code) of
 	// the plugins that ship one, fetched from /api/plugins/client/.
 	PluginClients []PluginClientInfo `json:"plugin_clients,omitempty"`
+	// PluginBoards declares each plugin's achievements and leaderboard, for
+	// Settings > About > Achievements.
+	PluginBoards []PluginBoardInfo `json:"plugin_boards,omitempty"`
 	// ServerVersion/ServerGitCommit/ServerBuildTime report the connected
 	// server's own build identity, for Server Settings > About -- piggybacks
 	// on Ready since it's already sent once per connection, no new opcode
@@ -747,6 +751,7 @@ type PluginManageResult struct {
 type PluginRegistryPayload struct {
 	PluginChannelKinds []PluginChannelKindInfo `json:"plugin_channel_kinds"`
 	PluginClients      []PluginClientInfo      `json:"plugin_clients,omitempty"`
+	PluginBoards       []PluginBoardInfo       `json:"plugin_boards,omitempty"`
 }
 
 // PluginClientInfo describes a plugin's client-side part: the files in its
@@ -1034,6 +1039,9 @@ type (
 	PluginPaneTitlePayload     = wire.PluginPaneTitlePayload
 	PluginPlaySoundPayload     = wire.PluginPlaySoundPayload
 	PluginGameResultPayload    = wire.PluginGameResultPayload
+	PluginRecord               = wire.PluginRecord
+	PluginStat                 = wire.PluginStat
+	PluginUnlock               = wire.PluginUnlock
 	PluginClientMessagePayload = wire.PluginClientMessagePayload
 	PaneImage                  = wire.PaneImage
 	PluginField                = wire.PluginField
@@ -1051,6 +1059,7 @@ const (
 	PluginEventPlaySound     = wire.PluginEventPlaySound
 	PluginEventClientMessage = wire.PluginEventClientMessage
 	PluginEventGameResult    = wire.PluginEventGameResult
+	PluginEventRecord        = wire.PluginEventRecord
 )
 
 // The navigation keys a pane frame can claim; see sdk/wire.
@@ -1065,3 +1074,54 @@ var PaneNavigationKeys = wire.PaneNavigationKeys
 
 // MaxClientMessageBytes caps a client_message's Data; see sdk/wire.
 const MaxClientMessageBytes = wire.MaxClientMessageBytes
+
+// PluginBoardInfo is what a plugin declares about achievements: the ones
+// members can unlock, and which stat its leaderboard ranks by.
+type PluginBoardInfo struct {
+	PluginID         string                  `json:"plugin_id"`
+	Name             string                  `json:"name"`
+	Achievements     []PluginAchievementInfo `json:"achievements,omitempty"`
+	LeaderboardStat  string                  `json:"leaderboard_stat,omitempty"`
+	LeaderboardLabel string                  `json:"leaderboard_label,omitempty"`
+}
+
+// PluginAchievementInfo is one declared achievement.
+type PluginAchievementInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Tier        string `json:"tier,omitempty"` // bronze, silver, gold
+	Icon        string `json:"icon,omitempty"`
+	Secret      bool   `json:"secret,omitempty"`
+}
+
+// PluginRecordsPayload carries your records (EventPluginRecords): all of
+// them after sign-in, then each one as it changes.
+type PluginRecordsPayload struct {
+	Records []PluginRecordInfo `json:"records"`
+}
+
+// PluginRecordInfo is your record for one plugin.
+type PluginRecordInfo struct {
+	PluginID string       `json:"plugin_id"`
+	Record   PluginRecord `json:"record"`
+}
+
+// LeaderboardResponse answers GET /api/plugins/leaderboard/{plugin_id}:
+// the top members by the plugin's leaderboard stat, and where you stand.
+type LeaderboardResponse struct {
+	PluginID string             `json:"plugin_id"`
+	Label    string             `json:"label"`
+	Entries  []LeaderboardEntry `json:"entries"`
+	You      *LeaderboardEntry  `json:"you,omitempty"`
+	Hidden   bool               `json:"hidden"` // you keep yourself off the leaderboards
+}
+
+// LeaderboardEntry is one place on a leaderboard.
+type LeaderboardEntry struct {
+	Rank     int       `json:"rank"`
+	UserID   uuid.UUID `json:"user_id"`
+	Username string    `json:"username"`
+	Value    string    `json:"value"`
+	Num      float64   `json:"num"`
+}

@@ -56,3 +56,40 @@ remote_pane = true
   options = ["easy", "normal", "hard"]
   default = "normal"
   help = "How well the computer plays"
+
+# Achievements and the leaderboard. The table kit keeps every player's
+# record and unlocks these for you; members see them on Settings > About
+# > Achievements. Add your own with Rules.Awards and an entry here.
+[[achievement]]
+id = "first_win"
+name = "First Victory"
+description = "Win a game"
+tier = "bronze"
+
+[[achievement]]
+id = "wins_10"
+name = "Seasoned Player"
+description = "Win ten games"
+tier = "silver"
+
+[[achievement]]
+id = "wins_50"
+name = "Grandmaster of the Vineyard"
+description = "Win fifty games"
+tier = "gold"
+
+[[achievement]]
+id = "beat_computer"
+name = "Beat the Machine"
+description = "Beat the computer"
+icon = "🤖"
+
+[[achievement]]
+id = "streak_5"
+name = "On a Roll"
+description = "Win five games in a row"
+icon = "🔥"
+
+[leaderboard]
+stat = "wins"
+label = "Wins"

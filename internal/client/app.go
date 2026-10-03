@@ -97,6 +97,7 @@ type App struct {
 	collection *Collection
 	toasts     []*toast
 	toastRects []toastRect // where the toasts were last drawn, for clicks (toasts.go)
+	leaderboards map[string]*leaderboardState // by server and plugin (plugin_records.go)
 	loading    *loadingState // the launch's loading screen while it plays
 
 	// Easter eggs and screensavers (eggs.go, screensaver.go).
@@ -1248,6 +1249,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleGrapeTick(m)
 	case fxTickMsg:
 		return a, a.handleFxTick(m)
+	case leaderboardMsg:
+		a.handleLeaderboard(m)
+		return a, nil
 	case updateCheckedMsg:
 		a.handleUpdateChecked(m)
 		return a, nil
@@ -1270,6 +1274,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if a.clickToast(m) {
 			return a, nil // a click on a toast: it opened its channel, or just went away
+		}
+		if cmd, ok := a.clickAchTab(m); ok {
+			return a, cmd // a tab on Settings > About > Achievements
 		}
 		// Plain hover motion (no button held) is handled -- and dropped --
 		// by MouseHoverFilter (grape_logo.go) before it ever reaches here,
@@ -1606,12 +1613,16 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					s.HelpScrollOffset++
 				}
 			}
-			// About scrolls the same way (its achievements run long).
+			// About scrolls the same way, and so does its Achievements page.
 			if s != nil && s.SelectedCategory == settingsCatAbout {
+				scroll := &s.AboutScroll
+				if s.AboutAch {
+					scroll = &s.AboutAchScroll
+				}
 				if msg.Type == tea.MouseWheelUp {
-					s.AboutScroll = max(0, s.AboutScroll-3)
+					*scroll = max(0, *scroll-3)
 				} else {
-					s.AboutScroll += 3 // clamped when drawn
+					*scroll += 3 // clamped when drawn
 				}
 			}
 		}
@@ -6207,6 +6218,7 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
 	sc.mu.Lock()
 	sc.PluginClients = payload.PluginClients
+	sc.PluginBoards = payload.PluginBoards
 	sc.mu.Unlock()
 
 	// Mark as ready and clear any reconnect backoff state
@@ -7338,6 +7350,12 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 		}
 
+	case protocol.EventPluginRecords:
+		var recs protocol.PluginRecordsPayload
+		if err := json.Unmarshal(msg.Data, &recs); err == nil {
+			a.applyRecords(sc, recs)
+		}
+
 	case protocol.EventPluginRegistryUpdate:
 		var payload protocol.PluginRegistryPayload
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
@@ -7347,6 +7365,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
 		sc.mu.Lock()
 		sc.PluginClients = payload.PluginClients
+		sc.PluginBoards = payload.PluginBoards
 		sc.mu.Unlock()
 
 	case protocol.EventPluginManageResult:

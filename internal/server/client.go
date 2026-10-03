@@ -503,6 +503,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		Servers:            servers,
 		PluginChannelKinds: c.handlers.PluginChannelKindInfos(),
 		PluginClients:      c.handlers.PluginClientInfos(),
+		PluginBoards:       c.handlers.PluginBoardInfos(),
 		ServerVersion:      c.handlers.version,
 		ServerGitCommit:    c.handlers.gitCommit,
 		ServerBuildTime:    c.handlers.buildTime,
@@ -578,6 +579,9 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 			}
 		}
 	}
+
+	// Their plugin records (achievements, stats), for Settings > About.
+	c.handlers.sendRecords(c)
 
 	// Broadcast presence update to all servers
 	c.hub.BroadcastPresenceUpdate(user, serverIDs)

@@ -10,6 +10,7 @@ package wire
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -371,6 +372,12 @@ const (
 	// them, so their client can count wins (Settings > About achievements).
 	// The table kit sends it; ViewerID is the player.
 	PluginEventGameResult = "game_result"
+	// Plugin → Concord (PluginRecord): one member's record for this plugin:
+	// their stats and the achievements they've unlocked (declared in
+	// plugin.toml). Concord stores it, shows it on Settings > About >
+	// Achievements, and ranks members on the leaderboard. Send the whole
+	// record each time; ViewerID is unused.
+	PluginEventRecord = "record"
 )
 
 // PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
@@ -495,4 +502,28 @@ type PluginGameResultPayload struct {
 	Result   string `json:"result"`             // "win", "loss" or "draw"
 	Computer bool   `json:"computer,omitempty"` // against the computer
 	Reason   string `json:"reason,omitempty"`   // e.g. "checkmate"
+}
+
+// PluginRecord is one member's record for a plugin (Kind "record"): what
+// the plugin tracks for them and what they've unlocked. Each send
+// replaces the last; Concord keeps the earliest date for each unlock.
+type PluginRecord struct {
+	UserID   uuid.UUID      `json:"user_id"`
+	Stats    []PluginStat   `json:"stats,omitempty"`    // at most 20, shown in order
+	Unlocked []PluginUnlock `json:"unlocked,omitempty"` // ids from plugin.toml's [[achievement]]
+}
+
+// PluginStat is one figure in a record, e.g. {"wins", "Wins", "12", 12}.
+// Num is what the leaderboard ranks by (plugin.toml's [leaderboard] stat).
+type PluginStat struct {
+	Key   string  `json:"key"`
+	Label string  `json:"label"`
+	Value string  `json:"value"`
+	Num   float64 `json:"num,omitempty"`
+}
+
+// PluginUnlock is an unlocked achievement and when.
+type PluginUnlock struct {
+	ID string    `json:"id"`
+	At time.Time `json:"at"`
 }

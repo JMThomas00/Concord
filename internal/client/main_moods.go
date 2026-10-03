@@ -332,26 +332,12 @@ func eggParty(g *fxGrid, t float64, pal loadingPalette) {
 	}
 }
 
-// onGameResult counts a finished game from a plugin's table kit towards
-// the game achievements, with a little party for a win.
+// onGameResult celebrates a win the moment a game ends. The counting is
+// the plugin's: its record (plugin_records.go) feeds the achievements.
 func (a *App) onGameResult(p protocol.PluginGameResultPayload) {
-	a.count("games_played")
-	if p.Result != "win" {
-		return
+	if p.Result == "win" {
+		a.celebrateHere()
 	}
-	wins := a.count("game_wins")
-	a.count("wins:" + strings.ToLower(p.Game))
-	a.unlock("first_win")
-	if p.Computer {
-		a.unlock("beat_computer")
-	}
-	switch {
-	case wins >= 50:
-		a.unlock("wins_50")
-	case wins >= 10:
-		a.unlock("wins_10")
-	}
-	a.celebrateHere()
 }
 
 // isSystemDisplay reports a system line in the chat (not a message anyone

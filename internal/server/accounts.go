@@ -650,6 +650,8 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/password/forgot", s.handleForgotPassword)
 	mux.HandleFunc("/api/password/reset", s.handleResetPassword)
 	mux.HandleFunc("/api/plugins/client/", s.handlePluginClientFile)
+	mux.HandleFunc("/api/plugins/leaderboard/", s.handleLeaderboard)
+	mux.HandleFunc("/api/account/leaderboard", s.handleLeaderboardVisibility)
 }
 
 func capitalize(s string) string {

@@ -86,8 +86,9 @@ type Kit struct {
 	conn    *plugin.Conn
 	rooms   map[uuid.UUID]*Room
 	viewers map[uuid.UUID]*viewerModel
-	dirty   map[uuid.UUID]*Room // rooms changed during the current event
-	moved   map[string]string   // table id -> move just played, for ChangedMsg
+	dirty   map[uuid.UUID]*Room         // rooms changed during the current event
+	moved   map[string]string           // table id -> move just played, for ChangedMsg
+	records map[uuid.UUID]*playerRecord // every player's record (records.go), loaded on first use
 }
 
 // New makes a Kit for a game.
@@ -480,6 +481,7 @@ func (k *Kit) reportResult(t *Table) {
 	if k.conn == nil || !o.Over {
 		return
 	}
+	k.recordResult(t, o) // records and achievements (records.go)
 	computer := false
 	for _, p := range t.Seats {
 		computer = computer || p.Computer

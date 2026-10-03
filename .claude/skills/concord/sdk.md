@@ -60,6 +60,7 @@ callback goroutine.
 | `SendToClient(channel, viewer, v)` | a message to that viewer's client code (at most 64 KB of JSON) |
 | `Notify(text)` | message in the admin-configured notification channel |
 | `NotifyUser(user, channel, text)` | toast + unread badge for one member who can see the channel |
+| `SendRecord(wire.PluginRecord)` | one member's stats and unlocked achievements (declared in plugin.toml, see manifest.md): shown on Settings > About > Achievements and ranked on the leaderboard. Send the whole record each time |
 | `SetTitle(channel, viewer, title)` | the pane's border title |
 | `LeavePane(channel, viewer)` | hand that viewer's keyboard back to Concord |
 | `RequestMembers(ctx, channel)` | who can see the channel, online, viewing. **Blocks**: call from a goroutine |

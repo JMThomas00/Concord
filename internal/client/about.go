@@ -6,7 +6,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // Settings > About: the client's (and connected server's) build, this
@@ -34,6 +33,8 @@ func (a *App) handleAboutKey(msg tea.KeyMsg) bool {
 		s.AboutScroll = max(0, s.AboutScroll-10)
 	case "pgdown":
 		s.AboutScroll += 10
+	case "a", "A":
+		a.openAchievements()
 	case "l", "L":
 		a.toggleMoodLock()
 	case "n", "N":
@@ -63,6 +64,9 @@ func (a *App) handleAboutKey(msg tea.KeyMsg) bool {
 // server's if one is connected (from its Ready payload), and the mood and
 // collection beside them when there's room.
 func (a *App) renderAboutContent(width, height int) string {
+	if s := a.settingsState; s != nil && s.AboutAch {
+		return a.renderAchievementsPage(width, height)
+	}
 	// Top: header + subtitle + blank + separator = 4 lines → pageTopExtra = 2
 	// Bottom: separator + help line = 2 lines → pageBottomExtra = 0
 	layout := calculateSettingsLayout(width, height, 2, 0)
@@ -177,39 +181,21 @@ func (a *App) renderAboutContent(width, height int) string {
 		}
 	}
 
+	// Achievements live on their own page now (achievements_page.go): a
+	// tab for Concord's and one per plugin, with leaderboards.
 	earned := 0
 	for _, ach := range achievements {
 		if coll.Achievements[ach.id] != "" {
 			earned++
 		}
 	}
-	right = append(right, "", purple.Render(fmt.Sprintf("Achievements  %d/%d", earned, len(achievements))), "")
-	hidden := 0
-	for _, ach := range achievements {
-		date := coll.Achievements[ach.id]
-		switch {
-		case date != "":
-			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Yellow)).Render("★ ")
-			if medal := achievementTiers[ach.id]; medal != "" {
-				mark = medal // bronze, silver or gold
-			}
-			// Name, what it was for, and when: the description gives way if
-			// the column is narrow.
-			desc := ach.description()
-			room := rightW - lipgloss.Width(mark) - len([]rune(ach.name)) - len(date) - 8
-			if len([]rune(desc)) > room {
-				desc = ansi.Truncate(desc, max(0, room), "…")
-			}
-			right = append(right, "  "+mark+normal.Render(ach.name)+"  "+dim.Render(desc)+"  "+dim.Italic(true).Render(date))
-		case ach.secret:
-			hidden++
-		default:
-			right = append(right, dim.Render("  ☆ ???  "+ach.hint))
-		}
+	tabs := a.achievementTabs()
+	right = append(right, "", purple.Render(fmt.Sprintf("Achievements  %d/%d", earned, len(achievements))))
+	more := "  A opens them"
+	if n := len(tabs) - 1; n > 0 {
+		more += fmt.Sprintf(", with %d plugin%s and leaderboards", n, plural(n))
 	}
-	if hidden > 0 {
-		right = append(right, dim.Render(fmt.Sprintf("  … and %d secret ones", hidden)))
-	}
+	right = append(right, dim.Render(more))
 
 	// Side by side when there's room, else one after the other.
 	var lines []string
@@ -239,7 +225,7 @@ func (a *App) renderAboutContent(width, height int) string {
 
 	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
 	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
-	help := "L lock mood · N new mood · Tab back to menu · Esc close"
+	help := "A achievements · L lock mood · N new mood · Tab back to menu · Esc close"
 	if len(coll.Cellar) > 0 {
 		help = "C/U cellar · " + help
 	}

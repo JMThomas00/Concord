@@ -98,6 +98,11 @@ type Manifest struct {
 	// sounds and (later) WebAssembly code in the plugin's client/ folder.
 	Client ClientDef `toml:"client"`
 
+	// Achievements members can unlock, and the stat the leaderboard ranks
+	// by (achievements.go). The plugin sends each member's record.
+	Achievements []AchievementDef `toml:"achievement"`
+	Leaderboard  LeaderboardDef   `toml:"leaderboard"`
+
 	// Dir is the plugin's own folder (set by LoadManifest, not from TOML).
 	Dir string `toml:"-"`
 	// BaseID is set on an instance's manifest: the installed plugin it's a
@@ -173,6 +178,9 @@ func (m *Manifest) Validate() error {
 	}
 	if _, err := m.Entrypoint(); err != nil {
 		return err
+	}
+	if err := m.validateAchievements(); err != nil {
+		return fmt.Errorf("plugin %q: %w", m.Plugin.ID, err)
 	}
 
 	seenKinds := make(map[string]bool)

@@ -74,6 +74,11 @@ type ServerConnection struct {
 	// PluginClients lists this server's plugin client parts (images, sounds),
 	// from READY and PLUGIN_REGISTRY_UPDATE.
 	PluginClients []protocol.PluginClientInfo
+	// PluginBoards declares this server's plugin achievements and leaderboards
+	// (READY, PLUGIN_REGISTRY_UPDATE); PluginRecords is your record for each
+	// (PLUGIN_RECORDS), by plugin ID (plugin_records.go).
+	PluginBoards  []protocol.PluginBoardInfo
+	PluginRecords map[string]protocol.PluginRecord
 	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
 	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
 	Members  []*MemberDisplay        // Members in current server

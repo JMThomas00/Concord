@@ -192,7 +192,7 @@ func (h *Handlers) onPluginStopped(pluginID string) {
 // plugin channel kinds, so an installed plugin's channel types can be
 // created (and its channels render as panes) without reconnecting.
 func (h *Handlers) onPluginRegistryChanged() {
-	payload := protocol.PluginRegistryPayload{PluginChannelKinds: h.PluginChannelKindInfos(), PluginClients: h.PluginClientInfos()}
+	payload := protocol.PluginRegistryPayload{PluginChannelKinds: h.PluginChannelKindInfos(), PluginClients: h.PluginClientInfos(), PluginBoards: h.PluginBoardInfos()}
 	servers, err := h.db.GetAllServers()
 	if err != nil {
 		return

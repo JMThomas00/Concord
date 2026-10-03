@@ -280,3 +280,43 @@ func TestFinishedGameReportsEachPlayersResult(t *testing.T) {
 		t.Fatalf("results %v", results)
 	}
 }
+
+// A finished game updates both players' records: wins, losses, and the
+// first-win achievement for the winner.
+func TestFinishedGameSendsRecords(t *testing.T) {
+	srv, ch, _ := startKit(t, nil, table.ModeSeats)
+	alice := srv.Enter(ch, "alice", 60, 12)
+	bob := srv.Enter(ch, "bob", 60, 12)
+	srv.FrameContaining(alice, "M: sit down")
+	srv.FrameContaining(bob, "M: sit down")
+	menu(srv, alice, 0)
+	srv.FrameContaining(bob, "X: alice")
+	menu(srv, bob, 0)
+	srv.FrameContaining(alice, "your move")
+	for i, m := range []string{"1", "4", "2", "5", "3"} {
+		v := alice
+		if i%2 == 1 {
+			v = bob
+		}
+		srv.Key(v, m)
+		if i < 4 {
+			srv.FrameContaining(map[bool]*plugintest.Viewer{true: bob, false: alice}[i%2 == 0], "your move")
+		}
+	}
+	srv.FrameContaining(bob, "alice wins")
+	recs := map[uuid.UUID]wire.PluginRecord{}
+	for _, e := range srv.DrainEvents() {
+		if e.Kind == wire.PluginEventRecord {
+			var r wire.PluginRecord
+			_ = json.Unmarshal(e.Payload, &r)
+			recs[r.UserID] = r
+		}
+	}
+	a, b := recs[alice.ID], recs[bob.ID]
+	if len(a.Stats) == 0 || a.Stats[0].Num != 1 || len(a.Unlocked) != 1 || a.Unlocked[0].ID != table.AchFirstWin {
+		t.Fatalf("alice's record %+v", a)
+	}
+	if len(b.Stats) < 2 || b.Stats[1].Num != 1 || len(b.Unlocked) != 0 {
+		t.Fatalf("bob's record %+v", b)
+	}
+}

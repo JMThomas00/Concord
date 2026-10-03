@@ -558,3 +558,12 @@ func (c *Conn) route(m *wire.Message, h Handler, dispatch func(func())) {
 		}
 	}
 }
+
+// SendRecord sends one member's record (stats and unlocked achievements)
+// to Concord, which keeps it, shows it to them on Settings > About >
+// Achievements and ranks it on the leaderboard. Send the whole record:
+// each one replaces the last. Achievement ids must be declared in
+// plugin.toml's [[achievement]] entries (others are dropped).
+func (c *Conn) SendRecord(rec wire.PluginRecord) error {
+	return c.Event(wire.PluginEventRecord, uuid.Nil, rec)
+}

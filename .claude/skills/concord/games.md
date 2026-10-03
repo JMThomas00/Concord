@@ -3,8 +3,9 @@
 Read this before building any game. The table kit supplies everything
 except the rules and the board: seats, spectators, three seating modes,
 the table menu on M (sit, stand, resign, rematch, add computer, lobby), "your turn"
-notifications, each player's result when a game ends (`game_result`, counted
-towards their achievements; nothing to write), saving and resuming, a
+notifications, every player's record (wins, losses, draws, streaks) with standard
+achievements and a leaderboard (paste `table.StandardAchievementsTOML` into
+plugin.toml; add your own with `Rules.Awards`), saving and resuming, a
 computer opponent off the event loop,
 and standalone play in a terminal (hotseat, computer, and network play).
 

@@ -116,3 +116,27 @@ trigger defaults to the plugin's or instance's name). An optional
 `mention_channels` field (`channel_multi_select`) limits that relay to the
 channels listed, and empty means everywhere. Declare those three keys to
 get it.
+
+## Achievements and leaderboards
+
+Declare what members can unlock, and which stat ranks them. The plugin then
+sends each member's record (`Conn.SendRecord`, or automatically from the
+`table` kit); members see it on Settings > About > Achievements, a tab per
+plugin, with the leaderboard. Unlocks for undeclared ids are dropped.
+
+```toml
+[[achievement]]
+id = "first_win"            # lowercase letters, digits, _ . - (48 max), unique
+name = "First Victory"      # required, 60 characters max
+description = "Win a game"  # 160 max; locked ones show it as a hint
+tier = "bronze"             # optional: bronze, silver, gold (shows a medal)
+icon = "🏆"                 # optional, 4 characters max, shown when there's no tier
+secret = false              # true: hidden until unlocked
+
+[leaderboard]
+stat = "wins"               # a stat key your records send (ranked by its num)
+label = "Wins"
+```
+
+At most 100 achievements. Games on the `table` kit should paste
+`table.StandardAchievementsTOML` (the scaffolder's game template has it).

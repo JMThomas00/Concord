@@ -280,6 +280,8 @@ func (h *Handlers) HandlePluginEvent(c *Client, msg *protocol.Message) {
 		h.handlePluginPaneTitle(c, req)
 	case protocol.PluginEventPlaySound:
 		h.handlePluginPlaySound(c, req)
+	case protocol.PluginEventRecord:
+		h.handlePluginRecord(c, req)
 	default:
 		if req.ViewerID == uuid.Nil {
 			MsgLog.Warn("Unhandled plugin event kind", "plugin_id", req.PluginID, "kind", req.Kind)

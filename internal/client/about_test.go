@@ -78,13 +78,20 @@ func TestAboutPageShowsMoodAndCollection(t *testing.T) {
 	out := ansi.Strip(a.renderAboutContent(150, 50))
 	a.settingsState.AboutScroll = 999 // the end of the list
 	out += ansi.Strip(a.renderAboutContent(150, 50))
-	for _, want := range []string{a.mood.code(), "Collection", "Banners", "Achievements", "First Light", "secret ones"} {
+	for _, want := range []string{a.mood.code(), "Collection", "Banners", "Achievements", "A opens them"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("About page missing %q:\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, ";##:") {
 		t.Error("the grape art is still on the About page")
+	}
+	a.settingsState.AboutAch = true // the list itself is on the Achievements page
+	out = ansi.Strip(a.renderAboutContent(150, 50))
+	for _, want := range []string{"First Light", "secret ones"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Achievements page missing %q", want)
+		}
 	}
 	if strings.Contains(out, "Up Up Down Down") {
 		t.Error("a secret achievement shows before it's earned")

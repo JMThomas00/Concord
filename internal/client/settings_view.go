@@ -371,10 +371,15 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 		return a.handleServerSoundPageKey(msg)
 	}
 
-	// About: scrolling (in the page), and L/N for the mood (anywhere on it)
+	// About: scrolling (in the page), L/N for the mood, C/U for the cellar
+	// and A for the Achievements page (anywhere on it); the Achievements
+	// page, once open, takes every key (achievements_page.go).
 	if s.SelectedCategory == settingsCatAbout {
+		if s.AboutAch {
+			return a.handleAchKey(msg)
+		}
 		switch msg.String() {
-		case "l", "L", "n", "N", "c", "C", "u", "U":
+		case "l", "L", "n", "N", "c", "C", "u", "U", "a", "A":
 			a.handleAboutKey(msg)
 			return nil
 		}

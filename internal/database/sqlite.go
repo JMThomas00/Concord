@@ -3581,6 +3581,23 @@ func (db *DB) MigratePluginPlatform() error {
 		return fmt.Errorf("failed to create plugin_instances table: %w", err)
 	}
 
+	// Records (2026-10-03): each member's stats and unlocked achievements
+	// for a plugin, sent by the plugin, kept as JSON (plugin_records.go);
+	// and whether a member keeps themselves off the leaderboards.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS plugin_records (
+			plugin_id  TEXT NOT NULL,
+			user_id    TEXT NOT NULL,
+			record     TEXT NOT NULL,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (plugin_id, user_id)
+		)`); err != nil {
+		return fmt.Errorf("failed to create plugin_records table: %w", err)
+	}
+	if err := addColumnIfMissing(db, "users", "leaderboard_hidden", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+
 	return nil
 }
 

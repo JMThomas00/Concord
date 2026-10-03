@@ -57,6 +57,21 @@ key = "api_key"
 label = "API Key"
 type = "secret"
 help = "Used to call the upstream service"
+
+[[achievement]]
+id = "first_win"
+name = "First Victory"
+description = "Win a game"
+tier = "bronze"
+
+[[achievement]]
+id = "secret_move"
+name = "Sneaky"
+secret = true
+
+[leaderboard]
+stat = "wins"
+label = "Wins"
 `
 
 // startTestPluginServer builds the testplugin fixture binary, writes its

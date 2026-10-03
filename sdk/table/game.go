@@ -79,6 +79,11 @@ type Rules struct {
 	// for everyone watching a table after a move ("" for none). It sees the
 	// game after the move, so it can pick a capture or a winning sound.
 	Sound func(g Game, move string) string
+	// Awards, if set, names achievements (declared in plugin.toml) a
+	// player earns from a finished game, beyond the standard ones
+	// (records.go): it sees the final game, the player's seat and how
+	// it ended, e.g. []string{"no_losses"} for a win without losing a piece.
+	Awards func(g Game, seat int, o Outcome) []string
 }
 
 // ChangedMsg is sent to every board showing a table after its game changes

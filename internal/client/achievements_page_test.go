@@ -1,0 +1,107 @@
+package client
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/protocol"
+	"github.com/google/uuid"
+)
+
+func chessBoard() protocol.PluginBoardInfo {
+	return protocol.PluginBoardInfo{PluginID: "chess", Name: "Chess", LeaderboardStat: "wins", LeaderboardLabel: "Wins",
+		Achievements: []protocol.PluginAchievementInfo{
+			{ID: "first_win", Name: "First Victory", Description: "Win a game", Tier: "bronze"},
+			{ID: "beat_computer", Name: "Beat the Machine", Description: "Beat the computer"},
+			{ID: "fools_mate", Name: "Fool's Mate", Secret: true},
+		}}
+}
+
+func recordsApp(t *testing.T) (*App, *ServerConnection) {
+	a := eggApp(t)
+	me := &models.User{ID: uuid.New()}
+	sc := &ServerConnection{ServerID: uuid.New(), ServerInfo: &ClientServerInfo{Name: "Sequoia"}, User: me,
+		PluginBoards: []protocol.PluginBoardInfo{chessBoard()}}
+	a.activeConn = sc
+	return a, sc
+}
+
+func TestRecordsToastFreshUnlocksAndAddUp(t *testing.T) {
+	a, sc := recordsApp(t)
+	old := time.Now().Add(-48 * time.Hour)
+	a.applyRecords(sc, protocol.PluginRecordsPayload{Records: []protocol.PluginRecordInfo{{PluginID: "chess",
+		Record: protocol.PluginRecord{UserID: sc.User.ID,
+			Stats:    []protocol.PluginStat{{Key: "wins", Label: "Wins", Value: "12", Num: 12}},
+			Unlocked: []protocol.PluginUnlock{{ID: "first_win", At: old}}}}}})
+	for _, ts := range a.toasts {
+		if strings.Contains(ts.label, "Chess") {
+			t.Fatal("a toast for an old unlock (sign-in)")
+		}
+	}
+	if a.coll().Achievements["wins_10"] == "" || a.coll().Achievements["first_win"] == "" {
+		t.Fatal("Concord's totals didn't count the plugin's wins")
+	}
+	a.toasts = nil
+	a.applyRecords(sc, protocol.PluginRecordsPayload{Records: []protocol.PluginRecordInfo{{PluginID: "chess",
+		Record: protocol.PluginRecord{UserID: sc.User.ID,
+			Stats:    []protocol.PluginStat{{Key: "wins", Label: "Wins", Value: "13", Num: 13}},
+			Unlocked: []protocol.PluginUnlock{{ID: "first_win", At: old}, {ID: "beat_computer", At: time.Now()}}}}}})
+	found := false
+	for _, ts := range a.toasts {
+		found = found || (ts.label == "🏆 Chess" && ts.title == "Beat the Machine")
+	}
+	if !found || a.coll().Achievements["beat_computer"] == "" {
+		t.Fatalf("toasts %+v", a.toasts)
+	}
+}
+
+func TestAchievementTabsAndPage(t *testing.T) {
+	a, sc := recordsApp(t)
+	other := &ServerConnection{ServerID: uuid.New(), ServerInfo: &ClientServerInfo{Name: "RedOak"},
+		PluginBoards: []protocol.PluginBoardInfo{chessBoard(), {PluginID: "tak", Name: "Tak"}}}
+	a.connMgr = nil
+	a.activeConn = sc
+	tabs := a.achievementTabs()
+	if len(tabs) != 2 { // just the active connection without a manager
+		t.Fatalf("%d tabs", len(tabs))
+	}
+	_ = other
+
+	a.view = ViewSettings
+	a.settingsState = &SettingsState{SelectedCategory: settingsCatAbout}
+	a.handleAboutKey(keyOf("a"))
+	if !a.settingsState.AboutAch {
+		t.Fatal("A didn't open the page")
+	}
+	sc.PluginRecords = map[string]protocol.PluginRecord{"chess": {UserID: sc.User.ID,
+		Stats:    []protocol.PluginStat{{Key: "wins", Label: "Wins", Value: "13", Num: 13}, {Key: "losses", Label: "Losses", Value: "4"}},
+		Unlocked: []protocol.PluginUnlock{{ID: "first_win", At: time.Now()}}}}
+	a.selectAchTab(1)
+	a.handleLeaderboard(leaderboardMsg{key: leaderboardKey(sc.ServerID, "chess"), resp: &protocol.LeaderboardResponse{
+		Label: "Wins", Entries: []protocol.LeaderboardEntry{
+			{Rank: 1, Username: "bob", Value: "20", Num: 20}, {Rank: 2, UserID: sc.User.ID, Username: "gh0st", Value: "13", Num: 13}}}})
+	out := ansi.Strip(a.renderAchievementsPage(120, 40))
+	for _, want := range []string{"Concord", "Chess", "Wins 13", "Losses 4", "Leaderboard · Wins", "bob", "gh0st", "First Victory", "Achievements  1/3", "1 secret"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("page missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Fool's Mate") {
+		t.Fatal("a secret achievement shows")
+	}
+	a.handleAchKey(keyOf("esc"))
+	if a.settingsState.AboutAch {
+		t.Fatal("Esc didn't go back to About")
+	}
+}
+
+func TestOrdinal(t *testing.T) {
+	for n, want := range map[int]string{1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 11: "11th", 12: "12th", 21: "21st", 112: "112th"} {
+		if got := ordinal(n); got != want {
+			t.Errorf("%d: %s", n, got)
+		}
+	}
+}
