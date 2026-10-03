@@ -2,6 +2,8 @@
 
 A terminal-based chat application inspired by Discord, built in Go with a beautiful TUI.
 
+**Website:** [concordchat.cc](https://concordchat.cc) (by [Anthoneyq](https://github.com/Anthoneyq)) · **Official server:** `server.concordchat.cc` · **Install:** [one line](#installation)
+
 ```text
    ____                              _
   / ___|___  _ __   ___ ___  _ __ __| |
@@ -629,8 +631,13 @@ Contributions are welcome. Please open an issue before submitting large changes 
 
 MIT License — see LICENSE file for details.
 
+## A Huge Thank-You to Anthoneyq 🍇
+
+Concord's website, [concordchat.cc](https://concordchat.cc), is the work of **[Anthoneyq](https://github.com/Anthoneyq)**. He designed and built all of it: the **Human** and **Terminal** layouts with their live theme switching, and a few secrets worth hunting for. He also wrote the original **live-lit ASCII grape renderer**. Concord's shaded grape logo on the login screen, the About page and the installer's welcome is a direct port of his code (see `internal/client/grape_logo.go`), shading matched character for character. The grapes have him to thank for their glow.
+
 ## Acknowledgments
 
+- [Anthoneyq](https://github.com/Anthoneyq): the website and the shaded grape logo (see above)
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) — TUI framework
 - [Lip Gloss](https://github.com/charmbracelet/lipgloss) — terminal styling
 - [Bubbles](https://github.com/charmbracelet/bubbles) — TUI components
