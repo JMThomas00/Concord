@@ -84,6 +84,14 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
   - `autostart.go` sets up starting: systemd system or user units, LaunchDaemon/LaunchAgent, or on Windows a hidden PowerShell launcher run by a SYSTEM boot task or the HKCU Run key;
   - `steps.go` runs it all.
   - A component whose settings file is already in its folder is **updated**: stopped, program swapped (renamed aside, which works on a running Windows exe), settings kept, restarted.
+- **Windows boot mode** (the default everywhere it's possible: "Always: in the background from startup"):
+  - `BootTaskScript` registers a SYSTEM scheduled task at startup that runs the program from its folder through `cmd /c … >> log`, with no time limit and restarts, plus a firewall rule;
+  - without an elevated prompt it runs once through UAC (`Runner.elevated`, `Start-Process -Verb RunAs`);
+  - its PowerShell parses (`TestBootTaskScriptsParse`), but it hasn't run for real yet.
+- **Two Huh v0.6 traps, both hit by Jordan:**
+  - **Group height:** a group measures its height when created, before it knows the width, so a wrapped description pushed the last field (the admin email) out of view while typing still went to it. Build forms with `formBuilder` (`style.go`), which sizes each group after the width is set.
+  - **Going back:** an Input checks itself on Shift+Tab, on blur and before leaving the group, so an invalid entry trapped you. `model.back` turns the checks off until the next key that isn't Shift+Tab.
+  - `TestEmailIsVisibleAndBackAlwaysWorks` drives the real form for both.
 - **Never capture the output of something that starts a background process** (`Runner.launch`): it inherits the pipe, and `CombinedOutput` then waits forever. This hung the first Windows test.
 - **Official server and hub addresses** are `internal/official` (placeholders until the official VPS exists); the client's and server wizard's default hub use it too.
 - **The installer's grapes** are `internal/grapes`, a copy of the client's renderer (`TestInstallerGrapesMatchTheClients` keeps them identical; `go run ./tools/grapelogo -pkg grapes -out internal/grapes/logo_data.go`).

@@ -149,3 +149,40 @@ func writeFile(path, content string, mode os.FileMode) error {
 	}
 	return os.WriteFile(path, []byte(content), mode)
 }
+
+// BootTaskScript is the PowerShell that sets a component to run in the
+// background from when Windows starts: a scheduled task, as SYSTEM, that
+// runs the program straight from its folder (output to its log), with no
+// time limit and a restart if it stops; plus a firewall rule so people on
+// the network can reach it. It stops a copy that's already running, then
+// starts the new one. It needs an administrator (Runner.elevated).
+func (pl *Plan) BootTaskScript(component string) string {
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	name, bin := windowsName(component), pl.Binary(component)
+	run := fmt.Sprintf(`/c ""%s" >> "%s" 2>&1"`, bin, pl.LogFile(component))
+	return fmt.Sprintf(`# Written by concord-install: runs the Concord %[1]s in the background from startup.
+$ErrorActionPreference = 'Stop'
+try {
+    Stop-ScheduledTask -TaskName %[2]s -ErrorAction SilentlyContinue
+    Get-Process | Where-Object { $_.Path -in @(%[3]s, %[4]s) } | Stop-Process -Force -ErrorAction SilentlyContinue
+    $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument %[5]s -WorkingDirectory %[6]s
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName %[2]s -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Remove-NetFirewallRule -DisplayName %[2]s -ErrorAction SilentlyContinue
+    New-NetFirewallRule -DisplayName %[2]s -Direction Inbound -Action Allow -Program %[3]s | Out-Null
+    Start-ScheduledTask -TaskName %[2]s
+    exit 0
+} catch {
+    Write-Error $_
+    exit 2
+}
+`, component, q(name), q(bin), q(bin+".old"), q(run), q(pl.Dir(component)))
+}
+
+// BootTaskRemoval is the PowerShell that undoes BootTaskScript.
+func (pl *Plan) BootTaskRemoval(component string) string {
+	name := "'" + strings.ReplaceAll(windowsName(component), "'", "''") + "'"
+	return fmt.Sprintf("Stop-ScheduledTask -TaskName %[1]s -ErrorAction SilentlyContinue\nUnregister-ScheduledTask -TaskName %[1]s -Confirm:$false -ErrorAction SilentlyContinue\nRemove-NetFirewallRule -DisplayName %[1]s -ErrorAction SilentlyContinue\nexit 0\n", name)
+}

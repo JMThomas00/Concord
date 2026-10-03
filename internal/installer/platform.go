@@ -109,14 +109,12 @@ func (p Platform) ArchiveName() string {
 }
 
 // CanStartAtBoot reports whether a service can start before anyone signs
-// in: it needs systemd on Linux, and an elevated prompt on Windows (where
-// asking for it later isn't possible; Linux and macOS ask with sudo).
+// in: Linux needs systemd. Setting it up needs an administrator, which
+// the installer asks for (sudo, or Windows' permission prompt).
 func (p Platform) CanStartAtBoot() bool {
 	switch p.OS {
 	case Linux:
 		return p.Systemd
-	case Windows:
-		return p.Admin
 	}
 	return true
 }

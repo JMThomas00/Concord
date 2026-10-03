@@ -49,6 +49,7 @@ type model struct {
 
 	form       *huh.Form
 	notice     string // a line above the form (why we came back to it)
+	back       bool   // the last key was shift+tab: answers aren't checked
 	terms      viewport.Model
 	termsOK    bool // the Accept button is focused
 	review     *huh.Form
@@ -106,7 +107,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		m.terms.Width, m.terms.Height = m.contentWidth(), max(6, m.h-14)
+		m.terms.Width, m.terms.Height = m.contentWidth()-4, m.termsHeight()
 	case tickMsg:
 		m.animate(time.Time(msg))
 		return m, tick()
@@ -169,13 +170,17 @@ func (m *model) animate(now time.Time) {
 
 func (m *model) toForm(notice string) tea.Cmd {
 	m.notice = notice
-	m.form = questions(m.plan).WithTheme(theme()).WithWidth(m.contentWidth()).WithShowHelp(true)
-	m.form.SubmitCmd = nil
+	m.form = questions(m.plan, &m.back).form(m.contentWidth()).WithShowHelp(true)
 	m.go_(stForm)
 	return m.form.Init()
 }
 
 func (m *model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Going back skips the answers' checks until the next key (Huh checks
+	// on the key, on leaving the field and on leaving the group).
+	if k, ok := msg.(tea.KeyMsg); ok {
+		m.back = k.String() == "shift+tab"
+	}
 	f, cmd := m.form.Update(msg)
 	m.form = f.(*huh.Form)
 	switch m.form.State {
@@ -196,8 +201,8 @@ func (m *model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 // --- the terms ------------------------------------------------------------------
 
 func (m *model) toTerms() {
-	m.terms = viewport.New(m.contentWidth(), max(6, m.h-14))
-	m.terms.SetContent(renderTerms(m.contentWidth()))
+	m.terms = viewport.New(m.contentWidth()-4, m.termsHeight())
+	m.terms.SetContent(renderTerms(m.contentWidth() - 6))
 	m.termsOK = true
 	m.go_(stTerms)
 }
@@ -230,7 +235,8 @@ func (m *model) updateTerms(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) toReview() tea.Cmd {
 	m.reviewPick = "install"
-	m.review = huh.NewForm(huh.NewGroup(
+	b := &formBuilder{}
+	b.group(
 		huh.NewSelect[string]().
 			Title("Ready?").
 			Options(
@@ -239,8 +245,8 @@ func (m *model) toReview() tea.Cmd {
 				huh.NewOption("Quit without installing", "quit"),
 			).
 			Value(&m.reviewPick),
-	)).WithTheme(theme()).WithWidth(m.contentWidth()).WithShowHelp(false)
-	m.review.SubmitCmd = nil
+	)
+	m.review = b.form(m.contentWidth()).WithShowHelp(false)
 	m.go_(stReview)
 	return m.review.Init()
 }
@@ -390,7 +396,8 @@ func (m *model) toAfter() tea.Cmd {
 		m.openNow = false
 		return tea.Quit
 	}
-	m.after = huh.NewForm(huh.NewGroup(
+	b := &formBuilder{}
+	b.group(
 		huh.NewConfirm().
 			Title("Join the official Concord server?").
 			Description(fmt.Sprintf("%s: where the Concord community hangs out. News, help, people to play games with.\nIt'll be waiting in your server list.", official.ServerHost)).
@@ -401,8 +408,8 @@ func (m *model) toAfter() tea.Cmd {
 			Description("It'll ask who you are first: a name, your email and a password.\nThat one profile signs you in to every server you join.").
 			Affirmative("Let's go").Negative("Later").
 			Value(&m.openNow),
-	)).WithTheme(theme()).WithWidth(m.contentWidth()).WithShowHelp(true)
-	m.after.SubmitCmd = nil
+	)
+	m.after = b.form(m.contentWidth()).WithShowHelp(true)
 	m.go_(stAfter)
 	return m.after.Init()
 }

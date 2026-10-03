@@ -38,7 +38,8 @@ type Plan struct {
 	ServerOnHub   bool   // list it on the official Grapevine hub
 	PublicHost    string // the address people use to reach it, for the hub
 	Description   string
-	Category      string
+	Tags          []string // chosen from the presets
+	OtherTags     string   // typed, separated by commas
 	TermsAccepted bool
 
 	HubDir      string
@@ -62,14 +63,16 @@ func NewPlan(p Platform) *Plan {
 		Platform:    p,
 		ServerName:  defaultServerName(),
 		ServerPort:  "8080",
-		ServerStart: StartAtLogin,
-		Category:    "General",
+		ServerStart: StartAtBoot,
 		HubName:     "Grapevine Hub",
 		HubPort:     "7777",
-		HubStart:    StartAtLogin,
+		HubStart:    StartAtBoot,
 	}
-	if !p.CanStartAtLogin() {
+	switch {
+	case !p.CanStartAtLogin():
 		pl.ServerStart, pl.HubStart = StartNever, StartNever
+	case !p.CanStartAtBoot():
+		pl.ServerStart, pl.HubStart = StartAtLogin, StartAtLogin
 	}
 	pl.ClientDir, pl.ServerDir, pl.HubDir = p.DefaultDir(Client), p.DefaultDir(Server), p.DefaultDir(Hub)
 	return pl
@@ -202,7 +205,7 @@ func (pl *Plan) Tidy() {
 	for _, d := range []*string{&pl.ClientDir, &pl.ServerDir, &pl.HubDir} {
 		*d = filepath.Clean(ExpandHome(*d))
 	}
-	for _, s := range []*string{&pl.ServerName, &pl.AdminEmail, &pl.PublicHost, &pl.Description, &pl.Category, &pl.HubName, &pl.ServerPort, &pl.HubPort} {
+	for _, s := range []*string{&pl.ServerName, &pl.AdminEmail, &pl.PublicHost, &pl.Description, &pl.OtherTags, &pl.HubName, &pl.ServerPort, &pl.HubPort} {
 		*s = strings.TrimSpace(*s)
 	}
 }
@@ -225,4 +228,19 @@ func Tilde(path string) string {
 		return "~" + string(filepath.Separator) + rel
 	}
 	return path
+}
+
+// AllTags is every tag for the Grapevine listing: the chosen ones, then
+// the typed ones, each once.
+func (pl *Plan) AllTags() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range append(append([]string{}, pl.Tags...), strings.Split(pl.OtherTags, ",")...) {
+		t = strings.TrimSpace(t)
+		if t != "" && !seen[strings.ToLower(t)] {
+			seen[strings.ToLower(t)] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }

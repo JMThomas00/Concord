@@ -37,11 +37,22 @@ var fortunes = []string{
 
 // --- the questions --------------------------------------------------------------
 
-func questions(pl *installer.Plan) *huh.Form {
+func questions(pl *installer.Plan, back *bool) *formBuilder {
 	p := pl.Platform
+	b := &formBuilder{}
+	// Moving back (shift+tab) never stops at a check: you can always return
+	// to fix an earlier answer, and every answer is checked on the way forward.
+	check := func(v func(string) error) func(string) error {
+		return func(s string) error {
+			if *back {
+				return nil
+			}
+			return v(s)
+		}
+	}
 	var groups []*huh.Group
 	if p.OS == "" {
-		groups = append(groups, huh.NewGroup(
+		groups = append(groups, b.group(
 			huh.NewSelect[string]().
 				Title("Which system is this computer running?").
 				Description("Concord couldn't tell by itself.").
@@ -52,18 +63,18 @@ func questions(pl *installer.Plan) *huh.Form {
 	opt := func(label, desc, value string) huh.Option[string] {
 		return huh.NewOption(fmt.Sprintf("%-8s %s", label, sDim.Render(desc)), value).Selected(pl.Has(value))
 	}
-	groups = append(groups, huh.NewGroup(
+	groups = append(groups, b.group(
 		huh.NewMultiSelect[string]().
 			Title("What do you want to install on this machine?").
 			Description("Space picks, enter moves on. Most people only need the client.").
 			Options(
 				opt("Client", "chat, voice and games, right in your terminal", installer.Client),
-				opt("Server", "your own community: channels, voice, plugins, your rules", installer.Server),
+				opt("Server", "your own community: channels, voice, plugins", installer.Server),
 				opt("Hub", "a Grapevine directory, where people find servers", installer.Hub),
 			).
 			Value(&pl.Components).
 			Validate(func(v []string) error {
-				if len(v) == 0 {
+				if len(v) == 0 && !*back {
 					return fmt.Errorf("pick at least one (space to tick it)")
 				}
 				return nil
@@ -74,66 +85,85 @@ func questions(pl *installer.Plan) *huh.Form {
 		return huh.NewInput().Title(title).
 			DescriptionFunc(func() string {
 				if pl.Existing(c) {
-					return "Concord's " + c + " is already here: this updates it and keeps your settings."
+					return "Already here: this updates it and keeps your settings."
 				}
 				if c == installer.Client {
 					return "Just the program. Your settings live in " + filepath.Join("~", ".concord") + "."
 				}
 				return "Its settings, database and plugins live here too."
 			}, dir).
-			Value(dir).Validate(installer.ValidateDir)
+			Value(dir).Validate(check(installer.ValidateDir))
 	}
 	fresh := func(c string) func() bool { return func() bool { return !pl.Has(c) || pl.Existing(c) } }
 	notChosen := func(c string) func() bool { return func() bool { return !pl.Has(c) } }
 
 	// The client.
-	groups = append(groups, huh.NewGroup(dirInput(installer.Client, "Where should the client live?", &pl.ClientDir)).WithHideFunc(notChosen(installer.Client)))
+	groups = append(groups, b.group(dirInput(installer.Client, "Where should the client live?", &pl.ClientDir)).WithHideFunc(notChosen(installer.Client)))
 
 	// The server.
 	groups = append(groups,
-		huh.NewGroup(dirInput(installer.Server, "Where should your server live?", &pl.ServerDir)).WithHideFunc(notChosen(installer.Server)),
-		huh.NewGroup(
+		b.group(dirInput(installer.Server, "Where should your server live?", &pl.ServerDir)).WithHideFunc(notChosen(installer.Server)),
+		b.group(
 			huh.NewInput().Title("What's your server called?").Description("People see this when they join. You can change it later.").
-				Value(&pl.ServerName).Validate(required("give it a name")),
-			huh.NewInput().Title("Which port should it listen on?").Description("8080 suits most people. Friends outside your network need it forwarded on your router.").
-				Value(&pl.ServerPort).Validate(portFree(func() string { return pl.HubPort }, pl.Has, installer.Hub)),
-			huh.NewInput().Title("Your email, to make you its admin (optional)").
-				Description("The first person to sign up becomes the owner anyway. This makes the account with this email an admin too.").
-				Placeholder("you@example.com").Value(&pl.AdminEmail).Validate(installer.ValidateEmail),
+				Value(&pl.ServerName).Validate(check(required("give it a name"))),
+			huh.NewInput().Title("Which port should it listen on?").Description("8080 suits most people.").
+				Value(&pl.ServerPort).Validate(check(portFree(func() string { return pl.HubPort }, pl.Has, installer.Hub))),
 		).WithHideFunc(fresh(installer.Server)),
-		huh.NewGroup(startQuestion(p, "server", &pl.ServerStart)).WithHideFunc(notChosen(installer.Server)),
-		huh.NewGroup(
+		b.group(
+			huh.NewInput().Title("Your email, to make you its admin").
+				Description("Optional. The first person to sign up becomes the owner anyway;\nthe account with this email is made an admin too.").
+				Placeholder("you@example.com").Value(&pl.AdminEmail).Validate(check(installer.ValidateEmail)),
+		).WithHideFunc(fresh(installer.Server)),
+		b.group(startQuestion(p, "server", &pl.ServerStart)).WithHideFunc(notChosen(installer.Server)),
+		b.group(
 			huh.NewConfirm().Title("Connect your server to the Concord hub?").
-				Description("Grapevine is Concord's server directory. Listed servers can be found and joined by anyone browsing it;\nunlisted ones are reached by sharing your address.").
+				Description("Grapevine is Concord's server directory: anyone browsing it can find and\njoin a listed server. Private ones are reached by sharing your address.").
 				Affirmative("List it").Negative("Keep it private").Value(&pl.ServerOnHub),
 		).WithHideFunc(fresh(installer.Server)),
-		huh.NewGroup(
+		b.group(
 			huh.NewInput().Title("The address people use to reach your server").
-				Description("A domain name or your public IP (not localhost). The hub checks it's really you before sharing it.").
-				Placeholder("chat.example.com").Value(&pl.PublicHost).Validate(required("the hub needs an address to give people")),
+				Description("A domain name or your public IP, not localhost.").
+				Placeholder("chat.example.com").Value(&pl.PublicHost).Validate(check(required("the hub needs an address to give people"))),
 			huh.NewInput().Title("One line about it").Placeholder("A cozy corner for board games and bad puns").Value(&pl.Description),
-			huh.NewSelect[string]().Title("What's it about?").
-				Options(huh.NewOptions("General", "Gaming", "Technology", "Art", "Music", "Tabletop", "Education", "Community")...).
-				Value(&pl.Category),
+		).WithHideFunc(func() bool { return fresh(installer.Server)() || !pl.ServerOnHub }),
+		b.group(
+			huh.NewMultiSelect[string]().Title("What's it about?").
+				Description("Pick as many as fit. People search the Grapevine by these.").
+				Options(tagOptions(pl.Tags)...).
+				Value(&pl.Tags),
+			huh.NewInput().Title("Anything else?").Description("Your own tags, separated by commas.").
+				Placeholder("AI, AI Research").Value(&pl.OtherTags),
 		).WithHideFunc(func() bool { return fresh(installer.Server)() || !pl.ServerOnHub }),
 	)
 
 	// The hub.
 	groups = append(groups,
-		huh.NewGroup(dirInput(installer.Hub, "Where should your hub live?", &pl.HubDir)).WithHideFunc(notChosen(installer.Hub)),
-		huh.NewGroup(
-			huh.NewInput().Title("What's your hub called?").Value(&pl.HubName).Validate(required("give it a name")),
+		b.group(dirInput(installer.Hub, "Where should your hub live?", &pl.HubDir)).WithHideFunc(notChosen(installer.Hub)),
+		b.group(
+			huh.NewInput().Title("What's your hub called?").Value(&pl.HubName).Validate(check(required("give it a name"))),
 			huh.NewInput().Title("Which port should it listen on?").Description("7777 unless something else uses it.").
-				Value(&pl.HubPort).Validate(portFree(func() string { return pl.ServerPort }, pl.Has, installer.Server)),
+				Value(&pl.HubPort).Validate(check(portFree(func() string { return pl.ServerPort }, pl.Has, installer.Server))),
 		).WithHideFunc(fresh(installer.Hub)),
-		huh.NewGroup(startQuestion(p, "hub", &pl.HubStart)).WithHideFunc(notChosen(installer.Hub)),
-		huh.NewGroup(
+		b.group(startQuestion(p, "hub", &pl.HubStart)).WithHideFunc(notChosen(installer.Hub)),
+		b.group(
 			huh.NewConfirm().Title("Connect your hub to the official Concord hub?").
-				Description("Hubs that connect share their listings, so your servers show up across the Grapevine and theirs show up on yours.").
+				Description("Connected hubs share their listings: your servers show up across\nthe Grapevine, and theirs show up on yours.").
 				Affirmative("Connect").Negative("Stand alone").Value(&pl.HubFederate),
 		).WithHideFunc(fresh(installer.Hub)),
 	)
-	return huh.NewForm(groups...)
+	_ = groups
+	return b
+}
+
+// presetTags are the Grapevine's common tags; people add their own too.
+var presetTags = []string{"Gaming", "Technology", "Programming", "Art", "Music", "Tabletop", "Anime", "Education", "Science", "Community", "Friends", "Chill"}
+
+func tagOptions(chosen []string) []huh.Option[string] {
+	opts := make([]huh.Option[string], len(presetTags))
+	for i, t := range presetTags {
+		opts[i] = huh.NewOption(t, t).Selected(contains(chosen, t))
+	}
+	return opts
 }
 
 func required(msg string) func(string) error {
@@ -165,20 +195,20 @@ func portFree(other func() string, has func(string) bool, otherComponent string)
 func startQuestion(p installer.Platform, what string, value *string) *huh.Select[string] {
 	var opts []huh.Option[string]
 	if p.CanStartAtBoot() {
-		opts = append(opts, huh.NewOption("When this computer starts", installer.StartAtBoot))
+		opts = append(opts, huh.NewOption("Always: in the background from when the computer starts", installer.StartAtBoot))
 	}
 	if p.CanStartAtLogin() {
-		opts = append(opts, huh.NewOption("When I sign in", installer.StartAtLogin))
+		opts = append(opts, huh.NewOption("While I'm signed in", installer.StartAtLogin))
 	}
 	opts = append(opts, huh.NewOption("Only when I start it myself", installer.StartNever))
-	desc := "Starting with the computer keeps it up for everyone, even before you sign in."
+	desc := "Always keeps it up for everyone, even before anyone signs in."
 	switch {
-	case p.OS == installer.Windows && !p.Admin:
-		desc = "To start it before anyone signs in, run the installer from an administrator terminal."
 	case p.OS == installer.Linux && !p.Systemd:
-		desc = "This system has no systemd (WSL?), so it starts when you run it."
-	case p.OS != installer.Windows:
-		desc += " That needs your password once."
+		desc = "This system has no systemd (WSL?), so it runs when you start it."
+	case p.OS == installer.Windows && !p.Admin:
+		desc += "\nWindows will ask for permission once."
+	case !p.Admin:
+		desc += "\nThat needs your password once."
 	}
 	return huh.NewSelect[string]().Title("When should your " + what + " run?").Description(desc).Options(opts...).Value(value)
 }
@@ -186,24 +216,47 @@ func startQuestion(p installer.Platform, what string, value *string) *huh.Select
 // --- the terms ----------------------------------------------------------------------
 
 func renderTerms(width int) string {
-	r, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dracula"), glamour.WithWordWrap(width-2))
+	text := strings.ReplaceAll(legal.ServerTerms, "\r", "") // the file has Windows line endings
+	r, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dracula"), glamour.WithWordWrap(width))
 	if err != nil {
-		return legal.ServerTerms
+		return text
 	}
-	out, err := r.Render(legal.ServerTerms)
+	out, err := r.Render(text)
 	if err != nil {
-		return legal.ServerTerms
+		return text
 	}
-	return strings.TrimSpace(out)
+	return strings.Trim(out, "\n")
 }
+
+// termsHeight is how tall the terms' box can be inside the page.
+func (m *model) termsHeight() int { return max(5, min(m.h-14, 30)) }
 
 // --- layout -----------------------------------------------------------------------------
 
-func (m *model) showSide() bool { return m.w >= sideWidth+64 && m.h >= grapes.Rows+4 }
+// The grapes sit where the welcome put them, the content beside them; on
+// a small screen the grapes step aside and the content takes the width.
+const (
+	introGap   = 4                           // between the grapes and the banner
+	introWidth = grapes.Size + introGap + 60 // grapes, gap, banner
+	introRows  = grapes.Rows + 3             // and the hint under them
+)
+
+func (m *model) showSide() bool { return m.w >= introWidth+5 && m.h >= introRows }
+
+// grapesAt is the grapes' top-left corner, the same on every page.
+func (m *model) grapesAt() (x, y int) {
+	return max(0, (m.w-introWidth)/2), max(0, (m.h-introRows)/2)
+}
+
+// contentX is where the content column starts, beside the grapes.
+func (m *model) contentX() int {
+	x, _ := m.grapesAt()
+	return x + grapes.Size + introGap
+}
 
 func (m *model) contentWidth() int {
 	if m.showSide() {
-		return min(76, m.w-sideWidth-4)
+		return min(76, m.w-m.contentX()-2)
 	}
 	return max(30, min(80, m.w-4))
 }
@@ -229,11 +282,15 @@ func (m *model) View() string {
 		body = m.viewAfter()
 	}
 	content := lipgloss.NewStyle().Width(m.contentWidth()).Render(m.header() + "\n\n" + body)
-	if m.showSide() {
-		side := lipgloss.NewStyle().Width(sideWidth).PaddingTop(3).Render(grapes.Render(grapes.Frame(m.light), grapeStyles))
-		content = lipgloss.JoinHorizontal(lipgloss.Top, side, content)
+	top := max(1, (m.h-lipgloss.Height(content))/2) // centred on the screen
+	if !m.showSide() {
+		return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Top, lipgloss.NewStyle().PaddingTop(min(top, 2)).Render(content))
 	}
-	return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Top, lipgloss.NewStyle().PaddingTop(1).Render(content))
+	gx, gy := m.grapesAt()
+	side := lipgloss.NewStyle().PaddingLeft(gx).PaddingTop(gy).Width(m.contentX()).
+		Render(grapes.Render(grapes.Frame(m.light), grapeStyles))
+	page := lipgloss.JoinHorizontal(lipgloss.Top, side, lipgloss.NewStyle().PaddingTop(top).Render(content))
+	return lipgloss.Place(m.w, m.h, lipgloss.Left, lipgloss.Top, page)
 }
 
 // header is the title and where you are in the journey.
@@ -269,22 +326,23 @@ func (m *model) viewIntro() string {
 	logo := grapes.Render(grapes.Frame(m.light), grapeStyles)
 	reveal := int(math.Max(0, (t-.7)/1.0) * float64(len([]rune(banner[0]))))
 	tagline := typeOut("Chat that lives in your terminal.", t-1.8, 28)
-	tagline2 := typeOut("Let's plant some grapes.", t-2.6, 28)
+	tagline2 := typeOut("Let's grow some grapes.", t-2.6, 28)
 	words := renderBanner(min(reveal, 999), t*.15) + "\n\n" + sText.Render(tagline) + "\n" + sAccent.Render(tagline2)
-	var art string
-	switch {
-	case m.w >= 104 && m.h >= grapes.Rows+2:
-		art = lipgloss.JoinHorizontal(lipgloss.Center, logo, "    ", words)
-	case m.w >= 64 && m.h >= grapes.Rows+12:
-		art = lipgloss.JoinVertical(lipgloss.Center, logo, "", words)
-	default:
-		art = lipgloss.JoinVertical(lipgloss.Center, logo, "", sTitle.Render("C O N C O R D"), sText.Render(tagline))
-	}
 	hint := ""
 	if t > 1.2 {
-		hint = "\n\n" + sDim.Render("press any key")
+		hint = sDim.Render("press any key")
 	}
-	return center(m.w, m.h, lipgloss.JoinVertical(lipgloss.Center, art, hint))
+	if !m.showSide() {
+		art := lipgloss.JoinVertical(lipgloss.Center, logo, "", sTitle.Render("C O N C O R D"), sText.Render(tagline))
+		return center(m.w, m.h, lipgloss.JoinVertical(lipgloss.Center, art, "", hint))
+	}
+	// Placed exactly where every later page keeps the grapes.
+	gx, gy := m.grapesAt()
+	words = lipgloss.NewStyle().PaddingTop((grapes.Rows - lipgloss.Height(words)) / 2).Render(words)
+	art := lipgloss.JoinHorizontal(lipgloss.Top, logo, strings.Repeat(" ", introGap), words)
+	art += "\n\n" + lipgloss.PlaceHorizontal(introWidth, lipgloss.Center, hint)
+	page := lipgloss.NewStyle().PaddingLeft(gx).PaddingTop(gy).Render(art)
+	return lipgloss.Place(m.w, m.h, lipgloss.Left, lipgloss.Top, page)
 }
 
 func typeOut(s string, t float64, perSec float64) string {
@@ -316,9 +374,11 @@ func (m *model) viewTerms() string {
 		accept, decline = off.Render(accept), on.Render(decline)
 	}
 	return sTitle.Render("One thing first: the Server Terms") + "\n" +
-		sDim.Render("Running a Concord server means agreeing to these. ↑/↓ to read, ←/→ and enter to choose.") + "\n\n" +
-		lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(cDim)).Render(m.terms.View()) + "\n" +
-		sDim.Render(fmt.Sprintf("%3d%%", pct)) + "   " + accept + " " + decline
+		sDim.Render("Running a Concord server means agreeing to these.") + "\n\n" +
+		lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(cPurple)).Padding(0, 1).
+			Render(m.terms.View()) + "\n" +
+		accept + " " + decline + sDim.Render(fmt.Sprintf("   %d%% read", pct)) + "\n" +
+		helpLine("↑/↓", "read", "←/→", "choose", "enter", "confirm")
 }
 
 func (m *model) viewReview() string {
@@ -332,7 +392,7 @@ func (m *model) viewReview() string {
 		}
 		return sGood.Render("install")
 	}
-	startLabel := map[string]string{installer.StartAtBoot: "when this computer starts", installer.StartAtLogin: "when you sign in", installer.StartNever: "only when you start it"}
+	startLabel := map[string]string{installer.StartAtBoot: "always, in the background from startup", installer.StartAtLogin: "while you are signed in", installer.StartNever: "only when you start it"}
 	row("System", pl.Platform.Name())
 	if pl.Has(installer.Client) {
 		b.WriteString("\n" + sSection.Render("Client") + "  " + verb(installer.Client) + "\n")
@@ -349,7 +409,10 @@ func (m *model) viewReview() string {
 				row("Admin", pl.AdminEmail)
 			}
 			if pl.ServerOnHub {
-				row("Grapevine", "listed as "+pl.PublicHost+" ("+pl.Category+")")
+				row("Grapevine", "listed as "+pl.PublicHost)
+				if tags := pl.AllTags(); len(tags) > 0 {
+					row("Tags", strings.Join(tags, ", "))
+				}
 			} else {
 				row("Grapevine", "private")
 			}
@@ -406,7 +469,7 @@ func (m *model) viewInstall() string {
 	if m.st == stFailed {
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(cRed)).Padding(0, 1).Width(w - 4)
 		b.WriteString("\n" + box.Render(sBad.Bold(true).Render("That didn't work.")+"\n"+sText.Render(m.failed.Error())) + "\n\n")
-		b.WriteString(sKey.Render("R") + sDim.Render(" try again   ") + sKey.Render("C") + sDim.Render(" change answers   ") + sKey.Render("Q") + sDim.Render(" quit"))
+		b.WriteString(helpLine("R", "try again", "C", "change answers", "Q", "quit"))
 		return b.String()
 	}
 	b.WriteString("\n" + fg(cPink).Italic(true).Render(m.quip) + "\n")

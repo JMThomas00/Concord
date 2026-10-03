@@ -36,12 +36,13 @@ type serverConfig struct {
 	TermsAccepted bool   `toml:"terms_accepted"`
 	AdminEmail    string `toml:"admin_email,omitempty"`
 	Grapevine     struct {
-		Enabled     bool   `toml:"enabled"`
-		HubURL      string `toml:"hub_url,omitempty"`
-		PublicHost  string `toml:"public_host,omitempty"`
-		PublicPort  int    `toml:"public_port,omitempty"`
-		Description string `toml:"description,omitempty"`
-		Category    string `toml:"category,omitempty"`
+		Enabled     bool     `toml:"enabled"`
+		HubURL      string   `toml:"hub_url,omitempty"`
+		PublicHost  string   `toml:"public_host,omitempty"`
+		PublicPort  int      `toml:"public_port,omitempty"`
+		Description string   `toml:"description,omitempty"`
+		Category    string   `toml:"category,omitempty"`
+		Tags        []string `toml:"tags,omitempty"`
 	} `toml:"grapevine"`
 	PluginsDir string `toml:"plugins_dir"`
 }
@@ -81,7 +82,12 @@ func (pl *Plan) ServerConfigTOML(hubURL string) ([]byte, error) {
 		c.Grapevine.PublicHost = pl.PublicHost
 		c.Grapevine.PublicPort = c.Port
 		c.Grapevine.Description = pl.Description
-		c.Grapevine.Category = pl.Category
+		tags := pl.AllTags()
+		c.Grapevine.Category = "General"
+		if len(tags) > 0 {
+			c.Grapevine.Category = tags[0]
+		}
+		c.Grapevine.Tags = tags
 	}
 	c.PluginsDir = "Plugins"
 	return toml.Marshal(c)

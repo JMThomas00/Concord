@@ -141,6 +141,9 @@ func theme() *huh.Theme {
 	t.Blurred.Title = t.Blurred.Title.Foreground(comment).Bold(false)
 	t.Blurred.NextIndicator = lipgloss.NewStyle()
 	t.Blurred.PrevIndicator = lipgloss.NewStyle()
+	t.Help.ShortKey, t.Help.FullKey = sHelpKey, sHelpKey
+	t.Help.ShortDesc, t.Help.FullDesc = sHelpDesc, sHelpDesc
+	t.Help.ShortSeparator, t.Help.FullSeparator, t.Help.Ellipsis = sHelpSep, sHelpSep, sHelpSep
 	return t
 }
 
@@ -151,3 +154,48 @@ func center(w, h int, s string) string {
 
 // truncate shortens s to w cells.
 func truncate(s string, w int) string { return ansi.Truncate(s, w, "…") }
+
+// formBuilder makes a form whose groups are exactly as tall as their
+// fields at the form's width. Huh measures a group when it's made, before
+// it knows the width, so a description that wraps would push the group's
+// last field out of sight (where typing still goes, unseen).
+type formBuilder struct {
+	groups []*huh.Group
+	fields [][]huh.Field
+}
+
+func (b *formBuilder) group(fields ...huh.Field) *huh.Group {
+	g := huh.NewGroup(fields...)
+	b.groups = append(b.groups, g)
+	b.fields = append(b.fields, fields)
+	return g
+}
+
+func (b *formBuilder) form(width int) *huh.Form {
+	f := huh.NewForm(b.groups...).WithTheme(theme()).WithWidth(width)
+	for i, g := range b.groups {
+		h := len(b.fields[i]) // the gaps between fields, and the last newline
+		for _, fl := range b.fields[i] {
+			h += lipgloss.Height(fl.View())
+		}
+		g.WithHeight(h)
+	}
+	f.SubmitCmd = nil
+	return f
+}
+
+// The key hints along the bottom: bright enough to read at a glance.
+var (
+	sHelpKey  = fg(cPink).Bold(true)
+	sHelpDesc = fg("#C9CCE0")
+	sHelpSep  = fg(cComment)
+)
+
+// helpLine draws key hints like the forms' own: key, what it does, ...
+func helpLine(pairs ...string) string {
+	var parts []string
+	for i := 0; i+1 < len(pairs); i += 2 {
+		parts = append(parts, sHelpKey.Render(pairs[i])+" "+sHelpDesc.Render(pairs[i+1]))
+	}
+	return strings.Join(parts, sHelpSep.Render(" · "))
+}

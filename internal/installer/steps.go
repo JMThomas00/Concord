@@ -620,8 +620,11 @@ func (r *Runner) clearAutostart(c, keep string) {
 		if keep != StartAtLogin {
 			_ = r.change("remove the sign-in entry", func() error { return setRunAtLogin(windowsName(c), "") })
 		}
-		if keep != StartAtBoot && pl.Platform.Admin {
-			_ = r.run("schtasks.exe", "/Delete", "/TN", windowsName(c), "/F")
+		if keep != StartAtBoot && exec.Command("schtasks.exe", "/Query", "/TN", windowsName(c)).Run() == nil {
+			path := filepath.Join(pl.Dir(c), "autostart-"+c+"-remove.ps1")
+			if r.change("write "+path, func() error { return writeFile(path, pl.BootTaskRemoval(c), 0o644) }) == nil {
+				_ = r.elevated(path)
+			}
 		}
 	}
 }
@@ -693,29 +696,43 @@ func (r *Runner) autostartMac(c, mode string) error {
 
 func (r *Runner) autostartWindows(c, mode string) error {
 	pl := r.Plan
-	if mode == StartNever {
-		return nil
-	}
-	if err := r.change("write "+pl.LauncherPath(c), func() error { return writeFile(pl.LauncherPath(c), pl.WindowsLauncher(c), 0o644) }); err != nil {
-		return err
-	}
-	if pl.Platform.Admin {
-		// Let people on the network reach it, without Windows asking.
-		_ = r.run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+windowsName(c))
-		_ = r.run("netsh", "advfirewall", "firewall", "add", "rule", "name="+windowsName(c), "dir=in", "action=allow", "program="+pl.Binary(c), "enable=yes")
-	} else {
-		r.Result.Notes = append(r.Result.Notes, fmt.Sprintf("If Windows asks whether %s may use the network, allow it (private networks), so others can reach it.", windowsName(c)))
-	}
 	switch mode {
 	case StartAtBoot:
-		if err := r.run("schtasks.exe", "/Create", "/TN", windowsName(c), "/TR", pl.launcherCommand(c), "/SC", "ONSTART", "/RU", "SYSTEM", "/F"); err != nil {
+		// One script does what needs an administrator (the task and the
+		// firewall rule), so Windows asks for permission only once.
+		script := pl.BootTaskScript(c)
+		path := filepath.Join(pl.Dir(c), "autostart-"+c+".ps1")
+		if err := r.change("write "+path, func() error { return writeFile(path, script, 0o644) }); err != nil {
 			return err
 		}
-		return r.run("schtasks.exe", "/Run", "/TN", windowsName(c))
-	default:
+		r.progress(.3, "asking Windows for permission to run it in the background")
+		return r.elevated(path)
+	case StartAtLogin:
+		if err := r.change("write "+pl.LauncherPath(c), func() error { return writeFile(pl.LauncherPath(c), pl.WindowsLauncher(c), 0o644) }); err != nil {
+			return err
+		}
+		r.Result.Notes = append(r.Result.Notes, fmt.Sprintf("If Windows asks whether %s may use the network, allow it (private networks), so others can reach it.", windowsName(c)))
 		if err := r.change("start it when you sign in", func() error { return setRunAtLogin(windowsName(c), pl.launcherCommand(c)) }); err != nil {
 			return err
 		}
 		return r.launch("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", pl.LauncherPath(c))
 	}
+	return nil
+}
+
+// elevated runs a PowerShell script as an administrator: directly when
+// the installer already is one, otherwise through Windows' permission
+// prompt (UAC). The script exits non-zero when something in it failed.
+func (r *Runner) elevated(script string) error {
+	if r.Plan.Platform.Admin || r.Plan.DryRun {
+		return r.run("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script)
+	}
+	q := strings.ReplaceAll(script, "'", "''")
+	err := r.run("powershell.exe", "-NoProfile", "-Command",
+		"try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden "+
+			"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','\""+q+"\"'; exit $p.ExitCode } catch { exit 5 }")
+	if err != nil && strings.Contains(err.Error(), "exit status 5") {
+		return fmt.Errorf("Windows didn't get permission, so it can't run in the background. Run the installer again and choose Yes, or pick \"While I'm signed in\"")
+	}
+	return err
 }

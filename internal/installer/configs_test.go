@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/concord-chat/concord/internal/hub"
@@ -15,7 +16,8 @@ func testPlan() *Plan {
 	pl := NewPlan(Platform{OS: Linux, Arch: "amd64", Home: "/home/you", Systemd: true})
 	pl.Components = []string{Client, Server, Hub}
 	pl.ServerName, pl.ServerPort, pl.AdminEmail = "Grape Hall", "9090", "Me@Example.com"
-	pl.ServerOnHub, pl.PublicHost, pl.Description, pl.Category = true, "chat.example.com", "Friends and grapes", "Gaming"
+	pl.ServerOnHub, pl.PublicHost, pl.Description = true, "chat.example.com", "Friends and grapes"
+	pl.Tags, pl.OtherTags = []string{"Gaming"}, " AI, AI Research, gaming"
 	pl.TermsAccepted = true
 	pl.HubName, pl.HubPort, pl.HubFederate = "My Hub", "7788", true
 	return pl
@@ -34,7 +36,7 @@ func TestServerConfigReadsBack(t *testing.T) {
 	g := c.Grapevine
 	if c.Port != 9090 || c.ServerName != "Grape Hall" || !c.TermsAccepted || c.AdminEmail != "me@example.com" ||
 		c.DatabasePath != "concord.db" || c.PluginsDir != "Plugins" || !c.MessagePruning.Enabled ||
-		!g.Enabled || g.HubURL != "https://hub.example" || g.PublicHost != "chat.example.com" || g.PublicPort != 9090 || g.Category != "Gaming" {
+		!g.Enabled || g.HubURL != "https://hub.example" || g.PublicHost != "chat.example.com" || g.PublicPort != 9090 || g.Category != "Gaming" || strings.Join(g.Tags, "/") != "Gaming/AI/AI Research" {
 		t.Fatalf("server read %+v", c)
 	}
 }
