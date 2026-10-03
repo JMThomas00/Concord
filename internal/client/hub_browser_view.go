@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/concord-chat/concord/internal/official"
 )
 
 // hubBrowserMode tracks which sub-view is active inside the browser.
@@ -105,7 +106,7 @@ func hubSortLabel(mode int) string {
 // defaultHubURL is the built-in fallback hub, used when the user's hub list is
 // empty. It is a fallback, not a pinned entry: users may remove it (x) as long
 // as another hub remains, e.g. to use only a private hub.
-const defaultHubURL = "http://grapevine.concord.chat"
+const defaultHubURL = official.HubURL
 
 // hubListRow is one row in the rendered server list — either a section header or a server entry.
 type hubListRow struct {

@@ -37,7 +37,7 @@ LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X 
 # Platforms for cross-compilation
 PLATFORMS=linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-.PHONY: all build build-server build-client build-hub clean test deps run-server run-client run-hub install dist help
+.PHONY: all build build-server build-client build-hub build-installer clean test deps run-server run-client run-hub install dist help
 
 # Default target
 all: build
@@ -71,6 +71,14 @@ build-hub:
 run-hub: build-hub
 	@echo "Starting hub..."
 	./$(BUILD_DIR)/$(HUB_BINARY)
+
+# Build the installer (pure Go): concord-install, which the one-line
+# install scripts download. Try it without changing anything:
+#   build/concord-install --from build --dry-run
+build-installer:
+	@echo "Building installer..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/concord-install$(if $(filter Windows_NT,$(OS)),.exe,) ./cmd/install
 
 # Build client without voice/audio (no C toolchain required)
 build-client-novoice:
@@ -253,6 +261,7 @@ help:
 	@echo "  build-client  Build only the client"
 	@echo "  build-windows         Build all 3 Windows binaries — server, client (voice included, built with clang), hub"
 	@echo "  build-windows-novoice Fallback only: no MSYS2/GCC on this machine, voice-stripped client"
+	@echo "  build-installer       Build concord-install (try it: build/concord-install --from build --dry-run)"
 	@echo "  clean         Remove build artifacts"
 	@echo "  test          Run tests"
 	@echo "  deps          Download and tidy dependencies"

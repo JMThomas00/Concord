@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/concord-chat/concord/internal/hub"
+	"github.com/concord-chat/concord/internal/official"
 	"github.com/concord-chat/concord/internal/server"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -90,7 +91,7 @@ const (
 	numGvFields
 )
 
-const defaultHubURL = "http://grapevine.concord.chat"
+const defaultHubURL = official.HubURL
 
 func newSetupModel(existingConfig *server.Config) setupModel {
 	hostname, _ := os.Hostname()

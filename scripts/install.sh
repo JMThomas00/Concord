@@ -1,113 +1,83 @@
 #!/bin/sh
-# Concord install script -- detects OS/arch and installs the latest
-# concord-client (or concord-server/-hub, via CONCORD_INSTALL_BINARY) from
-# the project's GitHub Releases, built by .github/workflows/release.yml.
+# Concord's one-line installer, for Linux and macOS:
 #
-# Usage:
-#   curl -fsSL https://concord.chat/install.sh | sh
-#   curl -fsSL https://concord.chat/install.sh | CONCORD_INSTALL_BINARY=concord-server sh
+#   curl -fsSL https://github.com/JMThomas00/Concord/releases/latest/download/install.sh | sh
 #
-# NOT run or verified anywhere yet -- item 12 (8d) on the pre-v0.1.0 to-do.
-# This depends on .github/workflows/release.yml actually having produced a
-# tagged release with real assets first; there's nothing to download until
-# then. The concord.chat URL above is a placeholder -- wherever this script
-# actually ends up hosted (GitHub raw, a redirect, project site) is
-# Jordan's call, not something to assume/provision here.
+# It fetches concord-install (cmd/install) for this computer from the
+# latest release, checks it against the release's SHA256SUMS, and runs it:
+# a guided form that installs the client, server and/or hub, with
+# everything they need. Arguments pass through:
 #
-# Mirrors the shape of well-known installers like rustup/Homebrew's own
-# install script: no server-side component, just a static script that
-# resolves the right release asset and drops the binary on PATH.
-
+#   curl -fsSL .../install.sh | sh -s -- --dry-run
+#
+# CONCORD_RELEASE=v0.1.0 picks a release other than the latest.
 set -eu
 
 REPO="JMThomas00/Concord"
-BINARY="${CONCORD_INSTALL_BINARY:-concord-client}"
+if [ -n "${CONCORD_RELEASE:-}" ]; then
+  BASE="https://github.com/$REPO/releases/download/$CONCORD_RELEASE"
+else
+  BASE="https://github.com/$REPO/releases/latest/download"
+fi
 
-case "$BINARY" in
-  concord-client|concord-server|concord-hub) ;;
+purple() { printf '\033[38;2;189;147;249m%s\033[0m\n' "$1"; }
+dim() { printf '\033[38;2;98;114;164m%s\033[0m\n' "$1"; }
+fail() { printf '\033[38;2;255;85;85m%s\033[0m\n' "$1" >&2; exit 1; }
+
+# Questions need the keyboard even though this script arrives on stdin.
+if [ -r /dev/tty ]; then TTY=/dev/tty; else TTY=""; fi
+
+case "$(uname -s)" in
+  Linux) os=linux ;;
+  Darwin) os=macos ;;
+  MINGW*|MSYS*|CYGWIN*) os=windows ;;
   *)
-    echo "error: CONCORD_INSTALL_BINARY must be one of concord-client, concord-server, concord-hub (got: $BINARY)" >&2
-    exit 1
+    [ -n "$TTY" ] || fail "Concord couldn't tell which system this is."
+    printf 'Which system is this computer running?\n  1) macOS\n  2) Linux\n  3) Windows\n> '
+    read -r pick < "$TTY"
+    case "$pick" in 1*|m*|M*) os=macos ;; 2*|l*|L*) os=linux ;; 3*|w*|W*) os=windows ;; *) fail "No problem: run this again when you know." ;; esac
     ;;
 esac
-
-os="$(uname -s)"
-arch="$(uname -m)"
-
-case "$os" in
-  Linux)
-    platform="linux-amd64"
-    archive_ext="tar.gz"
-    ;;
-  Darwin)
-    case "$arch" in
-      arm64) platform="macos-arm64" ;;
-      x86_64) platform="macos-x86_64" ;;
-      *)
-        echo "error: unsupported macOS architecture: $arch" >&2
-        exit 1
-        ;;
-    esac
-    archive_ext="tar.gz"
-    ;;
-  MINGW*|MSYS*|CYGWIN*)
-    echo "error: this script is for Linux/macOS. On Windows, download concord-windows-amd64.zip directly from:" >&2
-    echo "  https://github.com/$REPO/releases/latest" >&2
-    exit 1
-    ;;
-  *)
-    echo "error: unsupported OS: $os" >&2
-    exit 1
-    ;;
-esac
-
-if [ "$os" = "Linux" ] && [ "$arch" != "x86_64" ]; then
-  echo "error: only linux-amd64 release assets are published today (got arch: $arch)" >&2
+if [ "$os" = windows ]; then
+  echo "On Windows, paste this into PowerShell instead:"
+  purple "  irm https://github.com/$REPO/releases/latest/download/install.ps1 | iex"
   exit 1
 fi
 
-asset="concord-${platform}.${archive_ext}"
-url="https://github.com/$REPO/releases/latest/download/$asset"
+case "$(uname -m)" in
+  x86_64|amd64) arch=amd64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) fail "Concord doesn't have a build for $(uname -m) yet." ;;
+esac
+[ "$os" = macos ] && [ "$arch" = amd64 ] && arch=x86_64
 
-if [ -n "${CONCORD_INSTALL_DIR:-}" ]; then
-  install_dir="$CONCORD_INSTALL_DIR"
-  mkdir -p "$install_dir"
-  if [ ! -w "$install_dir" ]; then
-    echo "error: CONCORD_INSTALL_DIR ($install_dir) isn't writable" >&2
-    exit 1
+asset="concord-install-$os-$arch"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+purple "🍇 Fetching the Concord installer…"
+fetch() {
+  if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then wget -q "$1" -O "$2"
+  else fail "This needs curl or wget to download Concord."
   fi
-else
-  install_dir="/usr/local/bin"
-  if [ ! -w "$install_dir" ]; then
-    install_dir="$HOME/.local/bin"
-    mkdir -p "$install_dir"
-    echo "note: /usr/local/bin isn't writable, installing to $install_dir instead"
-    echo "      (make sure it's on your PATH)"
+}
+fetch "$BASE/$asset" "$tmp/concord-install" || fail "Couldn't download $asset (is there a published release yet? https://github.com/$REPO/releases)"
+
+if fetch "$BASE/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null; then
+  want="$(grep " \*\{0,1\}$asset\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
+  if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$tmp/concord-install" | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then got="$(shasum -a 256 "$tmp/concord-install" | cut -d' ' -f1)"
+  else got=""
+  fi
+  if [ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ]; then
+    fail "The installer doesn't match its published checksum, so it wasn't run. Try again in a minute."
   fi
 fi
 
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
-
-echo "Downloading $asset..."
-if command -v curl >/dev/null 2>&1; then
-  fetch() { curl -fsSL "$url" -o "$tmp_dir/$asset"; }
-elif command -v wget >/dev/null 2>&1; then
-  fetch() { wget -q "$url" -O "$tmp_dir/$asset"; }
+chmod +x "$tmp/concord-install"
+if [ -n "$TTY" ]; then
+  "$tmp/concord-install" "$@" < "$TTY"
 else
-  echo "error: need curl or wget to download the release archive" >&2
-  exit 1
+  "$tmp/concord-install" "$@"
 fi
-if ! fetch; then
-  echo "error: couldn't download $url" >&2
-  echo "  (no published release with that asset yet? see https://github.com/$REPO/releases)" >&2
-  exit 1
-fi
-
-echo "Extracting..."
-tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
-
-install -m 755 "$tmp_dir/$BINARY" "$install_dir/$BINARY"
-
-echo "Installed $BINARY to $install_dir/$BINARY"
-echo "Run '$BINARY' to get started (or see README.md's Quick Start)."

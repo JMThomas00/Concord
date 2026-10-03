@@ -68,7 +68,36 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 
 **`Dockerfile` / `docker-compose.yml` / `.dockerignore`** (added 2026-09-08, **not verified — no Docker available in the environment that wrote them**): multi-stage build (`golang:1.24-alpine` → `alpine:3.20`), contains only `concord-server` and `concord-hub` (both pure Go, no CGO) — the client is a TUI app and isn't a sensible container workload. Neither binary gets new non-interactive bootstrap config support; both already skip their first-run wizard whenever their config file exists, so the documented pattern is run-once-interactively-to-generate-config, then mount that file for all subsequent detached runs. See `docker-compose.yml`'s own top comment for the exact one-time setup steps. **Needs a real `docker build`/`docker run` smoke test before relying on it.**
 
-**`scripts/install.sh`** (added 2026-09-08, dry-run verified with a faked `uname`/`curl` against a locally-built fake archive — the real GitHub Release download path is untested since no tagged release exists yet): `curl -fsSL <url>/install.sh | sh` — detects OS/arch, downloads the matching release asset, installs to `/usr/local/bin` (falls back to `~/.local/bin`). `CONCORD_INSTALL_BINARY` env var picks server/client/hub (defaults to client). No package-manager listing yet (AUR/APT/Homebrew/Winget/Flatpak) — see the vault to-do's item 12 for that follow-on work, deliberately deferred until a real tagged release exists to point at.
+**The guided installer (To Do E/G, 2026-10-03): `cmd/install` (`concord-install`) + `internal/installer`.** The README's one line downloads `scripts/install.sh` (Linux/macOS) or `scripts/install.ps1` (Windows) from the latest release. Each fetches `concord-install-<os>-<arch>`, checks it against `SHA256SUMS`, and runs it with the terminal (`</dev/tty`).
+- **The program** is one Bubble Tea program (`cmd/install/model.go`):
+  - the grapes' entrance;
+  - the Huh questions (`views.go` `questions`): components, folders, server name/port/admin email, when it runs, Grapevine listing, hub peering;
+  - the Server Terms (embedded by the `legal` package) for a new server;
+  - a review (install / change / quit), then the checklist with grape quips;
+  - confetti, then "join the official server? open Concord now?";
+  - a summary printed to the terminal, so it stays.
+  - **Huh is pinned at v0.6.0:** later versions raise bubbles past the client's 0.20 (see the pinning rule in the SDK section).
+- **The work** (`internal/installer`, no terminal needed):
+  - `release.go` fetches a release (GitHub digest or `SHA256SUMS`);
+  - `configs.go` writes `concord-server.toml`/`grapevine-hub.toml` from mirrored structs, held to the real ones by `configs_test.go`, so the first-run wizards are skipped;
+  - `deps.go` finds and installs the client's missing libraries (Linux: `ldd` → apt/dnf/pacman/zypper; macOS: `otool` → Homebrew);
+  - `autostart.go` sets up starting: systemd system or user units, LaunchDaemon/LaunchAgent, or on Windows a hidden PowerShell launcher run by a SYSTEM boot task or the HKCU Run key;
+  - `steps.go` runs it all.
+  - A component whose settings file is already in its folder is **updated**: stopped, program swapped (renamed aside, which works on a running Windows exe), settings kept, restarted.
+- **Never capture the output of something that starts a background process** (`Runner.launch`): it inherits the pipe, and `CombinedOutput` then waits forever. This hung the first Windows test.
+- **Official server and hub addresses** are `internal/official` (placeholders until the official VPS exists); the client's and server wizard's default hub use it too.
+- **The installer's grapes** are `internal/grapes`, a copy of the client's renderer (`TestInstallerGrapesMatchTheClients` keeps them identical; `go run ./tools/grapelogo -pkg grapes -out internal/grapes/logo_data.go`).
+- **Testing:**
+  - `make build-installer`, then `build/concord-install --from build --dry-run` walks everything and changes nothing;
+  - `go test ./cmd/install` drives every stage and a full dry run;
+  - `CONCORD_E2E_SRC=<binaries> go test -run TestRealInstall ./internal/installer` does a real install, start, update and teardown in a temp folder. Verified 2026-10-03 on Windows (Run-key launcher) and on VM 113 (systemd user units, `CONCORD_E2E_REAL_HOME=1`).
+  - **Not yet run:** from a real release, macOS at all, the boot modes, and Linux library installs.
+- **Release workflow changes (unverified until the next tag):**
+  - the Linux build moved to ubuntu-22.04 (older glibc, more distros);
+  - the server and hub are built with `CGO_ENABLED=0` everywhere;
+  - the Linux and macOS clients link Opus statically (warnings, not failures, if that doesn't take);
+  - a `build-portable` job cross-compiles the installer for all five platforms, plus server+hub archives for linux-arm64 and macos-x86_64;
+  - the release gets `SHA256SUMS` and both scripts.
 
 ---
 

@@ -39,7 +39,35 @@ A terminal-based chat application inspired by Discord, built in Go with a beauti
 
 ## Installation
 
-### Prerequisites
+Paste one line into a terminal. A short, friendly form asks what you'd like (the client, a server, a hub, or any mix) and where, then installs everything and gets you chatting.
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://github.com/JMThomas00/Concord/releases/latest/download/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://github.com/JMThomas00/Concord/releases/latest/download/install.ps1 | iex
+```
+
+The installer:
+
+- downloads the latest release for your computer and checks it against its published checksum;
+- installs what the client needs (on Linux, a couple of system libraries through your package manager, asking for your password once);
+- puts `concord` on your PATH (and, on Windows, adds Concord to Windows Terminal's new-tab menu);
+- writes a new server's or hub's settings, sets it to start when the computer starts or when you sign in, and checks it's running;
+- can list your server on the Grapevine, connect your hub to the official one, and add the official Concord server to your client.
+
+**Updating:** run the same line again. It updates what's there and keeps your settings and data.
+
+**Just looking?** Add `--dry-run` to see every step without changing anything: `curl -fsSL …/install.sh | sh -s -- --dry-run`, or on Windows set `$env:CONCORD_INSTALL_ARGS = "--dry-run"` first.
+
+### Building from Source
+
+#### Prerequisites
 
 The **server** is pure Go (no CGO). The **client** requires CGO for voice (GCC/MSYS2 on Windows):
 
@@ -82,7 +110,7 @@ brew install go git make
 xcode-select --install   # provides GCC/Clang
 ```
 
-### Building from Source
+#### Building
 
 ```bash
 git clone https://github.com/JMThomas00/Concord.git
@@ -128,7 +156,7 @@ make build-windows-voice    # Windows client via MSYS2
 
 ### Pre-built Binaries
 
-Download from the [Releases](https://github.com/JMThomas00/Concord/releases) page (coming soon).
+Every [release](https://github.com/JMThomas00/Concord/releases) carries the server, client and hub for Windows, macOS and Linux (plus the server and hub for Linux on ARM and Intel Macs), `SHA256SUMS`, and the installer itself. The one-line installer picks the right one for you.
 
 ---
 

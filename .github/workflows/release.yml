@@ -101,20 +101,42 @@ jobs:
       # A native build, not a cross-toolchain -- gets real Cocoa (for
       # sqweek/dialog's Save As picker) and opus/malgo linking for free.
       - name: Install voice/dialog dependencies
-        run: brew install opus opusfile pkg-config
+        run: brew install opus opusfile libogg pkg-config
+
+      # Link Opus into the client, so it runs on Macs without Homebrew.
+      # macOS's linker always prefers a .dylib to a .a in the same folder,
+      # so pkg-config is pointed at a folder holding only the .a files.
+      - name: Prepare static Opus
+        run: |
+          S="$PWD/static"
+          mkdir -p "$S/lib" "$S/pkgconfig"
+          for f in opus opusfile libogg; do cp "$(brew --prefix $f)"/lib/*.a "$S/lib/"; done
+          OPUS_INC="$(brew --prefix opus)/include"
+          OPUSFILE_INC="$(brew --prefix opusfile)/include"
+          OGG_INC="$(brew --prefix libogg)/include"
+          printf 'Name: opus\nDescription: Opus (static)\nVersion: 1\nCflags: -I%s/opus\nLibs: -L%s/lib -lopus\n' "$OPUS_INC" "$S" > "$S/pkgconfig/opus.pc"
+          printf 'Name: opusfile\nDescription: opusfile (static)\nVersion: 1\nCflags: -I%s/opus -I%s/opus -I%s\nLibs: -L%s/lib -lopusfile -logg -lopus\n' "$OPUSFILE_INC" "$OPUS_INC" "$OGG_INC" "$S" > "$S/pkgconfig/opusfile.pc"
+          echo "PKG_CONFIG_PATH=$S/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Build server, client (voice), hub
-        env:
-          CGO_ENABLED: "1"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           GIT_COMMIT=$(git rev-parse --short HEAD)
           BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
           LDFLAGS="-X main.Version=$VERSION -X main.GitCommit=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME"
           mkdir -p build
-          go build -ldflags "$LDFLAGS" -o build/concord-server ./cmd/server
-          go build -ldflags "$LDFLAGS" -o build/concord-client ./cmd/client
-          go build -ldflags "$LDFLAGS" -o build/concord-hub ./cmd/hub
+          CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o build/concord-server ./cmd/server
+          CGO_ENABLED=1 go build -ldflags "$LDFLAGS" -o build/concord-client ./cmd/client
+          CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o build/concord-hub ./cmd/hub
+
+      # The installer installs Opus with Homebrew if this didn't take, so
+      # it's a warning rather than a failed release.
+      - name: Check the client needs no Homebrew libraries
+        run: |
+          otool -L build/concord-client
+          if otool -L build/concord-client | grep -qE "/opt/homebrew|/usr/local/opt|/usr/local/Cellar"; then
+            echo "::warning::concord-client still links a Homebrew library; Macs without Homebrew will need it"
+          fi
 
       - name: Package
         run: |
@@ -129,7 +151,10 @@ jobs:
 
   build-linux:
     name: Build (Linux)
-    runs-on: ubuntu-latest
+    # 22.04, not latest: the client needs cgo, so it needs a glibc at least
+    # as new as the one it was built with; an older one runs on more
+    # distributions (Debian 12, Ubuntu 22.04 and later).
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -146,20 +171,29 @@ jobs:
       # libgtk-3-dev: sqweek/dialog's Linux backend (the /download Save As
       # picker) is cgo against gtk+-3.0 and X11.
       - name: Install voice and dialog dependencies
-        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libgtk-3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libogg-dev libgtk-3-dev pkg-config
 
+      # The server and hub are pure Go: built without cgo they run on any
+      # Linux, glibc or not. The client links Opus in statically (like
+      # the Windows build), leaving only GTK, which desktops already have;
+      # the installer adds whatever's missing.
       - name: Build server, client (voice), hub
-        env:
-          CGO_ENABLED: "1"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           GIT_COMMIT=$(git rev-parse --short HEAD)
           BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
           LDFLAGS="-X main.Version=$VERSION -X main.GitCommit=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME"
           mkdir -p build
-          go build -ldflags "$LDFLAGS" -o build/concord-server ./cmd/server
-          go build -ldflags "$LDFLAGS" -o build/concord-client ./cmd/client
-          go build -ldflags "$LDFLAGS" -o build/concord-hub ./cmd/hub
+          CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o build/concord-server ./cmd/server
+          CGO_ENABLED=1 CGO_LDFLAGS="-Wl,-Bstatic -lopusfile -logg -lopus -Wl,-Bdynamic -lm" go build -ldflags "$LDFLAGS" -o build/concord-client ./cmd/client
+          CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o build/concord-hub ./cmd/hub
+
+      - name: Check the client's libraries
+        run: |
+          ldd build/concord-client
+          if ldd build/concord-client | grep -qE "libopus|libogg"; then
+            echo "::warning::concord-client still links Opus dynamically; the installer will install it where needed"
+          fi
 
       - name: Package
         run: |
@@ -172,16 +206,61 @@ jobs:
           name: concord-linux-amd64
           path: concord-linux-amd64.tar.gz
 
+  # Everything pure Go, cross-compiled from one runner: the installer for
+  # every platform, and the server and hub where there's no client build
+  # yet (Linux on ARM, e.g. a Raspberry Pi; Intel Macs).
+  build-portable:
+    name: Build (installer, portable server and hub)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+          LDFLAGS="-s -w -X main.Version=$VERSION -X main.GitCommit=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME"
+          mkdir -p out
+          for t in linux/amd64:linux-amd64 linux/arm64:linux-arm64 darwin/arm64:macos-arm64 darwin/amd64:macos-x86_64 windows/amd64:windows-amd64.exe; do
+            target="${t%%:*}"; name="${t#*:}"
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -ldflags "$LDFLAGS" -o "out/concord-install-$name" ./cmd/install
+          done
+          for t in linux/arm64:linux-arm64 darwin/amd64:macos-x86_64; do
+            target="${t%%:*}"; name="${t#*:}"
+            mkdir -p "pkg-$name"
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -ldflags "$LDFLAGS" -o "pkg-$name/concord-server" ./cmd/server
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -ldflags "$LDFLAGS" -o "pkg-$name/concord-hub" ./cmd/hub
+            tar -C "pkg-$name" -czf "out/concord-$name.tar.gz" concord-server concord-hub
+          done
+          cp scripts/install.sh scripts/install.ps1 out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: concord-portable
+          path: out/*
+
   release:
     name: Publish Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-macos, build-linux]
+    needs: [build-windows, build-macos, build-linux, build-portable]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+
+      # concord-install and install.sh check what they download against
+      # this (GitHub's own per-asset digest too, where it has one).
+      - name: Checksums
+        run: cd artifacts && sha256sum * > SHA256SUMS && cat SHA256SUMS
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
