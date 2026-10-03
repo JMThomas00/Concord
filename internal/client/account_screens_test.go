@@ -54,7 +54,7 @@ func TestLoginScreenOpensProfilesAndSwitches(t *testing.T) {
 		t.Fatalf("Ctrl+P on the login screen: view %v", a.view)
 	}
 	out := ansi.Strip(a.renderProfilesView())
-	if !strings.Contains(out, "amy") || !strings.Contains(out, "ben") || !strings.Contains(out, "(current)") {
+	if !strings.Contains(out, "amy") || !strings.Contains(out, "ben") || !strings.Contains(out, "in use") {
 		t.Fatalf("profiles:\n%s", out)
 	}
 	// The cursor starts on the active profile (amy, second); go to ben.

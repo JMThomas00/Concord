@@ -3,10 +3,12 @@ package client
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 )
 
@@ -31,40 +33,6 @@ func newInput(placeholder string, limit int, secret bool) textinput.Model {
 		in.EchoMode = textinput.EchoPassword
 	}
 	return in
-}
-
-// accountDialog draws a centered dialog with title, body and key hints.
-func (a *App) accountDialog(title, body string, hints []keyHint) string {
-	width := 66
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
-	content := titleStyle.Render(title) + "\n\n" + strings.TrimRight(body, "\n") + "\n\n" + a.renderKeyHints(hints, width-6)
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
-		Padding(1, 2).
-		Width(width).
-		Render(content)
-	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-func (a *App) dialogLabel(s string, focused bool) string {
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan))
-	if focused {
-		style = style.Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
-	}
-	return style.Render(s)
-}
-
-func (a *App) dialogNotice(msg string, isErr bool) string {
-	if msg == "" {
-		return ""
-	}
-	color := a.theme.Colors.Green
-	prefix := ""
-	if isErr {
-		color, prefix = a.theme.Colors.Red, "⚠ "
-	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Width(60).Render(prefix+msg) + "\n\n"
 }
 
 func (a *App) dim(s string) string {
@@ -170,16 +138,19 @@ func (a *App) handleProfilesKey(msg tea.KeyMsg) tea.Cmd {
 		a.profilesState = nil
 		a.view = ViewLogin
 		a.initLoginView()
-	case "up", "k":
+	case "up", "k", "left", "h", "shift+tab":
 		if s.Cursor > 0 {
 			s.Cursor--
 		}
-	case "down", "j":
-		if s.Cursor < len(list)-1 {
+	case "down", "j", "right", "l", "tab":
+		// One past the last profile is the + card.
+		if s.Cursor < len(list) {
 			s.Cursor++
 		}
 	case "enter":
 		if cur == nil {
+			a.profilesState = nil
+			a.startAddProfile()
 			return nil
 		}
 		if cur.ID != active || a.localIdentity == nil || a.localIdentity.ID != cur.ID {
@@ -430,35 +401,107 @@ func (a *App) renderProfilesView() string {
 	var b strings.Builder
 	if s.EditID != "" {
 		b.WriteString(a.dim("Fix a typo or change how you appear. Servers you're signed in to\nnow are updated too.") + "\n\n")
-		b.WriteString(a.dialogLabel("Alias:", s.EditFocus == 0) + "\n  " + s.EditAlias.View() + "\n\n")
-		b.WriteString(a.dialogLabel("Email:", s.EditFocus == 1) + "\n  " + s.EditEmail.View() + "\n\n")
-		b.WriteString(a.dialogLabel("Password:", s.EditFocus == 2) + "\n  " + s.EditPass.View() + "\n\n")
-		b.WriteString(a.dialogNotice(s.Notice, s.NoticeErr))
-		return a.accountDialog("Edit profile", b.String(), []keyHint{{"Tab", "Next"}, {"Enter", "Save"}, {"Esc", "Cancel"}})
-	}
-	b.WriteString(a.dim("Who's using Concord on this computer?") + "\n\n")
-	sel := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
-	for i, p := range list {
-		line := fmt.Sprintf("%s  %s", p.Alias, a.dim("<"+p.Email+">"))
-		if p.ID == active {
-			line += a.dim("  (current)")
+		b.WriteString(a.stageField("Alias", s.EditFocus == 0, s.EditAlias.View()) + "\n")
+		b.WriteString(a.stageField("Email", s.EditFocus == 1, s.EditEmail.View()) + "\n")
+		b.WriteString(a.stageField("Password", s.EditFocus == 2, s.EditPass.View()) + "\n")
+		if s.Notice != "" {
+			b.WriteString("\n" + a.stageNotice(s.Notice, s.NoticeErr))
 		}
-		if i == s.Cursor {
-			b.WriteString(sel.Render("▶ ") + sel.Render(p.Alias) + "  " + a.dim("<"+p.Email+">"))
-			if p.ID == active {
-				b.WriteString(a.dim("  (current)"))
-			}
-			b.WriteString("\n")
-		} else {
-			b.WriteString("  " + line + "\n")
-		}
+		return a.stagePage("Profiles", "Edit your profile", "profile", b.String(),[]keyHint{{"Tab", "Next"}, {"Enter", "Save"}, {"Esc", "Cancel"}})
 	}
-	b.WriteString("\n")
+	b.WriteString(a.profileCards(list, active, s.Cursor) + "\n\n")
 	if s.Busy {
-		b.WriteString(a.dim("Working…") + "\n\n")
+		b.WriteString(a.dim("Working…") + "\n")
 	}
-	b.WriteString(a.dialogNotice(s.Notice, s.NoticeErr))
-	return a.accountDialog("Profiles", b.String(), []keyHint{{"Enter", "Use"}, {"A", "Add"}, {"E", "Edit"}, {"P", "Password"}, {"F", "Forget"}, {"Esc", "Back"}})
+	b.WriteString(a.stageNotice(s.Notice, s.NoticeErr))
+	return a.stagePage("Profiles", "Who's using Concord?", "Concord", b.String(),
+		[]keyHint{{"←→", "Choose"}, {"Enter", "Use"}, {"E", "Edit"}, {"P", "Password"}, {"F", "Forget"}, {"Esc", "Back"}})
+}
+
+// profileCardW is a profile card's width, border included.
+const profileCardW = 18
+
+// profileCards draws the profiles as a row of cards, the + card last,
+// scrolled to keep the selected one in view.
+func (a *App) profileCards(list []*LocalIdentity, active string, cursor int) string {
+	fit := max(1, (stageWidth+1)/(profileCardW+1))
+	n := len(list) + 1
+	first := max(0, min(cursor-fit+1, n-fit))
+	first = min(first, cursor)
+	var cards []string
+	for i := first; i < n && i < first+fit; i++ {
+		if i == len(list) {
+			cards = append(cards, a.profileCard("", "", "", false, i == cursor))
+			continue
+		}
+		p := list[i]
+		cards = append(cards, a.profileCard(p.Alias, p.Email, p.ID, p.ID == active, i == cursor))
+		cards = append(cards, " ")
+	}
+	row := lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+	more := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	left, right := " ", " "
+	if first > 0 {
+		left = "‹"
+	}
+	if first+fit < n {
+		right = "›"
+	}
+	pad := strings.Repeat("\n", 2)
+	return lipgloss.JoinHorizontal(lipgloss.Top, more.Render(pad+left)+" ", row, " "+more.Render(pad+right))
+}
+
+// avatarColours are the colours a profile's initial can sit on.
+func (a *App) avatarColour(id string) string {
+	c := a.theme.Colors
+	choices := []string{c.Purple, c.Pink, c.Cyan, c.Green, c.Orange, c.Yellow}
+	h := 0
+	for _, r := range id {
+		h = h*31 + int(r)
+	}
+	return choices[(h%len(choices)+len(choices))%len(choices)]
+}
+
+// profileCard is one card: the initial on a coloured chip, alias, email,
+// and whether it's the profile in use. An empty alias is the + card.
+func (a *App) profileCard(alias, email, id string, current, selected bool) string {
+	c := a.theme.Colors
+	inner := profileCardW - 2
+	border := c.Comment
+	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Foreground))
+	if selected {
+		border = c.Purple
+		nameStyle = nameStyle.Foreground(lipgloss.Color(c.Purple)).Bold(true)
+	}
+	center := lipgloss.NewStyle().Width(inner).Align(lipgloss.Center)
+	var rows []string
+	if alias == "" {
+		plus := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Comment)).Bold(true)
+		if selected {
+			plus = plus.Foreground(lipgloss.Color(c.Purple))
+		}
+		rows = []string{center.Render(plus.Render(" + ")), center.Render(nameStyle.Render("Add profile")), center.Render(a.dim("someone new")), ""}
+	} else {
+		initial := strings.ToUpper(string([]rune(alias)[0]))
+		chip := lipgloss.NewStyle().Background(lipgloss.Color(a.avatarColour(id))).
+			Foreground(lipgloss.Color(c.Background)).Bold(true).Render(" " + initial + " ")
+		tag := ""
+		if current {
+			tag = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Green)).Render("● in use")
+		}
+		rows = []string{
+			center.Render(chip),
+			center.Render(nameStyle.Render(truncateWidth(alias, inner-2))),
+			center.Render(a.dim(truncateWidth(email, inner-2))),
+			center.Render(tag),
+		}
+	}
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(border)).
+		Width(inner).Render(strings.Join(rows, "\n"))
+}
+
+func truncateWidth(s string, w int) string {
+	return ansi.Truncate(s, w, "…")
 }
 
 // --- the code screen ---
@@ -499,6 +542,13 @@ type AccountCodeState struct {
 	Notice string
 	IsErr  bool
 	Busy   bool
+
+	// The boxes (code_boxes.go): when each letter was typed, when the
+	// last code was sent (for the resend wait), and when the server
+	// accepted the code (the ripple before the screen closes).
+	typedAt  []time.Time
+	SentAt   time.Time
+	Accepted time.Time
 }
 
 func (a *App) openCodeScreen(mode string, serverID uuid.UUID, email string) {
@@ -507,6 +557,9 @@ func (a *App) openCodeScreen(mode string, serverID uuid.UUID, email string) {
 		st.Back = a.codeState.Back
 	}
 	st.Code = newInput("ABC 234", 9, false)
+	if mode != codeModeForgot {
+		st.SentAt = time.Now() // opened because a code was just sent
+	}
 	st.NewPass = newInput("New password (min 8 chars)", 128, true)
 	st.Confirm = newInput("Confirm new password", 128, true)
 	st.Code.Focus()
@@ -548,6 +601,9 @@ func (a *App) codeServerName(id uuid.UUID) string {
 
 func (a *App) handleAccountCodeKey(msg tea.KeyMsg) tea.Cmd {
 	st := a.codeState
+	if !st.Accepted.IsZero() {
+		return nil // the ripple is playing; the screen closes itself
+	}
 	if st.Busy {
 		if msg.String() == "ctrl+q" {
 			return tea.Quit
@@ -884,8 +940,10 @@ func (a *App) applyAccountCodeResult(m accountCodeMsg) tea.Cmd {
 	switch m.action {
 	case "resend":
 		st.Notice = "A new code is on its way to " + st.Email + "."
+		st.SentAt = time.Now()
 	case "forgot":
 		st.Step = 1
+		st.SentAt = time.Now()
 		st.Notice = "If " + st.Email + " has an account on " + name + ", a code is on its way. Enter it with your new password."
 		st.Code.Focus()
 	case "fix":
@@ -903,12 +961,13 @@ func (a *App) applyAccountCodeResult(m accountCodeMsg) tea.Cmd {
 		st.Code.Reset()
 		st.Code.Focus()
 		st.Notice = "Fixed (your profile too). A new code was sent to " + m.email + "."
+		st.SentAt = time.Now()
 	case "verify":
 		delete(a.pendingVerify, m.serverID)
 		_ = a.configMgr.SaveServerSignIn(m.serverID, a.localIdentity.ID, m.email, m.token, m.userID)
 		a.statusMessage, a.statusError = "Email verified on "+name+". Welcome!", false
 		cmd := a.connectServerAsync(m.serverID, m.token)
-		return tea.Batch(a.closeCodeScreen(true), cmd)
+		return tea.Batch(a.acceptCode(st), cmd)
 	case "confirm":
 		_ = a.configMgr.SaveServerSignIn(m.serverID, a.localIdentity.ID, m.email, m.token, uuid.Nil)
 		if len(st.Queue) > 0 {
@@ -920,7 +979,7 @@ func (a *App) applyAccountCodeResult(m accountCodeMsg) tea.Cmd {
 			return nil
 		}
 		a.statusMessage, a.statusError = "Email changed on "+name+".", false
-		return a.closeCodeScreen(true)
+		return a.acceptCode(st)
 	case "reset":
 		p := *a.localIdentity
 		p.Password = st.NewPass.Value()
@@ -966,37 +1025,41 @@ func (a *App) closeCodeScreen(done bool) tea.Cmd {
 
 func (a *App) renderAccountCodeView() string {
 	st := a.codeState
+	now := time.Now()
 	name := a.codeServerName(st.ServerID)
+	bold := lipgloss.NewStyle().Bold(true)
 	var b strings.Builder
-	var title string
+	label, headline, accent := "", "", ""
 	hints := []keyHint{{"Enter", "Submit"}, {"Esc", "Back"}}
 	switch st.Mode {
 	case codeModeVerify:
-		title = "Verify your email"
+		label, headline, accent = "Verify", "Check your email", "email"
 		if st.Fixing {
+			headline, accent = "Fix your details", "Fix"
 			b.WriteString(a.dim("Typo when you signed up? Fix it, and a new code goes to the\ncorrected address. Your profile is updated too.") + "\n\n")
-			b.WriteString(a.dialogLabel("Email:", st.Focus == 0) + "\n  " + st.FixEmail.View() + "\n\n")
-			b.WriteString(a.dialogLabel("Alias:", st.Focus == 1) + "\n  " + st.FixAlias.View() + "\n\n")
+			b.WriteString(a.stageField("Email", st.Focus == 0, st.FixEmail.View()) + "\n")
+			b.WriteString(a.stageField("Alias", st.Focus == 1, st.FixAlias.View()) + "\n\n")
 			hints = []keyHint{{"Tab", "Next"}, {"Enter", "Save and resend"}, {"Esc", "Cancel"}}
 			break
 		}
-		b.WriteString(fmt.Sprintf("%s sent a 6-character code to\n%s\n\n", name, lipgloss.NewStyle().Bold(true).Render(st.Email)))
-		b.WriteString(a.dialogLabel("Code:", true) + "\n  " + st.Code.View() + "\n\n")
-		b.WriteString(a.dim("It expires in 15 minutes. Not there? Check spam, or resend.") + "\n\n")
-		hints = []keyHint{{"Enter", "Verify"}, {"Ctrl+R", "Resend"}, {"Ctrl+E", "Wrong email?"}, {"Esc", "Later"}}
+		b.WriteString(a.dim(name+" sent a code to ") + bold.Render(st.Email) + "\n\n")
+		b.WriteString(a.renderCodeBoxes(st, now) + "\n\n")
+		b.WriteString(a.renderResendBar(st, now) + "\n")
+		hints = []keyHint{{"Enter", "Verify"}, {"Ctrl+E", "Wrong email?"}, {"Esc", "Later"}}
 	case codeModeConfirmEmail:
-		title = "Confirm your new email"
-		b.WriteString(fmt.Sprintf("%s sent a code to %s.\nYour account there keeps the old address until you enter it.\n\n", name, st.Email))
-		b.WriteString(a.dialogLabel("Code:", true) + "\n  " + st.Code.View() + "\n\n")
+		label, headline, accent = "New email", "Confirm your new email", "new email"
+		b.WriteString(a.dim(name+" sent a code to ") + bold.Render(st.Email) + "\n")
+		b.WriteString(a.dim("Your account there keeps the old address until you enter it.") + "\n\n")
+		b.WriteString(a.renderCodeBoxes(st, now) + "\n\n")
 		hints = []keyHint{{"Enter", "Confirm"}, {"Esc", "Later"}}
 	case codeModeForgot:
-		title = "Forgot your password"
+		label, headline, accent = "Password reset", "Forgot your password?", "password"
 		if st.Step == 0 {
 			b.WriteString(a.dim("Which server should email you a reset code? Your new password\nis then set on every server this profile uses.") + "\n\n")
 			sel := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
 			for i, s := range st.Servers {
 				if i == st.Pick {
-					b.WriteString(sel.Render("▶ "+s.Name) + "  " + a.dim(a.emailOn(s)) + "\n")
+					b.WriteString(sel.Render("▸ "+s.Name) + "  " + a.dim(a.emailOn(s)) + "\n")
 				} else {
 					b.WriteString("  " + s.Name + "\n")
 				}
@@ -1004,25 +1067,30 @@ func (a *App) renderAccountCodeView() string {
 			if len(st.Servers) == 0 {
 				b.WriteString(a.dim("Add a server first.") + "\n")
 			}
-			b.WriteString("\n")
 			hints = []keyHint{{"↑↓", "Choose"}, {"Enter", "Send code"}, {"Esc", "Back"}}
 			break
 		}
 		if st.TempPassword {
-			b.WriteString(a.dialogLabel("Temporary password from "+name+"'s admin:", st.Focus == 0) + "\n")
+			b.WriteString(a.dim("The temporary password from "+name+"'s admin:") + "\n")
+			b.WriteString(a.stageField("Temporary", st.Focus == 0, st.Code.View()) + "\n\n")
 		} else {
-			b.WriteString(a.dialogLabel(fmt.Sprintf("Code from %s (sent to %s):", name, st.Email), st.Focus == 0) + "\n")
+			b.WriteString(a.dim(name+" sent a code to ") + bold.Render(st.Email) + "\n\n")
+			b.WriteString(a.renderCodeBoxes(st, now) + "\n\n")
 		}
-		b.WriteString("  " + st.Code.View() + "\n\n")
-		b.WriteString(a.dialogLabel("New password:", st.Focus == 1) + "\n  " + st.NewPass.View() + "\n\n")
-		b.WriteString(a.dialogLabel("Confirm:", st.Focus == 2) + "\n  " + st.Confirm.View() + "\n\n")
+		b.WriteString(a.stageField("New", st.Focus == 1, st.NewPass.View()) + "\n")
+		b.WriteString(a.stageField("Confirm", st.Focus == 2, st.Confirm.View()) + "\n")
+		if st.Focus >= 1 {
+			b.WriteString("\n" + a.passwordGrapes(st.NewPass.Value()) + "\n")
+		}
 		hints = []keyHint{{"Tab", "Next"}, {"Enter", "Reset"}, {"Ctrl+R", "Resend"}, {"Esc", "Back"}}
 	}
 	if st.Busy {
-		b.WriteString(a.dim("Working…") + "\n\n")
+		b.WriteString("\n" + a.dim("Working…") + "\n")
 	}
-	b.WriteString(a.dialogNotice(st.Notice, st.IsErr))
-	return a.accountDialog(title, b.String(), hints)
+	if st.Notice != "" {
+		b.WriteString("\n" + a.stageNotice(st.Notice, st.IsErr))
+	}
+	return a.stagePage(label, headline, accent, b.String(), hints)
 }
 
 // profileList is every profile saved on this computer.
@@ -1139,12 +1207,17 @@ func (a *App) renderPasswordChange() string {
 	pc := s.Password
 	var b strings.Builder
 	b.WriteString(a.dim("Changes it on this computer and on every server this profile uses.") + "\n\n")
-	b.WriteString(a.dialogLabel("Current password:", pc.Focus == 0) + "\n  " + pc.Current.View() + "\n\n")
-	b.WriteString(a.dialogLabel("New password:", pc.Focus == 1) + "\n  " + pc.New.View() + "\n\n")
-	b.WriteString(a.dialogLabel("Confirm:", pc.Focus == 2) + "\n  " + pc.Confirm.View() + "\n\n")
-	if s.Busy {
-		b.WriteString(a.dim("Working…") + "\n\n")
+	b.WriteString(a.stageField("Current", pc.Focus == 0, pc.Current.View()) + "\n")
+	b.WriteString(a.stageField("New", pc.Focus == 1, pc.New.View()) + "\n")
+	b.WriteString(a.stageField("Confirm", pc.Focus == 2, pc.Confirm.View()) + "\n")
+	if pc.Focus >= 1 {
+		b.WriteString("\n" + a.passwordGrapes(pc.New.Value()) + "\n")
 	}
-	b.WriteString(a.dialogNotice(s.Notice, s.NoticeErr))
-	return a.accountDialog("Change password", b.String(), []keyHint{{"Tab", "Next"}, {"Enter", "Change"}, {"Esc", "Cancel"}})
+	if s.Busy {
+		b.WriteString("\n" + a.dim("Working…") + "\n")
+	}
+	if s.Notice != "" {
+		b.WriteString("\n" + a.stageNotice(s.Notice, s.NoticeErr))
+	}
+	return a.stagePage("Profiles", "Change your password", "password", b.String(),[]keyHint{{"Tab", "Next"}, {"Enter", "Change"}, {"Esc", "Cancel"}})
 }

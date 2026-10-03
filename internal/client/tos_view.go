@@ -252,94 +252,66 @@ func (s *ToSState) canAcceptDecline() bool {
 	return s.hasScrolledToBottom || s.skipClicked
 }
 
-// renderToSView renders the full ToS acceptance screen
-func (a *App) renderToSView() string {
-	var content strings.Builder
+// tosViewportSize is the terms' reading area on the login stage.
+func (a *App) tosViewportSize() (int, int) {
+	// As tall as it can be while the grapes keep their 21 rows; on short
+	// terminals the grapes give way first, then the banner.
+	return stageWidth, max(5, min(12, a.height-33))
+}
 
-	// Banner
-	bannerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center).
-		Width(a.width)
-	content.WriteString(bannerStyle.Render(a.banner.Art))
-	content.WriteString("\n\n")
-
-	// Title
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center).
-		Width(a.width)
-	content.WriteString(titleStyle.Render("Terms of Service"))
-	content.WriteString("\n\n")
-
-	// Viewport
-	viewportStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
-		Padding(1, 2).
-		Width(a.width - 18).
-		Align(lipgloss.Center)
-
-	content.WriteString(lipgloss.PlaceHorizontal(
-		a.width,
-		lipgloss.Center,
-		viewportStyle.Render(a.tosState.viewport.View()),
-	))
-	content.WriteString("\n")
-
-	// Scroll hint
-	hintStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Italic(true).
-		Align(lipgloss.Center).
-		Width(a.width)
-
-	// Calculate scroll percentage
-	scrollPercentage := 0
-	if a.tosState.contentHeight > a.tosState.viewport.Height {
-		scrollPercentage = int(float64(a.tosState.viewport.YOffset) / float64(a.tosState.contentHeight-a.tosState.viewport.Height) * 100)
-		if scrollPercentage > 100 {
-			scrollPercentage = 100
+// resizeToS fits the terms to the window, keeping how far you've read.
+func (a *App) resizeToS() {
+	s := a.tosState
+	if s == nil {
+		return
+	}
+	w, h := a.tosViewportSize()
+	if s.viewport.Width == w && s.viewport.Height == h {
+		return
+	}
+	if s.viewport.Width != w {
+		if rendered, err := renderToSMarkdown(findToSFile("Client Terms.md"), w); err == nil {
+			s.renderedContent = rendered
+			s.contentHeight = lipgloss.Height(rendered)
+			s.viewport.SetContent(rendered)
 		}
-	} else {
-		scrollPercentage = 100
+	}
+	s.viewport.Width, s.viewport.Height = w, h
+	if s.contentHeight <= h {
+		s.hasScrolledToBottom = true
+	}
+	s.updateScrollState()
+}
+
+// renderToSView renders the terms on the login stage: the text, a
+// reading-progress bar, and Accept, which lights up once you've reached
+// the end.
+func (a *App) renderToSView() string {
+	a.resizeToS()
+	s := a.tosState
+	c := a.theme.Colors
+	read := 1.0
+	if s.contentHeight > s.viewport.Height {
+		read = min(1, float64(s.viewport.YOffset)/float64(s.contentHeight-s.viewport.Height))
+	}
+	if s.canAcceptDecline() {
+		read = 1
+	}
+	const barW = 40
+	filled := int(read * barW)
+	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Purple)).Render(strings.Repeat("━", filled)) +
+		lipgloss.NewStyle().Foreground(lipgloss.Color(c.Comment)).Render(strings.Repeat("─", barW-filled))
+	status := a.dim(fmt.Sprintf("  %d%% read", int(read*100)))
+	if s.canAcceptDecline() {
+		status = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Green)).Render("  ✓ all read")
 	}
 
-	hint := fmt.Sprintf("[Scroll: ↑/↓/PgUp/PgDn · %d%%]", scrollPercentage)
-	content.WriteString(hintStyle.Render(hint))
-	content.WriteString("\n\n")
-
-	// Buttons
-	content.WriteString(lipgloss.PlaceHorizontal(
-		a.width,
-		lipgloss.Center,
-		a.renderToSButtons(),
-	))
-	content.WriteString("\n\n")
-
-	// Instruction text
-	instructionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Align(lipgloss.Center).
-		Width(a.width)
-
-	if !a.tosState.canAcceptDecline() {
-		content.WriteString(instructionStyle.Render(
-			"Please scroll to the bottom to enable Accept/Decline buttons",
-		))
-	} else {
-		content.WriteString(instructionStyle.Render(
-			"[Tab] Switch Button · [Enter] Confirm",
-		))
-	}
-
-	return lipgloss.PlaceVertical(
-		a.height,
-		lipgloss.Center,
-		content.String(),
-	)
+	var b strings.Builder
+	b.WriteString(s.viewport.View() + "\n\n")
+	b.WriteString(bar + status + "\n\n")
+	b.WriteString(a.renderToSButtons() + "\n")
+	hints := []keyHint{{"↑↓ PgUp PgDn", "Read"}, {"Tab", "Switch"}, {"Enter", "Choose"}}
+	return a.stagePage("Before we start", "The fine print", "fine print", b.String(), hints)
 }
 
 // renderToSButtons renders the three action buttons

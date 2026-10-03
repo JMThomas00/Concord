@@ -1,11 +1,13 @@
 package client
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	zone "github.com/lrstanley/bubblezone"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -28,9 +30,12 @@ type fxState struct {
 	gen      int
 	ticking  bool
 	prevView View
+	prevKey  string    // stageKey at the last Update, so steps within a page transition too
 	stageAt  time.Time // when the login stage was last arrived at
 	last     string    // the last login-stage frame drawn, for transitions
 	burstAt  time.Time // when the main window started bursting open
+	shakeAt  time.Time // when the form started shaking (stage.go)
+	lastErr  string    // the problem shown at the last Update
 	trans    *transition
 }
 
@@ -47,7 +52,8 @@ func isStageView(v View) bool {
 // the ticker when anything is moving. Called after every Update.
 func (a *App) syncFx() tea.Cmd {
 	fx := &a.fx
-	if a.view != fx.prevView {
+	a.noticeReactions(time.Now())
+	if key := a.stageKey(); a.view != fx.prevView || key != fx.prevKey {
 		if isStageView(a.view) && !isStageView(fx.prevView) {
 			fx.stageAt = time.Now()
 		}
@@ -58,6 +64,7 @@ func (a *App) syncFx() tea.Cmd {
 			}
 		}
 		fx.prevView = a.view
+		fx.prevKey = key
 	}
 	if !a.fxMoving() || fx.ticking {
 		return nil
@@ -76,7 +83,9 @@ func (a *App) fxMoving() bool {
 	if a.connecting != nil && a.view != ViewMain {
 		a.connecting = nil // something else came first (a code screen)
 	}
-	if a.loading != nil || a.connecting != nil || a.fx.trans != nil || len(a.toasts) > 0 || a.bursting(now) {
+	a.trackCodeTyping(now)
+	if a.loading != nil || a.connecting != nil || a.fx.trans != nil || len(a.toasts) > 0 || a.bursting(now) ||
+		a.codeAnimating(now) || a.shaking(now) || a.grapeReact != nil {
 		return true
 	}
 	return isStageView(a.view) && a.atmosphereMoving()
@@ -109,10 +118,15 @@ func (a *App) applyFx(out string) string {
 	if isStageView(a.view) {
 		bg := a.renderAtmosphere(now)
 		t := a.fx.trans
-		if bg != nil || t != nil {
+		if bg != nil || t != nil || a.shaking(now) {
 			g := parseFrame(out, a.width, a.height)
 			if bg != nil {
 				g.underlay(bg, 3, 1)
+			}
+			if a.shaking(now) {
+				if z := zone.Get("stage-form"); z != nil && !z.IsZero() {
+					shake(g, z.StartY, z.EndY, z.StartX-2, float64(now.Sub(a.fx.shakeAt))/float64(shakeDur))
+				}
 			}
 			if t != nil {
 				p := float64(now.Sub(t.start)) / float64(t.duration())
@@ -168,4 +182,23 @@ var (
 // bursting reports whether the main window is still bursting open.
 func (a *App) bursting(now time.Time) bool {
 	return !a.fx.burstAt.IsZero() && now.Sub(a.fx.burstAt) < burstDur
+}
+
+// stageKey names the page showing on the login stage, steps included, so
+// moving between them plays a transition.
+func (a *App) stageKey() string {
+	k := fmt.Sprint(int(a.view))
+	switch a.view {
+	case ViewIdentitySetup:
+		k += fmt.Sprint(":", a.identityFocus)
+	case ViewAccountCode:
+		if st := a.codeState; st != nil {
+			k += fmt.Sprint(":", st.Mode, st.Step, st.Fixing, st.ServerID)
+		}
+	case ViewProfiles:
+		if s := a.profilesState; s != nil {
+			k += fmt.Sprint(":", s.EditID != "", s.Password != nil)
+		}
+	}
+	return k
 }

@@ -180,12 +180,16 @@ func (a *App) currentLockup() (logoLockup, bool) {
 	case ViewRegister:
 		_, stable = a.registerFormBlock()
 	default:
-		return logoLockup{}, false
+		if !isStageView(a.view) {
+			return logoLockup{}, false
+		}
+		stable = max(a.stageStable, stageRows)
 	}
 	return a.logoLockupFor(stable), true
 }
 
 func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
+	below = zone.Mark("stage-form", below) // where the form shakes (stage.go)
 	g := a.logoLockupFor(stableBelow)
 	slot := g.slot
 
@@ -559,7 +563,7 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 		}
 
 		if a.view == ViewMain {
-			a.startConnecting()
+			a.startConnecting(nil)
 		}
 		if allConnected {
 			a.statusMessage = "Ready"

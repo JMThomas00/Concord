@@ -30,12 +30,15 @@ type connectingState struct {
 	readyAt map[uuid.UUID]time.Duration // when each was first seen ready
 }
 
-// startConnecting shows the connecting screen, when there's anything to show.
-func (a *App) startConnecting() {
+// startConnecting shows the connecting screen for these servers (nil for
+// all of them), when there's anything to show.
+func (a *App) startConnecting(servers []*ClientServerInfo) {
 	if a.surprise() == surpriseOff || a.configMgr == nil || a.width <= 0 {
 		return
 	}
-	servers := a.configMgr.GetClientServers()
+	if servers == nil {
+		servers = a.configMgr.GetClientServers()
+	}
 	if len(servers) == 0 {
 		return
 	}

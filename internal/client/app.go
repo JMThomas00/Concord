@@ -95,6 +95,7 @@ type App struct {
 	collection *Collection
 	toasts     []*toast
 	loading    *loadingState // the launch's loading screen while it plays
+	grapeReact *grapeReaction // the grapes reacting to a problem or a success (stage.go)
 	connecting *connectingState // the screen after unlocking while servers connect
 
 	// Scroll positions for the channel list and members panels (see
@@ -113,6 +114,7 @@ type App struct {
 	pendingVerify map[uuid.UUID]string
 	addingProfile bool // the identity form is adding a profile, not the first one
 	formHintRows  int  // rows of shortcut hints under the login/register form (layoutBannerScreen)
+	stageStable   int  // the last stage page's reserved height (stage.go), for currentLockup
 
 	// Multi-server connection management
 	connMgr    *ConnectionManager      // Manages all server connections
@@ -1017,7 +1019,7 @@ func (a *App) Init() tea.Cmd {
 	a.launched()
 	a.recordMood()
 	a.discoverBanner(a.bannerIndex)
-	a.fx.prevView = a.view
+	a.fx.prevView, a.fx.prevKey = a.view, a.stageKey()
 	a.fx.stageAt = time.Now()
 	a.startLoading()
 	cmds := []tea.Cmd{
@@ -1212,6 +1214,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleGrapeTick(m)
 	case fxTickMsg:
 		return a, a.handleFxTick(m)
+	case codeAcceptedMsg:
+		// Falls through, so the page change gets its transition.
+		if a.codeState == m.st {
+			a.closeCodeScreen(true)
+		}
 	case paneCheckMsg:
 		return a, a.syncPluginPane()
 	case codeMsg:

@@ -191,9 +191,10 @@ func (a *App) grapeLogoShowing() bool {
 	if a.loading != nil {
 		return false // it powers on when the loading screen ends
 	}
-	switch a.view {
-	case ViewLogin, ViewRegister:
+	if isStageView(a.view) {
 		return true
+	}
+	switch a.view {
 	case ViewSettings:
 		return a.settingsState != nil && a.settingsState.Categories != nil &&
 			a.settingsState.SelectedCategory < len(a.settingsState.Categories) &&
@@ -318,6 +319,18 @@ func parseHex(s string) ([3]int, bool) {
 // (color-mix in srgb), with plain theme colors where blending isn't possible.
 func (a *App) grapeToneColors() map[string]lipgloss.Style {
 	c := a.theme.Colors
+	// Reacting (stage.go): the grapes flush red at a problem; the leaf
+	// glows at a success.
+	tint, success := a.reactionTint(time.Now())
+	if tint > 0 {
+		if success {
+			if m, ok := mixHex(c.Foreground, c.Green, tint*.55); ok {
+				c.Green = m
+			}
+		} else if m, ok := mixHex(c.Red, c.Purple, tint*.8); ok {
+			c.Purple = m
+		}
+	}
 	pick := func(fallback string, mixA, mixB string, t float64) lipgloss.Style {
 		col := fallback
 		if m, ok := mixHex(mixA, mixB, t); ok {

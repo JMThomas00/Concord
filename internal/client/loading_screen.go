@@ -112,7 +112,7 @@ func (a *App) skipLoading(msg tea.Msg) (bool, tea.Cmd) {
 func (a *App) endLoading() tea.Cmd {
 	a.loading = nil
 	a.fx.stageAt = time.Now()
-	a.fx.prevView = a.view
+	a.fx.prevView, a.fx.prevKey = a.view, a.stageKey()
 	a.fx.last = ""
 	if a.view == ViewLogin || a.view == ViewRegister {
 		return a.startBannerAnim()
