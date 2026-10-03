@@ -7,7 +7,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Screensavers: after a while with no input on the login stage, one of
+// Screensavers (more in screensaver_more.go): after a while with no input
+// on the login stage, one of
 // these takes over the screen until a key or click (which is otherwise
 // ignored). The bouncing logo celebrates hitting a corner exactly.
 
@@ -16,7 +17,7 @@ const (
 	idleCheckEvery = 5 * time.Second
 )
 
-var saverKinds = []string{"bounce", "flyers", "stars", "pipes", "lava"}
+var saverKinds = []string{"bounce", "flyers", "stars", "pipes", "lava", "life", "maze", "bottles", "bunches"}
 
 type idleCheckMsg struct{}
 
@@ -38,6 +39,11 @@ type saverState struct {
 	canvas *fxGrid
 	heads  []pipeHead
 	placed int
+
+	// screensaver_more.go
+	life  *lifeState
+	maze  *mazeState
+	bunch *bunchState
 }
 
 type pipeHead struct {
@@ -98,6 +104,14 @@ func (a *App) renderSaver(now time.Time) string {
 		saverPipes(s, g, dt, pal)
 	case "lava":
 		lavaLamp(g, el, s.seed, pal)
+	case "life":
+		saverLife(s, g, now, pal)
+	case "maze":
+		saverMaze(s, g, now, pal)
+	case "bottles":
+		saverBottles(g, el, s.seed)
+	case "bunches":
+		saverBunches(s, g, now, pal)
 	}
 	return g.String()
 }

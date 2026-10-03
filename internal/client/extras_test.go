@@ -100,3 +100,40 @@ func TestSpaceIsSlowMotion(t *testing.T) {
 		t.Fatalf("400ms of slow motion moved the clock %v", got)
 	}
 }
+
+func TestMazeCarvesSolvesAndWalks(t *testing.T) {
+	m := newMaze(31, 15)
+	for len(m.stack) > 0 {
+		m.carve(7)
+	}
+	m.solve()
+	if len(m.path) < 2 || m.path[0] != m.w+1 || m.path[len(m.path)-1] != (m.h-2)*m.w+m.w-2 {
+		t.Fatalf("no way through: %d steps", len(m.path))
+	}
+	for i := 1; i < len(m.path); i++ {
+		if d := abs(m.path[i] - m.path[i-1]); d != 1 && d != m.w {
+			t.Fatal("the path jumps")
+		}
+	}
+}
+
+func TestBunchesPlaysOnAndClearsLines(t *testing.T) {
+	b := &bunchState{}
+	b.spawn(5)
+	for i := 0; i < 20000; i++ {
+		b.tick(5)
+	}
+	if b.lines == 0 {
+		t.Fatal("the computer never cleared a line")
+	}
+}
+
+func TestLifeSettlesAndStartsOver(t *testing.T) {
+	l := newLife(20, 10, 3)
+	for i := 0; i < 700 && !l.settled(); i++ {
+		l.step()
+	}
+	if !l.settled() {
+		t.Fatal("never settled")
+	}
+}
