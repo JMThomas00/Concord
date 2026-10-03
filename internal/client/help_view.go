@@ -378,7 +378,7 @@ Opt in during the server's **first-run wizard** (or later with ` + "`--reconfigu
 ` + "```" + `toml
 [grapevine]
 enabled = true
-hub_url = "http://grapevine.concord.chat"   # or your own hub
+hub_url = "https://grapevine.concordchat.cc"   # or your own hub
 description = "A place to chat."
 category = "Gaming"
 tags = ["friendly", "english"]

@@ -247,7 +247,7 @@ interval_hours = 24
 # Optional: register with a Grapevine hub for public discovery
 [grapevine]
 enabled = true
-hub_url = "https://hub.concord.chat"
+hub_url = "https://grapevine.concordchat.cc"
 server_name = "My Server"
 description = "A cool Concord server"
 category = "general"
@@ -264,7 +264,7 @@ Managed automatically. Contains identity, UI preferences, audio settings, and hu
   "identity": { "alias": "user", "email": "user@example.com", "password": "..." },
   "ui": {
     "theme": "dracula",
-    "hub_urls": ["https://hub.concord.chat"]
+    "hub_urls": ["https://grapevine.concordchat.cc"]
   }
 }
 ```
