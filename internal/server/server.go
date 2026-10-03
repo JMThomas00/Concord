@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,6 +40,10 @@ type Config struct {
 	Grapevine      GrapevineConfig      `toml:"grapevine"`
 	PluginsDir     string               `toml:"plugins_dir"` // Folder scanned for plugin.toml subfolders at startup
 	Mail           MailConfig           `toml:"mail"`        // Outgoing email for verification and password reset (optional)
+	// RealIPHeader: the header a trusted proxy sets to each visitor's
+	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
+	// empty unless the server is reachable only through that proxy.
+	RealIPHeader string `toml:"real_ip_header,omitempty"`
 }
 
 // MessagePruningConfig configures automatic message pruning
@@ -121,6 +126,7 @@ type Server struct {
 
 // New creates a new server instance
 func New(config *Config) (*Server, error) {
+	realIPHeader = strings.TrimSpace(config.RealIPHeader)
 	// Open database
 	db, err := database.New(config.DatabasePath)
 	if err != nil {
@@ -534,7 +540,7 @@ func (s *Server) performAutomaticPruning() {
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		ClientLog.Error("WebSocket upgrade failed", "error", err, "remote_addr", r.RemoteAddr)
+		ClientLog.Error("WebSocket upgrade failed", "error", err, "remote_addr", remoteIP(r))
 		return
 	}
 
@@ -687,7 +693,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.accountActivated(user)
 
 	// Generate auth token
-	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
+	token, err := s.handlers.CreateAuthToken(user.ID, remoteIP(r), r.UserAgent())
 	if err != nil {
 		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -790,7 +796,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate auth token
-	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
+	token, err := s.handlers.CreateAuthToken(user.ID, remoteIP(r), r.UserAgent())
 	if err != nil {
 		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)

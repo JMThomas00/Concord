@@ -84,9 +84,15 @@ func getBucket(ip string) *bucket {
 	return b
 }
 
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.SplitN(fwd, ",", 2)[0]
+// clientIP is the visitor's address: from real_ip_header when the hub sits
+// behind a trusted proxy (Cloudflare's "CF-Connecting-IP"), otherwise the
+// connection's own. Forwarded headers aren't trusted otherwise, since
+// anyone can send them to dodge the join rate limit.
+func (h *Hub) clientIP(r *http.Request) string {
+	if name := strings.TrimSpace(h.config.RealIPHeader); name != "" {
+		if v, _, _ := strings.Cut(r.Header.Get(name), ","); strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
 	}
 	// RemoteAddr is "host:port"
 	host, _, _ := strings.Cut(r.RemoteAddr, ":")
@@ -262,7 +268,7 @@ func (h *Hub) handleGetServer(w http.ResponseWriter, r *http.Request) {
 
 // POST /v1/join/{id} — request connection details for a server (rate-limited)
 func (h *Hub) handleJoin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := h.clientIP(r)
 	if !getBucket(ip).allow() {
 		h.stats.JoinsRateLimited.Add(1)
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")

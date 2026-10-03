@@ -23,6 +23,10 @@ type Config struct {
 	Debug            bool            `toml:"debug"`
 	AdminToken       string          `toml:"admin_token"`
 	PeerHubs         []PeerHubConfig `toml:"peer_hubs"`
+	// RealIPHeader: the header a trusted proxy sets to each visitor's
+	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
+	// empty unless the hub is reachable only through that proxy.
+	RealIPHeader string `toml:"real_ip_header,omitempty"`
 }
 
 func DefaultConfig() *Config {

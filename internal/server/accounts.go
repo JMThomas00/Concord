@@ -78,8 +78,19 @@ func writeAPIError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg, "code": code})
 }
 
-// remoteIP is the client's address without its port.
+// realIPHeader names the header a trusted proxy puts each visitor's address
+// in (real_ip_header in concord-server.toml; "CF-Connecting-IP" behind
+// Cloudflare). Set only when the server can't be reached except through
+// that proxy, or anyone could claim any address. Empty: the connection's own.
+var realIPHeader string
+
+// remoteIP is the visitor's address without its port.
 func remoteIP(r *http.Request) string {
+	if realIPHeader != "" {
+		if v, _, _ := strings.Cut(r.Header.Get(realIPHeader), ","); strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -279,7 +290,7 @@ func (s *Server) accountActivated(user *models.User) {
 
 // issueSession answers {user, token} for a fresh session.
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, user *models.User) {
-	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
+	token, err := s.handlers.CreateAuthToken(user.ID, remoteIP(r), r.UserAgent())
 	if err != nil {
 		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)
 		writeAPIError(w, http.StatusInternalServerError, "internal", "Internal server error")
