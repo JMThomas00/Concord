@@ -13,26 +13,32 @@ scripted, so they can be made again after the interface changes.
 3. **A Linux client** next to the scripts, built without voice (the
    recording doesn't need it):
    `CGO_ENABLED=0 GOOS=linux go build -tags novoice -o concord-client ./cmd/client`
-4. **Record**, from a folder holding `concord-client`, the two `.tape`
-   files and a fresh copy of `vhs-home` (merlot's profile, the server in
-   the list, mood `#00C1S` locked so every take looks the same):
+4. **Record**, from a folder holding `concord-client`, `hero.sh`,
+   `still.tape` and `vhs-home` (merlot's profile, the server in the list,
+   mood `#00C1S` locked so every take looks the same):
 
    ```sh
-   rm -rf home && cp -r vhs-home home
-   docker run --rm --network host -v "$PWD:/vhs" ghcr.io/charmbracelet/vhs hero.tape
+   ./hero.sh                 # a practice take: types the message, doesn't send it
+   FINAL=1 ./hero.sh         # the real one (reset the server first, step 1)
    rm -rf home && cp -r vhs-home home
    docker run --rm --network host -v "$PWD:/vhs" ghcr.io/charmbracelet/vhs still.tape
    ```
 
-   Change the address in `vhs-home/.concord/servers.json` for another server.
-   Each take of `hero.tape` sends a message, so reset the server (step 1)
-   before a final take.
+   `hero.sh` needs `tmux`, a monospace font (`fonts-jetbrains-mono`) and,
+   in `./bin`, [asciinema](https://github.com/asciinema/asciinema/releases) 3
+   and [agg](https://github.com/asciinema/agg/releases). Change the address
+   in `vhs-home/.concord/servers.json` for another server.
 
 **Things to know:**
 
+- **Why not VHS for the GIF:** VHS screenshots its browser terminal, and
+  with the login stage's animations it managed about 2 frames a second
+  while stamping each as 1/25 s, so a 55-second take played in under 5.
+  asciinema records what the client actually printed, with timestamps, so
+  the GIF plays in real time. VHS is still fine for the stills.
 - **Loading screen:** the first key skips it ("any key skips"), so the
   script presses Space before typing the password.
 - **Focus:** it starts on the server list. Tab moves to the channels and
   then the messages.
-- **Window size:** the window is 1440×810 at font size 15; Concord needs
+- **Window size:** the GIF is 150×42 cells at font size 15; Concord needs
   about 120 columns.
