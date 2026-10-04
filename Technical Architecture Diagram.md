@@ -379,7 +379,7 @@ flowchart LR
 
 ## Multi-Server Pattern
 
-Unlike Discord's single-hub model, every Concord server is independent:
+Unlike a single-hub chat service, every Concord server is independent:
 
 - No central authority; no federation
 - Users connect directly to IP:Port

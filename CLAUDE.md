@@ -1,6 +1,6 @@
 # Concord — Claude Code Reference
 
-**A terminal-based chat application inspired by Discord**
+**A terminal-based, self-hosted chat application**
 **Last Updated:** 2026-10-02
 
 ---

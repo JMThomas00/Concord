@@ -15,7 +15,7 @@ import (
 // Sections marked "Coming Soon" describe planned features not yet shipped.
 const helpMarkdown = `# Concord — User Guide
 
-Concord is a terminal-first, self-hosted chat application. Every server is independently operated — there is no central service or account system. Think IRC with Discord-style channels, roles, and voice.
+Concord is a terminal-first, self-hosted chat application. Every server is independently operated — there is no central service or account system. Servers have channels, roles and voice, and each one is run by whoever hosts it.
 
 ---
 

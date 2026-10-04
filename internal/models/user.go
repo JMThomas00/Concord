@@ -21,7 +21,7 @@ const (
 type User struct {
 	ID           uuid.UUID  `json:"id"`
 	Username     string     `json:"username"`
-	Discriminator string    `json:"discriminator"` // 4-digit number like Discord's old system
+	Discriminator string    `json:"discriminator"` // 4-digit number that tells apart users with the same name
 	DisplayName  string     `json:"display_name,omitempty"`
 	Email        string     `json:"email,omitempty"`
 	PasswordHash string     `json:"-"` // Never serialize

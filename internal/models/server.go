@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Server represents a Concord server (similar to Discord's "guild")
+// Server represents a Concord server: a community with its own channels, roles and members
 type Server struct {
 	ID                   uuid.UUID `json:"id"`
 	Name                 string    `json:"name"`

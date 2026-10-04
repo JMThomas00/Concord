@@ -1,6 +1,6 @@
 # Concord
 
-A chat app for your terminal, inspired by Discord: servers, channels, voice, games and plugins, all keyboard-driven, all self-hostable. Built in Go on the [Charm](https://charm.sh) stack.
+A chat app for your terminal: servers, channels, voice, games and plugins, all keyboard-driven, all self-hostable. Built in Go on the [Charm](https://charm.sh) stack.
 
 **Website:** [concordchat.cc](https://concordchat.cc) (by [Anthoneyq](https://github.com/Anthoneyq)) · **Official server:** `server.concordchat.cc` · **Install:** [one line](#install)
 

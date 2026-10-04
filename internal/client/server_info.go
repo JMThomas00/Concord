@@ -98,7 +98,7 @@ func (s *ClientServerInfo) String() string {
 }
 
 // getColorForName generates a deterministic color based on name
-// Uses a simple palette of Discord-like colors
+// Uses a simple palette of bright, distinct colors
 func getColorForName(name string) string {
 	colors := []string{
 		"#7289DA", // Blurple
