@@ -67,7 +67,7 @@ The installer:
 
 Plugins are separate programs a server runs alongside itself. They add channels with games, boards or bots, and never need changes to Concord.
 
-- **Install one** (server admins): **Settings → Plugins → I**, then type its GitHub repo, like `JMThomas00/concord-chess`. Concord downloads the right build, checks it, and starts it with no restart. **U** updates it later.
+- **Install one** (server admins): **Server Settings (Ctrl+B) → Plugins → I**, then type its GitHub repo, like `JMThomas00/concord-chess`. Concord downloads the right build, checks it, and starts it with no restart. **U** updates it later.
 - **Plugins we've made:**
   - games: [tic-tac-toe](https://github.com/JMThomas00/concord-tictactoe), [checkers](https://github.com/JMThomas00/concord-checkers), [Tak](https://github.com/JMThomas00/concord-tak) and [chess](https://github.com/JMThomas00/concord-chess). Each has seats, challenges, spectators, a computer opponent, achievements and a leaderboard, and each also plays standalone in a terminal, even over the network.
   - **Tukan:** a kanban board.
