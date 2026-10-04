@@ -254,7 +254,7 @@ Contributions are welcome. Please open an issue before a large change, so we can
 
 ## License
 
-MIT. See LICENSE for details.
+MIT. See [LICENSE](LICENSE) for details.
 
 ## A Huge Thank-You to Anthoneyq 🍇
 
