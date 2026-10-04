@@ -21,6 +21,8 @@ A chat app for your terminal: servers, channels, voice, games and plugins, all k
 - **Keyboard-first, mouse-friendly.** Every mouse action has a key.
 - **Personality:** shaded ASCII grapes, loading screens, moods, screensavers, easter eggs and a collection to complete. 🍇
 
+Readmes are great, but the [website](https://concordchat.cc) is way more fun.
+
 ## Install
 
 Paste one line into a terminal. A short form asks what you'd like (the client, a server, a hub, or any mix) and where. It then installs everything and helps you take your first steps.
