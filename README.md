@@ -4,11 +4,7 @@ A chat app for your terminal, inspired by Discord: servers, channels, voice, gam
 
 **Website:** [concordchat.cc](https://concordchat.cc) (by [Anthoneyq](https://github.com/Anthoneyq)) · **Official server:** `server.concordchat.cc` · **Install:** [one line](#install)
 
-<!--
-  Hero shot placeholder: a VHS recording of a seeded demo server goes here
-  (To Do, "hero shot"). Uncomment once recorded:
-  ![Concord](demo/concord-demo.gif)
--->
+![Concord: signing in, a community's channels, a code snippet, switching themes live, and a first message](demo/hero.gif)
 
 ## Features
 
