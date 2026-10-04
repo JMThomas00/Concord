@@ -4838,6 +4838,13 @@ func (a *App) selectChannel(index int) {
 	// Leave whatever plugin pane was active before switching.
 	a.leavePluginPane()
 
+	// A category is only a place in the list: the chat shows what's in it
+	// (renderCategoryOverview), with no history to fetch.
+	if a.currentChannel != nil && a.currentChannel.Type == models.ChannelTypeCategory {
+		a.updateChatContent()
+		return
+	}
+
 	if a.currentChannel != nil && a.isRemotePaneChannel(a.currentChannel) {
 		a.enterPluginPane(a.currentChannel)
 		a.updateChatContent()
@@ -5649,6 +5656,12 @@ func (a *App) calculateMessageLinePosition(messageIndex int) int {
 func (a *App) handleSendMessage() tea.Cmd {
 	content := strings.TrimSpace(a.input.Value())
 	if content == "" {
+		return nil
+	}
+	if !strings.HasPrefix(content, "/") && a.currentChannel != nil && a.currentChannel.Type == models.ChannelTypeCategory {
+		// Keep what was typed: it belongs in one of the group's channels.
+		a.statusMessage = "That's a channel group: pick a channel in it to post."
+		a.statusError = true
 		return nil
 	}
 

@@ -297,6 +297,12 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 	// permission-overwrite, @everyone) — this used to be fetched twice.
 	channel, err := h.db.GetChannelByID(payload.ChannelID)
 
+	// A category only groups channels; it has no messages of its own.
+	if err == nil && channel.Type == models.ChannelTypeCategory {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Categories can't hold messages; pick a channel inside it")
+		return
+	}
+
 	// Check if channel is locked (requires ManageMessages permission to post)
 	if err == nil && channel.IsLocked && channel.ServerID != uuid.Nil {
 		// Check if user has ManageMessages permission to bypass lock

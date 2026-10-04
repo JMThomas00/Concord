@@ -67,3 +67,24 @@ func TestLoginKeyHintsWrapWholeOnNarrowTerminals(t *testing.T) {
 		}
 	}
 }
+
+// A long password used to wrap its box onto several rows, and an error on
+// a short screen pushed the hints off the bottom (Jordan, 2026-10-04).
+func TestLongPasswordAndErrorFitAShortScreen(t *testing.T) {
+	a := newLoginTestApp(t, 120, 28, true)
+	a.loginPassword.EchoMode = textinput.EchoPassword
+	a.loginPassword.SetValue(strings.Repeat("x", 60))
+	a.loginPassword.Focus()
+	a.view = ViewLogin
+	a.loginError = "Wrong password (Ctrl+F if you forgot it)"
+	view := ansi.Strip(a.View())
+	if rows := linesContaining(view, "*****"); len(rows) != 1 {
+		t.Errorf("password on %d rows, want 1:\n%s", len(rows), view)
+	}
+	if len(linesContaining(view, "Wrong password")) != 1 || len(linesContaining(view, "Ctrl+Q")) != 1 {
+		t.Errorf("error or hints missing:\n%s", view)
+	}
+	if n := len(strings.Split(view, "\n")); n != 28 {
+		t.Errorf("%d rows, want 28", n)
+	}
+}

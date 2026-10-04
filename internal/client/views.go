@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -259,7 +260,62 @@ func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
 	leftPad := max(0, min((a.width-visibleW)/2, a.width-groupW))
 
 	content := strings.Repeat("\n", topPad) + lipgloss.NewStyle().PaddingLeft(leftPad).Render(group)
+	// On a short screen (or with an error under the form) the group can be
+	// taller than the window. Its top rows are usually the empty part of the
+	// banner slot, so give those up first rather than cutting off the hints.
+	lines := strings.Split(content, "\n")
+	for len(lines) > a.height && strings.TrimSpace(ansi.Strip(lines[0])) == "" {
+		lines = lines[1:]
+	}
+	content = strings.Join(lines, "\n")
 	return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, content, lipgloss.WithWhitespaceChars(" "))
+}
+
+// renderCategoryOverview fills the chat box while a channel group is
+// highlighted: the group holds no messages, so it lists its channels.
+func (a *App) renderCategoryOverview(width, height int) string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	var rows []string
+	if a.channelTree != nil {
+		if node := a.channelTree.NodeMap[a.currentChannel.ID]; node != nil {
+			for _, child := range node.Children {
+				if child.Channel != nil {
+					rows = append(rows, a.channelIcon(child.Channel)+child.Channel.Name)
+				}
+			}
+		}
+	}
+	var head string
+	switch len(rows) {
+	case 0:
+		head = "An empty channel group"
+	case 1:
+		head = "A channel group with 1 channel"
+	default:
+		head = fmt.Sprintf("A channel group with %d channels", len(rows))
+	}
+	body := []string{dim.Italic(true).Render(head), ""}
+	if len(rows) > 0 {
+		list := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+		body = append(body, list.Render(strings.Join(rows, "\n")), "")
+	}
+	body = append(body, dim.Render("↑↓ pick a channel · ←→ fold or unfold"))
+	block := lipgloss.JoinVertical(lipgloss.Center, body...)
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, block)
+}
+
+// loginInputWidth is how many characters show in a login or register
+// field: the box's 34 columns inside its padding, less the "> " prompt and
+// the cursor. Longer entries scroll inside the box rather than wrapping it.
+const loginInputWidth = 31
+
+func (a *App) fitLoginInputs() {
+	for _, in := range []*textinput.Model{&a.loginEmail, &a.loginPassword, &a.loginPasswordConfirm, &a.loginUsername} {
+		if in.Width != loginInputWidth {
+			in.Width = loginInputWidth
+			in.SetCursor(in.Position()) // scrolls the text to fit the new width
+		}
+	}
 }
 
 // formErrorLines is how many rows an error message adds inside a login or
@@ -282,6 +338,7 @@ func (a *App) renderLoginView() string {
 func (a *App) loginFormBlock() (string, int) {
 	// Render login form with fixed width
 	formWidth := 50
+	a.fitLoginInputs()
 	var b strings.Builder
 
 	// Subtitle
@@ -413,6 +470,7 @@ func (a *App) registerFormBlock() (string, int) {
 
 	// Render registration form with fixed width
 	formWidth := 50
+	a.fitLoginInputs()
 	var b strings.Builder
 
 	// Subtitle
@@ -543,7 +601,7 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 			return nil
 		}
 		if password != a.localIdentity.Password {
-			a.loginError = "Incorrect password (Ctrl+F if you've forgotten it)"
+			a.loginError = "Wrong password (Ctrl+F if you forgot it)"
 			return nil
 		}
 		a.loginError = ""
@@ -1475,7 +1533,11 @@ func (a *App) renderChatPanel(width, height int) string {
 		hasMessages = true // Suppress the "No messages yet" empty state
 	}
 
-	if !hasMessages {
+	isCategory := a.currentChannel != nil && a.currentChannel.Type == models.ChannelTypeCategory
+	if isCategory {
+		channelTitle = titleStyle.Render(a.channelIcon(a.currentChannel) + a.currentChannel.Name)
+		chatContent = a.renderCategoryOverview(interiorWidth, chatHeight-2)
+	} else if !hasMessages {
 		emptyStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(a.theme.Colors.Comment)).
 			Italic(true).
