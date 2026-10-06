@@ -275,7 +275,7 @@ func (s *Server) startGrapevine(mux *http.ServeMux) {
 		publicHost,
 		publicPort,
 		func() int { return s.db.GetTotalMemberCount() },
-		func() int { return s.hub.ConnectedClientCount() },
+		func() int { return s.hub.PeopleOnlineCount() },
 		s.saveConfig,
 	)
 	s.grapevine.Start()

@@ -2299,10 +2299,12 @@ func (db *DB) IncrementMemberKickCount(userID, serverID uuid.UUID) error {
 	return nil
 }
 
-// GetTotalMemberCount returns the number of distinct non-banned users across all servers.
+// GetTotalMemberCount returns the number of distinct non-banned people across all servers
+// (plugin service accounts and bots aren't counted).
 func (db *DB) GetTotalMemberCount() int {
 	var count int
-	db.QueryRow(`SELECT COUNT(DISTINCT user_id) FROM server_members WHERE COALESCE(is_banned,0)=0`).Scan(&count)
+	db.QueryRow(`SELECT COUNT(DISTINCT m.user_id) FROM server_members m JOIN users u ON u.id = m.user_id
+		WHERE COALESCE(m.is_banned,0)=0 AND COALESCE(u.is_bot,0)=0 AND COALESCE(u.is_service_account,0)=0`).Scan(&count)
 	return count
 }
 

@@ -514,3 +514,19 @@ func TestHubVoiceEndsWithTheConnectionThatJoined(t *testing.T) {
 		t.Fatal("user went offline with a device still connected")
 	}
 }
+
+func TestPeopleOnlineCountSkipsPluginsAndBots(t *testing.T) {
+	hub := NewHub()
+	person, twoTabs, plugin, bot := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	hub.clients[person] = []*Client{{UserID: person, User: &models.User{}}}
+	hub.clients[twoTabs] = []*Client{{UserID: twoTabs, User: &models.User{}}, {UserID: twoTabs, User: &models.User{}}}
+	hub.clients[plugin] = []*Client{{UserID: plugin, User: &models.User{IsServiceAccount: true}, IsPlugin: true}}
+	hub.clients[bot] = []*Client{{UserID: bot, User: &models.User{IsBot: true}}}
+
+	if got := hub.PeopleOnlineCount(); got != 2 {
+		t.Errorf("PeopleOnlineCount = %d, want 2", got)
+	}
+	if got := hub.ConnectedClientCount(); got != 4 {
+		t.Errorf("ConnectedClientCount = %d, want 4", got)
+	}
+}

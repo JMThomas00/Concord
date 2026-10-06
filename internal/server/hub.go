@@ -592,6 +592,31 @@ func (h *Hub) ConnectedClientCount() int {
 	return len(h.clients)
 }
 
+// PeopleOnlineCount is the number of people connected: distinct users, leaving
+// out plugin processes and their service accounts, and bots. This is the
+// "online" figure the Grapevine shows.
+func (h *Hub) PeopleOnlineCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	n := 0
+	for _, conns := range h.clients {
+		for _, c := range conns {
+			if isPerson(c) {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+func isPerson(c *Client) bool {
+	if c.IsPlugin {
+		return false
+	}
+	return c.User == nil || (!c.User.IsServiceAccount && !c.User.IsBot)
+}
+
 // IsUserOnline reports whether a user with the given ID has an active connection.
 func (h *Hub) IsUserOnline(userID uuid.UUID) bool {
 	h.mu.RLock()
