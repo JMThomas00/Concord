@@ -620,8 +620,8 @@ func atmosEclipse(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid 
 	s := uint64(seed)
 	c.nightStars(t, s, 80, 1)
 	c.meteor(t, s)
-	x, y := float64(w)*0.78, float64(h)*0.3
-	r := math.Max(4, float64(h)*0.16)
+	x, y := float64(w)*0.8, float64(h)*0.34
+	r := math.Max(6, float64(h)*0.27) // big enough for the berries to read
 	c.drawEclipse(x, y, r, t, 1, 0)
 	return c.finish()
 }
@@ -636,19 +636,56 @@ func (c *sceneCanvas) drawEclipse(x, y, r, t, a, flare float64) {
 		c.glow(x+math.Cos(ang)*l*0.55, y+math.Sin(ang)*l*0.55/2, r*0.55, "#f0e6ff", 0.14*a)
 	}
 	c.glow(x, y, r*1.25, "#fffaee", 0.45*a)
-	c.drawDisc(x, y, r, a, 0.25+flare*0.25)
+	c.drawDisc(x, y, r, a, 0.5+flare*0.3)
 }
 
-// drawDisc: the dark eclipsing disc, its rim lit by rim (0..1).
+// grapeBerries is the eclipsing bunch's shape, in units of its radius (y
+// down): three berries, two, one, as the brand's grape hangs.
+var grapeBerries = [][2]float64{{-0.56, -0.3}, {0, -0.32}, {0.56, -0.3}, {-0.29, 0.18}, {0.29, 0.18}, {0, 0.6}}
+
+const grapeBerryR = 0.37
+
+// grapeShape reports whether (dx, dy), in units of the bunch's radius, is in
+// the bunch, and whether it's on its outline (shrink: how thick the outline is).
+func grapeShape(dx, dy, shrink float64) (in, edge bool) {
+	inside := func(b float64) bool {
+		for _, p := range grapeBerries {
+			if math.Hypot(dx-p[0], dy-p[1]) < b {
+				return true
+			}
+		}
+		// the stem, up and a little to the right
+		if dy < -0.55 && dy > -0.95 && math.Abs(dx-(-0.55-dy)*0.25) < 0.06+b-grapeBerryR {
+			return true
+		}
+		// the leaf beside it
+		lx, ly := (dx-0.36)/0.27, (dy+0.78)/0.12
+		return lx*lx+ly*ly < math.Pow(b/grapeBerryR, 2)
+	}
+	if !inside(grapeBerryR) {
+		return false, false
+	}
+	return true, !inside(grapeBerryR - shrink)
+}
+
+// drawDisc: the eclipsing grapes, a dark bunch whose outline is lit by rim
+// (0..1) where the light leaks round it.
 func (c *sceneCanvas) drawDisc(x, y, r, a, rim float64) {
+	shrink := math.Min(0.1, 1.1/r) // about a pixel of outline
 	c.halfDisc(x, y, r, func(dx, dy float64) (string, bool) {
-		d := dx*dx + dy*dy
-		if d > 1 {
+		in, edge := grapeShape(dx, dy, shrink)
+		if !in {
 			return "", false
 		}
 		col := blend(c.pal.dark, "#140d22", 0.9*a)
-		if d > 0.78 {
-			col = blend(col, "#f6eeff", rim*a)
+		// each berry catches a little light at its upper left, so they read as round
+		for _, p := range grapeBerries {
+			if math.Hypot(dx-p[0]+0.13, dy-p[1]+0.13) < grapeBerryR*0.32 {
+				col = blend(col, "#3a2a5e", 0.8*a)
+			}
+		}
+		if edge {
+			col = blend(col, "#e6dcff", rim*a)
 		}
 		return col, true
 	})

@@ -77,7 +77,7 @@ func loadFlashbang(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalett
 func loadEclipse(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette) {
 	c := newSceneCanvas(g.w, g.h, pal)
 	sx, sy := float64(g.w)*0.5, float64(g.h)*0.27
-	r := math.Max(3.5, float64(g.h)*0.13)
+	r := math.Max(6, float64(g.h)*0.24)
 	roll := easeOutCubic((el - 0.4) / 1.6)
 	bx := sx - (sx+r*3)*(1-roll)
 	cover := math.Max(0, 1-math.Abs(bx-sx)/(2*r))
@@ -94,7 +94,7 @@ func loadEclipse(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette)
 		}
 		c.drawEclipse(sx, sy, r, el, k*k, flare)
 	}
-	c.drawDisc(bx, sy, r, math.Min(1, el/0.4), 0.25*cover)
+	c.drawDisc(bx, sy, r, math.Min(1, el/0.4), 0.5*cover)
 	*g = *c.finish()
 	if cover > 0.9 { // once the day's gone, so its box doesn't cut the sky
 		caption(g, g.h*2/3-2, p, ls, pal)
