@@ -1,9 +1,15 @@
 package client
 
+import "time"
+
 // hubServersLoadedMsg is sent when a hub server listing finishes loading.
 type hubServersLoadedMsg struct {
 	servers []HubServerEntry
 	hubURL  string
+	// held is set when the listing arrived before the loading bar finished
+	// and was sent again for when it does; loadStart is the load it's for.
+	held      bool
+	loadStart time.Time
 }
 
 // hubLoadErrorMsg is sent when a hub server listing fails.

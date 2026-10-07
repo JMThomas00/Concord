@@ -166,6 +166,7 @@ The Grapevine is Concord's opt-in server directory. A **hub** lists the servers 
 - **Listing a server:** the installer asks, or set `[grapevine]` in `concord-server.toml` (below). The server registers, reports how many people are online, and re-registers by itself if the hub restarts.
 - **Joining from a listing:** listings never show a server's address. When you join, the hub asks the server to accept a single-use token, and only then gives you its address.
 - **Running a hub:** the installer, or `concord-hub` (a setup wizard on first run; `--setup` runs it again, `--dashboard` shows live stats).
+- **Connecting hubs:** list another hub under `[[peer_hubs]]` in `grapevine-hub.toml` (the installer does this for the official hub) and set `public_url` to your hub's own address. Your hub announces itself to its peers. Each peer checks that it answers there, at a public address, and adds it back, so both share listings, and yours appears on [concordchat.cc](https://concordchat.cc/grapevine). `accept_peer_announcements = false` turns that off for your hub. An admin can block a hub with `DELETE /v1/hubs/{id}`, and a hub that added itself is dropped after a week unreachable.
 
 ## Running a Server by Hand
 

@@ -88,7 +88,34 @@ func NewHubDB(path string) (*HubDB, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := hdb.addColumnIfMissing("peer_hubs", "announced", "INTEGER DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate peer_hubs: %w", err)
+	}
 	return hdb, nil
+}
+
+func (db *HubDB) addColumnIfMissing(table, column, decl string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl))
+	return err
 }
 
 // ── Registered servers ────────────────────────────────────────────────────────
@@ -235,9 +262,72 @@ func (db *HubDB) UpsertPeerHub(h *PeerHub) error {
 	return err
 }
 
+// AddAnnouncedPeer records a hub that announced itself. A hub already known
+// keeps its state: in particular one an admin blocked stays blocked.
+func (db *HubDB) AddAnnouncedPeer(name, url string) (added bool, err error) {
+	res, err := db.Exec(`
+		INSERT INTO peer_hubs (id, name, url, is_active, last_synced, registered_at, announced)
+		VALUES (?,?,?,1,NULL,?,1)
+		ON CONFLICT(url) DO NOTHING`,
+		uuid.New().String(), name, url, time.Now().UTC(),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// CountPeerHubs is how many peer hubs are recorded, blocked ones included.
+func (db *HubDB) CountPeerHubs() (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM peer_hubs`).Scan(&n)
+	return n, err
+}
+
+// DeactivatePeerHub stops syncing with a peer and leaves it out of
+// GET /v1/hubs. It stays recorded, so announcing again doesn't bring it back.
+func (db *HubDB) DeactivatePeerHub(id string) (bool, error) {
+	res, err := db.Exec(`UPDATE peer_hubs SET is_active=0 WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	if _, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id=?`, id); err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// PeerAnnounced reports whether url belongs to a hub that added itself, or
+// to no recorded hub at all (both get the public-addresses-only client).
+func (db *HubDB) PeerAnnounced(url string) bool {
+	var announced bool
+	if err := db.QueryRow(`SELECT announced FROM peer_hubs WHERE url=?`, url).Scan(&announced); err != nil {
+		return true
+	}
+	return announced
+}
+
+// PruneAnnouncedPeers deletes active hubs that added themselves and haven't
+// synced since before cutoff (never synced counts from when they announced).
+// They come back on their own when they're up and announce again.
+func (db *HubDB) PruneAnnouncedPeers(cutoff time.Time) (int64, error) {
+	const stale = `announced=1 AND is_active=1 AND COALESCE(last_synced, registered_at) < ?`
+	// Listings first: the foreign key's cascade isn't relied on.
+	if _, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id IN (SELECT id FROM peer_hubs WHERE `+stale+`)`, cutoff.UTC()); err != nil {
+		return 0, err
+	}
+	res, err := db.Exec(`DELETE FROM peer_hubs WHERE `+stale, cutoff.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (db *HubDB) ListPeerHubs() ([]*PeerHub, error) {
 	rows, err := db.Query(`
-		SELECT id, name, url, is_active, last_synced, registered_at
+		SELECT id, name, url, is_active, COALESCE(announced, 0), last_synced, registered_at
 		FROM peer_hubs ORDER BY registered_at`)
 	if err != nil {
 		return nil, err
@@ -248,7 +338,7 @@ func (db *HubDB) ListPeerHubs() ([]*PeerHub, error) {
 	for rows.Next() {
 		ph := &PeerHub{}
 		var lastSynced sql.NullTime
-		err := rows.Scan(&ph.ID, &ph.Name, &ph.URL, &ph.IsActive, &lastSynced, &ph.RegisteredAt)
+		err := rows.Scan(&ph.ID, &ph.Name, &ph.URL, &ph.IsActive, &ph.Announced, &lastSynced, &ph.RegisteredAt)
 		if err != nil {
 			return nil, err
 		}

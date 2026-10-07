@@ -51,6 +51,7 @@ func (pl *Plan) LoadSettings() {
 		if p := num(m["port"]); p > 0 {
 			pl.HubPort, pl.oldHubPort = strconv.Itoa(p), strconv.Itoa(p)
 		}
+		pl.HubAddress = str(m["public_url"], pl.HubAddress)
 		pl.HubFederate = false
 		if peers, ok := m["peer_hubs"].([]any); ok {
 			for _, p := range peers {
@@ -143,6 +144,9 @@ func (pl *Plan) mergeHubConfig(officialName, officialURL string) ([]byte, error)
 	}
 	if pl.HubFederate {
 		peers = append(peers, map[string]any{"name": officialName, "url": officialURL})
+		if u := pl.HubPublicURL(); u != "" {
+			m["public_url"] = u
+		}
 	}
 	m["peer_hubs"] = peers
 	return toml.Marshal(m)

@@ -154,6 +154,11 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 				Description("Connected hubs share their listings: your servers show\nup across the Grapevine, and theirs show up on yours.").
 				Affirmative("Connect").Negative("Stand alone").Value(&pl.HubFederate),
 		).WithHideFunc(fresh(installer.Hub)),
+		b.group(
+			huh.NewInput().Title("The address other hubs reach yours at").
+				Description("A domain name or your public IP, not localhost. Your hub tells the\nofficial one this address, and it adds yours back once it answers there.").
+				Placeholder("hub.example.com").Value(&pl.HubAddress).Validate(check(required("the official hub needs an address to reach yours"))),
+		).WithHideFunc(func() bool { return fresh(installer.Hub)() || !pl.HubFederate }),
 	)
 	_ = groups
 	return b
@@ -436,7 +441,7 @@ func (m *model) viewReview() string {
 			row("Name", pl.HubName)
 			row("Port", pl.HubPort)
 			if pl.HubFederate {
-				row("Grapevine", "connected to "+official.HubName)
+				row("Grapevine", "connected to "+official.HubName+", as "+pl.HubPublicURL())
 			} else {
 				row("Grapevine", "stands alone")
 			}

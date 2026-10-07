@@ -43,6 +43,7 @@ type PeerHub struct {
 	Name         string
 	URL          string
 	IsActive     bool
+	Announced    bool // added itself via POST /v1/hubs/announce
 	LastSynced   *time.Time
 	RegisteredAt time.Time
 }

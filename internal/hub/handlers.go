@@ -347,8 +347,7 @@ func (h *Hub) proxyJoin(w http.ResponseWriter, serverID, originURL string) {
 	}
 	req.Header.Set(federationHopHeader, "1")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := h.peerClient(originURL, 15*time.Second).Do(req)
 	if err != nil {
 		ApiLog.Error("proxy join failed", "id", serverID, "via", originURL, "error", err)
 		writeError(w, http.StatusBadGateway, "origin hub unreachable")

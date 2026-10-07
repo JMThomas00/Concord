@@ -96,3 +96,26 @@ func TestAddClientServers(t *testing.T) {
 		t.Fatalf("new entry %+v", s)
 	}
 }
+
+// A connected hub gets its own address, so it can announce itself to the
+// official hub; a typed host gets a scheme and the hub's port.
+func TestHubPublicURL(t *testing.T) {
+	cases := []struct{ typed, port, want string }{
+		{"hub.example.com", "7777", "http://hub.example.com:7777"},
+		{"hub.example.com", "443", "https://hub.example.com"},
+		{"https://hub.example.com/", "7777", "https://hub.example.com"},
+		{"203.0.113.5:9000", "7777", "http://203.0.113.5:9000"},
+		{"", "7777", ""},
+	}
+	for _, c := range cases {
+		pl := &Plan{HubAddress: c.typed, HubPort: c.port}
+		if got := pl.HubPublicURL(); got != c.want {
+			t.Errorf("%q on %s: %q, want %q", c.typed, c.port, got, c.want)
+		}
+	}
+	pl := &Plan{HubName: "Grape Hub", HubPort: "7777", HubFederate: true, HubAddress: "hub.example.com"}
+	b, _, err := pl.HubConfigTOML("Official", "https://grapevine.example")
+	if err != nil || !strings.Contains(string(b), `public_url = 'http://hub.example.com:7777'`) {
+		t.Fatalf("hub config has no public_url (%v):\n%s", err, b)
+	}
+}

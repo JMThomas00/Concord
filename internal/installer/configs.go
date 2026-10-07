@@ -57,6 +57,7 @@ type hubConfig struct {
 	FederationSync   int       `toml:"federation_sync_minutes"`
 	AdminToken       string    `toml:"admin_token"`
 	PeerHubs         []hubPeer `toml:"peer_hubs"`
+	PublicURL        string    `toml:"public_url,omitempty"`
 }
 
 type hubPeer struct {
@@ -111,6 +112,7 @@ func (pl *Plan) HubConfigTOML(officialName, officialURL string) ([]byte, string,
 	}
 	if pl.HubFederate {
 		c.PeerHubs = []hubPeer{{Name: officialName, URL: officialURL}}
+		c.PublicURL = pl.HubPublicURL() // so it announces itself to the official hub
 	}
 	b, err := toml.Marshal(c)
 	return b, token, err

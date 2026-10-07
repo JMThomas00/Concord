@@ -2,7 +2,6 @@ package client
 
 import (
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -44,6 +43,7 @@ type HubBrowserState struct {
 	cursor     int
 	loading    bool
 	loadStart  time.Time // when the current hub started loading (the loading bar)
+	arrived    bool      // its listing is in, waiting for the bar to finish
 	err        string
 
 	// Category tabs (derived from allServers)
@@ -355,6 +355,7 @@ func (a *App) openHubBrowser() tea.Cmd {
 	a.showHubBrowser = true
 	a.hubBrowser.loading = true
 	a.hubBrowser.loadStart = time.Now()
+	a.hubBrowser.arrived = false
 	a.hubBrowser.autoFallback = true // silently try next hub if this one is unreachable
 
 	client := a.hubBrowser.currentClient()
@@ -631,6 +632,7 @@ func (a *App) refreshCurrentHub() tea.Cmd {
 	s := &a.hubBrowser
 	s.loading = true
 	s.loadStart = time.Now()
+	s.arrived = false
 	s.err = ""
 	s.allServers = nil
 	s.filtered = nil
@@ -656,7 +658,18 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		if m.hubURL != s.currentHubURL() {
 			return true, nil // stale response from a previous hub selection
 		}
+		if m.held && (!s.loading || !m.loadStart.Equal(s.loadStart)) {
+			return true, nil // held for a load that's since been replaced
+		}
+		// The loading bar always runs its course (hubLoadMin), so it reads as
+		// a bar rather than a flicker: a listing that's early waits for it.
+		if wait := hubLoadMin - time.Since(s.loadStart); s.loading && !m.held && wait > 0 {
+			s.arrived = true
+			m.held, m.loadStart = true, s.loadStart
+			return true, tea.Tick(wait, func(time.Time) tea.Msg { return m })
+		}
 		s.loading = false
+		s.arrived = false
 		s.err = ""
 		s.allServers = m.servers
 		s.filtered = make([]HubServerEntry, 0, len(m.servers))
@@ -675,6 +688,7 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		if s.autoFallback && s.selectedHub < len(s.hubURLs)-1 {
 			s.selectedHub++
 			s.loadStart = time.Now() // the bar starts over for the next hub
+			s.arrived = false
 			return true, fetchHubServers(s.currentClient(), s.currentHubURL())
 		}
 		s.loading = false
@@ -1241,10 +1255,14 @@ func wrapText(s string, width int) string {
 // hubLoadingGrape rides the tip of the hub browser's loading bar.
 const hubLoadingGrape = "🍇"
 
+// hubLoadMin is how long the loading bar takes to fill, at the least.
+const hubLoadMin = 4 * time.Second
+
 // renderHubLoading is the hub browser's loading bar while a hub's listing is
 // on its way: which hub, and a bar with a grape at its tip. A hub answers in
-// one request, so there's no real progress to show; the bar eases toward the
-// end (never reaching it) and the listing replaces it as soon as it arrives.
+// one request, so there's no real progress to show: the bar fills over
+// hubLoadMin, waiting short of the end if the hub is slower, and the listing
+// replaces it when both are done.
 func (a *App) renderHubLoading(innerW int, elapsed time.Duration) []string {
 	dim := lipgloss.Color(a.theme.Colors.Comment)
 	accent := lipgloss.Color(a.theme.Colors.Purple)
@@ -1252,7 +1270,11 @@ func (a *App) renderHubLoading(innerW int, elapsed time.Duration) []string {
 	if barW < 8 {
 		return []string{lipgloss.NewStyle().Foreground(dim).Italic(true).Render("  Connecting…")}
 	}
-	p := 0.92 * (1 - math.Exp(-elapsed.Seconds()/1.5))
+	t := min(1, elapsed.Seconds()/hubLoadMin.Seconds())
+	p := t * t * (3 - 2*t) // eased in and out
+	if !a.hubBrowser.arrived {
+		p = min(p, 0.92)
+	}
 	filled := int(p * float64(barW))
 	bar := lipgloss.NewStyle().Foreground(accent).Render(strings.Repeat("━", filled)) +
 		hubLoadingGrape +

@@ -46,7 +46,8 @@ type Plan struct {
 	HubName     string
 	HubPort     string
 	HubStart    string
-	HubFederate bool // peer with the official hub
+	HubFederate bool   // peer with the official hub
+	HubAddress  string // where other hubs reach this one, as typed (HubPublicURL reads it)
 
 	// Release to install: "" for the latest. Source, when set, is a local
 	// archive or folder of binaries to install instead of downloading.
@@ -210,7 +211,7 @@ func (pl *Plan) Tidy() {
 	for _, d := range []*string{&pl.ClientDir, &pl.ServerDir, &pl.HubDir} {
 		*d = filepath.Clean(ExpandHome(*d))
 	}
-	for _, s := range []*string{&pl.ServerName, &pl.AdminEmail, &pl.PublicHost, &pl.Description, &pl.OtherTags, &pl.HubName, &pl.ServerPort, &pl.HubPort} {
+	for _, s := range []*string{&pl.ServerName, &pl.AdminEmail, &pl.PublicHost, &pl.Description, &pl.OtherTags, &pl.HubName, &pl.ServerPort, &pl.HubPort, &pl.HubAddress} {
 		*s = strings.TrimSpace(*s)
 	}
 }
@@ -248,4 +249,21 @@ func (pl *Plan) AllTags() []string {
 		}
 	}
 	return out
+}
+
+// HubPublicURL is the hub's address as other hubs use it: what was typed, with
+// a scheme added when there isn't one (https on port 443, otherwise http and
+// the hub's port), and no trailing slash.
+func (pl *Plan) HubPublicURL() string {
+	a := strings.TrimRight(strings.TrimSpace(pl.HubAddress), "/")
+	if a == "" || strings.Contains(a, "://") {
+		return a
+	}
+	if pl.HubPortNum() == 443 {
+		return "https://" + a
+	}
+	if strings.Contains(a, ":") && !strings.HasPrefix(a, "[") {
+		return "http://" + a // already has a port
+	}
+	return fmt.Sprintf("http://%s:%d", a, pl.HubPortNum())
 }
