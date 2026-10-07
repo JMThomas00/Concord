@@ -27,7 +27,7 @@ func (a *App) canShowPhoto() bool {
 
 // photoGrapes reports whether this launch shows the picture grapes now.
 func (a *App) photoGrapes() bool {
-	return isStageView(a.view) && a.pick(layerLogo) == "photo" && a.pick(layerLight) != "disco"
+	return a.onStage() && a.pick(layerLogo) == "photo" && a.pick(layerLight) != "disco"
 }
 
 // blankLogo is the logo's footprint, empty, for the picture to sit in.

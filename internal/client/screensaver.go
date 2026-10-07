@@ -55,7 +55,7 @@ type pipeHead struct {
 func (a *App) handleIdleCheck() tea.Cmd {
 	a.maybeGlitch(time.Now())
 	saversOn := a.uiConfig == nil || !a.uiConfig.Display.NoScreensaver
-	if saversOn && a.saver == nil && a.loading == nil && a.connecting == nil && isStageView(a.view) &&
+	if saversOn && a.saver == nil && a.loading == nil && a.connecting == nil && a.onStage() &&
 		a.surprise() == surpriseFull && time.Since(a.lastInput) >= saverAfter && a.width > 30 && a.height > 10 {
 		kind := saverKinds[rng.Intn(len(saverKinds))]
 		a.saver = &saverState{kind: kind, start: time.Now(), last: time.Now(), seed: rng.Uint64(),

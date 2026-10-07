@@ -50,6 +50,14 @@ func isStageView(v View) bool {
 	return false
 }
 
+// onStage reports whether a login-stage screen is what's showing: a stage
+// view with nothing covering it. The hub browser opens over the login
+// screen (Ctrl+G) and draws its own full-screen page, so the stage's
+// background, logo and surprises must stay off while it's up.
+func (a *App) onStage() bool {
+	return isStageView(a.view) && !a.showHubBrowser
+}
+
 // syncFx starts a transition when the login stage changes page, and starts
 // the ticker when anything is moving. Called after every Update.
 func (a *App) syncFx() tea.Cmd {
@@ -92,7 +100,10 @@ func (a *App) fxMoving() bool {
 		a.glitching(now) {
 		return true
 	}
-	return isStageView(a.view) && (a.atmosphereMoving() || a.calendar() != "" || a.dozing())
+	if a.showHubBrowser && (a.hubBrowser.loading || a.hubBrowser.joining) {
+		return true // the hub browser's loading bar
+	}
+	return a.onStage() && (a.atmosphereMoving() || a.calendar() != "" || a.dozing())
 }
 
 func (a *App) handleFxTick(msg fxTickMsg) tea.Cmd {
@@ -119,7 +130,7 @@ func (a *App) applyFx(out string) string {
 		return out
 	}
 	now := time.Now()
-	if isStageView(a.view) {
+	if a.onStage() {
 		t := a.fx.trans
 		if a.surprise() != surpriseOff || t != nil || a.shaking(now) {
 			g := parseFrame(out, a.width, a.height)

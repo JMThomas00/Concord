@@ -2,8 +2,10 @@ package client
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
@@ -41,6 +43,7 @@ type HubBrowserState struct {
 	filtered   []HubServerEntry
 	cursor     int
 	loading    bool
+	loadStart  time.Time // when the current hub started loading (the loading bar)
 	err        string
 
 	// Category tabs (derived from allServers)
@@ -351,6 +354,7 @@ func (a *App) openHubBrowser() tea.Cmd {
 	a.hubBrowser.returnView = a.view
 	a.showHubBrowser = true
 	a.hubBrowser.loading = true
+	a.hubBrowser.loadStart = time.Now()
 	a.hubBrowser.autoFallback = true // silently try next hub if this one is unreachable
 
 	client := a.hubBrowser.currentClient()
@@ -626,6 +630,7 @@ func (a *App) handleHubBrowserAddHubKey(msg tea.KeyMsg) tea.Cmd {
 func (a *App) refreshCurrentHub() tea.Cmd {
 	s := &a.hubBrowser
 	s.loading = true
+	s.loadStart = time.Now()
 	s.err = ""
 	s.allServers = nil
 	s.filtered = nil
@@ -669,6 +674,7 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		// automatic open (not a user-initiated refresh or explicit tab switch).
 		if s.autoFallback && s.selectedHub < len(s.hubURLs)-1 {
 			s.selectedHub++
+			s.loadStart = time.Now() // the bar starts over for the next hub
 			return true, fetchHubServers(s.currentClient(), s.currentHubURL())
 		}
 		s.loading = false
@@ -949,8 +955,7 @@ func (a *App) renderHubBrowserView() string {
 
 	var rows []string
 	if s.loading {
-		rows = append(rows, lipgloss.NewStyle().Foreground(dim).Italic(true).
-			Render("  Fetching server list..."))
+		rows = append(rows, a.renderHubLoading(innerW, time.Since(s.loadStart))...)
 	} else if len(s.filtered) == 0 && s.err == "" {
 		rows = append(rows, lipgloss.NewStyle().Foreground(dim).Italic(true).
 			Render("  No servers found."))
@@ -1231,4 +1236,28 @@ func wrapText(s string, width int) string {
 	}
 	lines = append(lines, line)
 	return strings.Join(lines, "\n")
+}
+
+// hubLoadingGrape rides the tip of the hub browser's loading bar.
+const hubLoadingGrape = "🍇"
+
+// renderHubLoading is the hub browser's loading bar while a hub's listing is
+// on its way: which hub, and a bar with a grape at its tip. A hub answers in
+// one request, so there's no real progress to show; the bar eases toward the
+// end (never reaching it) and the listing replaces it as soon as it arrives.
+func (a *App) renderHubLoading(innerW int, elapsed time.Duration) []string {
+	dim := lipgloss.Color(a.theme.Colors.Comment)
+	accent := lipgloss.Color(a.theme.Colors.Purple)
+	barW := min(48, innerW-8)
+	if barW < 8 {
+		return []string{lipgloss.NewStyle().Foreground(dim).Italic(true).Render("  Connecting…")}
+	}
+	p := 0.92 * (1 - math.Exp(-elapsed.Seconds()/1.5))
+	filled := int(p * float64(barW))
+	bar := lipgloss.NewStyle().Foreground(accent).Render(strings.Repeat("━", filled)) +
+		hubLoadingGrape +
+		lipgloss.NewStyle().Foreground(dim).Render(strings.Repeat("─", barW-filled))
+	label := lipgloss.NewStyle().Foreground(dim).Italic(true).
+		Render("Connecting to " + hubDisplayName(a.hubBrowser.currentHubURL()) + "…")
+	return []string{"", "  " + label, "", "  " + bar}
 }

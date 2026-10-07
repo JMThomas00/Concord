@@ -435,7 +435,8 @@ func (a *App) loginFormBlock() (string, int) {
 		}
 		b.WriteString("\n\n")
 
-		hints = []keyHint{{"Tab", "Switch fields"}, {"Enter", "Login/Register"}, {"Ctrl+G", "Discover servers"}, {"Ctrl+S", "Settings"}, {"Ctrl+U", "Update"}, {"Ctrl+Q", "Quit"}}
+		// Ctrl+G has its own tip line below the hints.
+		hints = []keyHint{{"Tab", "Switch fields"}, {"Enter", "Login/Register"}, {"Ctrl+S", "Settings"}, {"Ctrl+U", "Update"}, {"Ctrl+Q", "Quit"}}
 	}
 
 	// Create the form box with padding and fixed width
@@ -454,9 +455,34 @@ func (a *App) loginFormBlock() (string, int) {
 			hintBlock = grid
 		}
 	}
+	if tip := a.grapevineTip(a.width - 4); tip != "" {
+		hintBlock += "\n\n" + tip
+	}
 	a.formHintRows = lipgloss.Height(hintBlock)
 	below := lipgloss.JoinVertical(lipgloss.Left, loginForm, formHintsIndent.Render(hintBlock))
 	return below, lipgloss.Height(below) - formErrorLines(a.loginError, formWidth)
+}
+
+// grapevineTip is the login screen's pointer to the hub browser, which is
+// easy to miss among the shortcut hints. Empty on a screen too short or
+// narrow to spare the rows.
+func (a *App) grapevineTip(maxW int) string {
+	if a.height < 32 {
+		return ""
+	}
+	key := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
+		Background(lipgloss.Color(a.theme.Colors.Selection)).
+		Bold(true).
+		Padding(0, 1).
+		Render("Ctrl+G")
+	text := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true)
+	for _, words := range []string{"Tip: press %s to browse public servers on the Grapevine", "Tip: %s browses public servers"} {
+		if tip := text.Render(strings.SplitN(words, "%s", 2)[0]) + key + text.Render(strings.SplitN(words, "%s", 2)[1]); lipgloss.Width(tip) <= maxW {
+			return tip
+		}
+	}
+	return ""
 }
 
 // renderRegisterView renders the registration screen

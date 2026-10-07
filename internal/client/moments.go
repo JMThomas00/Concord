@@ -226,7 +226,7 @@ func (a *App) glitching(now time.Time) bool {
 
 // maybeGlitch starts a glitch when one's due (from the idle check).
 func (a *App) maybeGlitch(now time.Time) {
-	if !a.glitchy() || !isStageView(a.view) || a.loading != nil {
+	if !a.glitchy() || !a.onStage() || a.loading != nil {
 		return
 	}
 	if a.fx.nextGlitch.IsZero() {
