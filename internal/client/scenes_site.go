@@ -4,6 +4,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // The website's hero scenes (concord-site scenes.js), as terminal art. The
@@ -710,4 +712,69 @@ func (a *App) sinceBulbPop(now time.Time) float64 {
 		return -1
 	}
 	return now.Sub(a.fx.bulbPopAt).Seconds()
+}
+
+// sceneObject is the screen area a background's centrepiece takes up on the
+// right (the moon, the lightbulb and its glow, the orbit's and the galaxy's
+// cores), for the banner to keep clear of; false for a background without one.
+func sceneObject(kind string, w, h int) (x0, y0, x1, y1 int, ok bool) {
+	fw, fh := float64(w), float64(h)
+	switch kind {
+	case "moonrise":
+		mx, my, mr := fw*0.82, fh*0.24, math.Max(4, fh*0.16)
+		return int(mx - mr - 2), int(my - mr/2 - 1), int(mx + mr + 2), int(my + mr/2 + 1), true
+	case "lightbulb":
+		col, top, _ := bulbGeom(w, h, 0)
+		return col - 10, 0, col + 10, top + len(bulbArt) + 2, true
+	case "orbit":
+		cx, cy := fw*0.8, fh*0.42
+		R := math.Min(fw*0.22, fh*0.8) * 0.5
+		return int(cx - R), int(cy - R/2), int(cx + R), int(cy + R/2), true
+	case "galaxy":
+		cx, cy := fw*0.72, fh*0.44
+		R := math.Min(fw*0.3, fh*1.1) * 0.45
+		return int(cx - R), int(cy - R/2), int(cx + R), int(cy + R/2), true
+	}
+	return 0, 0, 0, 0, false
+}
+
+// sceneClearance returns a test for whether banner i, where the login stage
+// puts it, stays clear of this launch's background object (always true when
+// there isn't one). The placement is worked out once, for all the banners.
+func (a *App) sceneClearance() func(i int) bool {
+	all := func(int) bool { return true }
+	x0, y0, x1, y1, ok := sceneObject(a.pick(layerAtmosphere), a.width, a.height)
+	if !ok {
+		return all
+	}
+	var below string
+	var stable int
+	switch a.view {
+	case ViewLogin:
+		below, stable = a.loginFormBlock()
+	case ViewRegister:
+		below, stable = a.registerFormBlock()
+	default:
+		return all
+	}
+	g := a.logoLockupFor(stable)
+	p := a.lockupPlace(g, lipgloss.Width(below), lipgloss.Height(below), stable)
+	return func(i int) bool {
+		if i < 0 || i >= len(bannerDims) {
+			return true
+		}
+		bw, bh := min(bannerDims[i][0], g.boxW), min(bannerDims[i][1], g.slot)
+		bx0, by0 := p.bannerCol, p.bannerBottom-bh
+		return bx0+bw+1 < x0 || bx0 > x1 || p.bannerBottom <= y0 || by0 > y1
+	}
+}
+
+// anyBanner reports whether any banner passes ok.
+func (a *App) anyBanner(ok func(int) bool) bool {
+	for i := range banners {
+		if ok(i) {
+			return true
+		}
+	}
+	return false
 }

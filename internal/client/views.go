@@ -195,6 +195,57 @@ func (a *App) currentLockup() (logoLockup, bool) {
 	return a.logoLockupFor(stable), true
 }
 
+// lockupPlacement is where the login stage's group goes on screen.
+type lockupPlacement struct {
+	topPad, leftPad int
+	grapeTop        int // the grapes' top row within the group
+	bannerCol       int // the screen column the banner box starts at
+	bannerBottom    int // the screen row just below the banner box
+}
+
+// lockupPlace works out the placement for a form block belowW wide and
+// belowH tall (stableBelow without transient lines). layoutBannerScreen
+// draws with it; the banner pick reads it to keep clear of a scene's object.
+func (a *App) lockupPlace(g logoLockup, belowW, belowH, stableBelow int) lockupPlacement {
+	slot := g.slot
+	// visibleTop is the first row of what normally shows: most banners are
+	// short, so the top of the 21-row slot is usually empty.
+	visibleTop := max(0, slot-10)
+	visibleW := belowW
+	grapesW, grapeTop := 0, 0
+	if g.grapes {
+		// The grapes sit left of the column with their bottom row level with
+		// the form's last row (the password box on the login screen). That
+		// row is 2 + the hint rows up from the bottom of the stable form
+		// block (form bottom padding, then the hints), and error messages
+		// appear below it, so the grapes stay put along with the form.
+		grapeRows := grapeLogos[grapeLogoSize].rows
+		formLastRow := slot + bannerFormGap + stableBelow - 2 - max(1, a.formHintRows)
+		grapeTop = max(0, formLastRow-(grapeRows-1))
+		visibleTop = grapeTop
+		grapesW = grapeLogoSize + grapeLockupGap
+		visibleW += grapesW
+	}
+
+	// Center what normally shows (grapes top to hints; grapes left edge to
+	// the end of the hints row) rather than the whole reserved area, so the
+	// empty room kept for rare tall or wide banners doesn't push everything
+	// down and to the left. Both depend only on the terminal size and the
+	// stable form height, never on the banner, so nothing shifts on a
+	// shuffle. Clamped so the full group always stays on screen.
+	fullH := slot + bannerFormGap + stableBelow
+	topPad := (a.height-(fullH-visibleTop))/2 - visibleTop
+	if overflow := topPad + slot + bannerFormGap + belowH - a.height; overflow > 0 {
+		topPad -= overflow
+	}
+	topPad = max(0, topPad)
+
+	groupW := grapesW + max(formTextIndent+g.boxW, belowW)
+	leftPad := max(0, min((a.width-visibleW)/2, a.width-groupW))
+	return lockupPlacement{topPad: topPad, leftPad: leftPad, grapeTop: grapeTop,
+		bannerCol: leftPad + grapesW + formTextIndent, bannerBottom: topPad + slot}
+}
+
 func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
 	below = zone.Mark("stage-form", below) // where the form shakes (stage.go)
 	g := a.logoLockupFor(stableBelow)
@@ -224,40 +275,12 @@ func (a *App) layoutBannerScreen(banner, below string, stableBelow int) string {
 	}, "\n")
 
 	group := column
-	// visibleTop is the first row of what normally shows: most banners are
-	// short, so the top of the 21-row slot is usually empty.
-	visibleTop := max(0, slot-10)
-	visibleW := lipgloss.Width(below)
+	p := a.lockupPlace(g, lipgloss.Width(below), lipgloss.Height(below), stableBelow)
 	if g.grapes {
-		// The grapes sit left of the column with their bottom row level with
-		// the form's last row (the password box on the login screen). That
-		// row is 2 + the hint rows up from the bottom of the stable form
-		// block (form bottom padding, then the hints), and error messages
-		// appear below it, so the grapes stay put along with the form.
-		grapeRows := grapeLogos[grapeLogoSize].rows
-		formLastRow := slot + bannerFormGap + stableBelow - 2 - max(1, a.formHintRows)
-		grapeTop := max(0, formLastRow-(grapeRows-1))
-		grapes := strings.Repeat("\n", grapeTop) + a.renderGrapeLogo()
+		grapes := strings.Repeat("\n", p.grapeTop) + a.renderGrapeLogo()
 		group = lipgloss.JoinHorizontal(lipgloss.Top, grapes, strings.Repeat(" ", grapeLockupGap), column)
-		visibleTop = grapeTop
-		visibleW += grapeLogoSize + grapeLockupGap
 	}
-
-	// Center what normally shows (grapes top to hints; grapes left edge to
-	// the end of the hints row) rather than the whole reserved area, so the
-	// empty room kept for rare tall or wide banners doesn't push everything
-	// down and to the left. Both depend only on the terminal size and the
-	// stable form height, never on the banner, so nothing shifts on a
-	// shuffle. Clamped so the full group always stays on screen.
-	fullH := slot + bannerFormGap + stableBelow
-	topPad := (a.height-(fullH-visibleTop))/2 - visibleTop
-	if overflow := topPad + slot + bannerFormGap + lipgloss.Height(below) - a.height; overflow > 0 {
-		topPad -= overflow
-	}
-	topPad = max(0, topPad)
-
-	groupW := lipgloss.Width(group)
-	leftPad := max(0, min((a.width-visibleW)/2, a.width-groupW))
+	topPad, leftPad := p.topPad, p.leftPad
 
 	content := strings.Repeat("\n", topPad) + lipgloss.NewStyle().PaddingLeft(leftPad).Render(group)
 	// On a short screen (or with an error under the form) the group can be

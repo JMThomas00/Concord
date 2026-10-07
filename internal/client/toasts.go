@@ -68,9 +68,16 @@ func (a *App) toastFit() int {
 	return max(1, (bottom-a.height/3+1+toastGap)/(toastRows+toastGap))
 }
 
+// Toast orders (Settings > Notifications > Toast Order).
+const (
+	ToastOrderNewest = ""       // the newest at the bottom, dismissed first (the default)
+	ToastOrderOldest = "oldest" // a queue: the oldest at the bottom
+)
+
 // visibleToasts retires brief toasts that have had their time and returns
-// the ones on screen, oldest first (the newest is drawn at the bottom), with
-// how many older ones are waiting above them.
+// the ones on screen from the top of the stack to the bottom, with how many
+// more are waiting above them: older ones with the newest first, newer ones
+// with the oldest first.
 func (a *App) visibleToasts(now time.Time) (vis []*toast, waiting int) {
 	live := a.toasts[:0]
 	for _, t := range a.toasts {
@@ -80,7 +87,13 @@ func (a *App) visibleToasts(now time.Time) (vis []*toast, waiting int) {
 	}
 	a.toasts = live
 	n := min(len(a.toasts), a.toastFit())
-	vis = a.toasts[len(a.toasts)-n:]
+	if a.notifConfig.ToastOrder == ToastOrderOldest {
+		for i := n - 1; i >= 0; i-- { // the oldest n, the oldest lowest
+			vis = append(vis, a.toasts[i])
+		}
+	} else {
+		vis = a.toasts[len(a.toasts)-n:]
+	}
 	bottom := float64(a.height - 2 - toastRows + 1)
 	for i, t := range vis {
 		slot := float64(len(vis) - 1 - i) // 0 for the newest
@@ -95,7 +108,7 @@ func (a *App) visibleToasts(now time.Time) (vis []*toast, waiting int) {
 	return vis, len(a.toasts) - n
 }
 
-// currentToast is the newest toast on screen (nil for none).
+// currentToast is the toast at the bottom of the stack (nil for none).
 func (a *App) currentToast(now time.Time) *toast {
 	vis, _ := a.visibleToasts(now)
 	if len(vis) == 0 {
@@ -186,7 +199,7 @@ func (a *App) dismissToast(t *toast) {
 	}
 }
 
-// dismissBottomToast dismisses the newest toast (Ctrl+X); false when there
+// dismissBottomToast dismisses the bottom toast (Ctrl+X); false when there
 // wasn't one.
 func (a *App) dismissBottomToast() bool {
 	if t := a.currentToast(time.Now()); t != nil {

@@ -96,6 +96,10 @@ type App struct {
 	fx         fxState
 	collection *Collection
 	toasts     []*toast
+
+	// bannerShuffled: Ctrl+R picked the banner, so it may be any size
+	// (otherwise it keeps clear of a scene's object; scenes_site.go).
+	bannerShuffled bool
 	toastRects []toastRect // where the toasts were last drawn, for clicks (toasts.go)
 	leaderboards map[string]*leaderboardState // by server and plugin (plugin_records.go)
 	loading    *loadingState // the launch's loading screen while it plays

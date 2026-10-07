@@ -819,6 +819,13 @@ func (a *App) handleNotifFieldActivate(s *SettingsState) {
 			a.notifConfig.ToastScope = DesktopNotifyScopeCurrentServer
 		}
 		a.saveNotifConfig()
+	case 10: // Toast Order: newest first ↔ oldest first
+		if a.notifConfig.ToastOrder == ToastOrderOldest {
+			a.notifConfig.ToastOrder = ToastOrderNewest
+		} else {
+			a.notifConfig.ToastOrder = ToastOrderOldest
+		}
+		a.saveNotifConfig()
 	}
 }
 
@@ -1898,7 +1905,14 @@ func (a *App) renderNotificationsContent(width, height int) string {
 		toastScopeVal = "Current Server Only"
 	}
 	writeField(9, "Toasts From", toastScopeVal+" ◀▶")
-	addLine(dimStyle.Render("  Click a toast to go to its channel. None for the channel you're in."))
+
+	orderVal := "Newest First (the newest at the bottom, dismissed first)"
+	if cfg.ToastOrder == ToastOrderOldest {
+		orderVal = "Oldest First (a queue: the oldest at the bottom)"
+	}
+	writeField(10, "Toast Order", orderVal+" ◀▶")
+	addLine(dimStyle.Render("  Click a toast to dismiss it (a message's opens its channel), or Ctrl+X for the"))
+	addLine(dimStyle.Render("  bottom one. None for the channel you're in."))
 
 	// Apply scroll window: clip allMiddleLines to layout.middleLines starting at NotifScrollOffset.
 	offset := 0
@@ -2448,7 +2462,7 @@ func (a *App) renderDisplayContent(width, height int) string {
 // in the middle section. Layout: header+blank (2), fields 0-1 (3 lines
 // each), note+blank (2), divider+blank (2), header+blank (2), fields 2-6
 // (3 lines each), divider+blank (2), field 7 (2 lines, no trailing blank).
-var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31, 38, 41}
+var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31, 38, 41, 44}
 
 // updateNotifScroll adjusts NotifScrollOffset so the focused field is visible.
 func (a *App) updateNotifScroll(s *SettingsState) {

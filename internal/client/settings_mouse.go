@@ -166,7 +166,7 @@ func (a *App) handleNotificationsCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 
-	for field := 0; field <= 7; field++ {
+	for field := range notifFieldLineStarts {
 		if zoneInBounds(fmt.Sprintf("notif-field:%d", field), msg) {
 			s.NotifFocusField = field
 			return a.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})

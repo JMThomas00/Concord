@@ -182,6 +182,9 @@ type NotificationConfig struct {
 	// "current_server". The unread counts in the channel list show either way.
 	ToastMode  string `json:"toast_mode,omitempty"`
 	ToastScope string `json:"toast_scope,omitempty"`
+	// ToastOrder: "" keeps the newest at the bottom of the stack (dismissed
+	// first); "oldest" queues them, the oldest at the bottom.
+	ToastOrder string `json:"toast_order,omitempty"`
 }
 
 // DisplayConfig holds display and appearance preferences

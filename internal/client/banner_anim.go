@@ -110,6 +110,7 @@ func (a *App) setBanner(idx int) {
 // that fits the logo box at the current terminal size, animated in.
 func (a *App) shuffleBanner() tea.Cmd {
 	a.nameBanner = "" // back to the 326
+	a.bannerShuffled = true // any size now, object or not (scenes_site.go)
 	if a.count("shuffles") == 25 {
 		a.unlock("shuffler")
 	}
@@ -132,12 +133,24 @@ func (a *App) ensureBannerFits() tea.Cmd {
 		return nil
 	}
 	g, ok := a.currentLockup()
-	if !ok || g.fits(a.bannerIndex) {
+	if !ok {
 		return nil
 	}
-	idx, found := pickFittingBanner(a.bannerIndex, g.fits)
+	// Until Ctrl+R, the banner also keeps clear of a scene's object on the
+	// right (the moon, the lightbulb...), when one that does fits.
+	clearOf := func(int) bool { return true }
+	if !a.bannerShuffled {
+		clearOf = a.sceneClearance()
+	}
+	clear := func(i int) bool { return g.fits(i) && clearOf(i) }
+	if clear(a.bannerIndex) || (g.fits(a.bannerIndex) && !a.anyBanner(clear)) {
+		return nil
+	}
+	idx, found := pickFittingBanner(a.bannerIndex, clear)
 	if !found {
-		return nil // nothing fits a screen this small; the layout clips instead
+		if idx, found = pickFittingBanner(a.bannerIndex, g.fits); !found {
+			return nil // nothing fits a screen this small; the layout clips instead
+		}
 	}
 	a.setBanner(idx)
 	return a.startBannerAnim()
