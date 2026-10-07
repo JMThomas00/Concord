@@ -81,6 +81,7 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 - ` + "`Ctrl+F`" + ` — Forgot password (login screen)
 - ` + "`Ctrl+T`" + ` — Open Theme Browser (main window; on the login screen, Settings > Theme)
 - ` + "`Ctrl+U`" + ` — Check for a newer Concord (login screen)
+- ` + "`Ctrl+X`" + ` — Dismiss the bottom in-app notification
 - ` + "`[`" + ` — Toggle server list panel (collapse / expand)
 - ` + "`]`" + ` — Toggle members list panel (collapse / expand)
 - ` + "`Tab`" + ` — Switch focus between panels
@@ -420,6 +421,8 @@ Over 40 themes are embedded, including **Dracula**, **Alucard Dark/Light**, **No
 - **Notify From** — All Connected Servers, or only the one you currently have open
 
 A popup never appears for a channel you're already viewing — only for messages you'd otherwise miss.
+
+**In-app notifications** — cards in the bottom-left corner, newest at the bottom, for messages, mentions (a yellow border) and achievements. They stay until you deal with them: click one to dismiss it (a message's opens its channel), or press ` + "`Ctrl+X`" + ` to dismiss the bottom one, and the next drops into its place. When more arrive than fit, the top card counts the rest.
 
 **Audio Notifications** — sound and terminal-bell alerts:
 

@@ -65,7 +65,7 @@ func (a *App) watchEggKeys(msg tea.Msg) {
 				a.findEgg("disco")
 				msg = "Next time you open Concord, the login's a disco."
 			}
-			a.toasts = append(a.toasts, &toast{label: "🪩 Disco party", title: msg})
+			a.toasts = append(a.toasts, &toast{brief: true, label: "🪩 Disco party", title: msg})
 		}
 		return
 	}

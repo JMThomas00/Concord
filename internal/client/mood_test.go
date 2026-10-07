@@ -117,26 +117,44 @@ func TestCollectionAndAchievements(t *testing.T) {
 	}
 }
 
-// Toasts stack, newest at the bottom, a few at a time; the rest wait.
-func TestToastQueue(t *testing.T) {
-	a := &App{uiConfig: &UIConfig{}}
-	for i := 0; i < 6; i++ {
+// Notifications stack, newest at the bottom, as far up as a third of the
+// window; older ones wait above and are counted. They stay until dismissed
+// (the bottom one with Ctrl+X); a flourish goes by itself.
+func TestToastStack(t *testing.T) {
+	a := &App{uiConfig: &UIConfig{}, width: 120, height: 40}
+	fit := a.toastFit()
+	if fit < 3 {
+		t.Fatalf("only %d fit in 40 rows", fit)
+	}
+	for i := 0; i < fit+2; i++ {
 		a.toasts = append(a.toasts, &toast{title: fmt.Sprint(i)})
 	}
 	now := time.Now()
-	vis := a.visibleToasts(now)
-	if len(vis) != maxToasts || vis[0].title != "0" || vis[maxToasts-1].title != "3" {
-		t.Fatalf("visible %d, first %q", len(vis), vis[0].title)
+	vis, waiting := a.visibleToasts(now)
+	if len(vis) != fit || waiting != 2 || vis[len(vis)-1].title != fmt.Sprint(fit+1) {
+		t.Fatalf("visible %d, waiting %d, newest %q", len(vis), waiting, vis[len(vis)-1].title)
 	}
-	if a.currentToast(now).title != "3" {
-		t.Fatal("the newest isn't the one at the bottom")
+	top := int(vis[0].row(now.Add(time.Second)))
+	if top < a.height/3 {
+		t.Fatalf("the stack reaches row %d, above a third of the window", top)
 	}
-	later := a.visibleToasts(now.Add(toastTime + time.Millisecond))
-	if len(later) != 2 || later[0].title != "4" {
-		t.Fatalf("after the first four: %d, %+v", len(later), later)
+	if later, _ := a.visibleToasts(now.Add(time.Hour)); len(later) != fit {
+		t.Fatal("notifications went away by themselves")
 	}
-	if a.currentToast(now.Add(3*toastTime)) != nil {
-		t.Fatal("toasts never finish")
+	newest := a.currentToast(now)
+	if !a.dismissBottomToast() || a.currentToast(now) == newest || len(a.toasts) != fit+1 {
+		t.Fatal("Ctrl+X didn't dismiss the bottom one")
+	}
+	// The rest drop down: the new bottom one slides to the bottom slot.
+	vis, waiting = a.visibleToasts(now.Add(time.Second))
+	bottom := vis[len(vis)-1]
+	if waiting != 1 || bottom.toRow != float64(a.height-2-toastRows+1) {
+		t.Fatalf("waiting %d, bottom heading for row %v", waiting, bottom.toRow)
+	}
+	a.toasts = []*toast{{brief: true, title: "flourish"}}
+	a.visibleToasts(now)
+	if left, _ := a.visibleToasts(now.Add(briefToastTime + time.Millisecond)); len(left) != 0 {
+		t.Fatal("a flourish stayed")
 	}
 }
 

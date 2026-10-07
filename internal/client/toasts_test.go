@@ -50,7 +50,7 @@ func TestMessageToastsStackAndClick(t *testing.T) {
 			ben = i
 		}
 	}
-	if amy < 0 || ben < 0 || ben <= amy || !strings.HasPrefix(strings.TrimLeft(lines[ben], " "), "▎") {
+	if amy < 0 || ben < 0 || ben <= amy || !strings.HasPrefix(strings.TrimLeft(lines[ben], " "), "│") {
 		t.Fatalf("amy at %d, ben at %d:\n%s", amy, ben, out)
 	}
 	if ben < 30 {
@@ -59,7 +59,7 @@ func TestMessageToastsStackAndClick(t *testing.T) {
 	if !strings.Contains(out, "Mention in #dev") {
 		t.Fatal("the mention isn't marked")
 	}
-	r := a.toastRects[0] // the newest, at the bottom
+	r := a.toastRects[len(a.toastRects)-1] // the newest, at the bottom (drawn last, on top)
 	if !a.clickToast(tea.MouseMsg{X: r.col + 2, Y: r.row + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}) {
 		t.Fatal("the click missed")
 	}

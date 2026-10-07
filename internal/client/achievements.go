@@ -25,6 +25,7 @@ var achievements = []achievement{
 	{"all_loading", "Seen It Load", "See every loading screen", false},
 	{"all_logos", "Grape Expectations", "See every grape style", false},
 	{"all_backgrounds", "Scenery", "See every background", false},
+	{"all_screensavers", "Screen Time", "See every screensaver", false},
 	{"banners_50", "Wordsmith", "See 50 different banners", false},
 	{"banners_all", "Complete Works", "See every banner", false},
 	{"shuffler", "Shuffler", "Shuffle the banner 25 times (Ctrl+R)", false},

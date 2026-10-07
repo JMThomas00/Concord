@@ -83,7 +83,9 @@ func (a *App) syncFx() tea.Cmd {
 					}
 				}
 				fx.trans = t
-				a.discover(layerTransition, t.kind)
+				if t.kind == kind { // the pull chain isn't one of the transitions
+					a.discover(layerTransition, kind)
+				}
 			}
 		}
 		fx.prevView = a.view
@@ -107,7 +109,7 @@ func (a *App) fxMoving() bool {
 		a.connecting = nil // something else came first (a code screen)
 	}
 	a.trackCodeTyping(now)
-	if a.loading != nil || a.connecting != nil || a.fx.trans != nil || len(a.toasts) > 0 || a.bursting(now) ||
+	if a.loading != nil || a.connecting != nil || a.fx.trans != nil || a.toastsMoving(now) || a.bursting(now) ||
 		a.codeAnimating(now) || a.shaking(now) || a.grapeReact != nil || a.eggPlaying(now) || a.saver != nil ||
 		a.glitching(now) {
 		return true

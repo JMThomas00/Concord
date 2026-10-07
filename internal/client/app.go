@@ -2361,6 +2361,12 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 
+	case "ctrl+x":
+		// Dismiss the bottom toast (toasts.go); the next drops into its place.
+		if a.dismissBottomToast() {
+			return nil
+		}
+
 	case "ctrl+f":
 		// Forgot password: reset it with a code emailed by one of your
 		// servers, then use it everywhere.

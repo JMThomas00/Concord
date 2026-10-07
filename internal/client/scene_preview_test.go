@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 	"github.com/muesli/termenv"
 )
 
@@ -68,6 +69,27 @@ func TestScenePreview(t *testing.T) {
 			a.loading = &loadingState{kind: o.id, start: start, dur: loadingDur, seed: 7, lines: a.loadingLines(false)}
 			write(fmt.Sprintf("loading-%s-%03.0f", o.id, at*10), a.renderLoading(time.Now()))
 		}
+	}
+
+	// Notifications: a settled stack, an overflowing one, and one mid-slide.
+	{
+		a := newLayoutTestApp(t, w, h)
+		a.view = ViewMain
+		base := a.view0()
+		now := time.Now()
+		srv, ch := uuid.New(), uuid.New()
+		a.toastMessage(srv, ch, "amy", "Sequoia", "general", "anyone up for chess tonight?", false)
+		a.toasts = append(a.toasts, &toast{title: "Seasoned Player", created: now})
+		a.toastMessage(srv, ch, "ben", "Sequoia", "dev", "@gh0st can you look at the release?", true)
+		a.paintToasts(base, now)
+		write("toasts-3", a.paintToasts(base, now.Add(time.Second)))
+		for i := 0; i < 6; i++ {
+			a.toastMessage(srv, ch, fmt.Sprintf("user%d", i), "Sequoia", "general", "message number "+fmt.Sprint(i), false)
+		}
+		a.paintToasts(base, now.Add(2*time.Second))
+		write("toasts-overflow", a.paintToasts(base, now.Add(3*time.Second)))
+		a.dismissBottomToast()
+		write("toasts-dropping", a.paintToasts(base, now.Add(3*time.Second+120*time.Millisecond)))
 	}
 
 	// Page transitions: the login page into the register page.

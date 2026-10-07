@@ -70,6 +70,7 @@ func (a *App) handleIdleCheck() tea.Cmd {
 		a.saver = &saverState{kind: kind, start: time.Now(), last: time.Now(), seed: rng.Uint64(),
 			x: 3, y: 2, dx: 14, dy: 5}
 		a.findEgg("screensaver")
+		a.discoverSaver(kind)
 	}
 	return idleCheck()
 }

@@ -634,7 +634,7 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 		a.view = ViewMain
 		a.focus = FocusServerIcons // Start on server icons (consistent with auto-login)
 		if a.moment() == "arcade" {
-			a.toasts = append(a.toasts, &toast{label: "◆ ARCADE", title: "PLAYER 1 READY"})
+			a.toasts = append(a.toasts, &toast{brief: true, label: "◆ ARCADE", title: "PLAYER 1 READY"})
 		}
 		for serverID, email := range a.pendingVerify {
 			a.openCodeScreen(codeModeVerify, serverID, email)

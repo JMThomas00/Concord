@@ -51,7 +51,7 @@ func (a *App) handleAboutKey(msg tea.KeyMsg) bool {
 		if c := a.coll().Cellar; s.AboutCellar >= 0 && s.AboutCellar < len(c) && a.uiConfig != nil {
 			a.uiConfig.Display.MoodLock = c[s.AboutCellar].Code
 			a.saveDisplayConfig()
-			a.toasts = append(a.toasts, &toast{label: "🍾 Uncorked", title: c[s.AboutCellar].Code + " is your mood next launch"})
+			a.toasts = append(a.toasts, &toast{brief: true, label: "🍾 Uncorked", title: c[s.AboutCellar].Code + " is your mood next launch"})
 		}
 	default:
 		return false
@@ -156,6 +156,7 @@ func (a *App) renderAboutContent(width, height int) string {
 	for _, l := range moodLayers {
 		entry(l.name, coll.seenCount(l.id), len(l.options))
 	}
+	entry("Screensavers", a.saversSeen(), len(saverKinds))
 	right = append(right, fmt.Sprintf("  %s %s", dim.Render(fmt.Sprintf("%-16s", "Easter eggs")),
 		normal.Render(fmt.Sprintf("%d found", len(coll.Eggs)))))
 	right = append(right, fmt.Sprintf("  %s %s", dim.Render(fmt.Sprintf("%-16s", "Launches")),

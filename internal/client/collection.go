@@ -161,6 +161,9 @@ func (a *App) saveCollection() {
 // discover adds a layer option to the collection, and checks the
 // achievements that depend on it.
 func (a *App) discover(layer moodLayer, id string) {
+	if forced, ok := forcedPick(layer); ok && forced == id {
+		return // previewed with CONCORD_SCENES, not come across
+	}
 	c := a.coll()
 	if !c.see(layer, id) {
 		return
@@ -179,6 +182,36 @@ func (a *App) discover(layer moodLayer, id string) {
 		}
 	}
 	a.saveCollection()
+}
+
+// saverLayer is where screensavers are kept in the collection (they're not
+// a mood layer: any of them can start, any launch).
+const saverLayer moodLayer = "screensaver"
+
+// discoverSaver adds a screensaver to the collection.
+func (a *App) discoverSaver(kind string) {
+	if forced, ok := forcedSaver(); ok && forced == kind {
+		return
+	}
+	c := a.coll()
+	if !c.see(saverLayer, kind) {
+		return
+	}
+	if a.saversSeen() == len(saverKinds) {
+		a.unlock("all_screensavers")
+	}
+	a.saveCollection()
+}
+
+// saversSeen is how many of the screensavers have been seen.
+func (a *App) saversSeen() int {
+	n := 0
+	for _, k := range saverKinds {
+		if _, ok := a.coll().Seen[string(saverLayer)][k]; ok {
+			n++
+		}
+	}
+	return n
 }
 
 // discoverBanner adds the banner on screen to the collection.

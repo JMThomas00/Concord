@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -11,16 +12,20 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// Toasts: small cards in the bottom-left corner, stacked with the newest
-// at the bottom. Achievements and the login stage's little messages use
-// them, and so do new messages (Settings > Notifications > In-app Toasts):
-// clicking a message toast opens its channel.
+// Toasts: cards in the bottom-left corner, in a border of the theme's
+// accent, stacked with the newest at the bottom: a new one slides in and the
+// rest slide up above it, as far as a third of the way down the window; past
+// that, the top card counts the ones waiting above. Notifications (messages,
+// mentions, achievements, firsts) stay until they're dealt with: a click
+// dismisses one (a message's opens its channel), and Ctrl+X dismisses the
+// bottom one, when the next drops down into its place. The login stage's
+// little flourishes (brief) come and go by themselves.
 
 const (
-	toastTime        = 4 * time.Second // an achievement or a notice
-	messageToastTime = 6 * time.Second // a message: a little longer to read
-	maxToasts        = 4               // on screen at once; the oldest give way
-	toastSlide       = 250 * time.Millisecond
+	briefToastTime = 4 * time.Second // a flourish's time on screen
+	toastSlide     = 250 * time.Millisecond
+	toastRows      = 4 // border, label, text, border
+	toastGap       = 1
 )
 
 type toast struct {
@@ -31,15 +36,23 @@ type toast struct {
 	serverID, channelID uuid.UUID
 	mention             bool
 
+	brief bool // goes by itself (a flourish, not a notification)
+
 	created time.Time
 	shown   time.Time // when it first appeared on screen
+
+	// Where it is in the stack: it slides from fromRow to toRow from moveAt.
+	fromRow, toRow float64
+	moveAt         time.Time
 }
 
-func (t *toast) life() time.Duration {
-	if t.channelID != uuid.Nil {
-		return messageToastTime
+// row is the toast's top row now, mid-slide or settled.
+func (t *toast) row(now time.Time) float64 {
+	k := float64(now.Sub(t.moveAt)) / float64(toastSlide)
+	if k >= 1 {
+		return t.toRow
 	}
-	return toastTime
+	return t.fromRow + (t.toRow-t.fromRow)*easeOutCubic(math.Max(0, k))
 }
 
 // toastRect is where a toast was drawn, for clicks.
@@ -48,38 +61,58 @@ type toastRect struct {
 	t                    *toast
 }
 
-// visibleToasts retires finished toasts and returns those on screen now,
-// oldest first (so the newest is drawn at the bottom).
-func (a *App) visibleToasts(now time.Time) []*toast {
+// toastFit is how many toasts fit in the stack: from just above the status
+// bar up to a third of the way down the window.
+func (a *App) toastFit() int {
+	bottom := a.height - 2
+	return max(1, (bottom-a.height/3+1+toastGap)/(toastRows+toastGap))
+}
+
+// visibleToasts retires brief toasts that have had their time and returns
+// the ones on screen, oldest first (the newest is drawn at the bottom), with
+// how many older ones are waiting above them.
+func (a *App) visibleToasts(now time.Time) (vis []*toast, waiting int) {
 	live := a.toasts[:0]
 	for _, t := range a.toasts {
-		if t.shown.IsZero() || now.Sub(t.shown) < t.life() {
+		if !t.brief || t.shown.IsZero() || now.Sub(t.shown) < briefToastTime {
 			live = append(live, t)
 		}
 	}
 	a.toasts = live
-	// When more are waiting than fit, the oldest on screen leave early
-	// (once they've had a moment to be read).
-	for len(a.toasts) > maxToasts && !a.toasts[0].shown.IsZero() && now.Sub(a.toasts[0].shown) >= 1500*time.Millisecond {
-		a.toasts = a.toasts[1:]
-	}
-	n := min(len(a.toasts), maxToasts)
-	vis := a.toasts[:n]
-	for _, t := range vis {
-		if t.shown.IsZero() {
-			t.shown = now
+	n := min(len(a.toasts), a.toastFit())
+	vis = a.toasts[len(a.toasts)-n:]
+	bottom := float64(a.height - 2 - toastRows + 1)
+	for i, t := range vis {
+		slot := float64(len(vis) - 1 - i) // 0 for the newest
+		target := bottom - slot*float64(toastRows+toastGap)
+		switch {
+		case t.shown.IsZero():
+			t.shown, t.fromRow, t.toRow, t.moveAt = now, target, target, now
+		case t.toRow != target:
+			t.fromRow, t.toRow, t.moveAt = t.row(now), target, now
 		}
 	}
-	return vis
+	return vis, len(a.toasts) - n
 }
 
 // currentToast is the newest toast on screen (nil for none).
 func (a *App) currentToast(now time.Time) *toast {
-	vis := a.visibleToasts(now)
+	vis, _ := a.visibleToasts(now)
 	if len(vis) == 0 {
 		return nil
 	}
 	return vis[len(vis)-1]
+}
+
+// toastsMoving reports whether the stack needs redrawing on a timer: a toast
+// sliding in, up or down, or a flourish counting down.
+func (a *App) toastsMoving(now time.Time) bool {
+	for _, t := range a.toasts {
+		if t.shown.IsZero() || t.brief || now.Sub(t.moveAt) < toastSlide || now.Sub(t.shown) < toastSlide {
+			return true
+		}
+	}
+	return false
 }
 
 // paintToasts draws the stack over the bottom left of the frame, above the
@@ -87,54 +120,80 @@ func (a *App) currentToast(now time.Time) *toast {
 // frame (links, pictures) stays exactly as it was.
 func (a *App) paintToasts(frame string, now time.Time) string {
 	a.toastRects = nil
-	vis := a.visibleToasts(now)
+	vis, waiting := a.visibleToasts(now)
 	if len(vis) == 0 || a.width < 30 || a.height < 12 {
 		return frame
 	}
 	c := a.theme.Colors
-	accent := c.Purple
-	bottom := a.height - 2 // the row above the status bar
-	for i := len(vis) - 1; i >= 0; i-- {
+	bg := lipgloss.Color(c.Background)
+	for i := 0; i < len(vis); i++ { // oldest first: the newest lands on top while they slide
 		t := vis[i]
 		label := "🏆 Achievement unlocked"
 		if t.label != "" {
 			label = t.label
 		}
-		labelColour := accent
+		accent := c.Purple
 		if t.mention {
-			labelColour = c.Yellow
+			accent = c.Yellow
 		}
-		w := min(max(runewidth.StringWidth(label), runewidth.StringWidth(t.title))+4, min(52, a.width-4))
-		title := runewidth.Truncate(t.title, w-4, "…")
-		label = runewidth.Truncate(label, w-4, "…")
-		// Slide in from the left, and back out at the end.
-		age := now.Sub(t.shown)
+		w := min(max(runewidth.StringWidth(label), runewidth.StringWidth(t.title), 18), min(52, a.width-6))
+		title := runewidth.Truncate(t.title, w, "…")
+		label = runewidth.Truncate(label, w, "…")
+		edge := lipgloss.NewStyle().Foreground(lipgloss.Color(accent)).Background(bg)
+		dim := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Comment)).Background(bg)
+		body := lipgloss.NewStyle().Width(w+2).Padding(0, 1).Background(bg).Foreground(lipgloss.Color(c.Foreground))
+		// The top card counts the ones waiting above it; the bottom one
+		// says how to dismiss it.
+		topBorder := edge.Render("╭" + strings.Repeat("─", w+2) + "╮")
+		if i == 0 && waiting > 0 {
+			more := fmt.Sprintf(" +%d more ", waiting)
+			topBorder = edge.Render("╭─") + edge.Bold(true).Render(more) +
+				edge.Render(strings.Repeat("─", max(0, w+1-runewidth.StringWidth(more)))+"╮")
+		}
+		bottomBorder := edge.Render("╰" + strings.Repeat("─", w+2) + "╯")
+		if i == len(vis)-1 && !t.brief {
+			const hint = " ctrl+x "
+			bottomBorder = edge.Render("╰"+strings.Repeat("─", max(0, w+1-len(hint)))) + dim.Render(hint) + edge.Render("─╯")
+		}
+		lines := []string{
+			topBorder,
+			edge.Render("│") + body.Foreground(lipgloss.Color(accent)).Bold(true).Render(label) + edge.Render("│"),
+			edge.Render("│") + body.Render(title) + edge.Render("│"),
+			bottomBorder,
+		}
+		// Slide in from the left; a flourish slides back out at the end.
 		slide := 1.0
-		if age < toastSlide {
+		if age := now.Sub(t.shown); age < toastSlide {
 			slide = easeOutCubic(float64(age) / float64(toastSlide))
-		} else if left := t.life() - age; left < toastSlide {
+		} else if left := briefToastTime - age; t.brief && left < toastSlide {
 			slide = easeOutCubic(float64(left) / float64(toastSlide))
 		}
-		box := lipgloss.NewStyle().Width(w).Padding(0, 2).
-			Background(lipgloss.Color(c.Background)).
-			Foreground(lipgloss.Color(c.Foreground))
-		edge := lipgloss.NewStyle().Foreground(lipgloss.Color(labelColour)).Background(lipgloss.Color(c.Background))
-		lines := []string{
-			edge.Render("▎") + box.Render(""),
-			edge.Render("▎") + box.Foreground(lipgloss.Color(labelColour)).Bold(true).Render(label),
-			edge.Render("▎") + box.Render(title),
-			edge.Render("▎") + box.Render(""),
-		}
-		top := bottom - len(lines) + 1
-		col := 1 - int(float64(w+2)*(1-slide))
+		top := int(math.Round(t.row(now)))
+		col := 1 - int(float64(w+4)*(1-slide))
 		frame = overlayLines(frame, top, col, a.width, lines)
-		a.toastRects = append(a.toastRects, toastRect{row: top, col: max(0, col), rows: len(lines), cols: w + 1, t: t})
-		bottom = top - 2 // a row between toasts
-		if bottom < 4 {
-			break
-		}
+		a.toastRects = append(a.toastRects, toastRect{row: top, col: max(0, col), rows: len(lines), cols: w + 4, t: t})
 	}
 	return frame
+}
+
+// dismissToast removes a toast; the rest of the stack drops into place.
+func (a *App) dismissToast(t *toast) {
+	for i, x := range a.toasts {
+		if x == t {
+			a.toasts = append(a.toasts[:i], a.toasts[i+1:]...)
+			return
+		}
+	}
+}
+
+// dismissBottomToast dismisses the newest toast (Ctrl+X); false when there
+// wasn't one.
+func (a *App) dismissBottomToast() bool {
+	if t := a.currentToast(time.Now()); t != nil {
+		a.dismissToast(t)
+		return true
+	}
+	return false
 }
 
 // clickToast handles a click on a toast: a message's opens its channel,
@@ -143,14 +202,11 @@ func (a *App) clickToast(msg tea.MouseMsg) bool {
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return false
 	}
-	for _, r := range a.toastRects {
+	// Last drawn is on top, so it gets the click where cards overlap mid-slide.
+	for k := len(a.toastRects) - 1; k >= 0; k-- {
+		r := a.toastRects[k]
 		if msg.Y >= r.row && msg.Y < r.row+r.rows && msg.X >= r.col && msg.X < r.col+r.cols {
-			for i, t := range a.toasts {
-				if t == r.t {
-					a.toasts = append(a.toasts[:i], a.toasts[i+1:]...)
-					break
-				}
-			}
+			a.dismissToast(r.t)
 			if r.t.channelID != uuid.Nil {
 				a.goToChannel(r.t.serverID, r.t.channelID)
 			}
