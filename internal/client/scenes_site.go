@@ -621,7 +621,7 @@ func atmosEclipse(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid 
 	c.nightStars(t, s, 80, 1)
 	c.meteor(t, s)
 	x, y := float64(w)*0.8, float64(h)*0.34
-	r := math.Max(6, float64(h)*0.27) // big enough for the berries to read
+	r := math.Max(7, float64(h)*0.3) // big enough for the berries to read
 	c.drawEclipse(x, y, r, t, 1, 0)
 	return c.finish()
 }
@@ -639,55 +639,71 @@ func (c *sceneCanvas) drawEclipse(x, y, r, t, a, flare float64) {
 	c.drawDisc(x, y, r, a, 0.5+flare*0.3)
 }
 
-// grapeBerries is the eclipsing bunch's shape, in units of its radius (y
-// down): three berries, two, one, as the brand's grape hangs.
-var grapeBerries = [][2]float64{{-0.56, -0.3}, {0, -0.32}, {0.56, -0.3}, {-0.29, 0.18}, {0.29, 0.18}, {0, 0.6}}
+// The eclipsing grapes are the logo's own model (grape_logo_data.go): its
+// spheres for the berries, its leaf and stem from the logo's top rows. In
+// units of the body's radius, a point maps to logo pixels around the logo's
+// middle (the logo's pixels are square, like the half-block pixels here).
+const (
+	eclipseLogoCX, eclipseLogoCY = 223.0, 268.0
+	eclipseLogoScale             = 268.0 // logo pixels per unit
+)
 
-const grapeBerryR = 0.37
-
-// grapeShape reports whether (dx, dy), in units of the bunch's radius, is in
-// the bunch, and whether it's on its outline (shrink: how thick the outline is).
-func grapeShape(dx, dy, shrink float64) (in, edge bool) {
-	inside := func(b float64) bool {
-		for _, p := range grapeBerries {
-			if math.Hypot(dx-p[0], dy-p[1]) < b {
-				return true
+// grapeModelAt is the logo model at (dx, dy): whether it's in the bunch,
+// the surface normal there (z toward the viewer), and whether it's the leaf
+// or stem (whose normal is flat, edge in its x: 1 at its outline).
+func grapeModelAt(dx, dy float64) (in bool, n [3]float64, leaf bool) {
+	L := grapeLogos[grapeLogoSize]
+	x, y := eclipseLogoCX+dx*eclipseLogoScale, eclipseLogoCY+dy*eclipseLogoScale
+	bz := math.Inf(-1)
+	for _, g := range L.grapes {
+		ex, ey := (x-g[0])/g[2], (y-g[1])/g[2]
+		if d := ex*ex + ey*ey; d < 1 {
+			z := math.Sqrt(1 - d)
+			if depth := g[3] + g[2]*z; depth > bz {
+				bz, n = depth, [3]float64{ex, ey, z}
 			}
 		}
-		// the stem, up and a little to the right
-		if dy < -0.55 && dy > -0.95 && math.Abs(dx-(-0.55-dy)*0.25) < 0.06+b-grapeBerryR {
-			return true
+	}
+	if !math.IsInf(bz, -1) {
+		return true, n, false
+	}
+	// the leaf and stem: the logo's coloured cells, with an edge where a
+	// neighbouring cell is empty
+	toneAt := func(x, y float64) bool {
+		r, c := int(math.Floor(y/L.ch)), int(math.Floor(x/L.cw))
+		return r >= 0 && r < len(L.tones) && c >= 0 && c < len(L.tones[r]) && L.tones[r][c] != ' '
+	}
+	if !toneAt(x, y) {
+		return false, n, false
+	}
+	e := 0.0
+	for _, o := range [][2]float64{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
+		if !toneAt(x+o[0]*L.cw*0.5, y+o[1]*L.ch*0.35) {
+			e = 1
 		}
-		// the leaf beside it
-		lx, ly := (dx-0.36)/0.27, (dy+0.78)/0.12
-		return lx*lx+ly*ly < math.Pow(b/grapeBerryR, 2)
 	}
-	if !inside(grapeBerryR) {
-		return false, false
-	}
-	return true, !inside(grapeBerryR - shrink)
+	return true, [3]float64{e, 0, 0}, true
 }
 
-// drawDisc: the eclipsing grapes, a dark bunch whose outline is lit by rim
-// (0..1) where the light leaks round it.
+// drawDisc: the eclipsing grapes, backlit: each berry a dark purple sphere,
+// faintly lit from the front like the logo, its edge glowing where it curves
+// away, which outlines every grape, even one in front of another. rim (0..1)
+// is how much light leaks round.
 func (c *sceneCanvas) drawDisc(x, y, r, a, rim float64) {
-	shrink := math.Min(0.1, 1.1/r) // about a pixel of outline
+	core := blend(c.pal.dark, "#160d28", 0.92*a)
+	leafCore := blend(c.pal.dark, "#0f1a14", 0.92*a)
 	c.halfDisc(x, y, r, func(dx, dy float64) (string, bool) {
-		in, edge := grapeShape(dx, dy, shrink)
+		in, n, leaf := grapeModelAt(dx, dy)
 		if !in {
 			return "", false
 		}
-		col := blend(c.pal.dark, "#140d22", 0.9*a)
-		// each berry catches a little light at its upper left, so they read as round
-		for _, p := range grapeBerries {
-			if math.Hypot(dx-p[0]+0.13, dy-p[1]+0.13) < grapeBerryR*0.32 {
-				col = blend(col, "#3a2a5e", 0.8*a)
-			}
+		if leaf {
+			return blend(leafCore, "#d8f0e0", n[0]*0.5*rim*a), true
 		}
-		if edge {
-			col = blend(col, "#e6dcff", rim*a)
-		}
-		return col, true
+		fill := math.Max(0, n[0]*grapeLight0[0]+n[1]*grapeLight0[1]+n[2]*grapeLight0[2])
+		col := blend(core, brandDeep, 0.35*fill*fill*a) // the grape's own purple, barely lit
+		edge := math.Pow(math.Max(0, (1-n[2]-0.3)/0.7), 1.3)
+		return blend(col, "#e6dcff", math.Min(1, edge*rim*1.5)*a), true
 	})
 }
 

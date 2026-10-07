@@ -76,8 +76,8 @@ func loadFlashbang(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalett
 // shrinks away, the stars come out and the corona flares at totality.
 func loadEclipse(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette) {
 	c := newSceneCanvas(g.w, g.h, pal)
-	sx, sy := float64(g.w)*0.5, float64(g.h)*0.27
-	r := math.Max(6, float64(g.h)*0.24)
+	sx, sy := float64(g.w)*0.5, float64(g.h)*0.3
+	r := math.Max(8, float64(g.h)*0.38) // centre stage: the berries read best big
 	roll := easeOutCubic((el - 0.4) / 1.6)
 	bx := sx - (sx+r*3)*(1-roll)
 	cover := math.Max(0, 1-math.Abs(bx-sx)/(2*r))
@@ -97,7 +97,7 @@ func loadEclipse(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette)
 	c.drawDisc(bx, sy, r, math.Min(1, el/0.4), 0.5*cover)
 	*g = *c.finish()
 	if cover > 0.9 { // once the day's gone, so its box doesn't cut the sky
-		caption(g, g.h*2/3-2, p, ls, pal)
+		caption(g, g.h*4/5-2, p, ls, pal)
 	}
 }
 
