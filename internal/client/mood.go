@@ -114,7 +114,6 @@ var moodLayers = []layerInfo{
 		{"moonrise", "Moonrise", common},
 		{"lightbulb", "Lightbulb", rare},
 		{"galaxy", "Grape galaxy", rare},
-		{"eclipse", "Eclipse", rare},
 	}},
 	{layerLogo, "Grape styles", []moodOption{
 		{"shaded", "Shaded", common},

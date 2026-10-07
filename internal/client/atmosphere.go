@@ -69,8 +69,6 @@ func (a *App) baseAtmosphere(kind string, t float64, pal loadingPalette) *fxGrid
 		return atmosStarlings(a.width, a.height, t, a.mood.seed, pal)
 	case "moonrise":
 		return atmosMoon(a.width, a.height, t, a.mood.seed, pal)
-	case "eclipse":
-		return atmosEclipse(a.width, a.height, t, a.mood.seed, pal)
 	case "lightbulb":
 		return atmosBulb(a.width, a.height, t, a.mood.seed, pal, a.sinceBulbPop(time.Now()))
 	}

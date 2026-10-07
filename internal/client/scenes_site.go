@@ -612,23 +612,9 @@ func (c *sceneCanvas) drawMoon(x, y, r, a float64) {
 	})
 }
 
-// atmosEclipse (Eclipse): a total eclipse in a starry sky, the corona's
-// streamers stirring behind the dark disc, its edge lit where the light
-// leaks round.
-func atmosEclipse(w, h int, t float64, seed uint32, pal loadingPalette) *fxGrid {
-	c := newSceneCanvas(w, h, pal)
-	s := uint64(seed)
-	c.nightStars(t, s, 80, 1)
-	c.meteor(t, s)
-	x, y := float64(w)*0.8, float64(h)*0.34
-	r := math.Max(7, float64(h)*0.3) // big enough for the berries to read
-	c.drawEclipse(x, y, r, t, 1, 0)
-	return c.finish()
-}
-
-// drawEclipse: the corona and the eclipsing disc. flare brightens the
-// corona (the moment of totality).
-func (c *sceneCanvas) drawEclipse(x, y, r, t, a, flare float64) {
+// drawCorona: the eclipse's corona round (x, y). flare brightens it (the
+// moment of totality).
+func (c *sceneCanvas) drawCorona(x, y, r, t, a, flare float64) {
 	c.glow(x, y, r*(3.2+flare), "#d6c4ff", 0.22*a)
 	for i := 0; i < 12; i++ {
 		ang := float64(i)/12*2*math.Pi + math.Sin(t/2.4+float64(i))*0.12
@@ -636,7 +622,6 @@ func (c *sceneCanvas) drawEclipse(x, y, r, t, a, flare float64) {
 		c.glow(x+math.Cos(ang)*l*0.55, y+math.Sin(ang)*l*0.55/2, r*0.55, "#f0e6ff", 0.14*a)
 	}
 	c.glow(x, y, r*1.25, "#fffaee", 0.45*a)
-	c.drawDisc(x, y, r, a, 0.5+flare*0.3)
 }
 
 // The eclipsing grapes are the logo's own model (grape_logo_data.go): its

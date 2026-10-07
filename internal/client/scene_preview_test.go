@@ -61,7 +61,7 @@ func TestScenePreview(t *testing.T) {
 
 	// Loading screens.
 	for _, o := range findLayer(layerLoading).options {
-		for _, at := range []float64{0.6, 1.2, 2.5, 4} {
+		for _, at := range []float64{0.6, 1.2, 1.5, 1.7, 1.9, 2.5, 4} {
 			a := newLoginTestApp(t, w, h, true)
 			a.mood = moodFromSeed(12345)
 			start := time.Now().Add(-time.Duration(at * float64(time.Second)))

@@ -83,18 +83,20 @@ func loadEclipse(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette)
 	cover := math.Max(0, 1-math.Abs(bx-sx)/(2*r))
 	c.glow(sx, sy, float64(g.w)*0.6*(1-cover), "#ffecbe", 0.35*(1-cover)*math.Min(1, el/0.4))
 	c.nightStars(el, ls.seed, 60, cover)
-	if cover < 1 {
-		c.drawSun(sx, sy, r, math.Min(1, el/0.4)*(1-cover*0.2))
+	// the sun's wider than the grapes: it fades out under them as totality
+	// comes, rather than vanishing in a frame
+	if sun := math.Min(1, el/0.4) * math.Min(1, (1-cover)/0.35); sun > 0.02 {
+		c.drawSun(sx, sy, r, sun)
 	}
-	if cover > 0.55 {
+	flare := 0.0
+	if cover > 0.55 { // the corona, behind the sun's place
 		k := (cover - 0.55) / 0.45
-		flare := 0.0
 		if el > 2 {
 			flare = math.Sin(math.Min(1, (el-2)/0.6)*math.Pi) * 0.8
 		}
-		c.drawEclipse(sx, sy, r, el, k*k, flare)
+		c.drawCorona(sx, sy, r, el, k*k, flare)
 	}
-	c.drawDisc(bx, sy, r, math.Min(1, el/0.4), 0.5*cover)
+	c.drawDisc(bx, sy, r, math.Min(1, el/0.4), 0.5*cover+flare*0.3) // the grapes, wherever they've rolled to
 	*g = *c.finish()
 	if cover > 0.9 { // once the day's gone, so its box doesn't cut the sky
 		caption(g, g.h*4/5-2, p, ls, pal)
