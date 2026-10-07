@@ -15,9 +15,18 @@ type transition struct {
 	from  string // the old page's last frame
 	start time.Time
 	seed  uint64
+
+	// For the website's transitions (transitions_site.go): the theme's
+	// colours, the screen, and where the Lightbulb hangs.
+	pal              loadingPalette
+	w, h             int
+	bulbCol, bulbTop int
 }
 
 func (t *transition) duration() time.Duration {
+	if d, ok := siteTransitionDur(t.kind); ok {
+		return d
+	}
 	switch t.kind {
 	case "modem":
 		return 1600 * time.Millisecond
@@ -31,6 +40,9 @@ func (t *transition) duration() time.Duration {
 
 // render draws the transition at progress p (0..1) from one frame to the next.
 func (t *transition) render(from, to *fxGrid, p float64) *fxGrid {
+	if g, ok := t.renderSite(from, to, p); ok {
+		return g
+	}
 	switch t.kind {
 	case "decode":
 		return transDecode(from, to, p, t.seed)

@@ -225,6 +225,15 @@ func (a *App) renderLoading(now time.Time) string {
 		a.loadVine(g, el, p, ls, pal)
 	case "boot":
 		loadBoot(g, el, p, ls, pal)
+	// the website's light and dark switches (loading_site.go)
+	case "flashbang":
+		loadFlashbang(g, el, p, ls, pal)
+	case "eclipse":
+		loadEclipse(g, el, p, ls, pal)
+	case "moonrise":
+		loadMoonrise(g, el, p, ls, pal)
+	case "juice":
+		a.loadJuice(g, el, p, ls, pal)
 	default:
 		loadCalm(g, el, p, ls, pal)
 	}
@@ -278,21 +287,27 @@ var rainGlyphs = []rune("ｦｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁ�
 // loadMatrix: grape Matrix rain. Each falling column has a grape for a
 // head and a trail of characters fading from pink into the dark.
 func loadMatrix(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette) {
+	rainColumns(g, el, ls.seed, pal)
+	caption(g, g.h/2-2, p, ls, pal)
+}
+
+// rainColumns draws the falling columns (the Grape rain screensaver too).
+func rainColumns(g *fxGrid, el float64, seed uint64, pal loadingPalette) {
 	for k := 0; k*2+1 < g.w; k++ {
-		if cellHash(ls.seed, k, 0, 1) > 0.65 {
+		if cellHash(seed, k, 0, 1) > 0.65 {
 			continue
 		}
-		speed := 7 + cellHash(ls.seed, k, 0, 2)*14
-		length := 5 + int(cellHash(ls.seed, k, 0, 3)*12)
+		speed := 7 + cellHash(seed, k, 0, 2)*14
+		length := 5 + int(cellHash(seed, k, 0, 3)*12)
 		span := float64(g.h + length + 4)
-		head := math.Mod(el*speed+cellHash(ls.seed, k, 0, 4)*span, span) - 2
+		head := math.Mod(el*speed+cellHash(seed, k, 0, 4)*span, span) - 2
 		hy := int(head)
 		for i := length; i >= 1; i-- {
 			y := hy - i
 			if y < 0 || y >= g.h {
 				continue
 			}
-			ch := rainGlyphs[int(cellHash(ls.seed, k*997+y, int(el*6+float64(y)*0.3), 5)*float64(len(rainGlyphs)))]
+			ch := rainGlyphs[int(cellHash(seed, k*997+y, int(el*6+float64(y)*0.3), 5)*float64(len(rainGlyphs)))]
 			t := float64(i) / float64(length)
 			col := mix(pal.pink, pal.purple, 1-t*2)
 			if t > 0.5 {
@@ -302,7 +317,6 @@ func loadMatrix(g *fxGrid, el, p float64, ls *loadingState, pal loadingPalette) 
 		}
 		g.set(hy, k*2, "🍇", "", 2)
 	}
-	caption(g, g.h/2-2, p, ls, pal)
 }
 
 // --- lava lamp ---------------------------------------------------------------

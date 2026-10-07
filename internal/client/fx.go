@@ -39,6 +39,7 @@ type fxState struct {
 	glitchAt   time.Time // when the last glitch started (moments.go)
 	nextGlitch time.Time // when the next one's due
 	trans      *transition
+	bulbPopAt  time.Time // when the pull chain last popped the Lightbulb (scenes_site.go)
 }
 
 // isStageView reports the views that make up the login stage.
@@ -70,8 +71,19 @@ func (a *App) syncFx() tea.Cmd {
 		}
 		if isStageView(fx.prevView) && isStageView(a.view) && fx.last != "" {
 			if kind := a.pick(layerTransition); kind != "" {
-				fx.trans = &transition{kind: kind, from: fx.last, start: time.Now(), seed: rng.Uint64()}
-				a.discover(layerTransition, kind)
+				now := time.Now()
+				t := &transition{kind: kind, from: fx.last, start: now, seed: rng.Uint64(), w: a.width, h: a.height}
+				t.prepare(a.loadingPalette())
+				// With the Lightbulb lit, the pull chain turns it off instead.
+				if a.pick(layerAtmosphere) == "lightbulb" {
+					if a.fx.bulbPopAt.IsZero() || now.Sub(a.fx.bulbPopAt) > 16*time.Second { // lit, not about to pop
+						t.kind = "pullchain"
+						t.bulbCol, t.bulbTop, _ = bulbGeom(a.width, a.height, now.Sub(fx.stageAt).Seconds())
+						fx.bulbPopAt = now.Add(time.Duration(float64(t.duration()) * pullChainPop))
+					}
+				}
+				fx.trans = t
+				a.discover(layerTransition, t.kind)
 			}
 		}
 		fx.prevView = a.view

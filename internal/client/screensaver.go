@@ -17,7 +17,9 @@ const (
 	idleCheckEvery = 5 * time.Second
 )
 
-var saverKinds = []string{"bounce", "flyers", "stars", "pipes", "lava", "plasma", "life", "maze", "bottles", "bunches"}
+var saverKinds = []string{"bounce", "flyers", "stars", "pipes", "lava", "plasma", "life", "maze", "bottles", "bunches",
+	// the website's hero scenes (screensaver_site.go)
+	"warp", "harvest", "snake", "fireworks", "pop", "juice", "rain", "grapebounce"}
 
 type idleCheckMsg struct{}
 
@@ -44,6 +46,10 @@ type saverState struct {
 	life  *lifeState
 	maze  *mazeState
 	bunch *bunchState
+
+	// grapebounce: the last exact corner, for its shower
+	cornerAt         time.Time
+	cornerX, cornerY float64
 }
 
 type pipeHead struct {
@@ -56,8 +62,11 @@ func (a *App) handleIdleCheck() tea.Cmd {
 	a.maybeGlitch(time.Now())
 	saversOn := a.uiConfig == nil || !a.uiConfig.Display.NoScreensaver
 	if saversOn && a.saver == nil && a.loading == nil && a.connecting == nil && a.onStage() &&
-		a.surprise() == surpriseFull && time.Since(a.lastInput) >= saverAfter && a.width > 30 && a.height > 10 {
+		a.surprise() == surpriseFull && time.Since(a.lastInput) >= idleBeforeSaver() && a.width > 30 && a.height > 10 {
 		kind := saverKinds[rng.Intn(len(saverKinds))]
+		if k, ok := forcedSaver(); ok {
+			kind = k
+		}
 		a.saver = &saverState{kind: kind, start: time.Now(), last: time.Now(), seed: rng.Uint64(),
 			x: 3, y: 2, dx: 14, dy: 5}
 		a.findEgg("screensaver")
@@ -115,6 +124,22 @@ func (a *App) renderSaver(now time.Time) string {
 		saverPlasma(g, el, pal)
 	case "bunches":
 		saverBunches(s, g, now, pal)
+	case "warp":
+		saverWarp(g, el, s.seed, pal)
+	case "harvest":
+		saverHarvest(g, el, s.seed, pal)
+	case "snake":
+		saverSnake(g, el, s.seed, pal)
+	case "fireworks":
+		saverFireworks(g, el, s.seed, pal)
+	case "pop":
+		saverPop(g, el, s.seed, pal)
+	case "juice":
+		saverJuice(g, el, s.seed, pal)
+	case "rain":
+		saverRain(g, el, s.seed, pal)
+	case "grapebounce":
+		a.saverGrapeBounce(g, now, dt, pal)
 	}
 	return g.String()
 }

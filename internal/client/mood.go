@@ -77,6 +77,11 @@ var moodLayers = []layerInfo{
 		{"c64", "Concord 64", rare},
 		{"mac", "Happy grapes", rare},
 		{"vine", "Growing vine", rare},
+		// the website's light and dark switches
+		{"flashbang", "Flashbang", common},
+		{"eclipse", "Eclipse", common},
+		{"moonrise", "Moonrise", common},
+		{"juice", "Juice spill", common},
 	}},
 	{layerTransition, "Page transitions", []moodOption{
 		{"slide", "Slide and settle", common},
@@ -89,6 +94,10 @@ var moodLayers = []layerInfo{
 		{"dissolve", "Grape dissolve", common},
 		{"crt", "Channel change", rare},
 		{"plasma", "Plasma wipe", rare},
+		// the website's light and dark switches
+		{"flashbang", "Flashbang", common},
+		{"powercut", "Power cut", common},
+		{"juice", "Juice spill", rare},
 	}},
 	{layerAtmosphere, "Backgrounds", []moodOption{
 		{"grapes", "Drifting grapes", common},
@@ -96,6 +105,16 @@ var moodLayers = []layerInfo{
 		{"dots", "Dot grid", common},
 		{"leaves", "Falling leaves", common},
 		{"none", "Plain", common},
+		// the website's hero scenes
+		{"network", "Grape network", common},
+		{"vine", "Grapevine", common},
+		{"orbit", "Orbit", common},
+		{"rows", "Vineyard rows", common},
+		{"starlings", "Starlings", common},
+		{"moonrise", "Moonrise", common},
+		{"lightbulb", "Lightbulb", rare},
+		{"galaxy", "Grape galaxy", rare},
+		{"eclipse", "Eclipse", rare},
 	}},
 	{layerLogo, "Grape styles", []moodOption{
 		{"shaded", "Shaded", common},
@@ -302,6 +321,9 @@ func noColour() bool {
 // pick is what this launch shows for a layer, after the Surprise Me
 // setting and the terminal have had their say.
 func (a *App) pick(layer moodLayer) string {
+	if id, ok := forcedPick(layer); ok {
+		return id // CONCORD_SCENES (scenes_override.go)
+	}
 	id := a.mood.picks[layer]
 	lvl := a.surprise()
 	if layer == layerLight && a.discoNow && lvl != surpriseOff {

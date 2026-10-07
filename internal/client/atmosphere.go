@@ -54,6 +54,25 @@ func (a *App) baseAtmosphere(kind string, t float64, pal loadingPalette) *fxGrid
 		return atmosDots(a.width, a.height, pal)
 	case "leaves":
 		return atmosLeaves(a.width, a.height, t, a.mood.seed, pal)
+	// the website's hero scenes (scenes_site.go)
+	case "network":
+		return atmosNetwork(a.width, a.height, t, a.mood.seed, pal)
+	case "vine":
+		return atmosVine(a.width, a.height, t, a.mood.seed, pal)
+	case "orbit":
+		return atmosOrbit(a.width, a.height, t, a.mood.seed, pal)
+	case "galaxy":
+		return atmosGalaxy(a.width, a.height, t, a.mood.seed, pal)
+	case "rows":
+		return atmosRows(a.width, a.height, t, pal)
+	case "starlings":
+		return atmosStarlings(a.width, a.height, t, a.mood.seed, pal)
+	case "moonrise":
+		return atmosMoon(a.width, a.height, t, a.mood.seed, pal)
+	case "eclipse":
+		return atmosEclipse(a.width, a.height, t, a.mood.seed, pal)
+	case "lightbulb":
+		return atmosBulb(a.width, a.height, t, a.mood.seed, pal, a.sinceBulbPop(time.Now()))
 	}
 	return nil
 }
