@@ -24,7 +24,7 @@ interval_hours = 24  # Run pruning daily
 # Grapevine — decentralized server discovery (opt-in)
 [grapevine]
 enabled = false
-hub_url = "http://grapevine.concord.chat"  # Official hub; or point to your own concord-hub instance
+hub_url = "https://grapevine.concordchat.cc"  # Official hub; or point to your own concord-hub instance
 description = "A place to chat."
 category = ""   # e.g. "Gaming", "Technology", "Art", "Tabletop", "General"
 tags = []       # e.g. ["friendly", "18+", "english"]
