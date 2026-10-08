@@ -235,17 +235,23 @@ func (h *Hub) handleListServers(w http.ResponseWriter, r *http.Request) {
 
 	// Build public listings from local servers.
 	listings := make([]ServerListing, 0, len(servers))
+	local := make(map[string]bool, len(servers))
 	for _, s := range servers {
 		listings = append(listings, RegisteredServer(*s).ToListing())
+		local[s.ID] = true
 	}
 
-	// Append federated servers unless the caller is another hub pulling our list.
+	// Append federated servers unless the caller is another hub pulling our
+	// list. One registered here as well is already listed.
 	if q.Get("federation") != "1" {
 		fed, err := h.db.ListFederatedServers(category, query)
 		if err != nil {
 			ApiLog.Error("list federated failed", "error", err)
 		} else {
 			for _, s := range fed {
+				if local[s.ID] {
+					continue
+				}
 				listings = append(listings, *s)
 			}
 		}

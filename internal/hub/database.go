@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -392,7 +393,10 @@ func (db *HubDB) GetFederatedServerOrigin(serverID string) (string, error) {
 	return url, err
 }
 
-// ListFederatedServers returns all cached federated server listings joined with hub names.
+// ListFederatedServers returns the cached federated server listings joined
+// with hub names, each server once: the same server can arrive through
+// several peers (or one hub at two addresses), and the freshest copy, online
+// first, wins, the same choice GetFederatedServerOrigin makes for joins.
 func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing, error) {
 	q := `SELECT fs.id, fs.name, fs.description, fs.category, fs.tags,
 	             fs.member_count, fs.online_count, fs.max_members, fs.is_online,
@@ -410,7 +414,7 @@ func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing,
 		like := "%" + query + "%"
 		args = append(args, like, like)
 	}
-	q += " ORDER BY fs.online_count DESC"
+	q += " ORDER BY fs.is_online DESC, fs.cached_at DESC"
 
 	rows, err := db.Query(q, args...)
 	if err != nil {
@@ -419,6 +423,7 @@ func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing,
 	defer rows.Close()
 
 	var out []*ServerListing
+	seen := map[string]bool{}
 	for rows.Next() {
 		s := &ServerListing{}
 		var tagsJSON string
@@ -429,12 +434,17 @@ func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing,
 		if err != nil {
 			return nil, err
 		}
+		if seen[s.ID] {
+			continue
+		}
+		seen[s.ID] = true
 		json.Unmarshal([]byte(tagsJSON), &s.Tags)
 		if lastSeen.Valid {
 			s.LastSeen = lastSeen.String
 		}
 		out = append(out, s)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].OnlineCount > out[j].OnlineCount })
 	return out, rows.Err()
 }
 
