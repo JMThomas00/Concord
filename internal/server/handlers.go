@@ -362,6 +362,14 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 	if payload.ReplyToID != nil {
 		newMsg.ReplyToID = payload.ReplyToID
 	}
+	if payload.ThreadID != nil {
+		threadID, ok := h.resolveThread(payload.ChannelID, *payload.ThreadID)
+		if !ok {
+			c.sendError(protocol.ErrorCodeInvalidPayload, "That thread isn't in this channel")
+			return
+		}
+		newMsg.ThreadID = &threadID
+	}
 	newMsg.Attachments = attachments
 
 	// Check @everyone permission
@@ -407,8 +415,12 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		responsePayload.Stream = protocol.StreamWriting
 	}
 
-	// Broadcast to channel
+	// Broadcast to channel (a thread reply too: clients put it in its thread)
 	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageCreate, responsePayload, nil)
+	if newMsg.ThreadID != nil {
+		h.followAfterReply(*newMsg.ThreadID, newMsg)
+		h.broadcastThreadUpdate(payload.ChannelID, *newMsg.ThreadID)
+	}
 
 	// A plugin isn't a channel member, so it would never hear about its own
 	// message; echo it (with its nonce) so the plugin learns the new
@@ -1095,6 +1107,7 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 		HasMore:        len(messages) == req.Limit, // Simple pagination check
 		PinnedMessages: pinnedMessages,
 	}
+	h.attachThreadSummaries(displayMessages, req.ChannelID, serverID, c.UserID) // threads.go
 
 	h.hub.SendToUser(c.UserID, protocol.EventMessagesHistory, payload)
 }
@@ -1989,6 +2002,9 @@ func (h *Handlers) HandleDeleteMessage(c *Client, msg *protocol.Message) {
 	}
 
 	h.hub.BroadcastToChannel(payload.ChannelID, protocol.EventMessageDelete, deletePayload, nil)
+	if origMsg.ThreadID != nil {
+		h.broadcastThreadUpdate(origMsg.ChannelID, *origMsg.ThreadID)
+	}
 }
 
 // broadcastMemberUpdate fetches updated member data and broadcasts EventServerMemberUpdate.

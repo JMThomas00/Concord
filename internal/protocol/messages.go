@@ -95,6 +95,15 @@ const (
 	// EventPluginManageResult, then the refreshed plugin list.
 	OpPluginManage OpCode = 62
 
+	// OpRequestThread (63): C→S. A thread's replies (ThreadRequest),
+	// answered with EventThreadMessages. Channel history carries only each
+	// thread's summary, so a client loads the replies when it opens one.
+	OpRequestThread OpCode = 63
+
+	// OpThreadRead (64): C→S. "I've read this thread" (ThreadReadPayload),
+	// so its unread mark clears on every device signed in to the account.
+	OpThreadRead OpCode = 64
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -185,6 +194,8 @@ const (
 	EventPluginManageResult   EventType = "PLUGIN_MANAGE_RESULT"   // S→C: outcome of an OpPluginManage/OpPluginConfigSet
 	EventPluginRegistryUpdate EventType = "PLUGIN_REGISTRY_UPDATE" // S→C: installed channel kinds changed live
 	EventPluginRecords        EventType = "PLUGIN_RECORDS"         // S→C: your plugin records (achievements, stats), on sign-in and when one changes
+	EventThreadMessages       EventType = "THREAD_MESSAGES"        // S→C: a thread's replies, answering OpRequestThread
+	EventThreadUpdate         EventType = "THREAD_UPDATE"          // S→C: a thread's summary changed (a reply, a deletion, a read)
 )
 
 // Message represents a WebSocket message envelope
@@ -251,6 +262,9 @@ type SendMessagePayload struct {
 	ChannelID   uuid.UUID           `json:"channel_id"`
 	Content     string              `json:"content"`
 	ReplyToID   *uuid.UUID          `json:"reply_to_id,omitempty"`
+	// ThreadID posts the message into a thread: the ID of the thread's
+	// first message, or of any message in it (the server resolves it).
+	ThreadID    *uuid.UUID          `json:"thread_id,omitempty"`
 	Nonce       string              `json:"nonce,omitempty"` // Client-generated ID for deduplication
 	Attachments []models.Attachment `json:"attachments,omitempty"`
 	// Stream is StreamWriting for a plugin reply that will grow by edits
@@ -561,6 +575,53 @@ type MessageDisplay struct {
 	Author    *models.User         `json:"author"`
 	Member    *models.ServerMember `json:"member,omitempty"`    // Author's server membership (nickname), nil for system/plugin authors
 	Recipient *models.User         `json:"recipient,omitempty"` // For whispers only
+	// Thread summarises the replies to this message when it starts a
+	// thread (channel history only; replies themselves come by thread).
+	Thread *ThreadSummary `json:"thread,omitempty"`
+}
+
+// ThreadSummary is what a channel shows of a thread without loading it:
+// how many replies, the latest one, and who's in it. Following and Unread
+// are the receiving user's own: they follow a thread they started, posted
+// in or were @mentioned in, and it's unread when a reply came after they
+// last read it.
+type ThreadSummary struct {
+	ThreadID     uuid.UUID       `json:"thread_id"` // the first message's ID
+	ChannelID    uuid.UUID       `json:"channel_id"`
+	ReplyCount   int             `json:"reply_count"`
+	LastReplyAt  *time.Time      `json:"last_reply_at,omitempty"`
+	LastReply    *MessageDisplay `json:"last_reply,omitempty"`
+	Participants []uuid.UUID     `json:"participants,omitempty"` // up to 5, the first message's author first
+	Following    bool            `json:"following,omitempty"`
+	Unread       bool            `json:"unread,omitempty"`
+	// Followers is set on a THREAD_UPDATE broadcast to the whole channel,
+	// which can't carry each member's own Following/Unread: a client
+	// follows the thread when it's listed, and a reply from someone else
+	// makes it unread. A THREAD_UPDATE sent to one user (after a read)
+	// carries their own Following/Unread instead.
+	Followers []uuid.UUID `json:"followers,omitempty"`
+}
+
+// ThreadRequest asks for a thread's replies (OpRequestThread), oldest first,
+// the newest Limit of them (default and most 200).
+type ThreadRequest struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ThreadID  uuid.UUID `json:"thread_id"`
+	Limit     int       `json:"limit,omitempty"`
+}
+
+// ThreadMessagesPayload answers OpRequestThread (EventThreadMessages).
+type ThreadMessagesPayload struct {
+	ChannelID uuid.UUID         `json:"channel_id"`
+	ThreadID  uuid.UUID         `json:"thread_id"`
+	Messages  []*MessageDisplay `json:"messages"`
+	Summary   *ThreadSummary    `json:"summary,omitempty"`
+}
+
+// ThreadReadPayload marks a thread read up to now (OpThreadRead).
+type ThreadReadPayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ThreadID  uuid.UUID `json:"thread_id"`
 }
 
 // MessageUpdatePayload is dispatched when a message is edited

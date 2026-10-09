@@ -206,6 +206,16 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleTypingStop(c, msg)
 		})
 
+	case protocol.OpRequestThread:
+		c.requireAuth(func() {
+			c.handlers.HandleRequestThread(c, msg)
+		})
+
+	case protocol.OpThreadRead:
+		c.requireAuth(func() {
+			c.handlers.HandleThreadRead(c, msg)
+		})
+
 	case protocol.OpPresenceUpdate:
 		c.requireAuth(func() {
 			c.handlers.HandlePresenceUpdate(c, msg)

@@ -37,6 +37,12 @@ type Message struct {
 	Embeds          []Embed      `json:"embeds,omitempty"`
 	Reactions       []Reaction   `json:"reactions,omitempty"`
 	ReplyToID       *uuid.UUID   `json:"reply_to_id,omitempty"`     // Message being replied to
+	// ThreadID is set on every reply in a thread: the ID of the thread's
+	// first message (which itself has none). Threads are one level deep.
+	ThreadID *uuid.UUID `json:"thread_id,omitempty"`
+	// Deleted marks a thread's first message that was deleted while its
+	// replies remain: it's kept in history, empty, to head the thread.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // Attachment represents a file shared peer-to-peer alongside a message. The
