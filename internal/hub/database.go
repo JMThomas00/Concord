@@ -379,6 +379,13 @@ func (db *HubDB) UpsertFederatedServer(hubID string, s *ServerListing) error {
 	return err
 }
 
+// DropFederatedServersBefore removes a peer's cached listings that its sync
+// at syncStart didn't bring back: servers that went offline or left it.
+func (db *HubDB) DropFederatedServersBefore(hubID string, syncStart time.Time) error {
+	_, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id=? AND cached_at < ?`, hubID, syncStart.UTC())
+	return err
+}
+
 // GetFederatedServerOrigin returns the URL of the peer hub a federated server
 // listing came from, so join requests can be proxied to it.
 func (db *HubDB) GetFederatedServerOrigin(serverID string) (string, error) {
@@ -397,14 +404,17 @@ func (db *HubDB) GetFederatedServerOrigin(serverID string) (string, error) {
 // with hub names, each server once: the same server can arrive through
 // several peers (or one hub at two addresses), and the freshest copy, online
 // first, wins, the same choice GetFederatedServerOrigin makes for joins.
-func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing, error) {
+// Copies cached before freshSince are left out: their hub has stopped
+// answering, so nothing says they're still online (2026-10-09: Jordan's
+// home server showed as online all night after his PC was shut down).
+func (db *HubDB) ListFederatedServers(category, query string, freshSince time.Time) ([]*ServerListing, error) {
 	q := `SELECT fs.id, fs.name, fs.description, fs.category, fs.tags,
 	             fs.member_count, fs.online_count, fs.max_members, fs.is_online,
 	             fs.last_seen, ph.name
 	      FROM federated_servers fs
 	      JOIN peer_hubs ph ON ph.id = fs.hub_id AND ph.is_active=1
-	      WHERE 1=1`
-	var args []any
+	      WHERE fs.cached_at >= ?`
+	args := []any{freshSince.UTC()}
 	if category != "" {
 		q += " AND fs.category=?"
 		args = append(args, category)

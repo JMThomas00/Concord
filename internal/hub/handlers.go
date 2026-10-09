@@ -244,7 +244,7 @@ func (h *Hub) handleListServers(w http.ResponseWriter, r *http.Request) {
 	// Append federated servers unless the caller is another hub pulling our
 	// list. One registered here as well is already listed.
 	if q.Get("federation") != "1" {
-		fed, err := h.db.ListFederatedServers(category, query)
+		fed, err := h.db.ListFederatedServers(category, query, h.federatedFreshSince(time.Now()))
 		if err != nil {
 			ApiLog.Error("list federated failed", "error", err)
 		} else {
