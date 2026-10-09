@@ -3632,7 +3632,41 @@ func (db *DB) MigratePluginPlatform() error {
 		return fmt.Errorf("failed to create thread tables: %w", err)
 	}
 
+	// Voice permissions (2026-10-09): Connect and Speak were never checked,
+	// and @everyone never had them, so voice worked only by accident. Now
+	// that they're enforced, give every existing @everyone the voice
+	// permissions once, so nobody loses voice; after that an admin can take
+	// them away and it sticks.
+	if err := runOnce(db, "2026-10-09-everyone-voice", func() error {
+		_, err := db.Exec(`UPDATE roles SET permissions = permissions | ? WHERE is_default = 1`, int64(models.PermissionsVoice))
+		return err
+	}); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// runOnce applies a one-time data migration (one that mustn't be repeated
+// on every start, unlike the additive schema changes above), recording its
+// name in migrations_done.
+func runOnce(db *DB, name string, apply func() error) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS migrations_done (name TEXT PRIMARY KEY, done_at DATETIME NOT NULL)`); err != nil {
+		return fmt.Errorf("failed to create migrations_done: %w", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM migrations_done WHERE name = ?`, name).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	log.Printf("[MIGRATION] %s", name)
+	if err := apply(); err != nil {
+		return fmt.Errorf("migration %s: %w", name, err)
+	}
+	_, err := db.Exec(`INSERT INTO migrations_done (name, done_at) VALUES (?, ?)`, name, time.Now().UTC())
+	return err
 }
 
 // addColumnIfMissing adds a column to a table if it doesn't already exist.

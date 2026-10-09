@@ -2448,19 +2448,35 @@ func (h *Handlers) HandleVoiceStateUpdate(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeNotFound, "Voice channel not found")
 		return
 	}
-	if channel.MaxUsers > 0 {
-		current, _ := h.db.GetVoiceStatesForChannel(*req.ChannelID)
-		// Allow if already in this channel (update, not new join)
-		alreadyIn := false
-		for _, vs := range current {
-			if vs.UserID == c.UserID {
-				alreadyIn = true
-				break
-			}
+	current, _ := h.db.GetVoiceStatesForChannel(*req.ChannelID)
+	// Already in this channel: an update (a mute toggle), not a new join.
+	var mine *models.VoiceState
+	for _, vs := range current {
+		if vs.UserID == c.UserID {
+			mine = vs
+			break
 		}
-		if !alreadyIn && len(current) >= channel.MaxUsers {
-			c.sendError(protocol.ErrorCodeForbidden, "Voice channel is full")
+	}
+	if channel.MaxUsers > 0 && mine == nil && len(current) >= channel.MaxUsers {
+		c.sendError(protocol.ErrorCodeForbidden, "Voice channel is full")
+		return
+	}
+
+	// Connect is needed to join, and Speak to be heard: someone without it
+	// joins server-muted (peer-to-peer audio can't be blocked by the
+	// server, but every client honours a server mute). Both go through
+	// channel overwrites. A moderator's unmute sticks until they leave.
+	serverMuted, serverDeafened := false, false
+	if mine != nil {
+		serverMuted, serverDeafened = mine.IsServerMuted, mine.IsServerDeafened
+	}
+	if !c.IsPlugin && channel.ServerID != uuid.Nil {
+		if mine == nil && h.hasChannelPermission(c.UserID, channel, models.PermissionConnect) != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to join this voice channel")
 			return
+		}
+		if mine == nil && h.hasChannelPermission(c.UserID, channel, models.PermissionSpeak) != nil {
+			serverMuted = true
 		}
 	}
 
@@ -2470,16 +2486,22 @@ func (h *Handlers) HandleVoiceStateUpdate(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to join voice channel")
 		return
 	}
+	if mine == nil && serverMuted {
+		_ = h.db.SetServerVoiceMute(c.UserID, req.ServerID, true, serverDeafened)
+	}
 	h.hub.JoinVoiceChannel(c.UserID, req.ServerID, *req.ChannelID, c)
 
-	// Broadcast new state to all server members
+	// Broadcast new state to all server members (with any server mute, which
+	// a self-mute toggle used to report as lifted)
 	joinPayload := &protocol.VoiceStateEventPayload{
-		UserID:         c.UserID,
-		ServerID:       req.ServerID,
-		ChannelID:      req.ChannelID,
-		IsSelfMuted:    req.IsSelfMuted,
-		IsSelfDeafened: req.IsSelfDeafened,
-		User:           c.User,
+		UserID:           c.UserID,
+		ServerID:         req.ServerID,
+		ChannelID:        req.ChannelID,
+		IsSelfMuted:      req.IsSelfMuted,
+		IsSelfDeafened:   req.IsSelfDeafened,
+		IsServerMuted:    serverMuted,
+		IsServerDeafened: serverDeafened,
+		User:             c.User,
 	}
 	_ = h.hub.BroadcastToServer(req.ServerID, protocol.EventVoiceStateUpdate, joinPayload, nil)
 

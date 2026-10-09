@@ -122,7 +122,8 @@ func NewEveryoneRole(serverID uuid.UUID) *Role {
 			PermissionReadMessageHistory |
 			PermissionAddReactions |
 			PermissionManageChannels |
-			PermissionChangeNickname,
+			PermissionChangeNickname |
+			PermissionsVoice, // Connect, Speak, Use Voice Activity (enforced since 2026-10-09)
 		Position:    0,
 		IsHoisted:   false,
 		IsMentionable: false,
