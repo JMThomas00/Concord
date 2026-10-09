@@ -1674,10 +1674,7 @@ func (a *App) renderChatPanel(width, height int) string {
 		inputContent = hintStyle.Render(hint)
 	}
 	if a.threadTarget != nil {
-		// Posting into a thread (threads.go): say which, and how to leave
-		threadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Italic(true)
-		line := fmt.Sprintf("🧵 Replying in thread: \"%s\" · Esc leaves", a.threadQuote)
-		inputContent = threadStyle.Render(line) + "\n" + inputContent
+		// Posting into a thread: said in the box's borders, below
 	} else if a.replyTarget != nil {
 		// Show reply quote above input (styled, dimmed, italic)
 		replyStyle := lipgloss.NewStyle().
@@ -1686,7 +1683,11 @@ func (a *App) renderChatPanel(width, height int) string {
 		replyLine := fmt.Sprintf("↩ Replying to %s: %s", a.replyTarget.AuthorName, a.replyQuote)
 		inputContent = replyStyle.Render(replyLine) + "\n" + inputContent
 	}
-	input := zone.Mark("chat-input", inputStyle.Render(inputContent))
+	box := inputStyle.Render(inputContent)
+	if a.threadTarget != nil { // which thread, and how to leave it, in the borders (threads.go)
+		box = a.markThreadReplyBox(box, lipgloss.NewStyle().Foreground(inputBorderColor))
+	}
+	input := zone.Mark("chat-input", box)
 
 	// Note: pinnedHeader is rendered INSIDE the chat border, not as a separate element
 	parts := []string{chat, input}

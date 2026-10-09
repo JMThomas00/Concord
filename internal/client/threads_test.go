@@ -252,3 +252,42 @@ func TestThreadRepliesInTheChannel(t *testing.T) {
 		t.Errorf("%d clickable notice lines, want 1", len(a.threadNoticeLines))
 	}
 }
+
+// A minimised thread's latest-reply line shows markdown the way the chat
+// does (Jordan, 2026-10-09: "*Could you…?*" showed its asterisks).
+func TestTheLatestReplyLineRendersMarkdown(t *testing.T) {
+	a, _, root, _ := threadFixture(t)
+	ts := a.activeConn.thread(root.ID)
+	ts.summary.LastReply.Content = "*Could you take this convo elsewhere, please?*"
+	line := a.threadLatestLine(ts, 90)
+	plain := ansi.Strip(line)
+	if strings.Contains(plain, "*") || !strings.Contains(plain, "Could you take this convo elsewhere, please?") {
+		t.Fatalf("the line reads %q", plain)
+	}
+	if !strings.Contains(line, "\x1b[3") && !strings.Contains(line, ";3m") {
+		t.Errorf("no italics in %q", line)
+	}
+}
+
+// Replying in a thread is said in the message box's borders (Jordan's
+// sketch): which thread, top right, kept short; how to leave, bottom right.
+func TestTheReplyBoxSaysItsThreadInItsBorders(t *testing.T) {
+	a, _, root, _ := threadFixture(t)
+	a.startThreadReply(root)
+	box := "╭" + strings.Repeat("─", 98) + "╮\n│" + strings.Repeat(" ", 98) + "│\n╰" + strings.Repeat("─", 98) + "╯"
+	out := strings.Split(ansi.Strip(a.markThreadReplyBox(box, a.styles.UsernameOther)), "\n")
+	if !strings.Contains(out[0], `Replying in thread: "Has anyone tested`) || !strings.HasSuffix(out[0], "─╮") {
+		t.Errorf("top border %q", out[0])
+	}
+	if !strings.HasSuffix(out[2], "Esc to leave thread ─╯") {
+		t.Errorf("bottom border %q", out[2])
+	}
+	for i, l := range out {
+		if w := ansi.StringWidth(l); w != 100 {
+			t.Errorf("line %d is %d wide, want 100: %q", i, w, l)
+		}
+	}
+	if q := ansi.Strip(out[0]); ansi.StringWidth(q) > 100 || strings.Count(q, "Replying") != 1 {
+		t.Errorf("top border %q", q)
+	}
+}

@@ -393,8 +393,7 @@ func (a *App) threadLatestLine(ts *threadState, inner int) string {
 		when = " · " + agoText(time.Since(at))
 	}
 	room := max(10, inner-4-ansi.StringWidth(who)-ansi.StringWidth(when))
-	first := extractFirstLineWithEllipsis(text, room)
-	return dim.Render("  ↳ ") + dim.Bold(true).Render(who) + dim.Render(": "+first+when)
+	return dim.Render("  ↳ ") + dim.Bold(true).Render(who) + dim.Render(": ") + a.previewLine(text, room) + dim.Render(when)
 }
 
 // boxThreadSegment draws one message's rendered lines inside its thread's
@@ -505,4 +504,57 @@ func (a *App) sameThreadGroup(msgs []*MessageDisplay, i int) bool {
 		return m.ID
 	}
 	return key(msgs[i-1]) == key(msgs[i]) && cur.expanded
+}
+
+// markThreadReplyBox says, in the message box's borders, that it's posting
+// into a thread (top right: which, its opening words kept short) and how to
+// leave (bottom right).
+func (a *App) markThreadReplyBox(box string, edge lipgloss.Style) string {
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Italic(true)
+	width := lipgloss.Width(strings.SplitN(box, "\n", 2)[0])
+	quote := ansi.Truncate(a.threadQuote, max(10, min(32, width/2-24)), "…")
+	box = embedBorderRight(box, style.Render(fmt.Sprintf("Replying in thread: \"%s\"", quote)), edge, true)
+	return embedBorderRight(box, style.Render("Esc to leave thread"), edge, false)
+}
+
+// embedBorderRight writes text into a box's top or bottom border, near its
+// right end: "─ text ─╮" or "─ text ─╯". Text too wide for the border is
+// left out.
+func embedBorderRight(box, text string, edge lipgloss.Style, top bool) string {
+	lines := strings.Split(box, "\n")
+	i := len(lines) - 1
+	left, right := "╰", "╯"
+	if top {
+		i, left, right = 0, "╭", "╮"
+	}
+	width := lipgloss.Width(lines[i])
+	tw := lipgloss.Width(text)
+	if tw+8 > width {
+		return box
+	}
+	lines[i] = edge.Render(left+strings.Repeat("─", width-tw-5)) + " " + text + " " + edge.Render("─"+right)
+	return strings.Join(lines, "\n")
+}
+
+// previewLine is a message's first line of text (past any reply quote) as
+// the chat shows it, markdown and all (*this* in italics, not asterisks),
+// cut to width.
+func (a *App) previewLine(text string, width int) string {
+	line := ""
+	for _, l := range strings.Split(text, "\n") {
+		if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "↩ ") {
+			line = t
+			break
+		}
+	}
+	if line == "" {
+		return ""
+	}
+	rendered := a.renderMessageContent("", line, max(40, width+20), false)
+	for _, l := range strings.Split(rendered, "\n") {
+		if strings.TrimSpace(ansi.Strip(l)) != "" {
+			return ansi.Truncate(strings.TrimSpace(l), width, "…")
+		}
+	}
+	return ""
 }
