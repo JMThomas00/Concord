@@ -138,6 +138,9 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleWhisper(cmd.Args)
 	case "links":
 		return ch.handleLinks(cmd.Args)
+	case "threads":
+		ch.app.openThreadList() // threads_find.go
+		return "", nil
 	case "status":
 		return ch.handleStatus(cmd.Args)
 	case "title":

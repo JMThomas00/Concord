@@ -87,6 +87,9 @@ type ServerConnection struct {
 	// Threads by their first message's ID (threads.go): the summary, and the
 	// replies once the thread has been opened.
 	Threads map[uuid.UUID]*threadState
+	// The latest reply per thread, per channel, for the optional in-channel
+	// line (threads_find.go).
+	ThreadNotices map[uuid.UUID]map[uuid.UUID]threadNotice
 
 	// Voice state — keyed by protocol server ID
 	// VoiceStates maps userID → VoiceState for all users currently in voice on this connection's servers.

@@ -190,6 +190,10 @@ type NotificationConfig struct {
 	// (two lines each).
 	ToastSide  string `json:"toast_side,omitempty"`
 	ToastStyle string `json:"toast_style,omitempty"`
+	// ThreadLines: a line in the channel when someone replies in a thread:
+	// "" (off, the default), "followed" (threads you follow or were
+	// mentioned in) or "all" (threads_find.go).
+	ThreadLines string `json:"thread_lines,omitempty"`
 }
 
 // DisplayConfig holds display and appearance preferences

@@ -98,6 +98,7 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 
 - ` + "`PgUp / PgDn`" + ` — Scroll message history
 - ` + "`Alt+M`" + ` — Enter message navigation mode
+- ` + "`Alt+T`" + ` — Threads in this channel (Enter opens one)
 - ` + "`Ctrl+J`" + ` — Insert a newline in the input box (works on every platform; Ctrl+Enter/Shift+Enter may also work depending on your terminal, but many — including Windows Terminal/PowerShell — can't tell them apart from a plain Enter)
 - ` + "`@`" + ` — Open @mention autocomplete popup
 - ` + "`↑ / ↓`" + ` in popup — Navigate mention suggestions
@@ -108,7 +109,7 @@ The focused panel is highlighted with a purple border. Start typing in the **Cha
 
 Press **Alt+M** from the chat panel to enter message navigation:
 
-- **Level 1** — ↑/↓ move between messages; **Ctrl+C** copies the full message; **L** opens link browser for URLs in the selected message; **A** copies a message's attachment ID (for pasting into /download) to the clipboard
+- **Level 1** — ↑/↓ move between messages; **Ctrl+C** copies the full message; **L** opens link browser for URLs in the selected message; **A** copies a message's attachment ID (for pasting into /download) to the clipboard; **T** replies in the message's thread (starting one); **Enter** on a thread's first message expands or minimises it
 - **Level 2** — press **Enter** on a message to enter edit mode; ←/→ move within the message; **Shift+←/→** select text; **Ctrl+C** copies selection
 - Press **Esc** to exit either level
 
@@ -175,6 +176,12 @@ Admin commands:
 ### @Mentions
 
 Type ` + "`@`" + ` to open the autocomplete popup. Select a name with ↑/↓ and confirm with **Enter** or **Tab**. Mentioned messages are highlighted in your name colour. If **Bell on Mention** is enabled in Notification settings, a terminal bell fires on every @mention directed at you.
+
+### Threads
+
+Keep a side conversation in one place: **Alt+M**, arrow to a message, **T**, and type. The message box says **Replying in thread** until you press **Esc**. A thread sits where it started, in a box: minimised it shows the first message and the latest reply, with **+** and the reply count in its top edge (marked **new**, in cyan, when there's something you haven't read); **Enter** on it (or a click on its edge) expands it.
+
+New messages push threads up out of view, so the way back stays put: the chat box's bottom edge counts active and unread threads, and **Alt+T** (or ` + "`/threads`" + `) lists every thread in the channel; **Enter** opens one, expanded, ready to reply. You follow a thread you start, reply in or are  in: only those count as unread and send notifications. **Settings → Notifications → Thread Replies in the Channel** can also put a line in the channel when someone replies (off by default).
 
 ### Whispers (Ephemeral DMs)
 

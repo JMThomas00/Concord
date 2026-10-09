@@ -193,3 +193,62 @@ func TestTheMessageAfterAThreadKeepsItsAuthor(t *testing.T) {
 		}
 	}
 }
+
+// The chat box's bottom edge counts the channel's active and unread threads
+// (Jordan's sketch), and Alt+T lists them; Enter opens one expanded, with
+// the message box replying in it.
+func TestBottomEdgeAndAltTFindAThread(t *testing.T) {
+	a, _, root, replies := threadFixture(t)
+	ts := a.activeConn.thread(root.ID)
+	ts.replies, ts.loaded = replies, true
+	full, short := a.threadIndicator(time.Now())
+	for _, want := range []string{"1 active thread", "1 unread", "Alt+T"} {
+		if !strings.Contains(ansi.Strip(full), want) {
+			t.Errorf("%q missing from the indicator %q", want, ansi.Strip(full))
+		}
+	}
+	if !strings.Contains(ansi.Strip(short), "Alt+T") {
+		t.Errorf("short indicator %q", ansi.Strip(short))
+	}
+	box := strings.Repeat("│\n", 3) + "╰" + strings.Repeat("─", 78) + "╯"
+	edge := ansi.Strip(strings.Split(a.embedChatBottom(box, "bob is typing...", a.styles.UsernameOther), "\n")[3])
+	if !strings.Contains(edge, "bob is typing") || !strings.HasSuffix(edge, "Alt+T ─╯") || ansi.StringWidth(edge) != 80 {
+		t.Errorf("bottom edge %q", edge)
+	}
+
+	a.handleKeyPress(keyOf("alt+t"))
+	if a.threadList == nil || len(a.threadList.items) != 1 {
+		t.Fatalf("Alt+T didn't list the thread: %+v", a.threadList)
+	}
+	if out := ansi.Strip(a.renderThreadList()); !strings.Contains(out, "Threads in #") || !strings.Contains(out, "2 replies") {
+		t.Errorf("the list:\n%s", out)
+	}
+	a.handleKeyPress(keyOf("enter"))
+	if a.threadList != nil || !a.expandedThreads[root.ID] || a.threadTarget == nil || a.threadTarget.ID != root.ID {
+		t.Fatalf("Enter in the list: list %v expanded %v target %v", a.threadList, a.expandedThreads[root.ID], a.threadTarget)
+	}
+}
+
+// The optional in-channel line: off by default; "all" shows the latest
+// reply per thread, in time order among the messages.
+func TestThreadRepliesInTheChannel(t *testing.T) {
+	a, ch, root, _ := threadFixture(t)
+	reply := &MessageDisplay{Message: &models.Message{ID: uuid.New(), ChannelID: ch, ThreadID: &root.ID, Content: "Works", CreatedAt: time.Now().Add(-3 * time.Minute)}, AuthorName: "bob"}
+	a.noteThreadReply(a.activeConn, reply, false)
+	if strings.Contains(ansi.Strip(ansiContent(updated(a))), "replied in a thread") {
+		t.Fatal("the in-channel line shows while the setting is off")
+	}
+	a.notifConfig.ThreadLines = ThreadLinesFollowed
+	if strings.Contains(ansi.Strip(ansiContent(updated(a))), "replied in a thread") {
+		t.Fatal("followed-only shows a thread we don't follow")
+	}
+	a.notifConfig.ThreadLines = ThreadLinesAll
+	out := ansi.Strip(ansiContent(updated(a)))
+	i, j := strings.Index(out, "bob replied in a thread"), strings.Index(out, "Unrelated chatter")
+	if i < 0 || j < 0 || i > j {
+		t.Fatalf("the line should come before the message after it in time:\n%s", out)
+	}
+	if len(a.threadNoticeLines) != 1 {
+		t.Errorf("%d clickable notice lines, want 1", len(a.threadNoticeLines))
+	}
+}

@@ -1031,7 +1031,11 @@ func (a *App) renderMainView() string {
 	// Add top margin line for border visibility
 	topMargin := ""
 
-	return lipgloss.JoinVertical(lipgloss.Left, topMargin, mainContent, statusBar)
+	view := lipgloss.JoinVertical(lipgloss.Left, topMargin, mainContent, statusBar)
+	if a.threadList != nil { // Alt+T (threads_find.go)
+		view = overlayCenter(view, a.renderThreadList(), a.width, a.height)
+	}
+	return view
 }
 
 // renderSidebar renders the server/channel sidebar
@@ -1644,7 +1648,7 @@ func (a *App) renderChatPanel(width, height int) string {
 		typing = spinnerStyle.Render(frame) + " " + textStyle.Render(who+"...")
 	}
 	// It sits in the chat box's bottom border, like the channel name in the top.
-	chat = embedBorderBottom(chat, typing, lipgloss.NewStyle().Foreground(chatBorderColor))
+	chat = a.embedChatBottom(chat, typing, lipgloss.NewStyle().Foreground(chatBorderColor)) // + the thread indicator (threads_find.go)
 
 	// Input area — full rounded border; textarea is 5 content lines so that
 	// 1 top border + 5 content + 1 bottom border = 7 rows total (same slot, no gap).

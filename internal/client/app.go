@@ -414,6 +414,13 @@ type App struct {
 	threadTarget      *MessageDisplay
 	threadQuote       string
 	threadBorderLines map[int]uuid.UUID
+	// Finding threads (threads_find.go): the Alt+T list, the bottom edge's
+	// "↳ who replied" and until when, and the chat lines holding an
+	// in-channel reply notice (a click opens that thread).
+	threadList        *threadListState
+	threadFlash       string
+	threadFlashUntil  time.Time
+	threadNoticeLines map[int]uuid.UUID
 	replyQuote  string          // Ellipsized first line for display
 
 	// Edit message state
@@ -1352,6 +1359,10 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-schedule the AFK check
 		cmds = append(cmds, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }))
 
+	case threadFlashDoneMsg:
+		// The bottom edge's "↳ who replied" is over (threads_find.go): redraw.
+		return a, nil
+
 	case exitNavModeMsg:
 		a.messageNavMode = false
 		if msg.setFocus {
@@ -1540,9 +1551,13 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Captured BEFORE handleKeyPress/a.input.Update -- see the
 		// consuming check after the later `switch a.view` block.
 		wasComposing = a.view == ViewMain && a.focus == FocusInput && len(a.input.Value()) > 0
+		listWasOpen := a.threadList != nil // the Alt+T list keeps its keys (threads_find.go)
 		cmd := a.handleKeyPress(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+		if listWasOpen {
+			return a, tea.Batch(cmds...)
 		}
 		// See inPasteBurst's doc comment: handleKeyPress may have just
 		// flagged this keystroke as part of a machine-replayed paste burst.
@@ -2212,6 +2227,16 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	a.lastKeystrokeAt = time.Now()
 	if sinceLastKeystroke < pasteBurstKeyThreshold {
 		a.inPasteBurst = true
+	}
+
+	// Threads (threads_find.go): the open Alt+T list takes every key, and
+	// Alt+T opens it from anywhere in the main window.
+	if a.view == ViewMain && a.threadList != nil {
+		return a.handleThreadListKey(msg)
+	}
+	if a.view == ViewMain && msg.String() == "alt+t" {
+		a.openThreadList()
+		return nil
 	}
 
 	// A remote-pane plugin channel captures every key, full stop — every
@@ -5008,8 +5033,21 @@ func (a *App) updateChatContent() {
 	lineOffsets := make([]int, len(messages))
 	runningLines := 0
 
+	// The optional in-channel thread lines, placed in time order among the
+	// messages (threads_find.go); a click on one opens its thread.
+	notices := a.channelNotices()
+	a.threadNoticeLines = make(map[int]uuid.UUID)
+	writeNotice := func(n threadNotice, line int) {
+		a.threadNoticeLines[line] = n.threadID
+		content.WriteString(a.noticeLine(n) + "\n\n")
+	}
+
 	for i, msg := range messages {
 		msgStartLen := content.Len()
+		for len(notices) > 0 && msg.ThreadID == nil && notices[0].at.Before(msg.CreatedAt) {
+			writeNotice(notices[0], runningLines+strings.Count(content.String()[msgStartLen:], "\n"))
+			notices = notices[1:]
+		}
 
 		// Check if this message is selected in navigation mode
 		// Level 1: Highlight entire message with selection background
@@ -5351,6 +5389,11 @@ func (a *App) updateChatContent() {
 
 		lineOffsets[i] = runningLines
 		runningLines += strings.Count(content.String()[msgStartLen:], "\n")
+	}
+
+	for _, n := range notices { // replies after the channel's last message
+		writeNotice(n, runningLines)
+		runningLines += 2
 	}
 
 	a.messageLineOffsets = lineOffsets
@@ -6547,6 +6590,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if payload.Message.MentionEveryone {
 			hasMention = true
 		}
+		if isThreadReply && !display.IsOwn {
+			a.noteThreadReply(sc, display, followsThread || hasMention) // the optional in-channel line (threads_find.go)
+		}
 
 		// Unread tracking: only for messages not in the currently viewed channel
 		if !isCurrentChannel && !isMutedChannel && !isMutedServer && !isThreadReply {
@@ -6600,6 +6646,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				// A thread reply changes its box, not the bottom of the chat:
 				// redraw without scrolling away from what the user is reading.
 				a.updateChatContent()
+				if !display.IsOwn && (followsThread || hasMention) && !a.threadOnScreen(sc, payload.Message.ChannelID, *payload.Message.ThreadID) {
+					return a.flashThreadReply(display.AuthorName)
+				}
 				return nil
 			}
 			if a.currentChannel != nil && a.currentChannel.ID == payload.Message.ChannelID {

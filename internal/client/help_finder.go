@@ -41,6 +41,7 @@ func allSlashCommands() []slashCommandInfo {
 		{"help", "", "Show this command finder", roleLevelMember},
 		{"whisper", "@user <msg>", "Send an ephemeral DM (alias: /w)", roleLevelMember},
 		{"links", "[N]", "Show links from recent N messages (default: 20)", roleLevelMember},
+		{"threads", "", "List this channel's threads (Alt+T)", roleLevelMember},
 		{"theme", "[name]", "Open theme browser, or apply theme directly", roleLevelMember},
 		{"status", "<message>", "Set your status (use /status clear to remove)", roleLevelMember},
 		{"nick", "<nickname>", "Set your own nickname on this server (use clear to remove)", roleLevelMember},

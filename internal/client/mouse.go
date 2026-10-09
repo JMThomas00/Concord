@@ -90,6 +90,14 @@ func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
 			a.toggleThread(threadID)
 			return nil
 		}
+		// An in-channel "↳ who replied in a thread" line opens that thread.
+		if threadID, ok := a.threadNoticeLines[a.chatViewport.YOffset+relY]; ok {
+			for _, m := range a.activeConn.GetMessages(a.currentChannel.ID) {
+				if m.ID == threadID {
+					return a.jumpToThread(m)
+				}
+			}
+		}
 		if idx, ok := resolveMessageAtLine(a.messageLineOffsets, a.chatViewport.YOffset, relY); ok {
 			return a.selectMessageAtIndex(idx)
 		}

@@ -834,6 +834,17 @@ func (a *App) handleNotifFieldActivate(s *SettingsState) {
 		}
 		a.restackToasts()
 		a.saveNotifConfig()
+	case 13: // Thread Replies in the Channel: off → followed → all → off
+		switch a.notifConfig.ThreadLines {
+		case ThreadLinesOff:
+			a.notifConfig.ThreadLines = ThreadLinesFollowed
+		case ThreadLinesFollowed:
+			a.notifConfig.ThreadLines = ThreadLinesAll
+		default:
+			a.notifConfig.ThreadLines = ThreadLinesOff
+		}
+		a.saveNotifConfig()
+		a.updateChatContent()
 	case 12: // Toast Style: full ↔ compact
 		if a.notifConfig.ToastStyle == ToastStyleCompact {
 			a.notifConfig.ToastStyle = ToastStyleFull
@@ -1939,6 +1950,15 @@ func (a *App) renderNotificationsContent(width, height int) string {
 		styleVal = "Compact (two lines: the channel, then the server and who)"
 	}
 	writeField(12, "Toast Style", styleVal+" ◀▶")
+
+	linesVal := "Off (Alt+T and the chat's bottom edge show thread activity)"
+	switch cfg.ThreadLines {
+	case ThreadLinesFollowed:
+		linesVal = "Threads You Follow (a line in the channel; a click opens the thread)"
+	case ThreadLinesAll:
+		linesVal = "All Threads (a line in the channel; a click opens the thread)"
+	}
+	writeField(13, "Thread Replies in the Channel", linesVal+" ◀▶")
 	addLine(dimStyle.Render("  Click a toast to dismiss it (a message's opens its channel), or Ctrl+X for the"))
 	addLine(dimStyle.Render("  bottom one. None for the channel you're in."))
 
@@ -2490,7 +2510,7 @@ func (a *App) renderDisplayContent(width, height int) string {
 // in the middle section. Layout: header+blank (2), fields 0-1 (3 lines
 // each), note+blank (2), divider+blank (2), header+blank (2), fields 2-6
 // (3 lines each), divider+blank (2), field 7 (2 lines, no trailing blank).
-var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31, 38, 41, 44, 47, 50}
+var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31, 38, 41, 44, 47, 50, 53}
 
 // updateNotifScroll adjusts NotifScrollOffset so the focused field is visible.
 func (a *App) updateNotifScroll(s *SettingsState) {
