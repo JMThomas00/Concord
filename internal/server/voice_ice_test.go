@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -101,4 +102,27 @@ func TestCloudflareTURN(t *testing.T) {
 	if got := fresh.servers(uuid.New(), now); len(got) != 1 || got[0].URLs[0] != defaultSTUN {
 		t.Errorf("unreachable Cloudflare, nothing cached: %+v, want STUN only", got)
 	}
+}
+
+// TestCloudflareTURNLive asks the real Cloudflare for a login, through the
+// same code a voice join uses. It runs only with a key in the environment:
+// CONCORD_CF_TURN_KEY_ID and CONCORD_CF_TURN_TOKEN.
+func TestCloudflareTURNLive(t *testing.T) {
+	id, tok := os.Getenv("CONCORD_CF_TURN_KEY_ID"), os.Getenv("CONCORD_CF_TURN_TOKEN")
+	if id == "" || tok == "" {
+		t.Skip("set CONCORD_CF_TURN_KEY_ID and CONCORD_CF_TURN_TOKEN to try the real Cloudflare")
+	}
+	got := newICEProvider(VoiceConfig{CloudflareTURNKeyID: id, CloudflareTURNToken: tok}).servers(uuid.New(), time.Now())
+	turn := false
+	for _, s := range got {
+		for _, u := range s.URLs {
+			if strings.HasPrefix(u, "turn") && s.Username != "" && s.Credential != "" {
+				turn = true
+			}
+		}
+	}
+	if !turn {
+		t.Fatalf("no TURN server with a login: %+v", got)
+	}
+	t.Logf("%d ICE server entries, TURN with a login: ok", len(got))
 }
