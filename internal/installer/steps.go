@@ -634,13 +634,27 @@ func (r *Runner) clearAutostart(c, keep string) {
 		if keep != StartAtLogin {
 			_ = r.change("remove the sign-in entry", func() error { return setRunAtLogin(windowsName(c), "") })
 		}
-		if keep != StartAtBoot && exec.Command("schtasks.exe", "/Query", "/TN", windowsName(c)).Run() == nil {
+		if keep != StartAtBoot && bootTaskExists(windowsName(c)) {
 			path := filepath.Join(pl.Dir(c), "autostart-"+c+"-remove.ps1")
 			if r.change("write "+path, func() error { return writeFile(path, pl.BootTaskRemoval(c), 0o644) }) == nil {
 				_ = r.elevated(path)
 			}
 		}
 	}
+}
+
+// bootTaskExists reports whether the scheduled task is there. A task that
+// runs as SYSTEM can't be read without an administrator (schtasks answers
+// "Access is denied", in the system's language), so the firewall rule
+// BootTaskScript adds beside it, which anyone can read, counts too.
+func bootTaskExists(name string) bool {
+	out, err := exec.Command("schtasks.exe", "/Query", "/TN", name).CombinedOutput()
+	if err == nil || strings.Contains(strings.ToLower(string(out)), "access is denied") {
+		return true
+	}
+	q := "'" + strings.ReplaceAll(name, "'", "''") + "'"
+	return exec.Command("powershell.exe", "-NoProfile", "-Command",
+		"if (Get-NetFirewallRule -DisplayName "+q+" -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }").Run() == nil
 }
 
 func (r *Runner) autostartLinux(c, mode string) error {

@@ -112,8 +112,9 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
   - `make build-installer`, then `build/concord-install --from build --dry-run` walks everything and changes nothing;
   - `go test ./cmd/install` drives every stage and a full dry run;
   - `CONCORD_E2E_SRC=<binaries> go test -run TestRealInstall ./internal/installer` does a real install, start, update and teardown in a temp folder. Verified 2026-10-03 on Windows (Run-key launcher) and on VM 113 (systemd user units, `CONCORD_E2E_REAL_HOME=1`).
-  - **Boot mode across a real restart:** `TestBootStart` (`internal/installer/boot_e2e_test.go`, two runs with a reboot between). **Linux verified 2026-10-09** on VM 113 (systemd system units: both up within a minute of boot, then uninstalled cleanly).
-  - **Not yet run:** macOS at all, Windows boot mode (the SYSTEM task), and Linux library installs.
+  - **Boot mode across a real restart:** `TestBootStart` (`internal/installer/boot_e2e_test.go`, two runs with a reboot between). **Linux verified 2026-10-09** on VM 113 (systemd system units: both up within a minute of boot, then uninstalled cleanly). **Windows verified 2026-10-09** on Jordan's PC (SYSTEM tasks: both answering after the restart, then removed through one UAC prompt each).
+  - **A SYSTEM task is invisible to a normal user:** `schtasks /Query` says "Access is denied", which once made uninstall skip removing it silently (the programs kept running and their folders couldn't be deleted). `bootTaskExists` treats that answer, or the task's firewall rule, as "it's there".
+  - **Not yet run:** macOS at all, and Linux library installs.
 - **Release workflow changes (unverified until the next tag):**
   - the Linux build moved to ubuntu-22.04 (older glibc, more distros);
   - the server and hub are built with `CGO_ENABLED=0` everywhere;

@@ -29,6 +29,12 @@ func TestBootStart(t *testing.T) {
 	if !p.CanStartAtBoot() {
 		t.Skip("this computer can't start programs at boot")
 	}
+	// A home of its own inside dir: uninstalling clears the home's .concord, and
+	// on a real computer that would be the user's profiles and servers.
+	p.Home = filepath.Join(dir, "home")
+	if err := os.MkdirAll(p.Home, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	pl := NewPlan(p)
 	pl.Components = []string{Server, Hub}
 	pl.ServerDir, pl.HubDir = filepath.Join(dir, "server"), filepath.Join(dir, "hub")
