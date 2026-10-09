@@ -34,6 +34,8 @@ import (
 
 	malgo "github.com/gen2brain/malgo"
 	"github.com/google/uuid"
+
+	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/hraban/opus"
 	"github.com/pion/webrtc/v3"
 
@@ -173,7 +175,7 @@ type VoiceEngine struct {
 	localUserID uuid.UUID
 	channelID   uuid.UUID
 	serverID    uuid.UUID
-	stunURLs    []string
+	iceList     []protocol.ICEServer // STUN and TURN, from the server (voice_ice.go)
 
 	api *webrtc.API
 
@@ -279,13 +281,13 @@ func NewVoiceEngine(
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 // Start initialises audio devices and begins capturing from the microphone.
-func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, stunURLs []string) error {
+func (e *VoiceEngine) Start(serverID, channelID uuid.UUID, ice []protocol.ICEServer) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.serverID = serverID
 	e.channelID = channelID
-	e.stunURLs = stunURLs
+	e.iceList = ice
 
 	// ── malgo context ────────────────────────────────────────────────────────
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, func(msg string) {
@@ -1067,11 +1069,17 @@ func (e *VoiceEngine) UpdateConfig(cfg AudioConfig) {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 func (e *VoiceEngine) iceServers() []webrtc.ICEServer {
-	urls := e.stunURLs
-	if len(urls) == 0 {
-		urls = []string{"stun:stun.l.google.com:19302"}
+	var out []webrtc.ICEServer
+	for _, s := range e.iceList {
+		if len(s.URLs) == 0 {
+			continue
+		}
+		out = append(out, webrtc.ICEServer{URLs: s.URLs, Username: s.Username, Credential: s.Credential})
 	}
-	return []webrtc.ICEServer{{URLs: urls}}
+	if len(out) == 0 {
+		out = []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
+	}
+	return out
 }
 
 func (e *VoiceEngine) touchIncoming(userID uuid.UUID) {

@@ -7801,7 +7801,12 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 
 	serverID := payload.ServerID
 	channelID := payload.ChannelID
-	stunURLs := payload.STUNUrls
+	// STUN and TURN from the server's [voice] settings; an older server sends
+	// STUN addresses only.
+	ice := payload.ICEServers
+	if len(ice) == 0 && len(payload.STUNUrls) > 0 {
+		ice = []protocol.ICEServer{{URLs: payload.STUNUrls}}
+	}
 
 	startCmd := func() (result tea.Msg) {
 		// Recover from any CGO/malgo panics (e.g. nil audio backend on some
@@ -7811,7 +7816,7 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 				result = VoiceEngineErrorMsg{Err: fmt.Errorf("voice engine panic: %v", r)}
 			}
 		}()
-		if err := engine.Start(serverID, channelID, stunURLs); err != nil {
+		if err := engine.Start(serverID, channelID, ice); err != nil {
 			return VoiceEngineErrorMsg{Err: err}
 		}
 		for _, uid := range existingPeers {

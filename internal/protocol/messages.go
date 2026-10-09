@@ -1001,6 +1001,17 @@ type VoiceServerUpdatePayload struct {
 	Endpoint  string    `json:"endpoint"` // server host:port for signaling relay
 	STUNUrls  []string  `json:"stun_urls"`
 	TURNUrls  []string  `json:"turn_urls,omitempty"`
+	// ICEServers is the full list for WebRTC: STUN, and TURN relays with
+	// their (often short-lived) logins, from the server's [voice] settings.
+	// Clients use it when present, and STUNUrls otherwise (older servers).
+	ICEServers []ICEServer `json:"ice_servers,omitempty"`
+}
+
+// ICEServer is one STUN or TURN server, as WebRTC's RTCIceServer.
+type ICEServer struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username,omitempty"`
+	Credential string   `json:"credential,omitempty"`
 }
 
 // VoiceSignalPayload relays a WebRTC SDP offer/answer or ICE candidate between

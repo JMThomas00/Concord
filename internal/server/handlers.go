@@ -32,6 +32,9 @@ type Handlers struct {
 	// secrets seals "secret" plugin config values at rest -- see SetPluginSecrets.
 	secrets *plugins.SecretBox
 
+	// ice hands out STUN/TURN servers for voice calls (voice_ice.go).
+	ice *iceProvider
+
 	// pluginsDir is the resolved plugins directory (config.PluginsDir,
 	// defaulting to "Plugins" -- see server.go), set once at startup via
 	// SetPluginsDir. Needed by HandlePluginInstall to know where to place a
@@ -2487,6 +2490,7 @@ func (h *Handlers) HandleVoiceStateUpdate(c *Client, msg *protocol.Message) {
 		Token:     uuid.New().String(), // ephemeral session token
 		Endpoint:  "", // Phase 4: WebRTC endpoint from server config
 		STUNUrls:  []string{"stun:stun.l.google.com:19302"},
+		ICEServers: h.iceServers(c.UserID),
 	}
 	h.hub.SendToUser(c.UserID, protocol.EventVoiceServerUpdate, voiceServerPayload)
 
@@ -2665,6 +2669,7 @@ func (h *Handlers) HandleMoveVoice(c *Client, msg *protocol.Message) {
 		Token:     uuid.New().String(),
 		Endpoint:  "",
 		STUNUrls:  []string{"stun:stun.l.google.com:19302"},
+		ICEServers: h.iceServers(req.UserID),
 	}
 	h.hub.SendToUser(req.UserID, protocol.EventVoiceServerUpdate, voiceServerPayload)
 

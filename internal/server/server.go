@@ -40,6 +40,7 @@ type Config struct {
 	Grapevine      GrapevineConfig      `toml:"grapevine"`
 	PluginsDir     string               `toml:"plugins_dir"` // Folder scanned for plugin.toml subfolders at startup
 	Mail           MailConfig           `toml:"mail"`        // Outgoing email for verification and password reset (optional)
+	Voice          VoiceConfig          `toml:"voice"`       // STUN/TURN servers for voice calls (voice_ice.go; optional)
 	// RealIPHeader: the header a trusted proxy sets to each visitor's
 	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
 	// empty unless the server is reachable only through that proxy.
@@ -158,6 +159,10 @@ func New(config *Config) (*Server, error) {
 
 	// Create handlers
 	handlers := NewHandlers(db, hub, stats, pluginManager)
+	handlers.SetVoiceConfig(config.Voice) // STUN/TURN for voice calls (voice_ice.go)
+	if config.Voice.Relayed() {
+		Logger.Info("Voice: TURN relay configured", "cloudflare", config.Voice.CloudflareTURNKeyID != "")
+	}
 
 	// Register voice disconnect cleanup callback so the hub can trigger DB/broadcast
 	// cleanup without importing the handlers package (avoids circular dependency).

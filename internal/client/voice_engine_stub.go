@@ -20,6 +20,8 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+
+	"github.com/concord-chat/concord/internal/protocol"
 )
 
 // errVoiceNotAvailable is returned by stub methods when the application was
@@ -36,7 +38,7 @@ func NewVoiceEngine(_ AudioConfig, _ uuid.UUID, _ chan<- VoiceSignalOut, _ chan<
 }
 
 // Start always returns errVoiceNotAvailable in the stub build.
-func (e *VoiceEngine) Start(_, _ uuid.UUID, _ []string) error {
+func (e *VoiceEngine) Start(_, _ uuid.UUID, _ []protocol.ICEServer) error {
 	return errVoiceNotAvailable
 }
 
