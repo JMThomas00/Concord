@@ -97,3 +97,29 @@ func listServers(t *testing.T, base string) []ServerListing {
 	json.NewDecoder(resp.Body).Decode(&list)
 	return list
 }
+
+// Peers come and go with grapevine-hub.toml: one taken out of [[peer_hubs]]
+// is removed at the next start (it used to stay, failing to sync every few
+// minutes), while one an admin added through the API stays.
+func TestConfigPeersFollowTheConfig(t *testing.T) {
+	h, _ := newTestHub(t, "home")
+	urls := func() map[string]bool {
+		peers, _ := h.db.ListPeerHubs()
+		out := map[string]bool{}
+		for _, p := range peers {
+			out[p.URL] = true
+		}
+		return out
+	}
+	h.config.PeerHubs = []PeerHubConfig{{Name: "Official", URL: "https://grapevine.example.com"}, {Name: "Old", URL: "http://old.example.com"}}
+	h.seedPeerHubs()
+	if err := h.db.UpsertPeerHub(&PeerHub{Name: "By hand", URL: "https://hand.example.com", IsActive: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.config.PeerHubs = h.config.PeerHubs[:1] // "Old" taken out of the TOML, then a restart
+	h.seedPeerHubs()
+	got := urls()
+	if !got["https://grapevine.example.com"] || got["http://old.example.com"] || !got["https://hand.example.com"] {
+		t.Fatalf("peers after the restart: %v", got)
+	}
+}

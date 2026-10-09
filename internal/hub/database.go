@@ -93,6 +93,13 @@ func NewHubDB(path string) (*HubDB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate peer_hubs: %w", err)
 	}
+	// from_config: added by grapevine-hub.toml's [[peer_hubs]], so taking it
+	// out there takes it out here (2026-10-09; before, a removed peer kept
+	// failing to sync every few minutes).
+	if err := hdb.addColumnIfMissing("peer_hubs", "from_config", "INTEGER DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate peer_hubs: %w", err)
+	}
 	return hdb, nil
 }
 
@@ -515,4 +522,56 @@ func relativeTime(t time.Time, isOnline bool) string {
 	default:
 		return strings.ToLower(t.Format("Jan 2"))
 	}
+}
+
+// SyncConfigPeers makes the peers that came from grapevine-hub.toml match
+// it: each listed one is added (or, if already known, marked as from the
+// config and turned on), and one that came from the config but isn't
+// listed any more is removed, with its cached listings. Peers added
+// through the admin API or by announcing themselves are left alone.
+func (db *HubDB) SyncConfigPeers(peers []PeerHubConfig) (added, removed []string, err error) {
+	listed := make(map[string]bool, len(peers))
+	for _, pc := range peers {
+		if pc.URL == "" {
+			continue
+		}
+		listed[pc.URL] = true
+		res, err := db.Exec(`UPDATE peer_hubs SET name=?, is_active=1, from_config=1 WHERE url=?`, pc.Name, pc.URL)
+		if err != nil {
+			return added, removed, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			if _, err := db.Exec(`INSERT INTO peer_hubs (id, name, url, is_active, last_synced, registered_at, from_config) VALUES (?,?,?,1,NULL,?,1)`,
+				uuid.New().String(), pc.Name, pc.URL, time.Now().UTC()); err != nil {
+				return added, removed, err
+			}
+			added = append(added, pc.URL)
+		}
+	}
+	rows, err := db.Query(`SELECT id, url FROM peer_hubs WHERE from_config=1`)
+	if err != nil {
+		return added, removed, err
+	}
+	var gone []struct{ id, url string }
+	for rows.Next() {
+		var id, url string
+		if err := rows.Scan(&id, &url); err != nil {
+			rows.Close()
+			return added, removed, err
+		}
+		if !listed[url] {
+			gone = append(gone, struct{ id, url string }{id, url})
+		}
+	}
+	rows.Close()
+	for _, g := range gone {
+		if _, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id=?`, g.id); err != nil {
+			return added, removed, err
+		}
+		if _, err := db.Exec(`DELETE FROM peer_hubs WHERE id=?`, g.id); err != nil {
+			return added, removed, err
+		}
+		removed = append(removed, g.url)
+	}
+	return added, removed, nil
 }

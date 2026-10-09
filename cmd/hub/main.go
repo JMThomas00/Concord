@@ -34,6 +34,9 @@ func main() {
 	if err != nil {
 		hub.SysLog.Fatal("configuration failed", "error", err)
 	}
+	if msg := checkBindHost(cfg.Host); msg != "" {
+		hub.SysLog.Fatal("host in grapevine-hub.toml: "+msg, "host", cfg.Host)
+	}
 
 	h, err := hub.New(cfg)
 	if err != nil {

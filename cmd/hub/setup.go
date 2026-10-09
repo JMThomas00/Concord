@@ -102,6 +102,10 @@ func (m hubSetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "tab", "down", "enter":
 				if msg.String() == "enter" && m.focused == numHubFields-1 {
+					if err := checkBindHost(m.inputs[hubFieldHost].Value()); err != "" {
+						m.err = err
+						return m, nil
+					}
 					port := strings.TrimSpace(m.inputs[hubFieldPort].Value())
 					if _, err := strconv.Atoi(port); err != nil {
 						m.err = "Port must be a number."
@@ -372,4 +376,19 @@ func runSetupWizard() (*hub.Config, error) {
 	}
 	fmt.Println()
 	return cfg, nil
+}
+
+// checkBindHost explains a Bind Host that can't be listened on (empty for
+// one that's fine). The field is this computer's own network address, but
+// people type the hub's web address there, and the hub then crashed with
+// "too many colons in address" (2026-10-08).
+func checkBindHost(host string) string {
+	host = strings.TrimSpace(host)
+	switch {
+	case strings.Contains(host, "://") || strings.ContainsAny(host, "/"):
+		return "Bind Host is this computer's network address: use 0.0.0.0 (all of them). Your hub's web address goes in public_url in grapevine-hub.toml."
+	case strings.Count(host, ":") == 1:
+		return "Bind Host takes no port: put the port in the Port field."
+	}
+	return ""
 }

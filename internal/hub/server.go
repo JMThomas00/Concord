@@ -83,15 +83,14 @@ func (h *Hub) Stats() *Stats {
 
 // seedPeerHubs inserts [[peer_hubs]] from config into the DB on first run.
 func (h *Hub) seedPeerHubs() {
-	for _, pc := range h.config.PeerHubs {
-		if pc.URL == "" {
-			continue
-		}
-		ph := &PeerHub{Name: pc.Name, URL: pc.URL, IsActive: true}
-		if err := h.db.UpsertPeerHub(ph); err != nil {
-			FedLog.Error("seed peer hub failed", "url", pc.URL, "error", err)
-		} else {
-			FedLog.Info("peer hub registered", "name", pc.Name, "url", pc.URL)
-		}
+	added, removed, err := h.db.SyncConfigPeers(h.config.PeerHubs)
+	if err != nil {
+		FedLog.Error("peer hubs from the config failed", "error", err)
+	}
+	for _, u := range added {
+		FedLog.Info("peer hub registered", "url", u)
+	}
+	for _, u := range removed {
+		FedLog.Info("peer hub removed (no longer in grapevine-hub.toml)", "url", u)
 	}
 }
