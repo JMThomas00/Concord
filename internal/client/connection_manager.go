@@ -84,6 +84,9 @@ type ServerConnection struct {
 	Members  []*MemberDisplay        // Members in current server
 	Roles    map[uuid.UUID][]*models.Role    // Roles per protocol server
 	PinnedMessages map[uuid.UUID][]*models.Message // Pinned messages per channel
+	// Threads by their first message's ID (threads.go): the summary, and the
+	// replies once the thread has been opened.
+	Threads map[uuid.UUID]*threadState
 
 	// Voice state — keyed by protocol server ID
 	// VoiceStates maps userID → VoiceState for all users currently in voice on this connection's servers.
@@ -359,6 +362,21 @@ func (cm *ConnectionManager) SendMessage(serverID, channelID uuid.UUID, content 
 	}
 
 	return conn.SendMessage(channelID, content, replyToID)
+}
+
+// SendThreadMessage posts a message into a thread on a specific server.
+func (cm *ConnectionManager) SendThreadMessage(serverID, channelID, threadID uuid.UUID, content string) error {
+	sc := cm.GetConnection(serverID)
+	if sc == nil || sc.GetState() != StateReady {
+		return fmt.Errorf("server %s not ready", serverID)
+	}
+	sc.mu.RLock()
+	conn := sc.Connection
+	sc.mu.RUnlock()
+	if conn == nil {
+		return fmt.Errorf("no connection for server %s", serverID)
+	}
+	return conn.SendThreadMessage(channelID, threadID, content)
 }
 
 // SendTyping sends a typing indicator to a channel on a specific server

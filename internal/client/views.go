@@ -1669,7 +1669,12 @@ func (a *App) renderChatPanel(width, height int) string {
 		}
 		inputContent = hintStyle.Render(hint)
 	}
-	if a.replyTarget != nil {
+	if a.threadTarget != nil {
+		// Posting into a thread (threads.go): say which, and how to leave
+		threadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Italic(true)
+		line := fmt.Sprintf("🧵 Replying in thread: \"%s\" · Esc leaves", a.threadQuote)
+		inputContent = threadStyle.Render(line) + "\n" + inputContent
+	} else if a.replyTarget != nil {
 		// Show reply quote above input (styled, dimmed, italic)
 		replyStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).  // Dim gray

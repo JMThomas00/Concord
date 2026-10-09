@@ -85,6 +85,11 @@ func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
 
 	if z := zone.Get("chat-viewport-content"); z != nil && z.InBounds(msg) {
 		_, relY := z.Pos(msg)
+		// A thread's top edge (+ / −) expands or minimises it (threads.go).
+		if threadID, ok := a.threadBorderLines[a.chatViewport.YOffset+relY]; ok {
+			a.toggleThread(threadID)
+			return nil
+		}
 		if idx, ok := resolveMessageAtLine(a.messageLineOffsets, a.chatViewport.YOffset, relY); ok {
 			return a.selectMessageAtIndex(idx)
 		}
@@ -184,7 +189,7 @@ func (a *App) resolveClickedLink(msg tea.MouseMsg) (string, bool) {
 	if a.activeConn == nil || a.currentChannel == nil {
 		return "", false
 	}
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	for _, m := range messages {
 		links := a.extractLinksFromMessage(m)
 		for i, link := range links {
@@ -333,7 +338,7 @@ func (a *App) selectMessageAtIndex(idx int) tea.Cmd {
 	if a.activeConn == nil || a.currentChannel == nil {
 		return nil
 	}
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if idx < 0 || idx >= len(messages) || isSystemDisplay(messages[idx]) {
 		return nil // system lines (plugin notices) aren't selectable
 	}

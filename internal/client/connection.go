@@ -195,6 +195,21 @@ func (c *Connection) SendMessage(channelID uuid.UUID, content string, replyTo *u
 	return c.Send(msg)
 }
 
+// SendThreadMessage posts a message into a thread (threadID: the thread's
+// first message).
+func (c *Connection) SendThreadMessage(channelID, threadID uuid.UUID, content string) error {
+	msg, err := protocol.NewMessage(protocol.OpSendMessage, &protocol.SendMessagePayload{
+		ChannelID: channelID,
+		Content:   content,
+		ThreadID:  &threadID,
+		Nonce:     uuid.New().String(),
+	})
+	if err != nil {
+		return err
+	}
+	return c.Send(msg)
+}
+
 // SendTyping sends a typing indicator
 func (c *Connection) SendTyping(channelID uuid.UUID) error {
 	payload := &protocol.TypingStartPayload{

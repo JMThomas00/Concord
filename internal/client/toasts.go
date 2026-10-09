@@ -59,6 +59,7 @@ type toast struct {
 	// A message's toast knows where the message is, so a click goes there.
 	serverID, channelID uuid.UUID
 	mention             bool
+	threadID            uuid.UUID // a thread reply's: a click opens the thread (threads.go)
 
 	brief bool // goes by itself (a flourish, not a notification)
 
@@ -373,7 +374,10 @@ func (a *App) clickToast(msg tea.MouseMsg) bool {
 		r := a.toastRects[k]
 		if msg.Y >= r.row && msg.Y < r.row+r.rows && msg.X >= r.col && msg.X < r.col+r.cols {
 			a.dismissToast(r.t)
-			if r.t.channelID != uuid.Nil {
+			switch {
+			case r.t.threadID != uuid.Nil:
+				a.openThreadAt(r.t.serverID, r.t.channelID, r.t.threadID)
+			case r.t.channelID != uuid.Nil:
 				a.goToChannel(r.t.serverID, r.t.channelID)
 			}
 			return true

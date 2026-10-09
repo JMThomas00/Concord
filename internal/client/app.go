@@ -407,6 +407,13 @@ type App struct {
 
 	// Reply state (Teams-style quoted replies)
 	replyTarget *MessageDisplay // Message being replied to
+	// Threads (threads.go): which threads are expanded, the thread the
+	// message box posts into (its first message) and its opening words, and
+	// the chat lines holding a thread's top edge (a click there opens it).
+	expandedThreads   map[uuid.UUID]bool
+	threadTarget      *MessageDisplay
+	threadQuote       string
+	threadBorderLines map[int]uuid.UUID
 	replyQuote  string          // Ellipsized first line for display
 
 	// Edit message state
@@ -1985,10 +1992,12 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 				a.updateMentionPopup()
 			}
-		} else if keyMsg, ok := msg.(tea.KeyMsg); ok && a.focus == FocusChat && keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
+		} else if keyMsg, ok := msg.(tea.KeyMsg); ok && a.focus == FocusChat && !a.messageNavMode && keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
 			// Typing with the messages focused starts a message (as the
 			// Help guide says): the text went nowhere before, since the
 			// viewport only scrolls. Arrows and PgUp/PgDn still scroll.
+			// Not in message navigation (Alt+M), whose letters are commands
+			// (r, t, e…): they were landing in the message box too.
 			a.focus = FocusInput
 			cmds = append(cmds, a.input.Focus())
 			var cmd tea.Cmd
@@ -2540,7 +2549,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewAddServer {
 			return a.handleAddServerSubmit()
 		}
-		// In message navigation Level 1: Enter transitions to Level 2
+		// In message navigation Level 1: Enter on a thread's first message
+		// expands or minimises the thread (threads.go)...
+		if a.messageNavMode && !a.inMessageEditMode {
+			if m := a.selectedMessage(); m != nil && m.ThreadID == nil && a.threadPartOf(a.visibleMessages(), a.messageNavIndex).root {
+				a.toggleThread(m.ID)
+				return nil
+			}
+		}
+		// ...and anywhere else transitions to Level 2
 		if a.messageNavMode && !a.inMessageEditMode {
 			a.inMessageEditMode = true
 			a.messageCursorLine = 0
@@ -2663,6 +2680,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			a.mentionSuggestions = nil
 			return nil
 		}
+		// Leave the thread the message box is posting into
+		if a.threadTarget != nil {
+			a.threadTarget = nil
+			a.threadQuote = ""
+			a.statusMessage = "Left the thread: messages go to the channel"
+			a.statusError = false
+			return nil
+		}
 		// Clear reply state if active
 		if a.replyTarget != nil {
 			a.replyTarget = nil
@@ -2715,7 +2740,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Enter Level 1: Message Selection Mode
 		if a.view == ViewMain && (a.focus == FocusChat || a.focus == FocusInput) &&
 			a.activeConn != nil && a.currentChannel != nil {
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if last := lastSelectable(messages); last >= 0 {
 				a.messageNavMode = true
 				a.inMessageEditMode = false // Start in Level 1 (message selection)
@@ -2768,7 +2793,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			if a.activeConn == nil || a.currentChannel == nil {
 				return nil
 			}
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 
@@ -2784,13 +2809,26 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 
+	case "t", "T":
+		// Reply in the selected message's thread, starting one if it has
+		// none (threads.go); the message box posts there until Esc.
+		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
+			if m := a.selectedMessage(); m != nil && !m.IsSystem {
+				a.startThreadReply(m)
+				a.input.SetValue("")
+				return func() tea.Msg {
+					return exitNavModeMsg{setFocus: true}
+				}
+			}
+		}
+
 	case "e", "E":
 		// Edit selected message (own messages only, or admin/mod with permission)
 		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
 			if a.activeConn == nil || a.currentChannel == nil || a.activeConn.User == nil {
 				return nil
 			}
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 
@@ -2821,7 +2859,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			if a.activeConn == nil || a.currentChannel == nil || a.activeConn.User == nil {
 				return nil
 			}
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 
@@ -2861,7 +2899,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "l":
 		// In message navigation mode: open link(s) in selected message
 		if a.messageNavMode && a.activeConn != nil && a.currentChannel != nil {
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex >= 0 && a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 				links := a.extractLinksFromMessage(msg)
@@ -2896,7 +2934,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// the only practical way to get the exact UUID out of the "[file] ... —
 		// /download <id>" line for pasting into /download.
 		if a.messageNavMode && a.activeConn != nil && a.currentChannel != nil {
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex >= 0 && a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 				if len(msg.Attachments) == 0 {
@@ -3354,7 +3392,7 @@ func (a *App) navigateMessage(delta int) tea.Cmd {
 		return nil
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if len(messages) == 0 {
 		return nil
 	}
@@ -3421,7 +3459,7 @@ func (a *App) copyMessageToClipboard() tea.Cmd {
 		return nil
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
 		return nil
 	}
@@ -4448,7 +4486,7 @@ func (a *App) moveCursorInMessage(dx, dy int, clearSelection bool) tea.Cmd {
 		return nil
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
 		return nil
 	}
@@ -4542,7 +4580,7 @@ func (a *App) getSelectedText() string {
 		return ""
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
 		return ""
 	}
@@ -4950,8 +4988,9 @@ func (a *App) updateChatContent() {
 		return
 	}
 
-	// Get messages for current channel
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	// Get messages for current channel, with expanded threads' replies (threads.go)
+	messages := a.visibleMessages()
+	a.threadBorderLines = make(map[int]uuid.UUID)
 
 	// Get viewport width for full-width backgrounds
 	viewportWidth := a.chatViewport.Width
@@ -4997,7 +5036,7 @@ func (a *App) updateChatContent() {
 		if i > 0 && !isSystemMsg && !msg.IsBotAuthor {
 			prev := messages[i-1]
 			prevIsSystem := prev.IsSystem || prev.AuthorName == "System"
-			if !prevIsSystem && prev.AuthorID == msg.AuthorID {
+			if !prevIsSystem && prev.AuthorID == msg.AuthorID && a.sameThreadGroup(messages, i) {
 				gap := msg.CreatedAt.Sub(prev.CreatedAt)
 				gapMins := float64(5)
 				if a.uiConfig != nil && a.uiConfig.Display.GroupingGapMins > 0 {
@@ -5010,7 +5049,8 @@ func (a *App) updateChatContent() {
 		}
 
 		// Date separator: render a ──── Day ──── divider between days when enabled
-		if a.uiConfig != nil && a.uiConfig.Display.ShowDateSeps && !isSystemMsg {
+		// (not between a thread's replies, which sit inside its box)
+		if a.uiConfig != nil && a.uiConfig.Display.ShowDateSeps && !isSystemMsg && msg.ThreadID == nil {
 			msgDate := msg.CreatedAt.Truncate(24 * time.Hour)
 			if !lastRenderedDate.IsZero() && !msgDate.Equal(lastRenderedDate) {
 				now := time.Now()
@@ -5036,6 +5076,15 @@ func (a *App) updateChatContent() {
 				content.WriteString("\n")
 			}
 			lastRenderedDate = msgDate
+		}
+
+		// A message in a thread box is drawn 4 columns narrower, then boxed
+		// below (boxThreadSegment).
+		segStart := content.Len()
+		part := a.threadPartOf(messages, i)
+		w := viewportWidth
+		if part.boxed {
+			w = viewportWidth - 4
 		}
 
 		if showHeader && !isSystemMsg {
@@ -5126,7 +5175,7 @@ func (a *App) updateChatContent() {
 					// Right-align with highlight and symmetric right padding
 					headerStyle := lipgloss.NewStyle().
 						Background(lipgloss.Color(a.theme.Colors.Selection)).
-						Width(viewportWidth).
+						Width(w).
 						Align(lipgloss.Right).
 						PaddingRight(2)
 					headerLine = headerStyle.Render(plainHeader)
@@ -5134,7 +5183,7 @@ func (a *App) updateChatContent() {
 					// Left-align with highlight and left padding
 					headerStyle := lipgloss.NewStyle().
 						Background(lipgloss.Color(a.theme.Colors.Selection)).
-						Width(viewportWidth).
+						Width(w).
 						PaddingLeft(2)
 					headerLine = headerStyle.Render(plainHeader)
 				}
@@ -5143,13 +5192,13 @@ func (a *App) updateChatContent() {
 				if msg.IsOwn {
 					// Right-align with symmetric right padding
 					lineStyle := lipgloss.NewStyle().
-						Width(viewportWidth).
+						Width(w).
 						Align(lipgloss.Right).
 						PaddingRight(2)
 					headerLine = lineStyle.Render(header)
 				} else {
 					// Left-align with left padding to match right side visual spacing
-					lineStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
+					lineStyle := lipgloss.NewStyle().Width(w).PaddingLeft(2)
 					headerLine = lineStyle.Render(header)
 				}
 			}
@@ -5180,7 +5229,7 @@ func (a *App) updateChatContent() {
 
 			// Truncate message if too long (leave room for bars + padding)
 			msgContent := msg.Content
-			maxMsgLen := viewportWidth - 20 // Reserve ~10 chars per side for bars and padding
+			maxMsgLen := w - 20 // Reserve ~10 chars per side for bars and padding
 			if maxMsgLen < 30 {
 				maxMsgLen = 30
 			}
@@ -5191,7 +5240,7 @@ func (a *App) updateChatContent() {
 				wrapped := lipgloss.NewStyle().Width(maxMsgLen).Align(lipgloss.Center).Render(msgContent)
 				var lines []string
 				for _, l := range strings.Split(wrapped, "\n") {
-					lines = append(lines, lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, textStyle.Render(strings.TrimSpace(l))))
+					lines = append(lines, lipgloss.PlaceHorizontal(w, lipgloss.Center, textStyle.Render(strings.TrimSpace(l))))
 				}
 				contentLine = strings.Join(lines, "\n")
 			} else {
@@ -5199,11 +5248,11 @@ func (a *App) updateChatContent() {
 				line := barStyle.Render(leftBar) + textStyle.Render(msgContent) + barStyle.Render(rightBar)
 
 				// Center the line in the viewport
-				contentLine = lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, line)
+				contentLine = lipgloss.PlaceHorizontal(w, lipgloss.Center, line)
 			}
 		} else if msg.IsWhisper {
 			// Whisper: render with alignment based on ownership
-			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(viewportWidth), msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(w), msg.IsOwn)
 			// Apply whisper styling (orange/italic) to the rendered content
 			whisperStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Orange)).
@@ -5212,7 +5261,7 @@ func (a *App) updateChatContent() {
 		} else {
 			// Regular messages — highlight @mentions of the current user
 			// Pass alignment based on message ownership
-			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(viewportWidth), msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(w), msg.IsOwn)
 		}
 
 		// Apply width and highlighting
@@ -5230,7 +5279,7 @@ func (a *App) updateChatContent() {
 				// Right-align with highlight and symmetric right padding
 				contentStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
-					Width(viewportWidth).
+					Width(w).
 					Align(lipgloss.Right).
 					PaddingRight(messageGutterWidth)
 				contentLine = styleMessageLines(contentLine, contentStyle)
@@ -5238,7 +5287,7 @@ func (a *App) updateChatContent() {
 				// Left-align with highlight and left padding
 				contentStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
-					Width(viewportWidth).
+					Width(w).
 					PaddingLeft(messageGutterWidth)
 				contentLine = styleMessageLines(contentLine, contentStyle)
 			}
@@ -5246,13 +5295,13 @@ func (a *App) updateChatContent() {
 			// No highlight - apply width for proper formatting
 			if msg.IsOwn {
 				contentStyle := lipgloss.NewStyle().
-					Width(viewportWidth).
+					Width(w).
 					Align(lipgloss.Right).
 					PaddingRight(messageGutterWidth)
 				contentLine = styleMessageLines(contentLine, contentStyle)
 			} else {
 				// Left-align with left padding to match right side visual spacing
-				contentStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(messageGutterWidth)
+				contentStyle := lipgloss.NewStyle().Width(w).PaddingLeft(messageGutterWidth)
 				contentLine = styleMessageLines(contentLine, contentStyle)
 			}
 		}
@@ -5261,7 +5310,7 @@ func (a *App) updateChatContent() {
 		// Peer-to-peer attachment manifest (if any). The server never has the
 		// file's bytes -- this just tells the reader who to request it from.
 		for _, att := range msg.Attachments {
-			attLine := formatAttachmentLine(att, viewportWidth, msg.IsOwn, a.theme)
+			attLine := formatAttachmentLine(att, w, msg.IsOwn, a.theme)
 			content.WriteString(attLine)
 			content.WriteString("\n")
 		}
@@ -5271,17 +5320,33 @@ func (a *App) updateChatContent() {
 		if a.uiConfig != nil {
 			density = a.uiConfig.Display.MessageDensity
 		}
+		spacing := "\n\n" // "normal" or unset
 		switch density {
 		case "compact":
-			content.WriteString("\n") // no blank line
+			spacing = "\n" // no blank line
 		case "spacious":
 			if showHeader {
-				content.WriteString("\n\n\n") // extra gap before new sender groups
-			} else {
-				content.WriteString("\n\n")
+				spacing = "\n\n\n" // extra gap before new sender groups
 			}
-		default: // "normal" or unset
-			content.WriteString("\n\n")
+		}
+
+		if part.boxed {
+			// Wrap this message's lines in its thread's box (threads.go).
+			// The spacing after it goes outside the box once it closes,
+			// and between messages inside it otherwise.
+			before, seg := content.String()[:segStart], content.String()[segStart:]
+			if part.root {
+				a.threadBorderLines[runningLines+strings.Count(before[msgStartLen:], "\n")] = msg.ID
+			}
+			boxed, closed := a.boxThreadSegment(seg, part, viewportWidth, len(spacing)-1)
+			content.Reset()
+			content.WriteString(before)
+			content.WriteString(boxed)
+			if closed {
+				content.WriteString(spacing[1:])
+			}
+		} else {
+			content.WriteString(spacing)
 		}
 
 		lineOffsets[i] = runningLines
@@ -5727,6 +5792,18 @@ func (a *App) handleSendMessage() tea.Cmd {
 	if a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil {
 		serverID := a.currentClientServer.ID
 		channelID := a.currentChannel.ID
+
+		// In a thread: post there, and stay there until Esc (threads.go)
+		if t := a.threadTarget; t != nil {
+			threadID := t.ID
+			a.onMessageSent(serverID) // main_moods.go
+			return func() tea.Msg {
+				if err := a.connMgr.SendThreadMessage(serverID, channelID, threadID, content); err != nil {
+					return ErrorMsg{Error: fmt.Sprintf("Failed to send message: %v", err)}
+				}
+				return nil
+			}
+		}
 
 		// If replying, embed quote inline in message content
 		var replyToID *uuid.UUID
@@ -6446,8 +6523,16 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			Streaming:   payload.Stream == protocol.StreamWriting,
 		}
 
-		// Add message to connection's message history
-		sc.AddMessage(payload.Message.ChannelID, display)
+		// Add message to connection's message history -- or, for a reply in
+		// a thread, to its thread (threads.go): it doesn't count as channel
+		// activity, and only notifies those following the thread or mentioned.
+		isThreadReply := payload.Message.ThreadID != nil
+		followsThread := false
+		if isThreadReply {
+			followsThread = a.addThreadReply(sc, display)
+		} else {
+			sc.AddMessage(payload.Message.ChannelID, display)
+		}
 
 		// Check for @mention (personal mention or @everyone/@here) — computed before
 		// the isCurrentChannel guard so sounds can fire regardless of active channel.
@@ -6464,7 +6549,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 
 		// Unread tracking: only for messages not in the currently viewed channel
-		if !isCurrentChannel && !isMutedChannel && !isMutedServer {
+		if !isCurrentChannel && !isMutedChannel && !isMutedServer && !isThreadReply {
 			if a.unreadCounts[serverID] == nil {
 				a.unreadCounts[serverID] = make(map[uuid.UUID]int)
 			}
@@ -6479,7 +6564,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		// Sound and desktop notification: fire for all non-own, non-muted messages.
 		// Sound plays even in the current channel; desktop popup only when away from it.
-		if !display.IsOwn && !isMutedChannel && !isMutedServer {
+		if !display.IsOwn && !isMutedChannel && !isMutedServer && (!isThreadReply || followsThread || hasMention) {
 			channelName := ""
 			for _, channels := range sc.Channels {
 				for _, ch := range channels {
@@ -6495,7 +6580,11 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 			isCurrentServer := a.activeConn != nil && a.activeConn.ServerID == serverID
 			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention, isCurrentChannel, isCurrentServer)
-			if shouldToast(a.notifConfig.ToastMode, a.notifConfig.ToastScope, hasMention, isCurrentChannel, isCurrentServer) {
+			onScreen := isThreadReply && a.threadOnScreen(sc, payload.Message.ChannelID, *payload.Message.ThreadID)
+			if isThreadReply && !onScreen && shouldToast(a.notifConfig.ToastMode, a.notifConfig.ToastScope, hasMention, false, isCurrentServer) {
+				a.toastMessage(serverID, payload.Message.ChannelID, payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
+				a.markLastToastThread(*payload.Message.ThreadID, channelName)
+			} else if !isThreadReply && shouldToast(a.notifConfig.ToastMode, a.notifConfig.ToastScope, hasMention, isCurrentChannel, isCurrentServer) {
 				a.toastMessage(serverID, payload.Message.ChannelID, payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
 			}
 		}
@@ -6507,6 +6596,12 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		// Update UI if this is for the active connection and current channel
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			if a.currentChannel != nil && a.currentChannel.ID == payload.Message.ChannelID && isThreadReply {
+				// A thread reply changes its box, not the bottom of the chat:
+				// redraw without scrolling away from what the user is reading.
+				a.updateChatContent()
+				return nil
+			}
 			if a.currentChannel != nil && a.currentChannel.ID == payload.Message.ChannelID {
 				// Message is for currently viewed channel - update chat viewport
 				log.Printf("Updating chat content for message in current channel")
@@ -6550,6 +6645,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.mu.Lock()
 		// Clear existing messages first
 		sc.Messages[payload.ChannelID] = nil
+		var historyThreads []protocol.ThreadSummary // applied once the lock is released (threads.go)
 
 		// Determine current user ID for IsOwn flag
 		var currentUserID uuid.UUID
@@ -6588,11 +6684,15 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				IsWhisper:     isWhisper,
 				IsSystem:      isSystem,
 				IsBotAuthor:   msgDisplay.Author != nil && msgDisplay.Author.IsServiceAccount,
+				IsDeleted:     msgDisplay.Deleted, // a deleted message still heading its thread
 			}
 			sc.Messages[payload.ChannelID] = append(
 				sc.Messages[payload.ChannelID],
 				display,
 			)
+			if msgDisplay.Thread != nil {
+				historyThreads = append(historyThreads, *msgDisplay.Thread)
+			}
 		}
 
 		// Populate pinned messages for this channel
@@ -6600,6 +6700,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			sc.PinnedMessages[payload.ChannelID] = payload.PinnedMessages
 		}
 		sc.mu.Unlock()
+		for _, sum := range historyThreads {
+			a.applyThreadSummary(sc, sum)
+		}
 
 		// Refresh chat if we're currently viewing this channel on this server
 		if a.activeConn != nil && a.activeConn.ServerID == serverID &&
@@ -6637,6 +6740,25 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 		}
 
+	case protocol.EventThreadUpdate:
+		var sum protocol.ThreadSummary
+		if err := json.Unmarshal(msg.Data, &sum); err != nil {
+			log.Printf("Failed to parse THREAD_UPDATE payload: %v", err)
+			return nil
+		}
+		a.applyThreadSummary(sc, sum)
+		if a.activeConn == sc && a.currentChannel != nil && a.currentChannel.ID == sum.ChannelID {
+			a.updateChatContent()
+		}
+
+	case protocol.EventThreadMessages:
+		var p protocol.ThreadMessagesPayload
+		if err := json.Unmarshal(msg.Data, &p); err != nil {
+			log.Printf("Failed to parse THREAD_MESSAGES payload: %v", err)
+			return nil
+		}
+		a.handleThreadMessages(sc, p)
+
 	case protocol.EventMessageDelete:
 		// Parse message delete payload
 		var payload protocol.MessageDeletePayload
@@ -6651,6 +6773,14 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			if m.ID == payload.ID {
 				m.IsDeleted = true
 				break
+			}
+		}
+		for _, ts := range sc.Threads { // a reply in a thread (threads.go)
+			for i, r := range ts.replies {
+				if r.ID == payload.ID {
+					ts.replies = append(ts.replies[:i:i], ts.replies[i+1:]...)
+					break
+				}
 			}
 		}
 		sc.mu.Unlock()

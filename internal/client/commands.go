@@ -1001,7 +1001,7 @@ func (ch *CommandHandler) handleLinks(args []string) (string, error) {
 		return "", fmt.Errorf("not connected to a channel")
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 
 	// Collect all links from recent N messages (default: last 20)
 	limit := 20
