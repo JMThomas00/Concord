@@ -421,6 +421,9 @@ type App struct {
 	threadFlash       string
 	threadFlashUntil  time.Time
 	threadNoticeLines map[int]uuid.UUID
+	// updateAvailable is a newer release found at startup (updates.go):
+	// the login screen's tip offers it in place of the Grapevine tip.
+	updateAvailable string
 	replyQuote  string          // Ellipsized first line for display
 
 	// Edit message state
@@ -1077,6 +1080,9 @@ func (a *App) Init() tea.Cmd {
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
 	}
+	if cmd := a.startupUpdateCheck(); cmd != nil { // updates.go
+		cmds = append(cmds, cmd)
+	}
 	if (a.view == ViewLogin || a.view == ViewRegister) && a.loading == nil {
 		if cmd := a.startBannerAnim(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1274,6 +1280,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleFxTick(m)
 	case leaderboardMsg:
 		a.handleLeaderboard(m)
+		return a, nil
+	case startupUpdateMsg:
+		a.handleStartupUpdate(m)
 		return a, nil
 	case updateCheckedMsg:
 		a.handleUpdateChecked(m)

@@ -105,3 +105,49 @@ func TestUpdatedClientRestarts(t *testing.T) {
 		t.Fatalf("restarts %q, want %q", a.RestartPath(), want)
 	}
 }
+
+// Release candidates count: rc3 < rc4 < rc10 < the final release; local and
+// "dev" builds never ask.
+func TestNewerVersionKnowsReleaseCandidates(t *testing.T) {
+	for _, c := range []struct {
+		have, latest string
+		newer        bool
+	}{
+		{"0.1.0-rc3", "v0.1.0-rc4", true},
+		{"0.1.0-rc4", "v0.1.0-rc4", false},
+		{"0.1.0-rc9", "v0.1.0-rc10", true},
+		{"0.1.0-rc4", "v0.1.0", true},
+		{"0.1.0", "v0.1.0-rc4", false},
+		{"0.1.0", "v0.1.1", true},
+		{"0.2.0", "v0.1.9", false},
+		{"dev", "v0.1.0", false},
+		{"", "v0.1.0", false},
+	} {
+		if got := newerVersion(c.have, c.latest); got != c.newer {
+			t.Errorf("newerVersion(%q, %q) = %v, want %v", c.have, c.latest, got, c.newer)
+		}
+	}
+}
+
+// A newer release found at startup takes the login tip's place.
+func TestTheLoginTipOffersAnUpdate(t *testing.T) {
+	a := newLoginTestApp(t, 160, 45, true)
+	if tip := ansi.Strip(a.grapevineTip(120)); !strings.Contains(tip, "Ctrl+G") {
+		t.Fatalf("tip %q", tip)
+	}
+	a.clientVersion = "0.1.0-rc3"
+	a.handleStartupUpdate(startupUpdateMsg{latest: "v0.1.0-rc4"})
+	tip := ansi.Strip(a.grapevineTip(120))
+	if !strings.Contains(tip, "Client update available (v0.1.0-rc4): press") || !strings.Contains(tip, "Ctrl+U") || strings.Contains(tip, "Ctrl+G") {
+		t.Fatalf("tip %q", tip)
+	}
+	a.updateAvailable = ""
+	a.handleStartupUpdate(startupUpdateMsg{latest: "v0.1.0-rc3"})
+	if a.updateAvailable != "" {
+		t.Error("offered the version already running")
+	}
+	a.clientVersion = "dev"
+	if a.startupUpdateCheck() != nil {
+		t.Error("a dev build checks for updates")
+	}
+}

@@ -500,7 +500,13 @@ func (a *App) grapevineTip(maxW int) string {
 		Padding(0, 1).
 		Render("Ctrl+G")
 	text := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment)).Italic(true)
-	for _, words := range []string{"Tip: press %s to browse public servers on the Grapevine", "Tip: %s browses public servers"} {
+	tips := []string{"Tip: press %s to browse public servers on the Grapevine", "Tip: %s browses public servers"}
+	if v := a.updateAvailable; v != "" { // a newer release, found at startup (updates.go)
+		key = strings.Replace(key, "Ctrl+G", "Ctrl+U", 1)
+		text = lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Italic(true)
+		tips = []string{"Client update available (" + v + "): press %s to update now", "Update available: %s"}
+	}
+	for _, words := range tips {
 		if tip := text.Render(strings.SplitN(words, "%s", 2)[0]) + key + text.Render(strings.SplitN(words, "%s", 2)[1]); lipgloss.Width(tip) <= maxW {
 			return tip
 		}

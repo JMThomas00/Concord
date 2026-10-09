@@ -89,7 +89,12 @@ func homeDir() string {
 
 func (a *App) checkForUpdates() tea.Cmd {
 	a.updates.checking, a.updates.err = true, ""
-	return func() tea.Msg {
+	return fetchLatestRelease
+}
+
+// fetchLatestRelease asks GitHub for the latest published release.
+func fetchLatestRelease() tea.Msg {
+	{
 		client := &http.Client{Timeout: 8 * time.Second}
 		req, _ := http.NewRequest("GET", releasesURL, nil)
 		req.Header.Set("Accept", "application/vnd.github+json")
@@ -286,26 +291,12 @@ func (a *App) handleUpdatesKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // newerVersion reports whether release tag b is newer than version a
-// ("v0.1.2" style; anything unparsable compares as not newer).
+// ("v0.1.2" style, with release candidates: 0.1.0-rc3 < 0.1.0-rc4 <
+// 0.1.0). Anything unparsable compares as not newer, so a "dev" build never
+// asks to be updated.
 func newerVersion(a, b string) bool {
-	parse := func(v string) ([3]int, bool) {
-		var out [3]int
-		parts := strings.SplitN(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".", 3)
-		if len(parts) != 3 {
-			return out, false
-		}
-		for i, p := range parts {
-			p = strings.SplitN(p, "-", 2)[0]
-			n, err := strconv.Atoi(p)
-			if err != nil {
-				return out, false
-			}
-			out[i] = n
-		}
-		return out, true
-	}
-	va, okA := parse(a)
-	vb, okB := parse(b)
+	va, preA, okA := parseVersion(a)
+	vb, preB, okB := parseVersion(b)
 	if !okA || !okB {
 		return false
 	}
@@ -314,7 +305,85 @@ func newerVersion(a, b string) bool {
 			return vb[i] > va[i]
 		}
 	}
-	return false
+	switch {
+	case preA == preB:
+		return false
+	case preB == "": // the final release after its candidates
+		return true
+	case preA == "":
+		return false
+	}
+	// rc3 vs rc10: by the number at the end when the words match.
+	wordA, numA := splitPre(preA)
+	wordB, numB := splitPre(preB)
+	if wordA == wordB && numA >= 0 && numB >= 0 {
+		return numB > numA
+	}
+	return preB > preA
+}
+
+// parseVersion reads "v1.2.3" or "1.2.3-rc4": the three numbers and what
+// follows the dash.
+func parseVersion(v string) ([3]int, string, bool) {
+	var out [3]int
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	pre := ""
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		v, pre = v[:i], v[i+1:]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return out, "", false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return out, "", false
+		}
+		out[i] = n
+	}
+	return out, pre, true
+}
+
+// splitPre splits "rc12" into "rc" and 12 (-1 when there's no number).
+func splitPre(p string) (string, int) {
+	i := len(p)
+	for i > 0 && p[i-1] >= '0' && p[i-1] <= '9' {
+		i--
+	}
+	n, err := strconv.Atoi(p[i:])
+	if err != nil {
+		return p, -1
+	}
+	return p[:i], n
+}
+
+// ── Checking at startup ─────────────────────────────────────────────────────
+
+// startupUpdateMsg carries the latest release, found when Concord starts.
+type startupUpdateMsg struct{ latest string }
+
+// startupUpdateCheck looks for a newer release once, in the background,
+// when Concord starts; the login screen's tip then says so (grapevineTip).
+// Builds without a release version ("dev", local builds) don't ask, and
+// CONCORD_NO_UPDATE_CHECK=1 turns it off.
+func (a *App) startupUpdateCheck() tea.Cmd {
+	if os.Getenv("CONCORD_NO_UPDATE_CHECK") != "" {
+		return nil
+	}
+	if _, _, ok := parseVersion(a.clientVersion); !ok {
+		return nil
+	}
+	return func() tea.Msg {
+		m, _ := fetchLatestRelease().(updateCheckedMsg)
+		return startupUpdateMsg{latest: m.latest}
+	}
+}
+
+func (a *App) handleStartupUpdate(m startupUpdateMsg) {
+	if newerVersion(a.clientVersion, m.latest) {
+		a.updateAvailable = m.latest
+	}
 }
 
 // --- the page -----------------------------------------------------------------------------------
