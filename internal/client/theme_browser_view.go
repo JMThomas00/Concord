@@ -43,7 +43,7 @@ type SettingsState struct {
 	// Notifications category state. Fields 0-1 are the "Desktop
 	// Notifications" section (OS-native popups); fields 2-7 are "Audio
 	// Notifications" (sounds/bell/mute).
-	NotifFocusField      int  // 0=desktop mode, 1=notify scope, 2=sounds, 3=mentions-only, 4=bell, 5=mention sound, 6=message sound, 7=mute manager, 8=toast mode, 9=toast scope
+	NotifFocusField      int  // 0=desktop mode, 1=notify scope, 2=sounds, 3=mentions-only, 4=bell, 5=mention sound, 6=message sound, 7=mute manager, 8=toast mode, 9=toast scope, 10=toast order, 11=toast side, 12=toast style
 	NotifScrollOffset    int  // scroll offset for the middle section when content exceeds visible area
 	NotifSoundPickerOpen bool // sound picker sub-page open
 	NotifSoundTarget     int  // 0=mention sound, 1=message sound

@@ -148,7 +148,7 @@ func TestToastStack(t *testing.T) {
 	// The rest drop down: the new bottom one slides to the bottom slot.
 	vis, waiting = a.visibleToasts(now.Add(time.Second))
 	bottom := vis[len(vis)-1]
-	if waiting != 1 || bottom.toRow != float64(a.height-2-toastRows+1) {
+	if waiting != 1 || bottom.toRow != float64(a.height-2-a.toastRows()+1) {
 		t.Fatalf("waiting %d, bottom heading for row %v", waiting, bottom.toRow)
 	}
 	a.toasts = []*toast{{brief: true, title: "flourish"}}

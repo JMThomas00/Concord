@@ -185,6 +185,11 @@ type NotificationConfig struct {
 	// ToastOrder: "" keeps the newest at the bottom of the stack (dismissed
 	// first); "oldest" queues them, the oldest at the bottom.
 	ToastOrder string `json:"toast_order,omitempty"`
+	// ToastSide: "" (left, over the server and channel columns) or "right"
+	// (over the members panel). ToastStyle: "" (full cards) or "compact"
+	// (two lines each).
+	ToastSide  string `json:"toast_side,omitempty"`
+	ToastStyle string `json:"toast_style,omitempty"`
 }
 
 // DisplayConfig holds display and appearance preferences

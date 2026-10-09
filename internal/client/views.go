@@ -1004,6 +1004,7 @@ func (a *App) renderMainView() string {
 		membersWidth = 10
 		chatWidth = availableWidth - serverIconsWidth - channelsWidth - membersWidth
 	}
+	a.toastLeftW, a.toastRightW = serverIconsWidth+channelsWidth, membersWidth // toastArea
 
 	// Height for panels (reserve 1 line for status bar, 1 line for top border visibility)
 	panelHeight := a.height - 2

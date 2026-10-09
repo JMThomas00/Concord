@@ -48,7 +48,7 @@ func TestNotifFieldLineStarts(t *testing.T) {
 	if header < 0 {
 		t.Fatal("no Desktop Notifications section")
 	}
-	for field, label := range map[int]string{8: "Message Toasts", 9: "Toasts From", 10: "Toast Order"} {
+	for field, label := range map[int]string{8: "Message Toasts", 9: "Toasts From", 10: "Toast Order", 11: "Toast Side", 12: "Toast Style"} {
 		found := -1
 		for i, l := range lines {
 			if strings.Contains(l, label) {

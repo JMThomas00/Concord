@@ -826,6 +826,22 @@ func (a *App) handleNotifFieldActivate(s *SettingsState) {
 			a.notifConfig.ToastOrder = ToastOrderOldest
 		}
 		a.saveNotifConfig()
+	case 11: // Toast Side: left ↔ right
+		if a.notifConfig.ToastSide == ToastSideRight {
+			a.notifConfig.ToastSide = ToastSideLeft
+		} else {
+			a.notifConfig.ToastSide = ToastSideRight
+		}
+		a.restackToasts()
+		a.saveNotifConfig()
+	case 12: // Toast Style: full ↔ compact
+		if a.notifConfig.ToastStyle == ToastStyleCompact {
+			a.notifConfig.ToastStyle = ToastStyleFull
+		} else {
+			a.notifConfig.ToastStyle = ToastStyleCompact
+		}
+		a.restackToasts()
+		a.saveNotifConfig()
 	}
 }
 
@@ -1911,6 +1927,18 @@ func (a *App) renderNotificationsContent(width, height int) string {
 		orderVal = "Oldest First (a queue: the oldest at the bottom)"
 	}
 	writeField(10, "Toast Order", orderVal+" ◀▶")
+
+	sideVal := "Left (over the servers and channels)"
+	if cfg.ToastSide == ToastSideRight {
+		sideVal = "Right (over the members; the left when they're hidden)"
+	}
+	writeField(11, "Toast Side", sideVal+" ◀▶")
+
+	styleVal := "Full (who, where and the message)"
+	if cfg.ToastStyle == ToastStyleCompact {
+		styleVal = "Compact (two lines: the channel, then the server and who)"
+	}
+	writeField(12, "Toast Style", styleVal+" ◀▶")
 	addLine(dimStyle.Render("  Click a toast to dismiss it (a message's opens its channel), or Ctrl+X for the"))
 	addLine(dimStyle.Render("  bottom one. None for the channel you're in."))
 
@@ -2462,7 +2490,7 @@ func (a *App) renderDisplayContent(width, height int) string {
 // in the middle section. Layout: header+blank (2), fields 0-1 (3 lines
 // each), note+blank (2), divider+blank (2), header+blank (2), fields 2-6
 // (3 lines each), divider+blank (2), field 7 (2 lines, no trailing blank).
-var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31, 38, 41, 44}
+var notifFieldLineStarts = []int{2, 5, 14, 17, 20, 23, 26, 31, 38, 41, 44, 47, 50}
 
 // updateNotifScroll adjusts NotifScrollOffset so the focused field is visible.
 func (a *App) updateNotifScroll(s *SettingsState) {
