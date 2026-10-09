@@ -20,6 +20,11 @@ func (c *Conn) PostMessage(ctx context.Context, channelID uuid.UUID, content str
 	return c.postAndWait(ctx, wire.SendMessagePayload{ChannelID: channelID, Content: content, ReplyToID: replyTo})
 }
 
+// PostThreadMessage is PostMessage into a thread (see SendThreadMessage).
+func (c *Conn) PostThreadMessage(ctx context.Context, channelID, threadID uuid.UUID, content string) (uuid.UUID, error) {
+	return c.postAndWait(ctx, wire.SendMessagePayload{ChannelID: channelID, Content: content, ThreadID: &threadID})
+}
+
 // EditMessage replaces the text of one of the plugin's own messages.
 func (c *Conn) EditMessage(channelID, messageID uuid.UUID, content string) error {
 	return c.Send(wire.OpEditMessage, wire.EditMessagePayload{MessageID: messageID, ChannelID: channelID, Content: content})
@@ -89,6 +94,10 @@ func (c *Conn) answerPost(p wire.MessageCreatePayload) bool {
 type Stream struct {
 	// Interval is the least time between updates (default 400ms).
 	Interval time.Duration
+	// ThreadID, when set before the first Write, posts the reply into that
+	// thread: set it to the message you're answering's ThreadID, so a bot
+	// mentioned inside a thread answers there.
+	ThreadID *uuid.UUID
 
 	c         *Conn
 	ctx       context.Context
@@ -166,7 +175,7 @@ func (s *Stream) flushLocked(state string) error {
 	}
 	s.last = time.Now()
 	if s.msgID == uuid.Nil {
-		p := wire.SendMessagePayload{ChannelID: s.channelID, Content: s.text, ReplyToID: s.replyTo}
+		p := wire.SendMessagePayload{ChannelID: s.channelID, Content: s.text, ReplyToID: s.replyTo, ThreadID: s.ThreadID}
 		if state == wire.StreamWriting {
 			p.Stream = wire.StreamWriting
 		} // a reply finished before its first update is just a message

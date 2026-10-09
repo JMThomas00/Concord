@@ -65,7 +65,7 @@ Handle events in order. Don't block your read loop on slow work.
 | `PLUGIN_PANE_INPUT` | `{"channel_id", "viewer_id", "key_string", "runes", "viewer_name", ...}` | they pressed a key |
 | `PLUGIN_PANE_RESIZE` | same fields as Enter | their pane changed size or theme |
 | `PLUGIN_PANE_LEAVE` | `{"channel_id", "viewer_id"}` | they left or disconnected |
-| `MESSAGE_CREATE` | `{"id", "channel_id", "author_id", "content", "reply_to_id", "author": User}` | a chat message in one of your channels, or, in any channel, one that @mentions you (see below) |
+| `MESSAGE_CREATE` | `{"id", "channel_id", "author_id", "content", "reply_to_id", "thread_id", "author": User}` (`thread_id`: set on a reply in a thread, the thread's first message) | a chat message in one of your channels, or, in any channel, one that @mentions you (see below) |
 | `PLUGIN_EVENT` | `{"kind", "payload", ...}` | e.g. the reply to a `members` request |
 
 A **Channel** has `id`, `server_id`, `name`, `topic`, `type` (5 = plugin),
@@ -141,7 +141,7 @@ move focus between panels, as in every channel.
 
 **Chat**:
 
-- `op 3` sends a message: `{"channel_id", "content", "reply_to_id"}`.
+- `op 3` sends a message: `{"channel_id", "content", "reply_to_id", "thread_id"}`. Set `thread_id` to post into a thread: its first message's ID, or any message in it. Answer a message that arrived with a `thread_id` by sending it back, so a reply to a mention inside a thread stays in the thread.
 - `op 4` shows "typing…" and `op 60` clears it: `{"channel_id"}`.
 
 **Your `client/` folder** holds the pictures and sounds above (`.png`,

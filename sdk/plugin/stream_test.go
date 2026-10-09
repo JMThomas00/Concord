@@ -143,3 +143,33 @@ func TestLongStreamSplitsAcrossMessages(t *testing.T) {
 		t.Fatalf("text lost across the split:\n%s", all)
 	}
 }
+
+// A plugin mentioned inside a thread answers in that thread: the message it
+// gets carries ThreadID, and a reply posted with it (SendThreadMessage, or a
+// Stream with ThreadID set) goes there.
+func TestAnsweringInAThread(t *testing.T) {
+	srv := plugintest.NewServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go plugin.Run(ctx, srv.Config(), plugin.Handler{OnMessage: func(c *plugin.Conn, m wire.MessageCreatePayload) {
+		if m.ThreadID == nil {
+			return
+		}
+		go func() {
+			s := c.Stream(context.Background(), m.ChannelID, nil)
+			s.ThreadID = m.ThreadID
+			s.Write("Works here too")
+			s.Close()
+			c.SendThreadMessage(m.ChannelID, *m.ThreadID, "and once more")
+		}()
+	}})
+	srv.WaitReady()
+	ch, thread := uuid.New(), uuid.New()
+	srv.ThreadChatMessage(ch, thread, "alice", "@bot does it work?")
+	for _, want := range []string{"Works here too", "and once more"} {
+		got := srv.NextChat()
+		if got.ThreadID == nil || *got.ThreadID != thread || got.Content != want {
+			t.Fatalf("posted %+v, want %q in thread %s", got, want, thread)
+		}
+	}
+}

@@ -51,6 +51,7 @@ callback goroutine.
 |---|---|
 | `SendMessage(channel, text, replyTo)` | posts chat as the plugin (markdown works; at most 2000 bytes) |
 | `PostMessage(ctx, channel, text, replyTo)` | the same, but **blocks** until saved and returns the message ID |
+| `SendThreadMessage(channel, thread, text)` / `PostThreadMessage(ctx, …)` | the same, into a thread (`thread`: its first message, or any message in it) |
 | `EditMessage(channel, id, text)` | changes one of the plugin's own messages |
 | `Stream(ctx, channel, replyTo)` | a reply written as it's produced (LLM tokens): see below |
 | `Typing(channel, true)` | typing indicator; lasts ~5s, so **re-send every ~3s** during slow work |
@@ -77,6 +78,7 @@ isn't marked "edited".
 ```go
 go func() { // Stream blocks on the network: never inside a callback
 	s := c.Stream(ctx, m.ChannelID, &m.ID)
+	s.ThreadID = m.ThreadID // mentioned inside a thread? answer there (nil: in the channel)
 	for token := range tokens {
 		s.Write(token)
 	}
@@ -84,6 +86,11 @@ go func() { // Stream blocks on the network: never inside a callback
 }()
 ```
 
+- **Threads:** a message posted in a thread arrives with `m.ThreadID` set (the
+  thread's first message). Set `s.ThreadID` (or use `SendThreadMessage`) to
+  answer inside it; channel members see the reply in the thread's box, not
+  the channel. In tests: `plugintest.Server.ThreadChatMessage(channel, thread,
+  author, text)`, and `NextChat().ThreadID`.
 - The first piece appears at once; later ones are batched into an edit
   every `s.Interval` (400ms). Write pieces of any size.
 - Markdown renders correctly at every step: Concord treats an unfinished code

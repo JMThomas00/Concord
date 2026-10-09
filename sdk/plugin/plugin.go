@@ -265,6 +265,13 @@ func (c *Conn) SendMessage(channelID uuid.UUID, content string, replyTo *uuid.UU
 	return c.Send(wire.OpSendMessage, wire.SendMessagePayload{ChannelID: channelID, Content: content, ReplyToID: replyTo})
 }
 
+// SendThreadMessage posts a chat message into a thread: threadID is its
+// first message, or any message in it (a ChatMessage's ThreadID, when
+// answering one that was itself in a thread).
+func (c *Conn) SendThreadMessage(channelID, threadID uuid.UUID, content string) error {
+	return c.Send(wire.OpSendMessage, wire.SendMessagePayload{ChannelID: channelID, Content: content, ThreadID: &threadID})
+}
+
 // Typing shows or clears "typing…" for the plugin in channelID.
 func (c *Conn) Typing(channelID uuid.UUID, on bool) error {
 	op := wire.OpTypingStop

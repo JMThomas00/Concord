@@ -439,6 +439,15 @@ func (s *Server) ChatMessage(channelID uuid.UUID, author, content string) {
 	})
 }
 
+// ThreadChatMessage relays a chat message posted in a thread (threadID: the
+// thread's first message) -- e.g. a mention of the plugin inside a thread.
+func (s *Server) ThreadChatMessage(channelID, threadID uuid.UUID, author, content string) {
+	s.dispatch(wire.EventMessageCreate, wire.MessageCreatePayload{
+		ChatMessage: &wire.ChatMessage{ID: uuid.New(), ChannelID: channelID, AuthorID: s.UserID(author), Content: content, ThreadID: &threadID},
+		Author:      &wire.User{ID: s.UserID(author), Username: author},
+	})
+}
+
 // UserID is the user ID ChatMessage uses for author: the same for every
 // message by that name, so per-user logic (rate limits, turn order) can be
 // tested.

@@ -158,6 +158,10 @@ type ChatMessage struct {
 	AuthorID  uuid.UUID  `json:"author_id"`
 	Content   string     `json:"content"`
 	ReplyToID *uuid.UUID `json:"reply_to_id,omitempty"`
+	// ThreadID is set on a reply in a thread: the thread's first message.
+	// Answer in the same thread by posting with it (Conn.SendThreadMessage,
+	// Conn.PostThreadMessage, or Stream.ThreadID).
+	ThreadID *uuid.UUID `json:"thread_id,omitempty"`
 }
 
 // MessageCreatePayload is EventMessageCreate's data. For a message you
@@ -187,6 +191,7 @@ type SendMessagePayload struct {
 	ChannelID uuid.UUID  `json:"channel_id"`
 	Content   string     `json:"content"`
 	ReplyToID *uuid.UUID `json:"reply_to_id,omitempty"`
+	ThreadID  *uuid.UUID `json:"thread_id,omitempty"` // post into a thread (its first message, or any message in it)
 	Nonce     string     `json:"nonce,omitempty"`  // echoed back in your own MESSAGE_CREATE
 	Stream    string     `json:"stream,omitempty"` // StreamWriting for a reply that will grow by edits
 }
