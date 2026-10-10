@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -239,12 +240,17 @@ func (a *App) handleAchKey(msg tea.KeyMsg) tea.Cmd {
 			s.AchQuery, s.AboutAchScroll = "", 0
 		case key == "enter":
 			s.AchFocus = achFocusServer
-		case msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace:
-			s.AchQuery += string(msg.Runes)
-			if msg.Type == tea.KeySpace {
-				s.AchQuery += " "
+		case msg.Type == tea.KeySpace:
+			s.AchQuery, s.AboutAchScroll = s.AchQuery+" ", 0
+		case msg.Type == tea.KeyRunes:
+			// Only printable characters: on Windows a modifier pressed on its
+			// own (Shift, say, for a screenshot) can arrive as a NUL.
+			for _, r := range msg.Runes {
+				if unicode.IsPrint(r) {
+					s.AchQuery += string(r)
+					s.AboutAchScroll = 0
+				}
 			}
-			s.AboutAchScroll = 0
 		}
 		return nil
 	}
@@ -433,9 +439,12 @@ func (a *App) achSearchRow(width int) string {
 // the chosen one in view, each clickable.
 func (a *App) achChoiceRow(title string, focused bool, names, keys []string, sel, width int) string {
 	c := a.theme.Colors
+	// Only the chosen entry of the row with the keys gets a block of colour:
+	// the two rows sit right on top of each other, and blocks in both ran
+	// together. The chosen entry of the other row is underlined instead.
 	on := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Background)).Background(lipgloss.Color(c.Purple)).Bold(true).Padding(0, 1)
-	chosen := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Purple)).Background(lipgloss.Color(c.Selection)).Bold(true).Padding(0, 1)
-	off := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Foreground)).Background(lipgloss.Color(c.Selection)).Padding(0, 1)
+	chosen := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Purple)).Bold(true).Underline(true)
+	off := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Foreground))
 	rendered := make([]string, len(names))
 	for i, n := range names {
 		st := off
@@ -445,7 +454,11 @@ func (a *App) achChoiceRow(title string, focused bool, names, keys []string, sel
 				st = on
 			}
 		}
-		rendered[i] = zone.Mark(keys[i], st.Render(n))
+		chip := st.Render(n)
+		if !(i == sel && focused) {
+			chip = " " + chip + " " // the same width as the padded block, so nothing shifts
+		}
+		rendered[i] = zone.Mark(keys[i], chip)
 	}
 	head := a.achRowLabel(title, focused)
 	room := width - lipgloss.Width(head)

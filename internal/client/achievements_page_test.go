@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
@@ -188,5 +189,29 @@ func TestFuzzyMatch(t *testing.T) {
 		if got := fuzzyMatch(c.q, c.s); got != c.ok {
 			t.Errorf("%q in %q: %v", c.q, c.s, got)
 		}
+	}
+}
+
+// TestAchievementSearchTyping: a NUL (a lone modifier key on Windows)
+// doesn't land in the search, a space goes in once, and typing "grape" or
+// "disco" there doesn't set off About's eggs.
+func TestAchievementSearchTyping(t *testing.T) {
+	a, _ := recordsApp(t)
+	a.view = ViewSettings
+	a.settingsState = &SettingsState{SelectedCategory: settingsCatAbout}
+	a.handleAboutKey(keyOf("a"))
+	a.handleAchKey(keyOf("/"))
+	for _, r := range "grape" {
+		k := keyOf(string(r))
+		a.watchEggKeys(k)
+		a.handleAchKey(k)
+	}
+	a.handleAchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{0}})
+	a.handleAchKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	if q := a.settingsState.AchQuery; q != "grape " {
+		t.Fatalf("query %q", q)
+	}
+	if a.egg != nil {
+		t.Fatal("typing grape in the search set off the grape burst")
 	}
 }

@@ -54,7 +54,7 @@ func (a *App) watchEggKeys(msg tea.Msg) {
 	if len(a.eggKeys) > len(konamiCode) {
 		a.eggKeys = a.eggKeys[len(a.eggKeys)-len(konamiCode):]
 	}
-	if a.aboutShowing() && strings.HasSuffix(strings.Join(a.eggKeys, ""), "disco") {
+	if a.aboutEggs() && strings.HasSuffix(strings.Join(a.eggKeys, ""), "disco") {
 		a.eggKeys = nil
 		if a.uiConfig != nil {
 			d := &a.uiConfig.Display
@@ -69,7 +69,7 @@ func (a *App) watchEggKeys(msg tea.Msg) {
 		}
 		return
 	}
-	if a.aboutShowing() && strings.HasSuffix(strings.Join(a.eggKeys, ""), "grape") {
+	if a.aboutEggs() && strings.HasSuffix(strings.Join(a.eggKeys, ""), "grape") {
 		a.eggKeys = nil
 		a.startEgg("burst", 1800*time.Millisecond)
 		return
@@ -82,6 +82,13 @@ func (a *App) watchEggKeys(msg tea.Msg) {
 		}
 		a.startEgg("konami", 4*time.Second)
 	}
+}
+
+// aboutEggs is where the About eggs listen: About itself, not its
+// Achievements page, whose search box takes typing ("grape" is a search
+// there, not a wish).
+func (a *App) aboutEggs() bool {
+	return a.aboutShowing() && !a.settingsState.AboutAch
 }
 
 // watchGrapeClicks counts clicks on the grapes; ten in a row presses them.
