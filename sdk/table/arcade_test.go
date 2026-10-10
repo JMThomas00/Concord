@@ -12,6 +12,7 @@ import (
 	"github.com/JMThomas00/Concord/sdk/plugintest"
 	"github.com/JMThomas00/Concord/sdk/table"
 	"github.com/JMThomas00/Concord/sdk/wire"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
 )
 
@@ -199,4 +200,93 @@ func TestArcadeOptions(t *testing.T) {
 	srv.FrameContaining(v, "◂ CALM ▸")
 	srv.Key(v, "esc")
 	srv.FrameContaining(v, "EFFECTS CALM")
+}
+
+// stubBoard is the example board with an arcade face that shows what the
+// kit gives it: the viewer's pieces, and a callout for a moment after each
+// move (an Animator).
+type stubBoard struct {
+	tea.Model
+	seat  *table.Seat
+	moved time.Time
+}
+
+func (b *stubBoard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(table.ChangedMsg); ok {
+		b.moved = time.Now()
+	}
+	var cmd tea.Cmd
+	b.Model, cmd = b.Model.Update(msg)
+	return b, cmd
+}
+func (b *stubBoard) Draw(c *arcade.Canvas, x, y, w, h int) {
+	c.Text(x, y, "PIECES="+b.seat.Equipped("pieces"), "fg", "", false)
+	if b.Animating() {
+		c.Text(x, y+1, "CALLOUT", "yellow", "", true)
+	}
+}
+func (b *stubBoard) DrawSeat(*arcade.Canvas, int, int, int, int, int) {}
+func (b *stubBoard) Status() string                                   { return "" }
+func (b *stubBoard) Animating() bool {
+	return b.seat.Effects() == "" && time.Since(b.moved) < 600*time.Millisecond
+}
+
+func TestArcadeBoardGetsChoicesAndAnimates(t *testing.T) {
+	rules := arcadeRules()
+	plain := rules.NewBoard
+	rules.NewBoard = func(s *table.Seat) tea.Model { return &stubBoard{Model: plain(s), seat: s} }
+	srv := plugintest.NewServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { plugin.Run(ctx, srv.Config(), table.New(rules).Handler()); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	srv.WaitReady()
+	ch := uuid.New()
+	srv.Channel(wire.Channel{ID: ch, Name: "games", PluginConfig: map[string]string{table.SettingSeating: table.ModeSeats}})
+
+	alice, bob := srv.Enter(ch, "alice", 80, 24), srv.Enter(ch, "bob", 80, 24)
+	for _, v := range []*plugintest.Viewer{alice, bob} {
+		srv.FrameContaining(v, "PRESS ENTER")
+		srv.Key(v, "enter")
+		srv.FrameContaining(v, "TAKE A SEAT")
+		srv.Key(v, "down")
+		srv.Key(v, "enter")
+	}
+	srv.FrameContaining(alice, "PIECES=plain")
+	srv.FrameContaining(bob, "PIECES=plain")
+
+	// A move: bob's board animates, then a last frame clears the callout.
+	srv.Key(alice, "1")
+	srv.FrameContaining(bob, "CALLOUT")
+	for deadline := time.Now().Add(plugintest.Timeout); ; {
+		if f := srv.NextFrame(bob); !strings.Contains(f, "CALLOUT") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the callout never cleared")
+		}
+	}
+
+	// Win, unlock FANCY, and the board shows it.
+	for i, mv := range []string{"4", "2", "5", "3"} {
+		v := bob
+		if i%2 == 1 {
+			v = alice
+		}
+		srv.Key(v, mv)
+	}
+	srv.FrameContaining(alice, "YOU WIN!")
+	srv.Key(alice, "esc")
+	srv.FrameContaining(alice, "NEW SETS!")
+	for _, k := range []string{"down", "down", "enter", "right", "enter"} {
+		srv.Key(alice, k)
+	}
+	srv.FrameContaining(alice, "SPENDS 1 GOLD STAR")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "✓ IN USE")
+	srv.Key(alice, "esc")
+	srv.FrameContaining(alice, "TAKE A SEAT")
+	srv.Key(alice, "down")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "PIECES=fancy")
 }

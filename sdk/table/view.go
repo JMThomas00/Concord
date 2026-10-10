@@ -53,6 +53,7 @@ type viewerModel struct {
 	setsIdx map[string]int // the collection screen's item per kind
 	picked  string         // the unlockable just picked from a draft
 	reveal  time.Time      // when it was picked (its reveal is showing)
+	ticked  bool           // animated at the last tick
 
 	width, height int
 }
@@ -91,6 +92,9 @@ func (m *viewerModel) openTable(t *Table) {
 	r := m.room()
 	m.screen, m.tableID, m.menuOpen, m.notice = screenTable, t.ID, false, ""
 	m.seat = &Seat{Index: t.seatOf(m.v.ID), table: t, rules: &m.k.rules, viewer: m.v,
+		equipped: func(kind string) string { return m.k.equippedFor(m.v.ID)[kind] },
+		frame:    func() int { return m.frame },
+		effects:  func() string { return m.effects() },
 		play: func(seat int, move string) error {
 			// Always the table as it is now (seats may have changed).
 			if cur := r.table(t.ID); cur != nil {
@@ -149,8 +153,8 @@ func (m *viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.screen == screenTable && t.outcome().Over {
 				m.lastKey = time.Now() // the winning line blinks for a while
-				m.k.startTicker()
 			}
+			m.k.startTicker() // the board may animate the move (Animator)
 		}
 	case tickMsg:
 		if m.effects() == "" {

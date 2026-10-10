@@ -98,6 +98,14 @@ func (b *Board) Status() string                                  // e.g. "not yo
 - **Blinking and attract mode:** `seat.Frame()` counts the kit's ticks (5 a
   second, for 30 seconds after the last key, never when a player's Effects
   are off). Draw from the frame count; never keep animation state.
+- **Callouts after a move** ("DOUBLE!", "KING ME!"): implement
+  `table.Animator` (`Animating() bool`, e.g. for 1.4 s after `ChangedMsg`);
+  the kit redraws while it's true, then once more to clear it. Skip
+  callouts when `seat.Effects() != ""`: those players get no animation.
+- **The status row:** `Status()` is for errors (red). For instructions
+  ("Enter where it lands") implement `table.Hinter` (`Hint() string`).
+- **Previews** get 40 x 17 cells in the collection, 21 x 6 on offer cards
+  and 20 x 6 on the menu; grey out only what's locked.
 - **Under 64 x 24** the kit shows a plain "Enter to play" door and the plain
   table. A board that isn't an `ArcadeBoard` keeps the plain table view
   behind the arcade's menus.
