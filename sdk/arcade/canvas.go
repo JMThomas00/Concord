@@ -189,13 +189,17 @@ func (c *Canvas) String() string {
 		for last >= 0 && blank(row[last]) {
 			last--
 		}
-		cur := ""
+		cur, curBg := "", false
 		for x := 0; x <= last; x++ {
 			cl := row[x]
 			if cl.skip {
 				continue
 			}
 			ch, fg, bg, bold := c.glyph(cl)
+			if ch == " " && bg == "" && !curBg {
+				b.WriteByte(' ') // a plain space shows no colour: keep the current style
+				continue
+			}
 			sgr := c.style(fg, bg, bold)
 			if sgr != cur {
 				b.WriteString("\x1b[0")
@@ -203,7 +207,7 @@ func (c *Canvas) String() string {
 					b.WriteString(";" + sgr)
 				}
 				b.WriteString("m")
-				cur = sgr
+				cur, curBg = sgr, bg != "" && c.pal.Get(bg).sgr(true) != "49"
 			}
 			b.WriteString(ch)
 		}
