@@ -72,9 +72,10 @@ Plugins are separate programs a server runs alongside itself. They add channels 
 - **Install one** (server admins): **Server Settings (Ctrl+B) → Plugins → I**, then type its GitHub repo, like `JMThomas00/concord-chess`. Concord downloads the right build, checks it, and starts it with no restart. **U** updates it later.
 - **Plugins we've made:**
   - games: [tic-tac-toe](https://github.com/JMThomas00/concord-tictactoe), [checkers](https://github.com/JMThomas00/concord-checkers), [Tak](https://github.com/JMThomas00/concord-tak) and [chess](https://github.com/JMThomas00/concord-chess). Each has seats, challenges, spectators, a computer opponent, achievements and a leaderboard, and each also plays standalone in a terminal, even over the network.
+  - **[Grape Race](https://github.com/JMThomas00/concord-grape-race):** an arcade typing race on a drag strip, with a garage of unlockable cars. 🍇
   - **Tukan:** a kanban board.
   - **Mynah:** AI personas that chat.
-- **Build your own:** the plugin SDK (`github.com/JMThomas00/Concord/sdk`) handles the connection, panes, game tables and testing. `concord-plugin new <name> --template game|pane|bot|pty` gives you a working repo with a release workflow. [`sdk/PROTOCOL.md`](sdk/PROTOCOL.md) covers other languages, and the `/concord` skill in `.claude/skills/concord/` teaches an AI agent to build one.
+- **Build your own:** the plugin SDK (`github.com/JMThomas00/Concord/sdk`) handles the connection, panes, game tables, the arcade look (pixel art, sounds, rewards) and testing. `concord-plugin new <name> --template game|pane|bot|pty` gives you a working repo with a release workflow. [`sdk/PROTOCOL.md`](sdk/PROTOCOL.md) covers other languages, and the `/concord` skill in `.claude/skills/concord/` teaches an AI agent to build one.
 
 ## Keyboard Shortcuts
 
