@@ -10,7 +10,7 @@
 Concord is a self-hosted, terminal-first chat platform built in Go. Each server is independently hosted (IRC-style decentralization). The client is a full TUI application built on the Charmbracelet stack. Voice channels use WebRTC P2P audio with Opus encoding, and an out-of-process plugin platform lets external programs (bots, integrations) attach to a server as privileged clients.
 
 **Module path:** `github.com/concord-chat/concord`
-**Current version:** v0.1.0 (released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
+**Current version:** v0.1.1 (2026-10-10: plugin frames centred as one block, the Achievements page's search/server/plugin rows; v0.1.0 released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
 
 ---
 
