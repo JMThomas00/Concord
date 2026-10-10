@@ -78,8 +78,8 @@ func TestTerminalDefaultTheme(t *testing.T) {
 
 func TestRewards(t *testing.T) {
 	items := []Unlockable{
-		{"kart", "GO-KART", Starter}, {"f1", "F1", Common}, {"drag", "DRAG", Common},
-		{"monster", "MONSTER", Rare}, {"tub", "BATHTUB", Legendary},
+		{ID: "kart", Name: "GO-KART", Tier: Starter}, {ID: "f1", Name: "F1", Tier: Common}, {ID: "drag", Name: "DRAG", Tier: Common},
+		{ID: "monster", Name: "MONSTER", Tier: Rare}, {ID: "tub", Name: "BATHTUB", Tier: Legendary},
 	}
 	rnd := rand.New(rand.NewPCG(1, 2))
 	var r Rewards

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/JMThomas00/Concord/sdk/arcade"
 	"github.com/JMThomas00/Concord/sdk/wire"
 	"github.com/google/uuid"
 )
@@ -79,6 +80,16 @@ type playerRecord struct {
 	Streak     int                  `json:"streak"` // wins in a row now
 	BestStreak int                  `json:"best_streak"`
 	Unlocked   map[string]time.Time `json:"unlocked,omitempty"`
+
+	// The arcade (arcade.go): who they are, games played, passes and
+	// unlockables, and their own options.
+	Name     string            `json:"name,omitempty"`
+	Games    int               `json:"games,omitempty"`
+	Rewards  arcade.Rewards    `json:"rewards"`
+	Equipped map[string]string `json:"equipped,omitempty"` // kind -> id
+	Muted    bool              `json:"muted,omitempty"`
+	Effects  string            `json:"effects,omitempty"` // "" (full), "calm" or "off"
+	Earned   int               `json:"-"`                 // passes from the last game, for its results screen
 }
 
 func (r *playerRecord) unlock(id string, now time.Time) {
@@ -139,6 +150,9 @@ func (k *Kit) recordResult(t *Table, o Outcome) {
 			r = &playerRecord{}
 			k.records[p.UserID] = r
 		}
+		r.Name = p.Name
+		r.Games++
+		before := len(r.Unlocked)
 		switch {
 		case o.Winner == i:
 			r.Wins++
@@ -168,6 +182,19 @@ func (k *Kit) recordResult(t *Table, o Outcome) {
 			for _, id := range k.rules.Awards(t.game, i, o) {
 				r.unlock(id, now)
 			}
+		}
+		r.Earned = 0
+		if a := k.rules.Arcade; a != nil && len(a.Unlockables) > 0 {
+			// A pass for each new achievement, every third win in a row
+			// and every tenth game.
+			n := len(r.Unlocked) - before
+			if o.Winner == i && r.Streak > 0 && r.Streak%3 == 0 {
+				n++
+			}
+			if r.Games%10 == 0 {
+				n++
+			}
+			r.Earned = r.Rewards.Grant(n, a.Unlockables)
 		}
 		if k.conn != nil {
 			_ = k.conn.SendRecord(r.wire(p.UserID))

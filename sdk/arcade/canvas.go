@@ -256,3 +256,15 @@ func (c *Canvas) style(fg, bg string, bold bool) string {
 	}
 	return strings.Join(parts, ";")
 }
+
+// Shade sets the background of the cells in a w x h box at (x, y),
+// keeping what's drawn in them: a chalkboard, a highlighted square.
+func (c *Canvas) Shade(x, y, w, h int, bg string) {
+	for j := y; j < y+h; j++ {
+		for i := x; i < x+w; i++ {
+			if cl := c.at(i, j); cl != nil && !cl.skip {
+				cl.bg = bg
+			}
+		}
+	}
+}

@@ -1,7 +1,8 @@
 // Package arcade is the Concord Arcade standard for game plugins: a
 // character-cell canvas with half-block pixels, the shaded pixel-font logo,
 // seven-segment digits, colour roles taken from each viewer's Concord theme,
-// the Pit Pass reward system and a generated chiptune sound kit.
+// the pass-and-draft reward system (Pit Passes, Gold Stars: each game names
+// its own) and a generated chiptune sound kit.
 //
 // Screens are drawn on a Canvas the size of the viewer's pane and returned
 // from a pane model's View as Canvas.String(). Everything is plain text with
@@ -110,6 +111,8 @@ var dracula = map[string]string{
 //	tire    near black
 //	hub     wheel hubs
 //	<paint>D a darker shade of each paint, e.g. "cyanD"
+//	<colour>B a background tint of purple and each paint, e.g. "greenB" (a
+//	         chalkboard), falling back to "line" where colours can't mix
 type Palette struct{ roles map[string]Color }
 
 // NewPalette builds the roles from a viewer's theme (nil: Dracula).
@@ -143,6 +146,9 @@ func NewPalette(t *wire.PaneTheme) Palette {
 	r["hub"] = Mix(r["comment"], r["fg"], .3, r["comment"])
 	for _, paint := range Paints {
 		r[paint+"D"] = Mix(r[paint], r["bg"], .45, r[paint])
+	}
+	for _, col := range append([]string{"purple"}, Paints...) {
+		r[col+"B"] = Mix(r[col], r["bg"], .8, r["line"])
 	}
 	return p
 }

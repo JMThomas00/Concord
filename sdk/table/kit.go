@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,7 @@ type Room struct {
 	ChannelID  uuid.UUID         `json:"channel_id"`
 	Tables     []*Table          `json:"tables"`
 	Challenges []Challenge       `json:"challenges"`
+	Last       string            `json:"last,omitempty"` // the last finished game, for the arcade menu
 	settings   map[string]string // the channel's create_field values
 }
 
@@ -89,6 +91,10 @@ type Kit struct {
 	dirty   map[uuid.UUID]*Room         // rooms changed during the current event
 	moved   map[string]string           // table id -> move just played, for ChangedMsg
 	records map[uuid.UUID]*playerRecord // every player's record (records.go), loaded on first use
+
+	ticking bool // the arcade animation clock is running (arcade.go)
+	tickGen int
+	rnd     *mrand.Rand // offers of unlockables
 }
 
 // New makes a Kit for a game.
@@ -99,6 +105,7 @@ func New(rules Rules) *Kit {
 		viewers: map[uuid.UUID]*viewerModel{},
 		dirty:   map[uuid.UUID]*Room{},
 		moved:   map[string]string{},
+		rnd:     newRand(),
 	}
 	k.host = pane.NewHost(func(v *pane.Viewer) tea.Model { return k.newViewer(v) })
 	return k
@@ -261,7 +268,7 @@ func (k *Kit) play(r *Room, t *Table, seat int, move string) error {
 // afterMove starts the computer if it's next, or tells the next player.
 func (k *Kit) afterMove(r *Room, t *Table, mover int) {
 	if t.outcome().Over {
-		k.reportResult(t)
+		k.reportResult(r, t)
 		return
 	}
 	next := t.game.Turn()
@@ -322,6 +329,7 @@ func (k *Kit) sit(r *Room, t *Table, seat int, p Player) {
 		return
 	}
 	t.Seats[seat] = p
+	t.Score, t.Ready = nil, nil // new players, a new score
 	k.changed(r, t, "")
 	if t.full() {
 		k.afterMove(r, t, -1) // the computer may be first to move
@@ -331,6 +339,7 @@ func (k *Kit) sit(r *Room, t *Table, seat int, p Player) {
 func (k *Kit) stand(r *Room, t *Table, userID uuid.UUID) {
 	if s := t.seatOf(userID); s >= 0 && (!t.full() || t.outcome().Over) {
 		t.Seats[s] = Player{}
+		t.Score, t.Ready = nil, nil
 		if t.outcome().Over { // a finished game makes room for the next one
 			t.Moves, t.Resigned = nil, -1
 			t.rebuild(&k.rules)
@@ -342,7 +351,7 @@ func (k *Kit) stand(r *Room, t *Table, userID uuid.UUID) {
 func (k *Kit) resign(r *Room, t *Table, seat int) {
 	if seat >= 0 && t.full() && !t.outcome().Over {
 		t.Resigned = seat
-		k.reportResult(t)
+		k.reportResult(r, t)
 		k.changed(r, t, "")
 	}
 }
@@ -356,8 +365,11 @@ func (k *Kit) rematch(r *Room, t *Table) {
 	seats := append([]Player(nil), t.Seats...)
 	if len(seats) == 2 {
 		seats[0], seats[1] = seats[1], seats[0]
+		if len(t.Score) == 2 { // the score follows the players
+			t.Score[0], t.Score[1] = t.Score[1], t.Score[0]
+		}
 	}
-	t.Seats, t.Moves, t.Resigned = seats, nil, -1
+	t.Seats, t.Moves, t.Resigned, t.Ready = seats, nil, -1, nil
 	t.Options = copyMap(r.settings)
 	t.rebuild(&k.rules)
 	k.changed(r, t, "")
@@ -433,11 +445,22 @@ func (k *Kit) startGame(r *Room, me, opponent Player) *Table {
 }
 
 // seatsTable is ModeSeats' one table, created on first use.
+// Other tables in a seats room are games against the computer, started
+// from the arcade menu. (Games saved before Main existed: the first table
+// was the only one.)
 func (k *Kit) seatsTable(r *Room) *Table {
 	for _, t := range r.Tables {
-		return t
+		if t.Main {
+			return t
+		}
 	}
-	return k.newTable(r, make([]Player, len(k.rules.SeatNames)))
+	if len(r.Tables) > 0 {
+		r.Tables[0].Main = true
+		return r.Tables[0]
+	}
+	t := k.newTable(r, make([]Player, len(k.rules.SeatNames)))
+	t.Main = true
+	return t
 }
 
 // requestMembers looks up who can see the channel, in the background.
@@ -468,7 +491,7 @@ func (k *Kit) moveSound(r *Room, t *Table, move string) {
 		return
 	}
 	for id := range k.viewers {
-		if k.watching(id, t.ID) {
+		if k.watching(id, t.ID) && !(k.rules.Arcade != nil && k.record(id).Muted) {
 			_ = k.conn.PlaySound(r.ChannelID, id, sound, 1)
 		}
 	}
@@ -476,12 +499,21 @@ func (k *Kit) moveSound(r *Room, t *Table, move string) {
 
 // reportResult tells each person at a finished table how it went for them,
 // so their client can count the win (or loss) towards its achievements.
-func (k *Kit) reportResult(t *Table) {
+func (k *Kit) reportResult(r *Room, t *Table) {
 	o := t.outcome()
 	if k.conn == nil || !o.Over {
 		return
 	}
+	if o.Winner >= 0 && o.Winner < len(t.Seats) {
+		if len(t.Score) != len(t.Seats) {
+			t.Score = make([]int, len(t.Seats))
+		}
+		t.Score[o.Winner]++
+	}
 	k.recordResult(t, o) // records and achievements (records.go)
+	if t.full() {
+		r.Last = k.lastResult(t, o)
+	}
 	computer := false
 	for _, p := range t.Seats {
 		computer = computer || p.Computer
