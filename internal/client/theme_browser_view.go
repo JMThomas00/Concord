@@ -78,8 +78,11 @@ type SettingsState struct {
 	AboutScroll       int      // About page scroll position in lines (about.go)
 	AboutCellar       int      // the cellar bottle chosen on About (index into Collection.Cellar; C moves it)
 	AboutAch          bool     // the Achievements page is open (achievements_page.go)
-	AboutTab          int      // its tab
 	AboutAchScroll    int      // its scroll position
+	AchServer         string   // its server row: "all", "concord" or a server ID
+	AchPlugin         string   // its plugin row: "all" or a plugin ID
+	AchQuery          string   // its search
+	AchFocus          int      // which row has the keys (achFocusSearch...)
 	HelpRenderedLines []string // cached glamour output lines; nil = not yet rendered
 	HelpRenderWidth   int      // content width used for the cached render
 	HelpRenderTheme   string   // theme name used for the cached render -- glamour styling is theme-derived, so a theme switch must invalidate the cache too, not just a width change

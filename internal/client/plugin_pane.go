@@ -365,7 +365,11 @@ func (a *App) renderPluginPaneFrame(width, height int) string {
 	// an oversized frame gets word-wrapped here and corrupts every line —
 	// see the laneWidth fix in Tukan's own history). A slightly narrower
 	// frame should sit centered in the pane, not jammed into the top-left
-	// corner with all the slack on the right.
+	// corner with all the slack on the right. It's centred as one block:
+	// lipgloss centres each line on its own, so a frame whose lines differ in
+	// length (most do) would zig-zag. Padding every line to the widest keeps
+	// the plugin's own left edge.
+	frame = squareFrame(frame)
 	if len(images) > 0 {
 		lines, rasters := a.drawPaneImages(strings.Split(frame, "\n"), width, a.pluginPane.conn, a.pluginPane.PluginID, images)
 		frame = strings.Join(lines, "\n")
@@ -494,4 +498,20 @@ func sanitizePaneTitle(s string) string {
 		s = string(r[:120]) + "…"
 	}
 	return s
+}
+
+// squareFrame pads every line of a frame with spaces to the width of its
+// widest line, so centring it moves the whole block and not each line.
+func squareFrame(frame string) string {
+	lines := strings.Split(frame, "\n")
+	widest := 0
+	for _, l := range lines {
+		widest = max(widest, ansi.StringWidth(l))
+	}
+	for i, l := range lines {
+		if w := ansi.StringWidth(l); w < widest {
+			lines[i] = l + strings.Repeat(" ", widest-w)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
