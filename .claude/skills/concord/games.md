@@ -1,5 +1,7 @@
 # Turn-Based Games (`sdk/table`)
 
+> Every game follows the Concord Arcade standard: a title screen, a menu, pixel art and sounds. See [`arcade.md`](arcade.md).
+
 Read this before building any game. The table kit supplies everything
 except the rules and the board: seats, spectators, three seating modes,
 the table menu on M (sit, stand, resign, rematch, add computer, lobby), "your turn"

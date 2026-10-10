@@ -340,6 +340,13 @@ Plugins are built on the SDK, a **separate Go module** nested in this repo: `git
     - One player hosts on TCP port 7412 (or any free port) and is shown their LAN addresses and a 6-character join code; the other joins with `address code`. Moves travel as JSON lines, and the host sits in seat 0.
     - Both sides validate every move and number it, so drift disconnects rather than diverging.
     - A board's `tea.Quit` is ignored standalone (`noQuit`); it only means "hand keys back" inside Concord.
+- **`sdk/arcade`** (2026-10-10, branch `sdk-arcade`, not tagged yet) is the **Concord Arcade standard** every game follows (vault: "Concord - Arcade Standard"; pilot: `JMThomas00/concord-grape-race` v0.3.0):
+  - a canvas the size of the pane with half-block pixels, sprites, boxes and key chips, rendered to SGR (a style only when it changes; plain spaces carry none), about 5 KB a frame;
+  - colour roles from each viewer's theme (`NewPalette`, hex, ANSI or terminal-default; derived `hi shadow ghost dim tire hub <paint>D`), and `Paints` players may choose (never purple);
+  - the shaded 5x7 pixel-font `Logo` and seven-segment `Digit`s with ghost segments;
+  - `Rewards`: Pit Passes, tiers (starter, common, rare, legendary), a 1-of-3 `Deal` weighted 6/3/1 and saved until `Pick`;
+  - a generated chiptune sound kit (`WriteSoundKit` into a plugin's `client/`).
+  - The skill's guide is `.claude/skills/concord/arcade.md`.
 - **`sdk/pty`** is a **separate module** (`github.com/JMThomas00/Concord/sdk/pty`). It runs an unmodified terminal program in a pseudo-terminal behind an `x/vt` emulator and shows it in a channel. One viewer drives (the first; `Options.Shared` lets everyone type), and the pane title says who. It's Linux/macOS only (Windows needs ConPTY). It's its own module because `x/vt` needs newer x/ansi/runewidth/colorprofile, which would otherwise float into the client (see the pinning rule below).
 - **`sdk/cmd/concord-plugin new <name> --template game|pane|bot|pty [--sdk path]`** scaffolds a plugin repo:
   - `main.go`, `plugin.toml`, a README and `.gitignore`;
