@@ -145,12 +145,14 @@ func (a *App) updateHelpScrollFromRow(absY int) {
 }
 
 // handleNotificationsCategoryMouse handles clicks on the Notifications
-// category: the main field list (6 fields, each a zone-marked 2-line block
-// -- see writeZoneMarkedLines in settings_view.go) and the @mention/message
-// sound picker sub-page. The mute-manager picker (NotifMutePickerOpen) is
-// not yet wired -- it has its own internal tab bar (Servers/Channels) that
-// needs its own look, deferred the same way the member-list/Hub-Browser
-// gaps were in the first pass rather than guessed at.
+// category: the main field list (8 fields -- Desktop Notifications section
+// (mode/scope) plus the Audio Notifications section (sounds/mentions-only/
+// bell/mention sound/message sound) and the mute-manager link, each a
+// zone-marked 2-line block -- see writeZoneMarkedLines in settings_view.go)
+// and the @mention/message sound picker sub-page. The mute-manager picker
+// (NotifMutePickerOpen) is not yet wired -- it has its own internal tab bar
+// (Servers/Channels) that needs its own look, deferred the same way the
+// member-list/Hub-Browser gaps were in the first pass rather than guessed at.
 func (a *App) handleNotificationsCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 	s := a.settingsState
 
@@ -164,7 +166,7 @@ func (a *App) handleNotificationsCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 
-	for field := 0; field <= 5; field++ {
+	for field := range notifFieldLineStarts {
 		if zoneInBounds(fmt.Sprintf("notif-field:%d", field), msg) {
 			s.NotifFocusField = field
 			return a.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -187,13 +189,13 @@ func (a *App) handleDeleteServerConfirmMouse(msg tea.MouseMsg) tea.Cmd {
 	return nil
 }
 
-// handleDisplayCategoryMouse handles clicks on the Display category's 13
+// handleDisplayCategoryMouse handles clicks on the Display category's
 // fields (zone-marked 2-line blocks, "display-field:%d" -- see writeField
 // inside renderDisplayContent). No extra scroll-offset math is needed: the
 // zone bounds already reflect real post-scroll screen position.
 func (a *App) handleDisplayCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 	s := a.settingsState
-	for field := 0; field <= 12; field++ {
+	for field := range displayFieldLineStarts {
 		if zoneInBounds(fmt.Sprintf("display-field:%d", field), msg) {
 			s.DisplayFocusField = field
 			return a.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -202,7 +204,7 @@ func (a *App) handleDisplayCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 	return nil
 }
 
-// handleAudioCategoryMouse handles clicks on the Audio category's 11 fields
+// handleAudioCategoryMouse handles clicks on the Audio category's fields
 // (zone-marked as "audio-field:%d" -- both writeField's 2-line blocks and
 // writeToggle's 1-line blocks share this ID scheme) and the inline device
 // picker's rows. Clicking a slider field (Input Gain/Output Volume/VAD
@@ -221,7 +223,7 @@ func (a *App) handleAudioCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 
-	for field := 0; field <= 10; field++ {
+	for field := 0; field < audioFieldCount; field++ {
 		if !zoneInBounds(fmt.Sprintf("audio-field:%d", field), msg) {
 			continue
 		}

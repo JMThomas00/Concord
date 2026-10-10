@@ -20,6 +20,8 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+
+	"github.com/concord-chat/concord/internal/protocol"
 )
 
 // errVoiceNotAvailable is returned by stub methods when the application was
@@ -36,7 +38,7 @@ func NewVoiceEngine(_ AudioConfig, _ uuid.UUID, _ chan<- VoiceSignalOut, _ chan<
 }
 
 // Start always returns errVoiceNotAvailable in the stub build.
-func (e *VoiceEngine) Start(_, _ uuid.UUID, _ []string) error {
+func (e *VoiceEngine) Start(_, _ uuid.UUID, _ []protocol.ICEServer) error {
 	return errVoiceNotAvailable
 }
 
@@ -57,9 +59,6 @@ func (e *VoiceEngine) SetUserVolume(_ uuid.UUID, _ float64) {}
 
 // UpdateConfig is a no-op in the stub build.
 func (e *VoiceEngine) UpdateConfig(_ AudioConfig) {}
-
-// TogglePTT is a no-op in the stub build.
-func (e *VoiceEngine) TogglePTT() {}
 
 // ListDevices delegates to GetAudioDevices so the settings picker shows real
 // devices even without the voice build tag. GetAudioDevices is defined in

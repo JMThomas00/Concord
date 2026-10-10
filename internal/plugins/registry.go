@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
-// Registry is the set of plugins discovered under the Plugins directory at
-// startup. Like the theme system, the directory listing IS the registry —
-// no separate index file, no hot-reload; a new plugin folder is picked up on
-// the next server restart.
+// Registry is the set of plugins discovered under the Plugins directory.
+// Like the theme system, the directory listing IS the registry — no separate
+// index file. A Registry is immutable once built: the Manager publishes a new
+// one (Registry.with/without, or a fresh Discover) when plugins are loaded,
+// unloaded or rescanned live.
 type Registry struct {
 	manifests    map[string]*Manifest       // by plugin id
 	channelKinds map[string]*ChannelKindDef // by "pluginID:kind"
@@ -27,11 +29,7 @@ func channelKindKey(pluginID, kind string) string {
 // with an error logged by the caller (via the returned per-plugin errors),
 // not fatal to discovery of the rest.
 func Discover(pluginsDir string) (*Registry, map[string]error) {
-	reg := &Registry{
-		manifests:    make(map[string]*Manifest),
-		channelKinds: make(map[string]*ChannelKindDef),
-		owners:       make(map[string]string),
-	}
+	reg := newRegistry()
 	errs := make(map[string]error)
 
 	entries, err := os.ReadDir(pluginsDir)
@@ -44,38 +42,82 @@ func Discover(pluginsDir string) (*Registry, map[string]error) {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		// Dot-folders are the installer's own working space (.staging,
+		// .backup), never plugins.
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		folderName := entry.Name()
-		manifestPath := filepath.Join(pluginsDir, folderName, "plugin.toml")
-		if _, err := os.Stat(manifestPath); err != nil {
+		if _, err := os.Stat(filepath.Join(pluginsDir, folderName, "plugin.toml")); err != nil {
 			continue // Not a plugin folder (no plugin.toml)
 		}
-
-		m, err := LoadManifest(manifestPath)
+		m, err := LoadPluginFolder(filepath.Join(pluginsDir, folderName))
 		if err != nil {
 			errs[folderName] = err
 			continue
 		}
-		if err := m.Validate(); err != nil {
-			errs[folderName] = err
-			continue
-		}
-		if m.Plugin.ID != folderName {
-			errs[folderName] = fmt.Errorf("plugin.toml [plugin].id %q does not match folder name %q", m.Plugin.ID, folderName)
-			continue
-		}
-
-		reg.manifests[m.Plugin.ID] = m
-		for i := range m.ChannelKinds {
-			key := channelKindKey(m.Plugin.ID, m.ChannelKinds[i].Kind)
-			reg.channelKinds[key] = &m.ChannelKinds[i]
-			reg.owners[key] = m.Plugin.ID
-		}
+		reg.add(m)
 	}
 
 	return reg, errs
+}
+
+// LoadPluginFolder parses and validates dir/plugin.toml, and checks the
+// manifest's [plugin].id matches the folder's name.
+func LoadPluginFolder(dir string) (*Manifest, error) {
+	m, err := LoadManifest(filepath.Join(dir, "plugin.toml"))
+	if err != nil {
+		return nil, err
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	if folder := filepath.Base(dir); m.Plugin.ID != folder {
+		return nil, fmt.Errorf("plugin.toml [plugin].id %q does not match folder name %q", m.Plugin.ID, folder)
+	}
+	return m, nil
+}
+
+func newRegistry() *Registry {
+	return &Registry{
+		manifests:    make(map[string]*Manifest),
+		channelKinds: make(map[string]*ChannelKindDef),
+		owners:       make(map[string]string),
+	}
+}
+
+func (r *Registry) add(m *Manifest) {
+	r.manifests[m.Plugin.ID] = m
+	for i := range m.ChannelKinds {
+		key := channelKindKey(m.Plugin.ID, m.ChannelKinds[i].Kind)
+		r.channelKinds[key] = &m.ChannelKinds[i]
+		r.owners[key] = m.Plugin.ID
+	}
+}
+
+// with returns a copy of r with m added (or replacing the same id). A
+// Registry is never modified once published, so readers holding the old
+// one are unaffected.
+func (r *Registry) with(m *Manifest) *Registry {
+	out := newRegistry()
+	for id, existing := range r.manifests {
+		if id != m.Plugin.ID {
+			out.add(existing)
+		}
+	}
+	out.add(m)
+	return out
+}
+
+// without returns a copy of r with pluginID removed.
+func (r *Registry) without(pluginID string) *Registry {
+	out := newRegistry()
+	for id, existing := range r.manifests {
+		if id != pluginID {
+			out.add(existing)
+		}
+	}
+	return out
 }
 
 // Manifest returns the manifest for a plugin id, if discovered.

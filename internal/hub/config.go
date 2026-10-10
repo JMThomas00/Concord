@@ -23,6 +23,18 @@ type Config struct {
 	Debug            bool            `toml:"debug"`
 	AdminToken       string          `toml:"admin_token"`
 	PeerHubs         []PeerHubConfig `toml:"peer_hubs"`
+	// RealIPHeader: the header a trusted proxy sets to each visitor's
+	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
+	// empty unless the hub is reachable only through that proxy.
+	RealIPHeader string `toml:"real_ip_header,omitempty"`
+	// PublicURL is the address other hubs reach this one at, such as
+	// "https://hub.example.com". When set, the hub announces itself to its
+	// peer hubs, so they add it back and share its listings too.
+	PublicURL string `toml:"public_url,omitempty"`
+	// AcceptPeerAnnouncements lets other hubs add themselves as peers
+	// (POST /v1/hubs/announce) once they answer a health check at a public
+	// address. On by default; an admin can block one with DELETE /v1/hubs/{id}.
+	AcceptPeerAnnouncements bool `toml:"accept_peer_announcements"`
 }
 
 func DefaultConfig() *Config {
@@ -33,6 +45,8 @@ func DefaultConfig() *Config {
 		DatabasePath:     "grapevine.db",
 		HeartbeatTimeout: 90,
 		FederationSync:   5,
+
+		AcceptPeerAnnouncements: true,
 	}
 }
 

@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // initAddServerForm initializes the Add Server form
@@ -35,123 +37,64 @@ func (a *App) initAddServerForm() {
 	a.addServerError = ""
 }
 
-// renderAddServerView renders the Add Server dialog
+// renderAddServerView renders Add Server (and Edit Server) on the login
+// stage: a shell command that builds itself as you type, over the fields.
 func (a *App) renderAddServerView() string {
-	// Calculate dialog dimensions
-	dialogWidth := 60
-	dialogHeight := 18
-
-	// Center the dialog
-	leftPadding := (a.width - dialogWidth) / 2
-	topPadding := (a.height - dialogHeight) / 2
-
-	if leftPadding < 0 {
-		leftPadding = 0
-	}
-	if topPadding < 0 {
-		topPadding = 0
-	}
-
-	// Build the dialog content
-	var content strings.Builder
-
-	// Title
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center).
-		Width(dialogWidth - 4)
-
-	title := "Add New Server"
+	label, headline, accent := "Add a server", "Where's your server?", "server"
 	if a.editingServerID != nil {
-		title = "Edit Server"
+		label, headline, accent = "Edit server", "Change where it lives", "lives"
 	}
-	content.WriteString(titleStyle.Render(title))
-	content.WriteString("\n\n")
-
-	// Error message if present
-	if a.addServerError != "" {
-		errorStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Red)).
-			Width(dialogWidth - 4).
-			Align(lipgloss.Center)
-		content.WriteString(errorStyle.Render(a.addServerError))
-		content.WriteString("\n\n")
-	}
-
-	// Form fields with clean styling
-	labelStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Width(dialogWidth - 4)
-
-	fieldContainerStyle := lipgloss.NewStyle().
-		Padding(0, 1).
-		Width(dialogWidth - 6)
-
-	// Server Name
-	content.WriteString(labelStyle.Render("Server Name:"))
-	content.WriteString("\n")
-	content.WriteString(fieldContainerStyle.Render(a.addServerName.View()))
-	content.WriteString("\n\n")
-
-	// Server Address
-	content.WriteString(labelStyle.Render("Address:"))
-	content.WriteString("\n")
-	content.WriteString(fieldContainerStyle.Render(a.addServerAddress.View()))
-	content.WriteString("\n\n")
-
-	// Server Port
-	content.WriteString(labelStyle.Render("Port:"))
-	content.WriteString("\n")
-	content.WriteString(fieldContainerStyle.Render(a.addServerPort.View()))
-	content.WriteString("\n\n")
-
-	// Use TLS toggle
-	content.WriteString(labelStyle.Render("Use TLS (WSS):"))
-	content.WriteString("\n")
-
-	tlsValue := "[ ] No"
+	var b strings.Builder
+	b.WriteString(a.addServerCommand() + "\n\n")
+	b.WriteString(a.stageField("Name", a.addServerFocus == 0, a.addServerName.View()) + "\n")
+	b.WriteString(a.stageField("Address", a.addServerFocus == 1, a.addServerAddress.View()) + "\n")
+	b.WriteString(a.stageField("Port", a.addServerFocus == 2, a.addServerPort.View()) + "\n")
+	tls := "○ off   (ws://)"
 	if a.addServerUseTLS {
-		tlsValue = "[✓] Yes"
+		tls = "● on    (wss://)"
 	}
-
-	tlsStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	tlsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	if a.addServerFocus == 3 {
 		tlsStyle = tlsStyle.Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
 	}
+	b.WriteString(a.stageField("TLS", a.addServerFocus == 3, tlsStyle.Render(tls)) + "\n")
+	if a.addServerError != "" {
+		b.WriteString("\n" + a.stageNotice(a.addServerError, true))
+	}
+	hints := []keyHint{{"Tab", "Next"}, {"Space", "TLS"}, {"Enter", "Connect"}, {"Ctrl+G", "Discover"}, {"Esc", "Cancel"}}
+	if a.editingServerID != nil {
+		hints[2] = keyHint{"Enter", "Save"}
+	}
+	return a.stagePage(label, headline, accent, b.String(), hints)
+}
 
-	content.WriteString(fieldContainerStyle.Render(tlsStyle.Render(tlsValue)))
-	content.WriteString("\n\n")
-
-	// Help text
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Italic(true).
-		Width(dialogWidth - 4).
-		Align(lipgloss.Center)
-
-	content.WriteString(helpStyle.Render("[Tab] Next  [Space] Toggle TLS  [Enter] Add  [Ctrl+G] Discover Servers  [Esc] Cancel"))
-
-	// Wrap in dialog box
-	dialogStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
-		Padding(1, 2).
-		Width(dialogWidth).
-		Height(dialogHeight)
-
-	dialog := dialogStyle.Render(content.String())
-
-	// Center the dialog on screen
-	centeredDialog := lipgloss.NewStyle().
-		Width(a.width).
-		Height(a.height).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(dialog)
-
-	return centeredDialog
+// addServerCommand is the form as a shell command, built as you type:
+// $ concord connect wss://host:port --name "My Server"
+func (a *App) addServerCommand() string {
+	c := a.theme.Colors
+	st := func(col string) lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(col)) }
+	scheme := "ws://"
+	if a.addServerUseTLS {
+		scheme = "wss://"
+	}
+	host := strings.TrimSpace(a.addServerAddress.Value())
+	hostPart := st(c.Purple).Bold(true).Render(host)
+	if host == "" {
+		hostPart = st(c.Comment).Render("host")
+	}
+	port := strings.TrimSpace(a.addServerPort.Value())
+	if port == "" {
+		port = "8080"
+	}
+	cmd := st(c.Green).Bold(true).Render("$ ") + st(c.Foreground).Render("concord connect ") +
+		st(c.Comment).Render(scheme) + hostPart + st(c.Comment).Render(":") + st(c.Pink).Render(port)
+	if name := strings.TrimSpace(a.addServerName.Value()); name != "" {
+		cmd += st(c.Comment).Render(" --name ") + st(c.Yellow).Render(fmt.Sprintf("%q", name))
+	}
+	if time.Now().UnixMilli()/530%2 == 0 {
+		cmd += st(c.Foreground).Render("▌")
+	}
+	return ansi.Truncate(cmd, stageWidth, "…")
 }
 
 // handleAddServerSubmit validates and submits the Add Server form
@@ -259,6 +202,9 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 		a.view = ViewMain
 	}
 	a.statusMessage = fmt.Sprintf("Server '%s' added. Connecting...", name)
+	if a.view == ViewMain && a.localIdentity != nil {
+		a.startConnecting([]*ClientServerInfo{newServer}) // its handshake
+	}
 
 	// Save to servers.json
 	saveCmd := func() tea.Msg {

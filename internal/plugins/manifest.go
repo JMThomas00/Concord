@@ -44,10 +44,12 @@ type ProcessDef struct {
 type ConfigField struct {
 	Key      string   `toml:"key"`
 	Label    string   `toml:"label"`
-	Type     string   `toml:"type"` // text | number | boolean | select | channel_select
+	Type     string   `toml:"type"` // text | number | boolean | select | channel_select | secret
 	Options  []string `toml:"options"`
 	Default  string   `toml:"default"`
 	Required bool     `toml:"required"`
+	// Help is a one-line explanation shown under the field in the form.
+	Help string `toml:"help"`
 }
 
 // ChannelKindDef describes one channel kind a plugin provides.
@@ -74,6 +76,16 @@ type PluginDef struct {
 	Author            string `toml:"author"`
 	Description       string `toml:"description"`
 	MinConcordVersion string `toml:"min_concord_version"`
+	// SourceURL, if declared, is a release-archive URL an admin can install
+	// or update this plugin from via Settings > Plugins -- see
+	// InstallFromURL (install.go). Purely informational to Concord itself
+	// (no auto-update polling); a plugin without one can still be
+	// installed by an admin supplying a URL directly at install time.
+	SourceURL string `toml:"source_url"`
+	// Instances lets an admin run several named copies of this plugin
+	// (Mynah's personas), each with its own account, settings, channels and
+	// data, all running this one install's files. See instances.go.
+	Instances bool `toml:"instances"`
 }
 
 // Manifest is the parsed, validated contents of a plugin.toml file.
@@ -82,9 +94,20 @@ type Manifest struct {
 	Process          ProcessDef       `toml:"process"`
 	ChannelKinds     []ChannelKindDef `toml:"channel_kind"`
 	ServerConfigFields []ConfigField  `toml:"server_config_field"`
+	// Client describes the part that runs on members' computers: images,
+	// sounds and (later) WebAssembly code in the plugin's client/ folder.
+	Client ClientDef `toml:"client"`
+
+	// Achievements members can unlock, and the stat the leaderboard ranks
+	// by (achievements.go). The plugin sends each member's record.
+	Achievements []AchievementDef `toml:"achievement"`
+	Leaderboard  LeaderboardDef   `toml:"leaderboard"`
 
 	// Dir is the plugin's own folder (set by LoadManifest, not from TOML).
 	Dir string `toml:"-"`
+	// BaseID is set on an instance's manifest: the installed plugin it's a
+	// copy of (Dir is then the base's folder). Empty for an installed plugin.
+	BaseID string `toml:"-"`
 }
 
 // LoadManifest reads and parses a plugin.toml file. It does not validate —
@@ -98,6 +121,11 @@ func LoadManifest(path string) (*Manifest, error) {
 	m := &Manifest{}
 	if err := toml.Unmarshal(data, m); err != nil {
 		return nil, fmt.Errorf("failed to parse manifest: %w", err)
+	}
+	// Absolute, so process.go's join of Dir+entrypoint isn't re-resolved
+	// relative to cmd.Dir (which is also the plugin folder).
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
 	}
 	m.Dir = filepath.Dir(path)
 	return m, nil
@@ -124,6 +152,14 @@ func (m *Manifest) Entrypoint() (*EntrypointDef, error) {
 // understands. Adding a new type later is one case there, not a protocol change.
 var validFieldTypes = map[string]bool{
 	"text": true, "number": true, "boolean": true, "select": true, "channel_select": true,
+	// channel_multi_select: several text channels, stored as comma-separated
+	// channel IDs (empty means none were picked).
+	"channel_multi_select": true,
+	// secret: a text value (API key, password) stored encrypted, shown to
+	// admins only as set/not set, and delivered in plaintext only to the
+	// plugin itself. Server config only -- per-channel values are sent to
+	// every member who can see the channel.
+	"secret": true,
 }
 
 // Validate checks a manifest is well-formed and usable on this host. It does
@@ -143,6 +179,9 @@ func (m *Manifest) Validate() error {
 	if _, err := m.Entrypoint(); err != nil {
 		return err
 	}
+	if err := m.validateAchievements(); err != nil {
+		return fmt.Errorf("plugin %q: %w", m.Plugin.ID, err)
+	}
 
 	seenKinds := make(map[string]bool)
 	for _, ck := range m.ChannelKinds {
@@ -156,8 +195,16 @@ func (m *Manifest) Validate() error {
 		if err := validateFields(m.Plugin.ID, ck.CreateFields); err != nil {
 			return err
 		}
+		for _, f := range ck.CreateFields {
+			if f.Type == "secret" {
+				return fmt.Errorf("plugin %q: channel_kind %q field %q can't be a secret (channel settings are visible to members); use a server_config_field", m.Plugin.ID, ck.Kind, f.Key)
+			}
+		}
 	}
 	if err := validateFields(m.Plugin.ID, m.ServerConfigFields); err != nil {
+		return err
+	}
+	if err := m.Client.validate(m.Plugin.ID); err != nil {
 		return err
 	}
 

@@ -117,6 +117,11 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to migrate plugin platform: %w", err)
 	}
 
+	if err := wrapper.MigrateAccountVerification(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate account verification: %w", err)
+	}
+
 	// Clear any stale voice state from a previous server run
 	if err := wrapper.ClearAllVoiceStates(); err != nil {
 		db.Close()
@@ -1492,11 +1497,17 @@ func (db *DB) CreateMessage(msg *models.Message) error {
 		recipientID.Valid = true
 	}
 
+	var threadID sql.NullString
+	if msg.ThreadID != nil {
+		threadID.String = msg.ThreadID.String()
+		threadID.Valid = true
+	}
+
 	_, err := db.Exec(`
-		INSERT INTO messages (id, channel_id, author_id, content, type, created_at, is_pinned, is_whisper, recipient_id, reply_to_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO messages (id, channel_id, author_id, content, type, created_at, is_pinned, is_whisper, recipient_id, reply_to_id, thread_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID.String(), msg.ChannelID.String(), msg.AuthorID.String(),
-		msg.Content, msg.Type, msg.CreatedAt, msg.IsPinned, msg.IsWhisper, recipientID, replyToID)
+		msg.Content, msg.Type, msg.CreatedAt, msg.IsPinned, msg.IsWhisper, recipientID, replyToID, threadID)
 	if err != nil {
 		return err
 	}
@@ -1576,21 +1587,22 @@ func (db *DB) getMessageAttachments(messageIDs []uuid.UUID) (map[uuid.UUID][]mod
 // GetMessage retrieves a single message by ID
 func (db *DB) GetMessage(messageID uuid.UUID) (*models.Message, error) {
 	query := `
-		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id
+		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id, thread_id
 		FROM messages
 		WHERE id = ?`
 
 	msg := &models.Message{}
 	var idStr, channelIDStr, authorIDStr string
 	var editedAt sql.NullTime
-	var replyToID sql.NullString
+	var replyToID, threadID sql.NullString
 
 	err := db.QueryRow(query, messageID.String()).Scan(
 		&idStr, &channelIDStr, &authorIDStr, &msg.Content,
-		&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &replyToID)
+		&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &replyToID, &threadID)
 	if err != nil {
 		return nil, err
 	}
+	msg.ThreadID = parseNullUUID(threadID)
 
 	msg.ID = uuid.MustParse(idStr)
 	msg.ChannelID = uuid.MustParse(channelIDStr)
@@ -1615,7 +1627,7 @@ func (db *DB) GetMessage(messageID uuid.UUID) (*models.Message, error) {
 // GetPinnedMessages retrieves all pinned messages for a channel
 func (db *DB) GetPinnedMessages(channelID uuid.UUID) ([]*models.Message, error) {
 	query := `
-		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id
+		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id, thread_id
 		FROM messages
 		WHERE channel_id = ? AND is_pinned = 1
 		ORDER BY created_at DESC`
@@ -1631,13 +1643,14 @@ func (db *DB) GetPinnedMessages(channelID uuid.UUID) ([]*models.Message, error) 
 		msg := &models.Message{}
 		var idStr, channelIDStr, authorIDStr string
 		var editedAt sql.NullTime
-		var replyToID sql.NullString
+		var replyToID, threadID sql.NullString
 
 		err := rows.Scan(&idStr, &channelIDStr, &authorIDStr, &msg.Content,
-			&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &replyToID)
+			&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &replyToID, &threadID)
 		if err != nil {
 			return nil, err
 		}
+		msg.ThreadID = parseNullUUID(threadID)
 
 		msg.ID = uuid.MustParse(idStr)
 		msg.ChannelID = uuid.MustParse(channelIDStr)
@@ -1685,24 +1698,28 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 	var query string
 	var args []interface{}
 
-	// Filter: show regular messages to everyone, whispers only to sender/recipient, hide deleted messages
-	whisperFilter := "(is_whisper = 0 OR author_id = ? OR recipient_id = ?)"
-	deletedFilter := "(is_deleted = 0 OR is_deleted IS NULL)"
+	// Filter: show regular messages to everyone, whispers only to sender/recipient, hide deleted messages.
+	// Thread replies aren't channel history (they load by thread, threads.go),
+	// and a deleted message that starts a thread with replies left stays, as
+	// an empty "deleted" header for its thread.
+	whisperFilter := "(m.is_whisper = 0 OR m.author_id = ? OR m.recipient_id = ?)"
+	deletedFilter := "(m.is_deleted = 0 OR m.is_deleted IS NULL OR EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND (r.is_deleted = 0 OR r.is_deleted IS NULL)))"
+	const columns = `m.id, m.channel_id, m.author_id, m.content, m.type, m.created_at, m.edited_at, m.is_pinned, m.is_whisper, m.recipient_id, m.reply_to_id, COALESCE(m.is_deleted, 0)`
 
 	if before != nil {
 		query = `
-			SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, is_whisper, recipient_id, reply_to_id
-			FROM messages
-			WHERE channel_id = ? AND created_at < (SELECT created_at FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY created_at DESC
+			SELECT ` + columns + `
+			FROM messages m
+			WHERE m.channel_id = ? AND m.thread_id IS NULL AND m.created_at < (SELECT created_at FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
+			ORDER BY m.created_at DESC
 			LIMIT ?`
 		args = []interface{}{channelID.String(), before.String(), userID.String(), userID.String(), limit}
 	} else {
 		query = `
-			SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, is_whisper, recipient_id, reply_to_id
-			FROM messages
-			WHERE channel_id = ? AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY created_at DESC
+			SELECT ` + columns + `
+			FROM messages m
+			WHERE m.channel_id = ? AND m.thread_id IS NULL AND ` + whisperFilter + ` AND ` + deletedFilter + `
+			ORDER BY m.created_at DESC
 			LIMIT ?`
 		args = []interface{}{channelID.String(), userID.String(), userID.String(), limit}
 	}
@@ -1722,9 +1739,12 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 		var replyToID sql.NullString
 
 		err := rows.Scan(&idStr, &channelIDStr, &authorIDStr, &msg.Content,
-			&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &msg.IsWhisper, &recipientID, &replyToID)
+			&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &msg.IsWhisper, &recipientID, &replyToID, &msg.Deleted)
 		if err != nil {
 			return nil, err
+		}
+		if msg.Deleted {
+			msg.Content = "" // only kept to head its thread
 		}
 
 		msg.ID, _ = uuid.Parse(idStr)
@@ -2294,10 +2314,12 @@ func (db *DB) IncrementMemberKickCount(userID, serverID uuid.UUID) error {
 	return nil
 }
 
-// GetTotalMemberCount returns the number of distinct non-banned users across all servers.
+// GetTotalMemberCount returns the number of distinct non-banned people across all servers
+// (plugin service accounts and bots aren't counted).
 func (db *DB) GetTotalMemberCount() int {
 	var count int
-	db.QueryRow(`SELECT COUNT(DISTINCT user_id) FROM server_members WHERE COALESCE(is_banned,0)=0`).Scan(&count)
+	db.QueryRow(`SELECT COUNT(DISTINCT m.user_id) FROM server_members m JOIN users u ON u.id = m.user_id
+		WHERE COALESCE(m.is_banned,0)=0 AND COALESCE(u.is_bot,0)=0 AND COALESCE(u.is_service_account,0)=0`).Scan(&count)
 	return count
 }
 
@@ -3563,7 +3585,88 @@ func (db *DB) MigratePluginPlatform() error {
 		return err
 	}
 
+	// Instances (2026-09-30): extra copies of a plugin that allows them (one
+	// Mynah persona per row), sharing the base plugin's folder. A row whose
+	// id equals its base_id only renames the base plugin's own instance.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS plugin_instances (
+			id         TEXT PRIMARY KEY,
+			base_id    TEXT NOT NULL,
+			name       TEXT NOT NULL,
+			created_at DATETIME NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("failed to create plugin_instances table: %w", err)
+	}
+
+	// Records (2026-10-03): each member's stats and unlocked achievements
+	// for a plugin, sent by the plugin, kept as JSON (plugin_records.go);
+	// and whether a member keeps themselves off the leaderboards.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS plugin_records (
+			plugin_id  TEXT NOT NULL,
+			user_id    TEXT NOT NULL,
+			record     TEXT NOT NULL,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (plugin_id, user_id)
+		)`); err != nil {
+		return fmt.Errorf("failed to create plugin_records table: %w", err)
+	}
+	if err := addColumnIfMissing(db, "users", "leaderboard_hidden", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+
+	// Threads (2026-10-09, threads.go): a reply's thread_id is its thread's
+	// first message; thread_follows is who follows which thread and when
+	// they last read it.
+	if err := addColumnIfMissing(db, "messages", "thread_id", "TEXT"); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
+		CREATE TABLE IF NOT EXISTS thread_follows (
+			user_id      TEXT NOT NULL,
+			thread_id    TEXT NOT NULL,
+			last_read_at DATETIME,
+			PRIMARY KEY (user_id, thread_id)
+		)`); err != nil {
+		return fmt.Errorf("failed to create thread tables: %w", err)
+	}
+
+	// Voice permissions (2026-10-09): Connect and Speak were never checked,
+	// and @everyone never had them, so voice worked only by accident. Now
+	// that they're enforced, give every existing @everyone the voice
+	// permissions once, so nobody loses voice; after that an admin can take
+	// them away and it sticks.
+	if err := runOnce(db, "2026-10-09-everyone-voice", func() error {
+		_, err := db.Exec(`UPDATE roles SET permissions = permissions | ? WHERE is_default = 1`, int64(models.PermissionsVoice))
+		return err
+	}); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// runOnce applies a one-time data migration (one that mustn't be repeated
+// on every start, unlike the additive schema changes above), recording its
+// name in migrations_done.
+func runOnce(db *DB, name string, apply func() error) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS migrations_done (name TEXT PRIMARY KEY, done_at DATETIME NOT NULL)`); err != nil {
+		return fmt.Errorf("failed to create migrations_done: %w", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM migrations_done WHERE name = ?`, name).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	log.Printf("[MIGRATION] %s", name)
+	if err := apply(); err != nil {
+		return fmt.Errorf("migration %s: %w", name, err)
+	}
+	_, err := db.Exec(`INSERT INTO migrations_done (name, done_at) VALUES (?, ?)`, name, time.Now().UTC())
+	return err
 }
 
 // addColumnIfMissing adds a column to a table if it doesn't already exist.

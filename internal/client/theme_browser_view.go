@@ -40,8 +40,11 @@ type SettingsState struct {
 	ServerFormOpen   bool
 	ServerFormState  *ServerFormState
 
-	// Notifications category state
-	NotifFocusField      int  // 0=sounds, 1=mentions-only, 2=bell, 3=mention sound, 4=message sound, 5=mute manager
+	// Notifications category state. Fields 0-1 are the "Desktop
+	// Notifications" section (OS-native popups); fields 2-7 are "Audio
+	// Notifications" (sounds/bell/mute).
+	NotifFocusField      int  // 0=desktop mode, 1=notify scope, 2=sounds, 3=mentions-only, 4=bell, 5=mention sound, 6=message sound, 7=mute manager, 8=toast mode, 9=toast scope, 10=toast order, 11=toast side, 12=toast style
+	NotifScrollOffset    int  // scroll offset for the middle section when content exceeds visible area
 	NotifSoundPickerOpen bool // sound picker sub-page open
 	NotifSoundTarget     int  // 0=mention sound, 1=message sound
 	NotifSoundCursor     int  // cursor position in sound picker list
@@ -56,8 +59,9 @@ type SettingsState struct {
 
 	// Audio category state
 	AudioFocusField int // 0=input device, 1=output device, 2=input gain, 3=output volume,
-	                    // 4=VAD toggle, 5=VAD threshold, 6=PTT toggle, 7=PTT key,
-	                    // 8=noise suppress, 9=echo cancel, 10=codec preset
+	                    // 4=VAD toggle, 5=VAD sensitivity, 6=noise suppress,
+	                    // 7=noise suppress strength, 8=echo cancel, 9=echo cancel strength,
+	                    // 10=codec preset
 
 	// AudioSliderActive is true when a continuous-adjust field (gain, volume,
 	// VAD threshold) has been activated with Enter; ←/→ then fine-tune the value.
@@ -71,8 +75,14 @@ type SettingsState struct {
 
 	// Help & Guide category state
 	HelpScrollOffset  int      // current scroll position in lines
+	AboutScroll       int      // About page scroll position in lines (about.go)
+	AboutCellar       int      // the cellar bottle chosen on About (index into Collection.Cellar; C moves it)
+	AboutAch          bool     // the Achievements page is open (achievements_page.go)
+	AboutTab          int      // its tab
+	AboutAchScroll    int      // its scroll position
 	HelpRenderedLines []string // cached glamour output lines; nil = not yet rendered
 	HelpRenderWidth   int      // content width used for the cached render
+	HelpRenderTheme   string   // theme name used for the cached render -- glamour styling is theme-derived, so a theme switch must invalidate the cache too, not just a width change
 
 	// Server sound override sub-page state (Manage Servers → S key)
 	ServerSoundPageOpen  bool       // server sound override sub-page open
@@ -214,9 +224,19 @@ type ServerManagementState struct {
 	RemoveExemptSelected   int
 
 	// Plugins category state
+	// PluginList is the installed plugins (the Plugins list); AllPlugins
+	// adds their instances, shown on each plugin's page (PluginPage).
 	PluginList         []protocol.PluginInfo
+	AllPlugins         []protocol.PluginInfo
+	PluginPage         *PluginPageState
 	SelectedPlugin      int
 	PluginConfigState   *PluginConfigFormState
+	// PluginNotice is the outcome of the last plugin action (install,
+	// restart, ...), shown atop the Plugins list.
+	PluginNotice      string
+	PluginNoticeError bool
+	// UninstallConfirm is the plugin id awaiting a second X to uninstall.
+	UninstallConfirm string
 }
 
 // PluginConfigFormState holds state for a single plugin's config sub-page
@@ -228,10 +248,20 @@ type PluginConfigFormState struct {
 	PluginID     string
 	Product      string // manifest [plugin].product, if declared — see pluginDisplayLabel
 	Fields       []protocol.PluginField
-	TextInputs   []textinput.Model // parallel to Fields, used for text/number
+	TextInputs   []textinput.Model // parallel to Fields, used for text/number/secret
 	Values       []string          // parallel to Fields, used for boolean/select/channel_select
 	FocusField   int               // 0..len(Fields)-1 fields, then save, then back
 	ErrorMsg     string
+
+	// Mode is "" for a plugin's own settings, or "install"/"update" when
+	// the same generic form collects a release URL and checksum instead.
+	Mode        string
+	Saving      bool              // sent; waiting for the server's verdict
+	FieldErrors map[string]string // from a rejected save, by field key
+	SecretsSet  map[string]bool   // secret fields that already have a value
+
+	// Picker is open while a channel_multi_select field is being edited.
+	Picker *channelPicker
 }
 
 // RoleFormState holds state for the role creation/edit modal
@@ -283,6 +313,18 @@ type ChannelFormState struct {
 	// renders as a locked label and is never sent in the update request.
 	OriginalType      models.ChannelType
 	PluginDisplayLabel string
+
+	// A plugin channel's settings live on their own Configure page, opened
+	// from the form's "Configure" row, so a plugin with many settings can't
+	// push the form off screen. ConfigFocus walks: the instance choice (when
+	// there's more than one), then PluginFields, then Done.
+	Configuring bool
+	ConfigFocus int
+	// InstanceOptions: the chosen plugin's instances (Mynah's personas) offering
+	// this channel kind; InstanceIndex picks the one that will own it.
+	InstanceOptions []protocol.PluginChannelKindInfo
+	InstanceIndex   int
+	Picker          *channelPicker
 }
 
 // MoveDialogState holds state for the move channel dialog

@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -60,11 +61,35 @@ type ServerConnection struct {
 	User    *models.User            // Authenticated user
 	Token   string                  // Auth token
 	Servers []*models.Server        // Servers from READY message
+
+	// Connected server's own build identity, from READY -- see Server
+	// Settings > About.
+	ServerVersion   string
+	ServerGitCommit string
+	ServerBuildTime string
+	// Plugin channel kinds this server offers: from READY, replaced by
+	// PLUGIN_REGISTRY_UPDATE when plugins are installed or removed live.
+	// App.pluginChannelKinds is the union across connections.
+	PluginChannelKinds []protocol.PluginChannelKindInfo
+	// PluginClients lists this server's plugin client parts (images, sounds),
+	// from READY and PLUGIN_REGISTRY_UPDATE.
+	PluginClients []protocol.PluginClientInfo
+	// PluginBoards declares this server's plugin achievements and leaderboards
+	// (READY, PLUGIN_REGISTRY_UPDATE); PluginRecords is your record for each
+	// (PLUGIN_RECORDS), by plugin ID (plugin_records.go).
+	PluginBoards  []protocol.PluginBoardInfo
+	PluginRecords map[string]protocol.PluginRecord
 	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
 	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
 	Members  []*MemberDisplay        // Members in current server
 	Roles    map[uuid.UUID][]*models.Role    // Roles per protocol server
 	PinnedMessages map[uuid.UUID][]*models.Message // Pinned messages per channel
+	// Threads by their first message's ID (threads.go): the summary, and the
+	// replies once the thread has been opened.
+	Threads map[uuid.UUID]*threadState
+	// The latest reply per thread, per channel, for the optional in-channel
+	// line (threads_find.go).
+	ThreadNotices map[uuid.UUID]map[uuid.UUID]threadNotice
 
 	// Voice state — keyed by protocol server ID
 	// VoiceStates maps userID → VoiceState for all users currently in voice on this connection's servers.
@@ -342,6 +367,21 @@ func (cm *ConnectionManager) SendMessage(serverID, channelID uuid.UUID, content 
 	return conn.SendMessage(channelID, content, replyToID)
 }
 
+// SendThreadMessage posts a message into a thread on a specific server.
+func (cm *ConnectionManager) SendThreadMessage(serverID, channelID, threadID uuid.UUID, content string) error {
+	sc := cm.GetConnection(serverID)
+	if sc == nil || sc.GetState() != StateReady {
+		return fmt.Errorf("server %s not ready", serverID)
+	}
+	sc.mu.RLock()
+	conn := sc.Connection
+	sc.mu.RUnlock()
+	if conn == nil {
+		return fmt.Errorf("no connection for server %s", serverID)
+	}
+	return conn.SendThreadMessage(channelID, threadID, content)
+}
+
 // SendTyping sends a typing indicator to a channel on a specific server
 func (cm *ConnectionManager) SendTyping(serverID, channelID uuid.UUID) error {
 	sc := cm.GetConnection(serverID)
@@ -362,6 +402,30 @@ func (cm *ConnectionManager) SendTyping(serverID, channelID uuid.UUID) error {
 	}
 
 	return conn.SendTyping(channelID)
+}
+
+// SendTypingStop mirrors SendTyping's shape for the "stopped without
+// sending" signal -- see OpTypingStop's doc comment in
+// internal/protocol/messages.go.
+func (cm *ConnectionManager) SendTypingStop(serverID, channelID uuid.UUID) error {
+	sc := cm.GetConnection(serverID)
+	if sc == nil {
+		return fmt.Errorf("server %s not found", serverID)
+	}
+
+	if sc.GetState() != StateReady {
+		return nil // Silently ignore if not ready
+	}
+
+	sc.mu.RLock()
+	conn := sc.Connection
+	sc.mu.RUnlock()
+
+	if conn == nil {
+		return nil
+	}
+
+	return conn.SendTypingStop(channelID)
 }
 
 // SendVoiceStateUpdate sends a voice state update (join/leave/mute/deafen) to a server.
@@ -493,9 +557,13 @@ func (cm *ConnectionManager) Identify(serverID uuid.UUID, token string) error {
 type AutoConnectResult struct {
 	ServerID uuid.UUID
 	UserID   uuid.UUID
-	Email    string
+	Username string // the account's name on the server
+	Email    string // the email it signed in (or must verify) with
 	Token    string
 	Err      error
+	// NeedsVerification: the account exists but must enter the code the
+	// server emailed to Email before it can sign in.
+	NeedsVerification bool
 }
 
 // AutoConnect performs the full token→login→register flow for a server.
@@ -561,27 +629,69 @@ func (cm *ConnectionManager) AutoConnect(serverID uuid.UUID, savedToken, email, 
 // AutoConnectHTTP performs only the HTTP login→register flow (no WebSocket).
 // Use this when the WebSocket connection will be handled separately by connectServerAsync,
 // which correctly sets activeConn before calling Identify to prevent the READY race condition.
-func (cm *ConnectionManager) AutoConnectHTTP(serverID uuid.UUID, email, alias, password string) AutoConnectResult {
+//
+// It signs in as the profile: by the email this profile last used on the
+// server (saved), else the profile's email. It only registers a new account
+// on a server this profile has never signed in to, and only when the
+// server says the sign-in details are wrong: anywhere else a failure is
+// reported, so a changed password or email never quietly makes a second
+// account.
+func (cm *ConnectionManager) AutoConnectHTTP(serverID uuid.UUID, profile *LocalIdentity, saved *SavedCredentials) AutoConnectResult {
 	result := AutoConnectResult{ServerID: serverID}
-
-	// Try HTTP login first
-	user, token, err := cm.Login(serverID, email, password)
-	if err == nil {
-		result.UserID = user.ID
-		result.Email = email
-		result.Token = token
-		return result
+	email := profile.Email
+	known := saved.belongsTo(profile)
+	if known && saved.Email != "" {
+		email = saved.Email
 	}
-
-	// Login failed — try auto-register (server may not have this account yet)
-	user, token, err = cm.Register(serverID, alias, email, password)
-	if err != nil {
-		result.Err = fmt.Errorf("auto-connect failed: %w", err)
-		return result
-	}
-	result.UserID = user.ID
 	result.Email = email
-	result.Token = token
+
+	done := func(user *models.User, token string) AutoConnectResult {
+		result.UserID, result.Token = user.ID, token
+		result.Username = user.Username
+		return result
+	}
+	needsCode := func(err error) bool {
+		if e, ok := IsVerificationRequired(err); ok {
+			result.NeedsVerification = true
+			result.Err = e
+			if e.Email != "" {
+				result.Email = e.Email
+			}
+			return true
+		}
+		return false
+	}
+
+	user, token, err := cm.Login(serverID, email, profile.Password)
+	if err == nil {
+		return done(user, token)
+	}
+	if needsCode(err) {
+		return result
+	}
+	apiErr, isAPI := err.(*APIError)
+	if !isAPI || apiErr.Status != http.StatusUnauthorized {
+		result.Err = err
+		return result
+	}
+	if known {
+		result.Err = fmt.Errorf("couldn't sign in as %s: the password doesn't match (reset it with Forgot password on the login screen)", email)
+		return result
+	}
+
+	// Never signed in here as this profile: make the account.
+	user, token, err = cm.Register(serverID, profile.Alias, profile.Email, profile.Password)
+	if err == nil {
+		return done(user, token)
+	}
+	if needsCode(err) {
+		return result
+	}
+	if apiErr, ok := err.(*APIError); ok && apiErr.Status == http.StatusConflict {
+		result.Err = fmt.Errorf("%s already has an account on this server with a different password (Forgot password on the login screen resets it)", profile.Email)
+		return result
+	}
+	result.Err = err
 	return result
 }
 

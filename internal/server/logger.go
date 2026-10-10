@@ -1,7 +1,7 @@
 package server
 
 import (
-	"os"
+	"io"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -21,9 +21,18 @@ var (
 	PluginLog *log.Logger
 )
 
-// InitLogger initializes the server logger with beautiful styling
-func InitLogger(level log.Level) {
-	Logger = log.NewWithOptions(os.Stderr, log.Options{
+// InitLogger initializes the server logger with beautiful styling, writing
+// to w (os.Stderr for normal/hybrid operation; io.Discard in --dashboard
+// mode, which promises "no live logs" -- see cmd/server/main.go. Without
+// that redirect, raw log lines land on the same alt-screen buffer
+// tea.WithAltScreen() owns for the full-screen dashboard, corrupting its
+// rendered boxes until bubbletea's next full repaint (e.g. a resize) papers
+// over it. Component-specific sub-loggers below are derived via .With(),
+// which copies the Logger struct by value -- each one captures whatever
+// writer w was at that point, so this must be set before those calls, not
+// after via Logger.SetOutput().
+func InitLogger(w io.Writer, level log.Level) {
+	Logger = log.NewWithOptions(w, log.Options{
 		ReportCaller:    false, // Don't show caller by default (cleaner output)
 		ReportTimestamp: true,
 		TimeFormat:      time.Kitchen, // "3:04PM"

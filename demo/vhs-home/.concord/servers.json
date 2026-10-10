@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "id": "5f0c8d4e-7a51-4c1b-9b7e-2d3f4a5b6c7d",
+      "name": "The Vineyard",
+      "address": "192.168.1.66",
+      "port": 8090,
+      "use_tls": false,
+      "order": 0,
+      "added_at": "2026-10-03T23:00:00Z",
+      "icon_letter": "Th",
+      "icon_color": "#9B59B6",
+      "saved_credentials": {"profile_id": "demo-merlot", "email": "merlot@vineyard.example", "token": "", "auto_connect": true, "remember_credentials": true}
+    }
+  ]
+}

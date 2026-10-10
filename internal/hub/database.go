@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -88,7 +89,41 @@ func NewHubDB(path string) (*HubDB, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := hdb.addColumnIfMissing("peer_hubs", "announced", "INTEGER DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate peer_hubs: %w", err)
+	}
+	// from_config: added by grapevine-hub.toml's [[peer_hubs]], so taking it
+	// out there takes it out here (2026-10-09; before, a removed peer kept
+	// failing to sync every few minutes).
+	if err := hdb.addColumnIfMissing("peer_hubs", "from_config", "INTEGER DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate peer_hubs: %w", err)
+	}
 	return hdb, nil
+}
+
+func (db *HubDB) addColumnIfMissing(table, column, decl string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl))
+	return err
 }
 
 // ── Registered servers ────────────────────────────────────────────────────────
@@ -235,9 +270,72 @@ func (db *HubDB) UpsertPeerHub(h *PeerHub) error {
 	return err
 }
 
+// AddAnnouncedPeer records a hub that announced itself. A hub already known
+// keeps its state: in particular one an admin blocked stays blocked.
+func (db *HubDB) AddAnnouncedPeer(name, url string) (added bool, err error) {
+	res, err := db.Exec(`
+		INSERT INTO peer_hubs (id, name, url, is_active, last_synced, registered_at, announced)
+		VALUES (?,?,?,1,NULL,?,1)
+		ON CONFLICT(url) DO NOTHING`,
+		uuid.New().String(), name, url, time.Now().UTC(),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// CountPeerHubs is how many peer hubs are recorded, blocked ones included.
+func (db *HubDB) CountPeerHubs() (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM peer_hubs`).Scan(&n)
+	return n, err
+}
+
+// DeactivatePeerHub stops syncing with a peer and leaves it out of
+// GET /v1/hubs. It stays recorded, so announcing again doesn't bring it back.
+func (db *HubDB) DeactivatePeerHub(id string) (bool, error) {
+	res, err := db.Exec(`UPDATE peer_hubs SET is_active=0 WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	if _, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id=?`, id); err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// PeerAnnounced reports whether url belongs to a hub that added itself, or
+// to no recorded hub at all (both get the public-addresses-only client).
+func (db *HubDB) PeerAnnounced(url string) bool {
+	var announced bool
+	if err := db.QueryRow(`SELECT announced FROM peer_hubs WHERE url=?`, url).Scan(&announced); err != nil {
+		return true
+	}
+	return announced
+}
+
+// PruneAnnouncedPeers deletes active hubs that added themselves and haven't
+// synced since before cutoff (never synced counts from when they announced).
+// They come back on their own when they're up and announce again.
+func (db *HubDB) PruneAnnouncedPeers(cutoff time.Time) (int64, error) {
+	const stale = `announced=1 AND is_active=1 AND COALESCE(last_synced, registered_at) < ?`
+	// Listings first: the foreign key's cascade isn't relied on.
+	if _, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id IN (SELECT id FROM peer_hubs WHERE `+stale+`)`, cutoff.UTC()); err != nil {
+		return 0, err
+	}
+	res, err := db.Exec(`DELETE FROM peer_hubs WHERE `+stale, cutoff.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (db *HubDB) ListPeerHubs() ([]*PeerHub, error) {
 	rows, err := db.Query(`
-		SELECT id, name, url, is_active, last_synced, registered_at
+		SELECT id, name, url, is_active, COALESCE(announced, 0), last_synced, registered_at
 		FROM peer_hubs ORDER BY registered_at`)
 	if err != nil {
 		return nil, err
@@ -248,7 +346,7 @@ func (db *HubDB) ListPeerHubs() ([]*PeerHub, error) {
 	for rows.Next() {
 		ph := &PeerHub{}
 		var lastSynced sql.NullTime
-		err := rows.Scan(&ph.ID, &ph.Name, &ph.URL, &ph.IsActive, &lastSynced, &ph.RegisteredAt)
+		err := rows.Scan(&ph.ID, &ph.Name, &ph.URL, &ph.IsActive, &ph.Announced, &lastSynced, &ph.RegisteredAt)
 		if err != nil {
 			return nil, err
 		}
@@ -288,6 +386,13 @@ func (db *HubDB) UpsertFederatedServer(hubID string, s *ServerListing) error {
 	return err
 }
 
+// DropFederatedServersBefore removes a peer's cached listings that its sync
+// at syncStart didn't bring back: servers that went offline or left it.
+func (db *HubDB) DropFederatedServersBefore(hubID string, syncStart time.Time) error {
+	_, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id=? AND cached_at < ?`, hubID, syncStart.UTC())
+	return err
+}
+
 // GetFederatedServerOrigin returns the URL of the peer hub a federated server
 // listing came from, so join requests can be proxied to it.
 func (db *HubDB) GetFederatedServerOrigin(serverID string) (string, error) {
@@ -302,15 +407,21 @@ func (db *HubDB) GetFederatedServerOrigin(serverID string) (string, error) {
 	return url, err
 }
 
-// ListFederatedServers returns all cached federated server listings joined with hub names.
-func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing, error) {
+// ListFederatedServers returns the cached federated server listings joined
+// with hub names, each server once: the same server can arrive through
+// several peers (or one hub at two addresses), and the freshest copy, online
+// first, wins, the same choice GetFederatedServerOrigin makes for joins.
+// Copies cached before freshSince are left out: their hub has stopped
+// answering, so nothing says they're still online (2026-10-09: Jordan's
+// home server showed as online all night after his PC was shut down).
+func (db *HubDB) ListFederatedServers(category, query string, freshSince time.Time) ([]*ServerListing, error) {
 	q := `SELECT fs.id, fs.name, fs.description, fs.category, fs.tags,
 	             fs.member_count, fs.online_count, fs.max_members, fs.is_online,
 	             fs.last_seen, ph.name
 	      FROM federated_servers fs
 	      JOIN peer_hubs ph ON ph.id = fs.hub_id AND ph.is_active=1
-	      WHERE 1=1`
-	var args []any
+	      WHERE fs.cached_at >= ?`
+	args := []any{freshSince.UTC()}
 	if category != "" {
 		q += " AND fs.category=?"
 		args = append(args, category)
@@ -320,7 +431,7 @@ func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing,
 		like := "%" + query + "%"
 		args = append(args, like, like)
 	}
-	q += " ORDER BY fs.online_count DESC"
+	q += " ORDER BY fs.is_online DESC, fs.cached_at DESC"
 
 	rows, err := db.Query(q, args...)
 	if err != nil {
@@ -329,6 +440,7 @@ func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing,
 	defer rows.Close()
 
 	var out []*ServerListing
+	seen := map[string]bool{}
 	for rows.Next() {
 		s := &ServerListing{}
 		var tagsJSON string
@@ -339,12 +451,17 @@ func (db *HubDB) ListFederatedServers(category, query string) ([]*ServerListing,
 		if err != nil {
 			return nil, err
 		}
+		if seen[s.ID] {
+			continue
+		}
+		seen[s.ID] = true
 		json.Unmarshal([]byte(tagsJSON), &s.Tags)
 		if lastSeen.Valid {
 			s.LastSeen = lastSeen.String
 		}
 		out = append(out, s)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].OnlineCount > out[j].OnlineCount })
 	return out, rows.Err()
 }
 
@@ -405,4 +522,56 @@ func relativeTime(t time.Time, isOnline bool) string {
 	default:
 		return strings.ToLower(t.Format("Jan 2"))
 	}
+}
+
+// SyncConfigPeers makes the peers that came from grapevine-hub.toml match
+// it: each listed one is added (or, if already known, marked as from the
+// config and turned on), and one that came from the config but isn't
+// listed any more is removed, with its cached listings. Peers added
+// through the admin API or by announcing themselves are left alone.
+func (db *HubDB) SyncConfigPeers(peers []PeerHubConfig) (added, removed []string, err error) {
+	listed := make(map[string]bool, len(peers))
+	for _, pc := range peers {
+		if pc.URL == "" {
+			continue
+		}
+		listed[pc.URL] = true
+		res, err := db.Exec(`UPDATE peer_hubs SET name=?, is_active=1, from_config=1 WHERE url=?`, pc.Name, pc.URL)
+		if err != nil {
+			return added, removed, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			if _, err := db.Exec(`INSERT INTO peer_hubs (id, name, url, is_active, last_synced, registered_at, from_config) VALUES (?,?,?,1,NULL,?,1)`,
+				uuid.New().String(), pc.Name, pc.URL, time.Now().UTC()); err != nil {
+				return added, removed, err
+			}
+			added = append(added, pc.URL)
+		}
+	}
+	rows, err := db.Query(`SELECT id, url FROM peer_hubs WHERE from_config=1`)
+	if err != nil {
+		return added, removed, err
+	}
+	var gone []struct{ id, url string }
+	for rows.Next() {
+		var id, url string
+		if err := rows.Scan(&id, &url); err != nil {
+			rows.Close()
+			return added, removed, err
+		}
+		if !listed[url] {
+			gone = append(gone, struct{ id, url string }{id, url})
+		}
+	}
+	rows.Close()
+	for _, g := range gone {
+		if _, err := db.Exec(`DELETE FROM federated_servers WHERE hub_id=?`, g.id); err != nil {
+			return added, removed, err
+		}
+		if _, err := db.Exec(`DELETE FROM peer_hubs WHERE id=?`, g.id); err != nil {
+			return added, removed, err
+		}
+		removed = append(removed, g.url)
+	}
+	return added, removed, nil
 }

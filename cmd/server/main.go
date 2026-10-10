@@ -11,6 +11,16 @@ import (
 	"github.com/concord-chat/concord/internal/server"
 )
 
+// Version/GitCommit/BuildTime are populated at build time via the
+// Makefile's shared LDFLAGS ("-X main.Version=..." etc.) -- reported to
+// connecting clients via ReadyPayload, see Server Settings > About.
+// Defaults here keep a plain `go build`/`go run` (no ldflags) sensible.
+var (
+	Version   = "dev"
+	GitCommit = "unknown"
+	BuildTime = "unknown"
+)
+
 func main() {
 	// Parse command line flags
 	configPath := flag.String("config", "", "Path to configuration file")
@@ -23,7 +33,10 @@ func main() {
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	debugMode := flag.Bool("debug", false, "Enable debug logging (shorthand for --log-level debug)")
 	hybridMode := flag.Bool("hybrid", false, "Enable hybrid dashboard with live logs")
+	dashboardOnlyMode := flag.Bool("dashboard", false, "Enable full-screen dashboard mode (no live logs)")
 	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
+	testMail := flag.String("test-mail", "", "Send a test email to this address with the [mail] settings, then exit")
+	resetPassword := flag.String("reset-password", "", "Give the account with this email a new temporary password, then exit")
 	flag.Parse()
 
 	// Parse and initialize logger early
@@ -43,7 +56,7 @@ func main() {
 	default:
 		level = charmlog.InfoLevel
 	}
-	server.InitLogger(level)
+	server.InitLogger(os.Stderr, level)
 	database.SetDebug(level == charmlog.DebugLevel)
 
 	// Detect first-run: no config file specified and default config file absent
@@ -109,16 +122,40 @@ func main() {
 		config.DatabasePath = *dbPath
 	}
 
-	// Clear screen for clean server startup (only in normal mode)
-	if !*hybridMode {
+	// One-off account tools that exit without starting the server.
+	if *testMail != "" {
+		if err := server.SendTestMail(config.Mail, config.ServerName, *testMail); err != nil {
+			fmt.Fprintf(os.Stderr, "Test email failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Test email sent to %s. Check its inbox (and spam folder).\n", *testMail)
+		return
+	}
+	if *resetPassword != "" {
+		db, err := database.New(config.DatabasePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to open database: %v\n", err)
+			os.Exit(1)
+		}
+		pw, err := server.ResetPasswordOffline(db, *resetPassword)
+		db.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Reset failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("New temporary password for %s: %s\nGive it to them: on the Concord login screen they press Ctrl+F (Forgot password), pick this server, and enter it as the temporary password.\n", *resetPassword, pw)
+		return
+	}
+
+	// Clear screen for clean server startup (only in normal mode -- either
+	// dashboard mode takes over the whole screen itself).
+	if !*hybridMode && !*dashboardOnlyMode {
 		fmt.Print("\033[2J\033[H")
 	}
 
 	// Print beautiful startup banner and information (only in normal mode)
-	if !*hybridMode {
+	if !*hybridMode && !*dashboardOnlyMode {
 		server.PrintBanner()
-		addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
-		server.PrintStartupInfo(addr, config.DatabasePath)
 	}
 
 	// Handle --admin-email: open DB, grant role, close, then start normally
@@ -176,16 +213,28 @@ func main() {
 		server.Logger.Fatal("Failed to create server", "error", err)
 	}
 
+	// Only after server.New has actually opened the database -- printed
+	// earlier, this claimed "Database ✅ Connected" / "ready to accept
+	// connections" right before a fatal DB-open failure.
+	if !*hybridMode && !*dashboardOnlyMode {
+		server.PrintStartupInfo(fmt.Sprintf("%s:%d", config.Host, config.Port), config.DatabasePath)
+	}
+
 	// Tell the server where its config lives so Grapevine can persist credentials.
 	effectiveConfigPath := configFilename
 	if *configPath != "" {
 		effectiveConfigPath = *configPath
 	}
 	srv.SetConfigPath(effectiveConfigPath)
+	srv.SetBuildInfo(Version, GitCommit, BuildTime)
 
-	// Enable hybrid mode if requested
+	// Hybrid wins if both flags are somehow passed together -- it's the
+	// more capable of the two (panels plus live scrolling logs), matching
+	// Server.Run()'s own precedence.
 	if *hybridMode {
 		srv.SetDashboardMode(true)
+	} else if *dashboardOnlyMode {
+		srv.SetFullDashboardMode(true)
 	}
 
 	if err := srv.Run(); err != nil {

@@ -1,0 +1,145 @@
+// <%.Name%>: a turn-based game that runs in a terminal and in Concord
+// channels. It starts as a tiny game (take 1-3 stones; whoever takes the
+// last stone wins) -- replace Game, Board and bestMove with your own.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+
+	"github.com/JMThomas00/Concord/sdk/plugin"
+	"github.com/JMThomas00/Concord/sdk/table"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// rules is everything the table kit needs to host the game.
+var rules = table.Rules{
+	Name:      "<%.Name%>",
+	SeatNames: []string{"First", "Second"},
+	New:       func(options map[string]string) table.Game { return &Game{stones: 15} },
+	NewBoard:  func(s *table.Seat) tea.Model { return &Board{seat: s} },
+	AI:        func(g table.Game, level int) string { return bestMove(g.(*Game), level) },
+}
+
+func main() {
+	cfg, underConcord := plugin.ConfigFromEnv()
+	if !underConcord {
+		if err := table.RunLocal(rules, nil); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := plugin.Run(ctx, cfg, table.New(rules).Handler()); err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatal(err)
+	}
+}
+
+// ── Rules ──────────────────────────────────────────────────────────────────
+
+// Game: a pile of stones; each move takes 1, 2 or 3 ("1".."3"); taking the
+// last stone wins.
+type Game struct {
+	stones int
+	moves  int
+	winner int
+}
+
+func (g *Game) Turn() int {
+	if g.stones == 0 {
+		return -1
+	}
+	return g.moves % 2
+}
+
+func (g *Game) Play(move string) error {
+	n, err := strconv.Atoi(move)
+	if err != nil || n < 1 || n > 3 {
+		return fmt.Errorf("take 1, 2 or 3 stones")
+	}
+	if n > g.stones {
+		return fmt.Errorf("only %d left", g.stones)
+	}
+	g.stones -= n
+	if g.stones == 0 {
+		g.winner = g.moves % 2
+	}
+	g.moves++
+	return nil
+}
+
+func (g *Game) Outcome() table.Outcome {
+	if g.stones > 0 {
+		return table.Outcome{}
+	}
+	return table.Outcome{Over: true, Winner: g.winner, Reason: "took the last stone"}
+}
+
+// bestMove: level 1 takes 1-3 at random-ish; higher levels leave a multiple
+// of 4 whenever they can (the winning strategy).
+func bestMove(g *Game, level int) string {
+	if level > 1 && g.stones%4 != 0 {
+		return strconv.Itoa(g.stones % 4)
+	}
+	take := 1 + g.moves%3
+	if take > g.stones {
+		take = g.stones
+	}
+	return strconv.Itoa(take)
+}
+
+// ── Board ──────────────────────────────────────────────────────────────────
+
+// Board draws the pile and takes 1-3 from the keyboard. It's a normal Bubble
+// Tea model: the same code runs in a terminal and in Concord (where each
+// viewer gets their own, and Tab is kept for the table menu).
+type Board struct {
+	seat *table.Seat
+	err  string
+}
+
+func (b *Board) Init() tea.Cmd { return nil }
+
+func (b *Board) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case table.ChangedMsg:
+		b.err = ""
+	case tea.KeyMsg:
+		switch k := msg.String(); k {
+		case "1", "2", "3":
+			if !b.seat.MyTurn() {
+				b.err = "not your turn"
+			} else if err := b.seat.Play(k); err != nil {
+				b.err = err.Error()
+			}
+		case "q", "esc":
+			return b, tea.Quit // in Concord: hand the keyboard back
+		}
+	}
+	return b, nil
+}
+
+func (b *Board) View() string {
+	g := b.seat.Game().(*Game)
+	stone := lipgloss.NewStyle().Foreground(b.seat.Color("yellow", lipgloss.Color("11"))).Render("●")
+	lines := []string{
+		strings.Repeat(stone+" ", g.stones),
+		fmt.Sprintf("%d stones left", g.stones),
+		"",
+	}
+	switch {
+	case b.err != "":
+		lines = append(lines, b.err)
+	case b.seat.MyTurn():
+		lines = append(lines, "your move: press 1, 2 or 3")
+	}
+	return strings.Join(lines, "\n")
+}

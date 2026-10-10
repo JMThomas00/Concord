@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -11,7 +12,7 @@ import (
 // renderAudioContent renders the Audio settings panel.
 func (a *App) renderAudioContent(width, height int) string {
 	s := a.settingsState
-	layout := calculateSettingsLayout(width, height, 2, 0)
+	layout := calculateSettingsLayout(width, height, 3, 0)
 
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
@@ -36,11 +37,12 @@ func (a *App) renderAudioContent(width, height int) string {
 	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
 		Render("Audio Settings"))
 	top.writeLine(dimStyle.Render("Voice channel audio devices, volume, and codec options"))
+	top.writeLine(dimStyle.Render("Note: changing Input/Output Device while in a voice channel needs a leave+rejoin to fully apply"))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE ──
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
+	middle := newScrollSection(layout.middleLines, layout.interiorWidth, a.dimText)
 
 	writeField := func(fieldIdx int, label, value string) {
 		isSelected := focused && focusField == fieldIdx
@@ -51,6 +53,7 @@ func (a *App) renderAudioContent(width, height int) string {
 			lStyle = selectedStyle
 			vStyle = selectedStyle
 			marker = "▶ "
+			middle.markFocus()
 		}
 		writeZoneMarkedLines(middle, fmt.Sprintf("audio-field:%d", fieldIdx),
 			lStyle.Render(marker+label), vStyle.Render("    "+value))
@@ -64,6 +67,7 @@ func (a *App) renderAudioContent(width, height int) string {
 		if isSelected {
 			lStyle = selectedStyle
 			marker = "▶ "
+			middle.markFocus()
 		}
 		stateStr := dimStyle.Render("OFF")
 		if enabled {
@@ -90,14 +94,16 @@ func (a *App) renderAudioContent(width, height int) string {
 		if pct > 1 {
 			pct = 1
 		}
-		filled := int(pct * float64(barWidth))
-		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled) + "]"
+		// A slider in the style of the members panel's (voice_level.go): the
+		// line up to the ● knob is the value.
+		knob := int(math.Round(pct * float64(barWidth-1)))
+		bar := strings.Repeat("━", knob) + "●" + strings.Repeat("─", barWidth-1-knob)
 		text := fmt.Sprintf("%s %d%%", bar, int(pct*100))
 
 		isFieldSelected := focused && focusField == fieldIdx
 		if isFieldSelected && sliderActive {
 			// Green bar + ◄ ► hints — slider is live
-			return greenStyle.Render("◄ "+text+" ►")
+			return greenStyle.Render("◄ " + text + " ►")
 		}
 		// Static hint when field is selected but slider not yet activated
 		if isFieldSelected {
@@ -147,24 +153,21 @@ func (a *App) renderAudioContent(width, height int) string {
 	// Field 4: Voice Activity Detection
 	writeToggle(4, "Voice Activity Detection (VAD)", cfg.VADEnabled)
 
-	// Field 5: VAD Threshold
-	writeField(5, "VAD Sensitivity", progressBar(5, cfg.VADThreshold, 1.0, 20))
+	// Field 5: VAD Sensitivity (displayed inverted from the raw gate threshold --
+	// see vadSensitivityFromThreshold for why)
+	writeField(5, "VAD Sensitivity", progressBar(5, vadSensitivityFromThreshold(cfg.VADThreshold), 1.0, 20))
 
-	// Field 6: Push-to-Talk
-	writeToggle(6, "Push-to-Talk (PTT)", cfg.PTTEnabled)
+	// Field 6: Noise Suppression
+	writeToggle(6, "Noise Suppression", cfg.NoiseSuppress)
 
-	// Field 7: PTT Key
-	pttKey := cfg.PTTKey
-	if pttKey == "" {
-		pttKey = "ctrl+space"
-	}
-	writeField(7, "PTT Key", pttKey)
+	// Field 7: Noise Suppression Strength
+	writeField(7, "Noise Suppression Strength", progressBar(7, cfg.NoiseSuppressStrength, 1.0, 20))
 
-	// Field 8: Noise Suppression
-	writeToggle(8, "Noise Suppression", cfg.NoiseSuppress)
+	// Field 8: Echo Cancellation
+	writeToggle(8, "Echo Cancellation", cfg.EchoCancellation)
 
-	// Field 9: Echo Cancellation
-	writeToggle(9, "Echo Cancellation", cfg.EchoCancellation)
+	// Field 9: Echo Cancellation Strength
+	writeField(9, "Echo Cancellation Strength", progressBar(9, cfg.EchoCancellationStrength, 1.0, 20))
 
 	// Field 10: Codec Preset
 	codec := cfg.CodecPreset
@@ -172,15 +175,29 @@ func (a *App) renderAudioContent(width, height int) string {
 		codec = "medium"
 	}
 	codecDesc := map[string]string{
-		"low":    "Low    ( 8 kHz, telephone quality)",
-		"medium": "Medium (16 kHz, standard voice)",
-		"high":   "High   (24 kHz, HD voice)",
-		"ultra":  "Ultra  (48 kHz, studio quality)",
+		"low":    "Low    (24 kbps, for poor connections)",
+		"medium": "Medium (48 kbps, full-band voice)",
+		"high":   "High   (64 kbps)",
+		"ultra":  "Ultra  (96 kbps, music-grade)",
 	}[codec]
 	if codecDesc == "" {
 		codecDesc = codec
 	}
 	writeField(10, "Codec Quality", codecDesc+" ◀▶")
+
+	// Field 11: automatic levelling (autoLevel, voice_dsp.go)
+	writeToggle(11, "Automatic Levelling (evens out quiet and loud talkers)", !cfg.AutoLevelOff)
+
+	// Plugin sounds: games and other plugins can play short sounds (moves,
+	// chimes) on this computer. Voice isn't affected.
+	middle.writeLine(a.renderSeparator(layout.interiorWidth))
+	middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).Render("  Plugin Sounds"))
+	if !sfxAvailable {
+		middle.writeLine(dimStyle.Render("  This build has no audio, so plugins can't play sounds."))
+	}
+	middle.writeBlank()
+	writeToggle(12, "Play Plugin Sounds", !cfg.PluginSoundsMuted)
+	writeField(13, "Plugin Sound Volume", progressBar(13, cfg.PluginSoundVolume, 1.0, 20))
 
 	middle.pad()
 
@@ -199,16 +216,51 @@ func (a *App) renderAudioContent(width, height int) string {
 	// in renderServerIconsCollapsed (views.go). Found again here 2026-09-07
 	// wiring mouse support to the Audio category.
 	return lipgloss.NewStyle().
-		Width(width).Height(height - 2).
+		Width(width).Height(height-2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
 		Padding(0, 1).Render(content)
 }
 
+// vadThresholdMin/Max bound the realistic RMS range for human speech in this
+// pipeline -- normal talking rarely pushes rmsAmplitude (see voice_engine.go)
+// past ~0.3, so the old 0.0-1.0 raw range left most of the slider dead. The
+// UI-facing "Sensitivity" is the INVERSE of the stored gate threshold (higher
+// sensitivity -> lower threshold -> easier to trigger). Previously the slider
+// mapped sensitivity directly onto the raw threshold with no rescaling, so
+// turning sensitivity up actually made VAD dramatically harder to trigger --
+// once speech dropped below that (very high) threshold it would never engage
+// again, i.e. it appeared to get stuck muted.
+const (
+	vadThresholdMin = 0.02
+	vadThresholdMax = 0.30
+)
+
+// vadSensitivityFromThreshold converts the stored RMS gate threshold to the
+// 0.0-1.0 "Sensitivity" shown in the UI.
+func vadSensitivityFromThreshold(t float64) float64 {
+	if t <= vadThresholdMin {
+		return 1.0
+	}
+	if t >= vadThresholdMax {
+		return 0.0
+	}
+	return 1.0 - (t-vadThresholdMin)/(vadThresholdMax-vadThresholdMin)
+}
+
+// vadThresholdFromSensitivity is the inverse of vadSensitivityFromThreshold.
+func vadThresholdFromSensitivity(sens float64) float64 {
+	sens = clampF(sens, 0.0, 1.0)
+	return vadThresholdMax - sens*(vadThresholdMax-vadThresholdMin)
+}
+
+// audioFieldCount is the number of fields on the Audio page.
+const audioFieldCount = 14
+
 // isAudioSliderField reports whether field idx is a continuous-value field
 // that uses the ←/→ slider mode (as opposed to a toggle or device picker).
 func isAudioSliderField(idx int) bool {
-	return idx == 2 || idx == 3 || idx == 5 // Input Gain, Output Volume, VAD Threshold
+	return idx == 2 || idx == 3 || idx == 5 || idx == 7 || idx == 9 || idx == 13 // Input Gain, Output Volume, VAD Sensitivity, Noise Suppression Strength, Echo Cancellation Strength, Plugin Sound Volume
 }
 
 // adjustAudioSlider nudges the value for the currently-active slider field.
@@ -225,8 +277,15 @@ func (a *App) adjustAudioSlider(s *SettingsState, delta int) {
 		cfg.InputGain = clampF(cfg.InputGain+d, 0.0, 2.0)
 	case 3: // Output Volume  0.0–1.0
 		cfg.OutputVolume = clampF(cfg.OutputVolume+d, 0.0, 1.0)
-	case 5: // VAD Threshold  0.0–1.0
-		cfg.VADThreshold = clampF(cfg.VADThreshold+d, 0.0, 1.0)
+	case 5: // VAD Sensitivity -- higher % = more sensitive = LOWER RMS threshold
+		sens := clampF(vadSensitivityFromThreshold(cfg.VADThreshold)+d, 0.0, 1.0)
+		cfg.VADThreshold = vadThresholdFromSensitivity(sens)
+	case 7: // Noise Suppression Strength  0.0–1.0
+		cfg.NoiseSuppressStrength = clampF(cfg.NoiseSuppressStrength+d, 0.0, 1.0)
+	case 9: // Echo Cancellation Strength  0.0–1.0
+		cfg.EchoCancellationStrength = clampF(cfg.EchoCancellationStrength+d, 0.0, 1.0)
+	case 13: // Plugin Sound Volume  0.0–1.0 (0 is stored as 0.01: 0 means "unset")
+		cfg.PluginSoundVolume = clampF(cfg.PluginSoundVolume+d, 0.01, 1.0)
 	}
 	a.saveAudioConfig()
 	if a.voiceEngine != nil {
@@ -263,42 +322,28 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 		return
 	case 4: // VAD toggle
 		cfg.VADEnabled = !cfg.VADEnabled
-		if cfg.VADEnabled {
-			cfg.PTTEnabled = false // VAD and PTT are mutually exclusive
-		}
-	case 5: // VAD Threshold: cycle 0.2 → 0.4 → 0.6 → 0.8 → 0.2
+	case 5: // VAD Sensitivity: cycle 25% → 50% → 75% → 100% → 25%
+		sens := vadSensitivityFromThreshold(cfg.VADThreshold)
 		switch {
-		case cfg.VADThreshold < 0.2:
-			cfg.VADThreshold = 0.2
-		case cfg.VADThreshold < 0.4:
-			cfg.VADThreshold = 0.4
-		case cfg.VADThreshold < 0.6:
-			cfg.VADThreshold = 0.6
-		case cfg.VADThreshold < 0.8:
-			cfg.VADThreshold = 0.8
+		case sens < 0.25:
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.25)
+		case sens < 0.50:
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.50)
+		case sens < 0.75:
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.75)
+		case sens < 1.0:
+			cfg.VADThreshold = vadThresholdFromSensitivity(1.0)
 		default:
-			cfg.VADThreshold = 0.2
+			cfg.VADThreshold = vadThresholdFromSensitivity(0.25)
 		}
-	case 6: // PTT toggle
-		cfg.PTTEnabled = !cfg.PTTEnabled
-		if cfg.PTTEnabled {
-			cfg.VADEnabled = false // VAD and PTT are mutually exclusive
-		}
-	case 7: // PTT Key — cycle through common options
-		keys := []string{"ctrl+space", "ctrl+alt+m", "alt+v"}
-		cur := cfg.PTTKey
-		next := keys[0]
-		for i, k := range keys {
-			if k == cur && i+1 < len(keys) {
-				next = keys[i+1]
-				break
-			}
-		}
-		cfg.PTTKey = next
-	case 8: // Noise Suppression toggle
+	case 6: // Noise Suppression toggle
 		cfg.NoiseSuppress = !cfg.NoiseSuppress
-	case 9: // Echo Cancellation toggle
+	case 8: // Echo Cancellation toggle
 		cfg.EchoCancellation = !cfg.EchoCancellation
+	case 11: // Automatic Levelling toggle
+		cfg.AutoLevelOff = !cfg.AutoLevelOff
+	case 12: // Plugin Sounds toggle
+		cfg.PluginSoundsMuted = !cfg.PluginSoundsMuted
 	case 10: // Codec Preset: cycle low → medium → high → ultra → low
 		switch cfg.CodecPreset {
 		case "low":
@@ -313,6 +358,23 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 	}
 
 	a.saveAudioConfig()
+	// Without this, none of the toggle/cycle fields above (VAD, Noise
+	// Suppression, Echo Cancellation, Codec Preset) took effect on an
+	// already-running VoiceEngine -- only the slider fields did (see
+	// adjustAudioSlider). This used to strand a running call with a stale
+	// config it could never recover from without leaving and rejoining --
+	// e.g. toggling a gate-style setting on then back off left the engine's
+	// own cfg copy permanently stuck on "on" (it was never told about either
+	// change), which looked exactly like a dead mic.
+	//
+	// Codec Preset is the one still-partial exception: this hot-reloads its
+	// Opus bitrate (see UpdateConfig), but the sample rate is fixed for the
+	// life of the malgo devices opened in Start(), so a genuine quality-tier
+	// change still needs a voice reconnect to fully take effect (see the note
+	// at the top of this page).
+	if a.voiceEngine != nil {
+		a.voiceEngine.UpdateConfig(*cfg)
+	}
 }
 
 // openAudioDevicePicker loads the device list and opens the inline picker for the given

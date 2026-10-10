@@ -310,7 +310,7 @@ flowchart LR
 
 - Completely separate from text pipeline — independent failure domain
 - UDP where possible; TCP fallback for restrictive NATs
-- Push-to-talk handled client-side (no server processing until PTT active)
+- Voice Activity Detection gating handled client-side (no server processing until the gate opens)
 - Speaking indicators via lightweight heartbeat to text server (not voice path)
 
 ---
@@ -379,7 +379,7 @@ flowchart LR
 
 ## Multi-Server Pattern
 
-Unlike Discord's single-hub model, every Concord server is independent:
+Unlike a single-hub chat service, every Concord server is independent:
 
 - No central authority; no federation
 - Users connect directly to IP:Port

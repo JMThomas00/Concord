@@ -199,7 +199,7 @@ func TestHandleAudioCategoryMouseNoZoneMatchDoesNothing(t *testing.T) {
 // click actually resolves, unlike the guard-clause tests above.
 func TestHandleAudioCategoryMouseExitsSliderModeOnFieldSwitch(t *testing.T) {
 	a := &App{settingsState: &SettingsState{AudioFocusField: 2, AudioSliderActive: true}}
-	marked := zone.Mark("audio-field:6", "Push-to-Talk  OFF")
+	marked := zone.Mark("audio-field:6", "Noise Suppression  OFF")
 	scanned := zone.Scan(marked)
 	_ = scanned
 

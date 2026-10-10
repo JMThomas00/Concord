@@ -1,0 +1,71 @@
+# <%.Name%>
+
+A [Concord](https://github.com/JMThomas00/Concord) plugin that's also a
+standalone program: the same binary runs in your terminal, or on a Concord
+server<% if eq .Kind "bot" %> as a bot in its channels<% else %> in its own channels<% end %>.
+
+## Run it on your own computer
+
+<% if eq .Kind "pty" %>This plugin shows a terminal program inside Concord channels, so it only
+does something useful on a Concord server (Linux or macOS). Run standalone,
+it just says so.
+<% else %>**Download:** from this repo's [Releases](https://github.com/<%.Repo%>/releases),
+get the zip for your system (`<%.ID%>_windows_amd64.zip`,
+`<%.ID%>_darwin_arm64.zip` for Apple silicon, `<%.ID%>_linux_amd64.zip`, ...),
+unzip it, and run the program inside from a terminal:
+
+```sh
+./<%.ID%>          # Windows: .\<%.ID%>.exe
+```
+
+On macOS, if it's blocked as being from an unidentified developer, run
+`xattr -d com.apple.quarantine <%.ID%>` once.
+
+**Or with Go installed:**
+
+```sh
+go install <%.Module%>@latest
+<%.ID%>
+```
+<% if eq .Kind "game" %>
+It starts with a menu: two players on one keyboard, against the computer, or
+over the network (one player hosts and is shown an address and a join code;
+the other joins with them).
+<% end %><% end %>
+## Use it on a Concord server
+
+You need to be the server owner, or have the **Manage Plugins** permission.
+
+1. In Concord, open **Server Settings → Plugins** and press **I** (install).
+2. Type `<%.Repo%>` and press Enter. Concord downloads the latest release for
+   the server's own system, verifies it, and starts it: no restart, no files
+   to edit.
+3. Optional: select the plugin and press **Enter** for its settings.
+4. Open **Server Settings → Channels**, create a channel, and choose
+   **<% if eq .Kind "game" %><%.Name%> Table<% else %><%.Name%><% end %>** as its type. Its options appear there too.
+<% if eq .Kind "bot" %>5. Chat in that channel (or @mention the bot anywhere).
+<% else %>5. Select the channel, then press **Tab** (or click the pane) so your keys go
+   to it. **Esc** (or **Ctrl+]**) gives the keyboard back to Concord; **Tab**
+   moves on to the member list.<% if eq .Kind "game" %> **M** opens the table menu.<% end %>
+<% end %>
+To update later: select it in **Server Settings → Plugins**, press **U**, then
+Enter. A failed update rolls back by itself.
+
+## Develop
+
+```sh
+go run .              # run it standalone
+go test ./...         # tests, including a fake Concord server (sdk/plugintest)
+go run release.go     # the release zips, in dist/
+```
+
+Release a version by pushing a tag: `git tag v0.1.0 && git push --tags`.
+`.github/workflows/release.yml` then attaches
+`dist/<%.ID%>_<os>_<arch>.zip` for every platform to the GitHub release,
+which is what Concord installs.
+
+- `plugin.toml`: what Concord reads: the channel type this plugin adds, its
+  settings (shown as forms in Concord; never hand-edited), and which binary
+  to start on each OS.
+- `main.go`: standalone vs plugin, and the plugin's behaviour, built on the
+  Concord SDK (`github.com/JMThomas00/Concord/sdk`).

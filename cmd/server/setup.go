@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/mail"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/concord-chat/concord/internal/hub"
+	"github.com/concord-chat/concord/internal/official"
 	"github.com/concord-chat/concord/internal/server"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -19,6 +21,8 @@ type setupPhase int
 
 const (
 	phaseServer        setupPhase = iota // main server settings form
+	phaseMailAsk                         // "send email?" yes/no
+	phaseMailForm                        // SMTP settings form
 	phaseGrapevineAsk                    // "list on Grapevine?" yes/no
 	phaseGrapevineForm                   // Grapevine listing details form
 	phaseHubAsk                          // "host a Grapevine hub?" 3-way choice
@@ -50,7 +54,23 @@ type setupModel struct {
 
 	// Hub hosting step
 	hubChoice hubChoice // default: hubChoiceNotInterested
+
+	// Email step
+	mailOptIn   bool
+	mailInputs  []textinput.Model
+	mailFocused int
 }
+
+const (
+	mailFieldHost = iota
+	mailFieldPort
+	mailFieldSecurity
+	mailFieldUsername
+	mailFieldPassword
+	mailFieldFrom
+	mailFieldVerify
+	numMailFields
+)
 
 const (
 	fieldName = iota
@@ -71,7 +91,7 @@ const (
 	numGvFields
 )
 
-const defaultHubURL = "http://grapevine.concord.chat"
+const defaultHubURL = official.HubURL
 
 func newSetupModel(existingConfig *server.Config) setupModel {
 	hostname, _ := os.Hostname()
@@ -178,11 +198,45 @@ func newSetupModel(existingConfig *server.Config) setupModel {
 	}
 	gvInputs[gvFieldPublicPort].CharLimit = 5
 
+	var mailCfg server.MailConfig
+	if existingConfig != nil {
+		mailCfg = existingConfig.Mail
+	}
+	mailInputs := make([]textinput.Model, numMailFields)
+	mailField := func(i int, placeholder, value string, limit int) {
+		mailInputs[i] = textinput.New()
+		mailInputs[i].Placeholder = placeholder
+		mailInputs[i].SetValue(value)
+		mailInputs[i].CharLimit = limit
+	}
+	port := ""
+	if mailCfg.SMTPPort != 0 {
+		port = strconv.Itoa(mailCfg.SMTPPort)
+	}
+	security := mailCfg.Security
+	if security == "" {
+		security = "starttls"
+	}
+	verify := "yes"
+	if mailCfg.RequireVerification != nil && !*mailCfg.RequireVerification {
+		verify = "no"
+	}
+	mailField(mailFieldHost, "smtp.gmail.com", mailCfg.SMTPHost, 255)
+	mailField(mailFieldPort, "587", port, 5)
+	mailField(mailFieldSecurity, "starttls", security, 8)
+	mailField(mailFieldUsername, "you@gmail.com", mailCfg.SMTPUsername, 255)
+	mailField(mailFieldPassword, "an app password", mailCfg.SMTPPassword, 255)
+	mailInputs[mailFieldPassword].EchoMode = textinput.EchoPassword
+	mailField(mailFieldFrom, "Concord <you@gmail.com>", mailCfg.From, 255)
+	mailField(mailFieldVerify, "yes", verify, 3)
+
 	return setupModel{
-		inputs:    inputs,
-		gvInputs:  gvInputs,
-		gvOptIn:   gv != nil && gv.Enabled,
-		hubChoice: hubChoiceNotInterested,
+		inputs:     inputs,
+		gvInputs:   gvInputs,
+		gvOptIn:    gv != nil && gv.Enabled,
+		hubChoice:  hubChoiceNotInterested,
+		mailOptIn:  mailCfg.Enabled(),
+		mailInputs: mailInputs,
 	}
 }
 
@@ -216,7 +270,7 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.err = ""
 					m.inputs[m.focused].Blur()
-					m.phase = phaseGrapevineAsk
+					m.phase = phaseMailAsk
 					return m, nil
 				}
 				m.inputs[m.focused].Blur()
@@ -227,6 +281,51 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputs[m.focused].Blur()
 				m.focused = (m.focused - 1 + numFields) % numFields
 				m.inputs[m.focused].Focus()
+			}
+
+		case phaseMailAsk:
+			switch msg.String() {
+			case "y", "Y":
+				m.mailOptIn = true
+			case "n", "N":
+				m.mailOptIn = false
+				m.phase = phaseGrapevineAsk
+				return m, nil
+			case "left", "right", "tab", "h", "l":
+				m.mailOptIn = !m.mailOptIn
+				return m, nil
+			case "enter":
+			default:
+				return m, nil
+			}
+			if !m.mailOptIn {
+				m.phase = phaseGrapevineAsk
+				return m, nil
+			}
+			m.phase = phaseMailForm
+			m.mailInputs[m.mailFocused].Focus()
+			return m, textinput.Blink
+
+		case phaseMailForm:
+			switch msg.String() {
+			case "tab", "down", "enter":
+				if msg.String() == "enter" && m.mailFocused == numMailFields-1 {
+					if err := validateMailForm(m.mailInputs); err != "" {
+						m.err = err
+						return m, nil
+					}
+					m.err = ""
+					m.mailInputs[m.mailFocused].Blur()
+					m.phase = phaseGrapevineAsk
+					return m, nil
+				}
+				m.mailInputs[m.mailFocused].Blur()
+				m.mailFocused = (m.mailFocused + 1) % numMailFields
+				m.mailInputs[m.mailFocused].Focus()
+			case "shift+tab", "up":
+				m.mailInputs[m.mailFocused].Blur()
+				m.mailFocused = (m.mailFocused - 1 + numMailFields) % numMailFields
+				m.mailInputs[m.mailFocused].Focus()
 			}
 
 		case phaseGrapevineAsk:
@@ -314,8 +413,38 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inputs[m.focused], cmd = m.inputs[m.focused].Update(msg)
 	case phaseGrapevineForm:
 		m.gvInputs[m.gvFocused], cmd = m.gvInputs[m.gvFocused].Update(msg)
+	case phaseMailForm:
+		m.mailInputs[m.mailFocused], cmd = m.mailInputs[m.mailFocused].Update(msg)
 	}
 	return m, cmd
+}
+
+// validateMailForm checks the email step, returning what's wrong ("" if
+// nothing).
+func validateMailForm(in []textinput.Model) string {
+	val := func(i int) string { return strings.TrimSpace(in[i].Value()) }
+	if val(mailFieldHost) == "" {
+		return "SMTP server is required (or go back and choose No)."
+	}
+	if p := val(mailFieldPort); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n <= 0 || n > 65535 {
+			return "SMTP port must be a number (or blank for the default)."
+		}
+	}
+	switch strings.ToLower(val(mailFieldSecurity)) {
+	case "", "starttls", "tls", "none":
+	default:
+		return "Security must be starttls, tls or none."
+	}
+	if _, err := mail.ParseAddress(val(mailFieldFrom)); err != nil {
+		return "From must be an email address, e.g. Concord <you@example.com>."
+	}
+	switch strings.ToLower(val(mailFieldVerify)) {
+	case "", "yes", "y", "no", "n":
+	default:
+		return "Require verification must be yes or no."
+	}
+	return ""
 }
 
 
@@ -356,6 +485,28 @@ func (m setupModel) View() string {
 
 	var title, instruction, form string
 	switch m.phase {
+	case phaseMailAsk:
+		title = "Email"
+		instruction = "Optional: let the server send verification and password reset codes"
+		form = m.renderMailAsk()
+
+	case phaseMailForm:
+		title = "Outgoing Email (SMTP)"
+		instruction = "Any SMTP service works: Gmail/Outlook with an app password, Fastmail, Resend, SendGrid, Mailgun, SES…"
+		form = renderFormFields(
+			[]string{"SMTP Server", "Port", "Security", "Username", "Password", "From", "Require Verification"},
+			[]string{
+				"Host name of your mail provider's SMTP server",
+				"Blank: 587 for starttls, 465 for tls",
+				"starttls (port 587), tls (port 465), or none (a relay on this machine only)",
+				"Usually your email address; blank if the server needs no login",
+				"For Gmail/Outlook, an app password, not your normal one",
+				"The sender people see, e.g. Concord <you@example.com>",
+				"yes: new accounts enter an emailed code before they can sign in",
+			},
+			m.mailInputs,
+		)
+
 	case phaseGrapevineAsk:
 		title = "Grapevine Discovery"
 		instruction = "Optional: list your server publicly so others can find it"
@@ -429,7 +580,7 @@ func (m setupModel) View() string {
 		Width(width)
 
 	hint := "[Tab] Next Field · [Shift+Tab] Previous Field · [Enter] Confirm · [Esc] Cancel"
-	if m.phase == phaseGrapevineAsk {
+	if m.phase == phaseGrapevineAsk || m.phase == phaseMailAsk {
 		hint = "[Y] Yes · [N] No · [←/→] Toggle · [Enter] Confirm · [Esc] Cancel"
 	} else if m.phase == phaseHubAsk {
 		hint = "[1] Mirror  [2] Custom  [3] Skip · [←/→] Navigate · [Enter] Confirm · [Esc] Cancel"
@@ -520,6 +671,40 @@ func (m setupModel) renderGrapevineAsk() string {
 	return b.String()
 }
 
+// renderMailAsk renders the email yes/no screen.
+func (m setupModel) renderMailAsk() string {
+	questionStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#f8f8f2")).
+		Bold(true)
+
+	bodyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#6272a4"))
+
+	choice := lipgloss.NewStyle().Padding(0, 3)
+	selected := choice.
+		Foreground(lipgloss.Color("#282a36")).
+		Background(lipgloss.Color("#BD93F9")).
+		Bold(true)
+
+	yes, no := choice.Render("Yes"), selected.Render("No")
+	if m.mailOptIn {
+		yes, no = selected.Render("Yes"), choice.Render("No")
+	}
+
+	var b strings.Builder
+	b.WriteString(questionStyle.Render("Can this server send email?"))
+	b.WriteString("\n\n")
+	b.WriteString(bodyStyle.Render("With an SMTP account, new members confirm their email with a\n" +
+		"6-character code, and anyone who forgets their password can reset it.\n" +
+		"Without one, people sign up with just their email and password (no\n" +
+		"code to confirm it), and only you can reset a forgotten password\n" +
+		"(concord-server --reset-password <email>).\n\n" +
+		"Test the settings afterwards with: concord-server --test-mail <you@example.com>"))
+	b.WriteString("\n\n")
+	b.WriteString(yes + "   " + no)
+	return b.String()
+}
+
 // renderHubAsk renders the 3-way hub-hosting choice screen.
 func (m setupModel) renderHubAsk() string {
 	questionStyle := lipgloss.NewStyle().
@@ -556,7 +741,7 @@ func (m setupModel) renderHubAsk() string {
 			"alongside your server helps the network stay resilient.\n\n"+
 			"Mirror Hub      — syncs the official Grapevine listing. Acts as a\n"+
 			"                  failover for clients who add your hub URL. Requires\n"+
-			"                  a public IP or Cloudflare Tunnel (see Obsidian note).\n\n"+
+			"                  a public IP or a Cloudflare Tunnel.\n\n"+
 			"Custom Hub      — standalone hub; no official sync by default.\n\n"+
 			"Not Interested  — skip. You can run concord-hub separately any time.",
 	))
@@ -566,7 +751,7 @@ func (m setupModel) renderHubAsk() string {
 		b.WriteString(warnStyle.Render(
 			"! Your hub URL will be publicly visible — your server's IP address\n"+
 				"  or domain name will be discoverable. On a home server, use a\n"+
-				"  Cloudflare Tunnel to hide your real IP (see CLOUDFLARE TUNNEL SETUP.md)."))
+				"  Cloudflare Tunnel to hide your real IP."))
 		b.WriteString("\n\n")
 	}
 
@@ -628,6 +813,22 @@ func runFirstRunSetup(existingConfig *server.Config) *server.Config {
 		cfg.Grapevine = existingConfig.Grapevine // keeps server_id + registration_secret
 	}
 
+	cfg.Mail = server.MailConfig{}
+	if final.mailOptIn {
+		val := func(i int) string { return strings.TrimSpace(final.mailInputs[i].Value()) }
+		port, _ := strconv.Atoi(val(mailFieldPort))
+		verify := !strings.HasPrefix(strings.ToLower(val(mailFieldVerify)), "n")
+		cfg.Mail = server.MailConfig{
+			SMTPHost:            val(mailFieldHost),
+			SMTPPort:            port,
+			Security:            strings.ToLower(val(mailFieldSecurity)),
+			SMTPUsername:        val(mailFieldUsername),
+			SMTPPassword:        final.mailInputs[mailFieldPassword].Value(),
+			From:                val(mailFieldFrom),
+			RequireVerification: &verify,
+		}
+	}
+
 	cfg.Grapevine.Enabled = final.gvOptIn
 	if final.gvOptIn {
 		hubURL := strings.TrimSpace(final.gvInputs[gvFieldHubURL].Value())
@@ -658,7 +859,7 @@ func runFirstRunSetup(existingConfig *server.Config) *server.Config {
 	// Write config file
 	data, err := toml.Marshal(cfg)
 	if err == nil {
-		_ = os.WriteFile(configFilename, data, 0644)
+		_ = os.WriteFile(configFilename, data, 0600)
 		fmt.Printf("\nConfig written to %s\n", configFilename)
 	}
 
@@ -708,7 +909,7 @@ func writeHubConfig(choice hubChoice, serverName string) {
 		fmt.Println("This means your server's IP address or domain will be visible.")
 		fmt.Println()
 		fmt.Println("On a home server or LXC container, use a Cloudflare Tunnel to")
-		fmt.Println("hide your real IP address. See: CONCORD - CLOUDFLARE TUNNEL SETUP.md")
+		fmt.Println("hide your real IP address.")
 		fmt.Println()
 		fmt.Printf("Federation sync: every %d minutes from %s\n", hubCfg.FederationSync, defaultHubURL)
 		fmt.Println("Share your hub URL with users, or contact the official hub operator")

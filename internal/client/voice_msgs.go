@@ -73,7 +73,7 @@ type AudioDevice struct {
 }
 
 // voiceLocalSpeakingMsg is sent through voiceEventOut when the local user's
-// VAD/PTT speaking state changes. The Update loop converts it to OpVoiceSpeaking.
+// VAD speaking state changes. The Update loop converts it to OpVoiceSpeaking.
 type voiceLocalSpeakingMsg struct{ speaking bool }
 
 // VoiceQualityMsg is emitted every ~5 s per connected peer with the latest

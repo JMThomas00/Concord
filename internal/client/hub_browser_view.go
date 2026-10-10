@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/concord-chat/concord/internal/official"
 )
 
 // hubBrowserMode tracks which sub-view is active inside the browser.
@@ -39,6 +42,8 @@ type HubBrowserState struct {
 	filtered   []HubServerEntry
 	cursor     int
 	loading    bool
+	loadStart  time.Time // when the current hub started loading (the loading bar)
+	arrived    bool      // its listing is in, waiting for the bar to finish
 	err        string
 
 	// Category tabs (derived from allServers)
@@ -105,7 +110,7 @@ func hubSortLabel(mode int) string {
 // defaultHubURL is the built-in fallback hub, used when the user's hub list is
 // empty. It is a fallback, not a pinned entry: users may remove it (x) as long
 // as another hub remains, e.g. to use only a private hub.
-const defaultHubURL = "http://grapevine.concord.chat"
+const defaultHubURL = official.HubURL
 
 // hubListRow is one row in the rendered server list — either a section header or a server entry.
 type hubListRow struct {
@@ -349,6 +354,8 @@ func (a *App) openHubBrowser() tea.Cmd {
 	a.hubBrowser.returnView = a.view
 	a.showHubBrowser = true
 	a.hubBrowser.loading = true
+	a.hubBrowser.loadStart = time.Now()
+	a.hubBrowser.arrived = false
 	a.hubBrowser.autoFallback = true // silently try next hub if this one is unreachable
 
 	client := a.hubBrowser.currentClient()
@@ -624,6 +631,8 @@ func (a *App) handleHubBrowserAddHubKey(msg tea.KeyMsg) tea.Cmd {
 func (a *App) refreshCurrentHub() tea.Cmd {
 	s := &a.hubBrowser
 	s.loading = true
+	s.loadStart = time.Now()
+	s.arrived = false
 	s.err = ""
 	s.allServers = nil
 	s.filtered = nil
@@ -649,7 +658,18 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		if m.hubURL != s.currentHubURL() {
 			return true, nil // stale response from a previous hub selection
 		}
+		if m.held && (!s.loading || !m.loadStart.Equal(s.loadStart)) {
+			return true, nil // held for a load that's since been replaced
+		}
+		// The loading bar always runs its course (hubLoadMin), so it reads as
+		// a bar rather than a flicker: a listing that's early waits for it.
+		if wait := hubLoadMin - time.Since(s.loadStart); s.loading && !m.held && wait > 0 {
+			s.arrived = true
+			m.held, m.loadStart = true, s.loadStart
+			return true, tea.Tick(wait, func(time.Time) tea.Msg { return m })
+		}
 		s.loading = false
+		s.arrived = false
 		s.err = ""
 		s.allServers = m.servers
 		s.filtered = make([]HubServerEntry, 0, len(m.servers))
@@ -667,6 +687,8 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		// automatic open (not a user-initiated refresh or explicit tab switch).
 		if s.autoFallback && s.selectedHub < len(s.hubURLs)-1 {
 			s.selectedHub++
+			s.loadStart = time.Now() // the bar starts over for the next hub
+			s.arrived = false
 			return true, fetchHubServers(s.currentClient(), s.currentHubURL())
 		}
 		s.loading = false
@@ -698,6 +720,7 @@ func (a *App) handleHubMsg(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			Name:        m.resp.DisplayName,
 			Address:     m.resp.Host,
 			Port:        m.resp.Port,
+			UseTLS:      grapevineScheme(m.resp.Port) == "https",
 			HubServerID: m.resp.ServerID,
 		}
 		// Try to add; on "already exists", record the hub listing ID on the
@@ -846,7 +869,7 @@ func (a *App) renderHubBrowserView() string {
 	if rightPad < 1 {
 		rightPad = 1
 	}
-	header := title + strings.Repeat(" ", rightPad) + headerRight
+	header := ansi.Truncate(title+strings.Repeat(" ", rightPad)+headerRight, innerW, "…") // one line, however many hubs
 
 	sep := lipgloss.NewStyle().Foreground(dim).Render(strings.Repeat("─", innerW))
 
@@ -914,7 +937,11 @@ func (a *App) renderHubBrowserView() string {
 	// Calculate how many rows fit
 	// Used lines so far: title(1) sep(1) catLine(1) searchLine(1) tableHeader(1) tableSep(1) = 6
 	// plus instructions at bottom (1) + border padding (2) = 9
-	listH := h - 2 - 2 - 6 - 1 // border(2) + padding(2) + fixed rows(6) + footer(1)
+	// All told: border (2) and padding (2), the 7 rows above the list
+	// (header, sep, categories, search, sep, table header, table sep) and
+	// the 2 below it (sep, footer). Counting 7 fixed rows instead of 9 made
+	// the page 2 lines taller than the screen, cutting off its border.
+	listH := h - 2 - 2 - 7 - 2
 	if listH < 1 {
 		listH = 1
 	}
@@ -942,8 +969,7 @@ func (a *App) renderHubBrowserView() string {
 
 	var rows []string
 	if s.loading {
-		rows = append(rows, lipgloss.NewStyle().Foreground(dim).Italic(true).
-			Render("  Fetching server list..."))
+		rows = append(rows, a.renderHubLoading(innerW, time.Since(s.loadStart))...)
 	} else if len(s.filtered) == 0 && s.err == "" {
 		rows = append(rows, lipgloss.NewStyle().Foreground(dim).Italic(true).
 			Render("  No servers found."))
@@ -1026,7 +1052,7 @@ func (a *App) renderHubBrowserView() string {
 		body.WriteString(row + "\n")
 	}
 	body.WriteString(sep + "\n")
-	body.WriteString(footer)
+	body.WriteString(ansi.Truncate(footer, innerW, "…")) // one line on a narrow screen
 
 	result := border.Padding(1, 2).Render(body.String())
 
@@ -1224,4 +1250,36 @@ func wrapText(s string, width int) string {
 	}
 	lines = append(lines, line)
 	return strings.Join(lines, "\n")
+}
+
+// hubLoadingGrape rides the tip of the hub browser's loading bar.
+const hubLoadingGrape = "🍇"
+
+// hubLoadMin is how long the loading bar takes to fill, at the least.
+const hubLoadMin = 4 * time.Second
+
+// renderHubLoading is the hub browser's loading bar while a hub's listing is
+// on its way: which hub, and a bar with a grape at its tip. A hub answers in
+// one request, so there's no real progress to show: the bar fills over
+// hubLoadMin, waiting short of the end if the hub is slower, and the listing
+// replaces it when both are done.
+func (a *App) renderHubLoading(innerW int, elapsed time.Duration) []string {
+	dim := lipgloss.Color(a.theme.Colors.Comment)
+	accent := lipgloss.Color(a.theme.Colors.Purple)
+	barW := min(48, innerW-8)
+	if barW < 8 {
+		return []string{lipgloss.NewStyle().Foreground(dim).Italic(true).Render("  Connecting…")}
+	}
+	t := min(1, elapsed.Seconds()/hubLoadMin.Seconds())
+	p := t * t * (3 - 2*t) // eased in and out
+	if !a.hubBrowser.arrived {
+		p = min(p, 0.92)
+	}
+	filled := int(p * float64(barW))
+	bar := lipgloss.NewStyle().Foreground(accent).Render(strings.Repeat("━", filled)) +
+		hubLoadingGrape +
+		lipgloss.NewStyle().Foreground(dim).Render(strings.Repeat("─", barW-filled))
+	label := lipgloss.NewStyle().Foreground(dim).Italic(true).
+		Render("Connecting to " + hubDisplayName(a.hubBrowser.currentHubURL()) + "…")
+	return []string{"", "  " + label, "", "  " + bar}
 }

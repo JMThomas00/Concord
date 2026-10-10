@@ -17,7 +17,6 @@ import (
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/concord-chat/concord/internal/themes"
 	"github.com/google/uuid"
-	"github.com/sqweek/dialog"
 )
 
 // Command represents a parsed slash command
@@ -139,6 +138,9 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleWhisper(cmd.Args)
 	case "links":
 		return ch.handleLinks(cmd.Args)
+	case "threads":
+		ch.app.openThreadList() // threads_find.go
+		return "", nil
 	case "status":
 		return ch.handleStatus(cmd.Args)
 	case "title":
@@ -165,6 +167,18 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 		return ch.handleAttach(cmd.Args)
 	case "download":
 		return ch.handleDownload(cmd.Args)
+	case "grape":
+		return ch.handleGrapeCommand()
+	case "disco":
+		return ch.handleDiscoCommand()
+	case "mood":
+		return ch.handleMoodCommand(cmd.Args)
+	case "vintage":
+		return ch.handleVintageCommand()
+	case "collection":
+		return ch.handleCollectionCommand()
+	case "party": // hidden, like /grape and /disco
+		return ch.handlePartyCommand()
 	default:
 		return "", fmt.Errorf("unknown command: %s", cmd.Name)
 	}
@@ -444,60 +458,13 @@ func (ch *CommandHandler) handleLockChannel(lock bool) (string, error) {
 	return "Channel unlocked. All users can post.", nil
 }
 
+// handleHelp opens the interactive /help fuzzy finder (help_finder.go) --
+// mirrors handleTheme's own "no args opens an interactive browser" shape.
+// Any args are joined back into the finder's initial query, so
+// "/help mute" opens the finder pre-filtered to mute-related commands.
 func (ch *CommandHandler) handleHelp(args []string) (string, error) {
-	level := ch.app.currentUserRoleLevel()
-
-	// All users can whisper and change theme
-	lines := []string{
-		"Available Commands:",
-		"/whisper @user <msg>       - Send an ephemeral DM (alias: /w)",
-		"/links [N]                 - Show links from recent N messages (default: 20)",
-		"/theme [name]              - Open theme browser, or apply theme directly",
-		"/status <message>          - Set your status (use /status clear to remove)",
-		"/nick <nickname>           - Set your own nickname on this server (use clear to remove)",
-		"/attach <path> [caption]   - Share a local file peer-to-peer (you must stay online for others to download it)",
-		"/download <attachment-id>  - Download a file someone else attached",
-		"/mute                      - Mute current channel (suppress unread badges)",
-		"/unmute                    - Unmute current channel",
-		"/join-voice [#channel]     - Join a voice channel",
-		"/leave-voice               - Leave the current voice channel",
-	}
-
-	if level >= roleLevelMod {
-		lines = append(lines,
-			"/create-channel <name>     - Create a new text channel",
-			"/create-group <name>       - Create a new channel group",
-			"/delete-channel            - Delete the current channel",
-			"/delete-group <name>       - Delete an empty channel group",
-			"/rename-channel <name>     - Rename the current channel",
-			"/move-channel <group>      - Move current channel to a channel group",
-			"/lock                      - Lock current channel (only mods/admins can post)",
-			"/unlock                    - Unlock current channel (all users can post)",
-			"/mute @user [minutes]      - Server-mute a member",
-			"/unmute @user              - Server-unmute a member",
-			"/mute-voice @user          - Server-mute a user in voice",
-			"/deafen-voice @user        - Server-deafen a user in voice",
-			"/unmute-voice @user        - Lift voice mute/deafen",
-			"/kick @user [reason]       - Kick a member from the server",
-			"/timeout @user <minutes>   - Temporarily ban a member",
-			"/pin [N]                   - Pin the Nth most recent message (default: 1)",
-			"/unpin [N]                 - Unpin the Nth pinned message (default: 1)",
-		)
-	}
-
-	if level >= roleLevelAdmin {
-		lines = append(lines,
-			"/roles                     - List all available roles on this server",
-			"/role assign|remove @user <role> - Manage member roles",
-			"/create-role <name> [preset] - Create a new role (presets: text, moderator, admin)",
-			"/title @user <title>       - Assign a custom title to a member (use clear to remove)",
-			"/ban @user [reason]        - Permanently ban a member",
-			"/unban @user               - Lift a ban from a member",
-			"/move-voice @user <channel> - Force-move user to a voice channel",
-		)
-	}
-
-	return strings.Join(lines, "\n"), nil
+	ch.app.openHelpFinder(strings.Join(args, " "))
+	return "", nil
 }
 
 // resolveMember finds a MemberDisplay by @username (strips leading @).
@@ -1037,7 +1004,7 @@ func (ch *CommandHandler) handleLinks(args []string) (string, error) {
 		return "", fmt.Errorf("not connected to a channel")
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 
 	// Collect all links from recent N messages (default: last 20)
 	limit := 20
@@ -1249,11 +1216,11 @@ func (ch *CommandHandler) handleDownload(args []string) (string, error) {
 	// Ask where to save via the OS's native Save As dialog rather than
 	// silently dropping it into ~/Downloads -- this blocks the TUI while
 	// open, same as any other modal file picker.
-	destPath, dlgErr := dialog.File().SetStartFile(found.Filename).Title("Save " + found.Filename + " as").Save()
+	destPath, dlgErr := promptSavePath(found.Filename)
 	switch {
 	case dlgErr == nil:
 		// proceed with the chosen path
-	case errors.Is(dlgErr, dialog.ErrCancelled):
+	case errors.Is(dlgErr, errSaveDialogCancelled):
 		return "Download cancelled", nil
 	default:
 		// Save dialog unavailable in this environment (e.g. no display) --
@@ -1411,6 +1378,7 @@ func (ch *CommandHandler) handleJoinVoice(args []string) (string, error) {
 		return "", errors.New("usage: /join-voice [#channel-name] (or select a voice channel first)")
 	}
 
+	a.leaveVoiceElsewhere() // only ever in one call
 	channelID := target.ID
 	payload := &protocol.VoiceStateUpdatePayload{
 		ServerID:  a.currentServer.ID,
@@ -1424,32 +1392,9 @@ func (ch *CommandHandler) handleJoinVoice(args []string) (string, error) {
 
 // handleLeaveVoice handles /leave-voice — leaves the current voice channel.
 func (ch *CommandHandler) handleLeaveVoice(_ []string) (string, error) {
-	a := ch.app
-	if a.activeConn == nil || a.currentServer == nil || a.currentClientServer == nil {
-		return "", errors.New("not connected to a server")
-	}
-
-	a.activeConn.mu.RLock()
-	var inVoice bool
-	var serverID uuid.UUID
-	if a.activeConn.User != nil {
-		if vs, ok := a.activeConn.VoiceStates[a.activeConn.User.ID]; ok {
-			inVoice = true
-			serverID = vs.ServerID
-		}
-	}
-	a.activeConn.mu.RUnlock()
-
-	if !inVoice {
+	// Leaves wherever your voice is, even from another server.
+	if !ch.app.leaveVoice() {
 		return "", errors.New("you are not in a voice channel")
-	}
-
-	payload := &protocol.VoiceStateUpdatePayload{
-		ServerID:  serverID,
-		ChannelID: nil, // nil = leave
-	}
-	if err := a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload); err != nil {
-		return "", fmt.Errorf("failed to leave voice: %w", err)
 	}
 	return "Left voice channel.", nil
 }

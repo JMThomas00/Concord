@@ -1,6 +1,8 @@
 package client
 
 import (
+	"strings"
+
 	"fmt"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -14,12 +16,12 @@ import (
 // the selected type is voice (adds a max-users field) or a plugin kind (adds
 // its declared create_fields) — the two are mutually exclusive.
 type channelFormFieldLayout struct {
-	isVoice      bool
-	isPlugin     bool
-	pluginStart  int // FocusField of the first plugin field (only meaningful if isPlugin)
+	isVoice        bool
+	isPlugin       bool
+	configureField int // FocusField of the "Configure" row (only meaningful if isPlugin)
 	maxUsersField int // FocusField of the max-users field (only meaningful if isVoice)
-	submitField  int
-	cancelField  int
+	submitField   int
+	cancelField   int
 }
 
 func computeChannelFormLayout(state *ChannelFormState) channelFormFieldLayout {
@@ -31,8 +33,8 @@ func computeChannelFormLayout(state *ChannelFormState) channelFormFieldLayout {
 	l := channelFormFieldLayout{isVoice: state.TypeIndex == 1, isPlugin: isPlugin}
 	next := 2 // 0=name, 1=type
 	if l.isPlugin {
-		l.pluginStart = next
-		next += len(state.PluginFields)
+		l.configureField = next
+		next++
 	}
 	if l.isVoice {
 		l.maxUsersField = next
@@ -59,11 +61,18 @@ func buildFieldEditors(fields []protocol.PluginField, currentValues map[string]s
 			val = f.Default
 		}
 		switch f.Type {
-		case "text", "number":
+		case "text", "number", "secret":
 			ti := textinput.New()
-			ti.SetValue(val)
-			ti.CharLimit = 100
+			ti.CharLimit = 1000 // room for URLs, checksums and API keys
 			ti.Width = 40
+			if f.Type == "secret" {
+				// Never pre-filled: the server doesn't send secrets back.
+				// Typing replaces the stored value; leaving it empty keeps it.
+				ti.EchoMode = textinput.EchoPassword
+				ti.EchoCharacter = '•'
+			} else {
+				ti.SetValue(val)
+			}
 			textInputs[i] = ti
 		default: // boolean, select, channel_select
 			if f.Type == "boolean" && val == "" {
@@ -85,6 +94,10 @@ func collectFieldValues(fields []protocol.PluginField, textInputs []textinput.Mo
 	result := make(map[string]string, len(fields))
 	for i, f := range fields {
 		switch f.Type {
+		case "secret":
+			if v := textInputs[i].Value(); v != "" { // empty = keep what's stored
+				result[f.Key] = v
+			}
 		case "text", "number":
 			result[f.Key] = textInputs[i].Value()
 		default:
@@ -95,12 +108,55 @@ func collectFieldValues(fields []protocol.PluginField, textInputs []textinput.Mo
 }
 
 // setPluginKind switches the channel-creation form to a plugin channel kind,
-// rebuilding the field editors for that kind's declared create_fields.
-func setPluginKind(state *ChannelFormState, info protocol.PluginChannelKindInfo) {
+// rebuilding the field editors for that kind's declared create_fields, and
+// offering its instances (if the plugin has several) to own the channel.
+func (a *App) setPluginKind(state *ChannelFormState, info protocol.PluginChannelKindInfo) {
 	state.PluginID = info.PluginID
 	state.PluginKind = info.Kind
 	state.PluginFields = info.CreateFields
 	state.PluginTextInputs, state.PluginValues = buildFieldEditors(info.CreateFields, nil)
+	state.InstanceOptions = a.kindInstances(info)
+	state.InstanceIndex = 0
+	state.ConfigFocus = 0
+}
+
+// clearPluginKind switches the form back to a built-in channel type.
+func clearPluginKind(state *ChannelFormState) {
+	state.PluginFields, state.PluginTextInputs, state.PluginValues = nil, nil, nil
+	state.InstanceOptions, state.InstanceIndex = nil, 0
+}
+
+// kindInstances lists every instance of info's plugin (the plugin itself
+// first) that offers info's channel kind on the current server.
+func (a *App) kindInstances(info protocol.PluginChannelKindInfo) []protocol.PluginChannelKindInfo {
+	base := info.PluginID
+	if info.BaseID != "" {
+		base = info.BaseID
+	}
+	var out []protocol.PluginChannelKindInfo
+	for _, k := range a.currentServerKinds() {
+		if k.Kind != info.Kind || (k.PluginID != base && k.BaseID != base) {
+			continue
+		}
+		if k.PluginID == base {
+			out = append([]protocol.PluginChannelKindInfo{k}, out...)
+		} else {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// configRows describes the Configure page: whether it starts with the
+// instance choice (more than one instance, and only when creating), and
+// how many rows come before Done.
+func configRows(state *ChannelFormState) (instanceRow bool, rows int) {
+	instanceRow = state.Mode != "edit" && len(state.InstanceOptions) > 1
+	rows = len(state.PluginFields)
+	if instanceRow {
+		rows++
+	}
+	return instanceRow, rows
 }
 
 // cyclePluginFieldValue advances a boolean/select field's value by one step
@@ -160,12 +216,26 @@ func pluginDisplayLabel(name, product string) string {
 // state for one plugin, seeded from its currently-saved server config values.
 func newPluginConfigFormState(info protocol.PluginInfo) *PluginConfigFormState {
 	textInputs, values := buildFieldEditors(info.ConfigFields, info.ConfigValues)
+	secretsSet := map[string]bool{}
+	for _, key := range info.SecretsSet {
+		secretsSet[key] = true
+	}
+	for i, fld := range info.ConfigFields {
+		if fld.Type == "secret" {
+			if secretsSet[fld.Key] {
+				textInputs[i].Placeholder = "set — type to replace"
+			} else {
+				textInputs[i].Placeholder = "not set"
+			}
+		}
+	}
 	return &PluginConfigFormState{
 		PluginID:   info.ID,
 		Product:    info.Product,
 		Fields:     info.ConfigFields,
 		TextInputs: textInputs,
 		Values:     values,
+		SecretsSet: secretsSet,
 	}
 }
 
@@ -235,9 +305,17 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 			return
 		}
 		ft := state.Fields[f].Type
-		if ft == "text" || ft == "number" {
+		if isTextField(ft) {
 			state.TextInputs[f].Focus()
 		}
+	}
+
+	if p := state.Picker; p != nil {
+		if p.Key(msg.String()) {
+			state.Values[p.Field] = p.Value()
+			state.Picker = nil
+		}
+		return nil
 	}
 
 	switch msg.String() {
@@ -263,17 +341,22 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 	case "up", "down", "left", "right":
 		if state.FocusField >= 0 && state.FocusField < len(state.Fields) {
 			f := state.Fields[state.FocusField]
-			if f.Type != "text" && f.Type != "number" {
+			if !isTextField(f.Type) && f.Type != "channel_multi_select" {
 				dir := 1
 				if msg.String() == "up" || msg.String() == "left" {
 					dir = -1
 				}
-				state.Values[state.FocusField] = cyclePluginFieldValue(f, state.Values[state.FocusField], dir, a.textChannelNames())
+				state.Values[state.FocusField] = cyclePluginFieldValue(f, state.Values[state.FocusField], dir, a.textChannelIDs())
 			}
 		}
 		return nil
 
 	case "enter":
+		if state.FocusField >= 0 && state.FocusField < len(state.Fields) && state.Fields[state.FocusField].Type == "channel_multi_select" {
+			f := state.Fields[state.FocusField]
+			state.Picker = newChannelPicker(state.FocusField, f.Label, state.Values[state.FocusField], a.textChannelIDs())
+			return nil
+		}
 		if state.FocusField == saveField {
 			return a.handleSavePluginConfig()
 		} else if state.FocusField == backField {
@@ -284,7 +367,7 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 
 	if state.FocusField >= 0 && state.FocusField < len(state.Fields) {
 		f := state.Fields[state.FocusField]
-		if f.Type == "text" || f.Type == "number" {
+		if isTextField(f.Type) {
 			var cmd tea.Cmd
 			state.TextInputs[state.FocusField], cmd = state.TextInputs[state.FocusField].Update(msg)
 			return cmd
@@ -293,13 +376,34 @@ func (a *App) handlePluginConfigKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// handleSavePluginConfig sends the edited server_config_field values and
-// closes the sub-page; the refreshed plugin list arrives via
-// EventPluginConfigUpdate like any other config change.
+// handleSavePluginConfig sends the form -- a plugin's settings, or an
+// install/update request -- and keeps it open until the server's
+// EventPluginManageResult arrives (applyPluginManageResult): it closes on
+// success, and shows what's wrong, per field, on failure.
 func (a *App) handleSavePluginConfig() tea.Cmd {
 	state := a.serverManagementState.PluginConfigState
-	a.sendPluginConfigSet(state.PluginID, nil, pluginConfigFormValues(state))
-	a.serverManagementState.PluginConfigState = nil
-	a.statusMessage = "Saving plugin configuration..."
+	if state.Saving {
+		return nil
+	}
+	values := pluginConfigFormValues(state)
+	state.ErrorMsg, state.FieldErrors = "", nil
+	switch state.Mode {
+	case protocol.PluginActionInstall, protocol.PluginActionUpdate:
+		// Install: the plugin's ID comes from the download itself. Update:
+		// an empty source means "wherever the plugin says it comes from".
+		if !a.sendPluginManage(protocol.PluginManageRequest{
+			Action: state.Mode, PluginID: state.PluginID,
+			SourceURL: strings.TrimSpace(values["source"]),
+		}) {
+			state.ErrorMsg = "Not connected"
+			return nil
+		}
+		a.statusMessage = "Downloading and checking the plugin…"
+	default:
+		a.sendPluginConfigSet(state.PluginID, nil, values)
+		a.statusMessage = "Saving plugin settings…"
+	}
+	state.Saving = true
+	a.statusError = false
 	return nil
 }

@@ -11,21 +11,29 @@ import (
 )
 
 // voiceUserEntry tracks a user's current voice channel for disconnect cleanup.
+// conn is the connection that joined (the one carrying the audio), so only
+// that connection closing ends the user's voice session; nil when unknown.
 type voiceUserEntry struct {
 	serverID  uuid.UUID
 	channelID uuid.UUID
+	conn      *Client
 }
 
-// Hub maintains the set of active clients and broadcasts messages
+// Hub maintains the set of active clients and broadcasts messages.
+//
+// A user can be connected more than once (two computers, or a reconnect
+// racing the old socket's cleanup). Every live connection is kept, and
+// anything addressed to a user, server or channel reaches all of them. A
+// user goes offline only when their last connection closes.
 type Hub struct {
-	// Registered clients by user ID
-	clients map[uuid.UUID]*Client
+	// Live connections by user ID, oldest first.
+	clients map[uuid.UUID][]*Client
 
-	// Clients by server ID for efficient broadcasting
-	serverClients map[uuid.UUID]map[uuid.UUID]*Client
+	// Online users by server ID, for server broadcasts.
+	serverClients map[uuid.UUID]map[uuid.UUID]struct{}
 
-	// Clients by channel ID for typing indicators and DMs
-	channelClients map[uuid.UUID]map[uuid.UUID]*Client
+	// Users by channel ID, for channel broadcasts (typing, voice speaking).
+	channelClients map[uuid.UUID]map[uuid.UUID]struct{}
 
 	// voiceChannelUsers maps channelID → set of userIDs currently in that voice channel.
 	voiceChannelUsers map[uuid.UUID]map[uuid.UUID]struct{}
@@ -52,6 +60,17 @@ type Hub struct {
 	// onVoiceLeave is an optional callback invoked (in a goroutine) when a user
 	// disconnects while in a voice channel. Handlers.go sets this to handle DB cleanup.
 	onVoiceLeave func(userID, serverID, channelID uuid.UUID)
+
+	// onUserDisconnect is an optional callback invoked (in a goroutine) when a
+	// user disconnects, with their Status already set to StatusOffline.
+	// Handlers.go sets this to persist the offline status to the database --
+	// see unregisterClient's own doc comment for the real bug this closes.
+	onUserDisconnect func(user *models.User)
+
+	// onClientGone is invoked (in a goroutine) for every connection that
+	// unregisters, including plugin connections, users in no server, and a
+	// user's connection whose other connections are still open.
+	onClientGone func(c *Client)
 }
 
 // BroadcastMessage represents a message to be sent to multiple clients
@@ -71,9 +90,9 @@ type BroadcastMessage struct {
 // NewHub creates a new Hub instance
 func NewHub() *Hub {
 	return &Hub{
-		clients:           make(map[uuid.UUID]*Client),
-		serverClients:     make(map[uuid.UUID]map[uuid.UUID]*Client),
-		channelClients:    make(map[uuid.UUID]map[uuid.UUID]*Client),
+		clients:           make(map[uuid.UUID][]*Client),
+		serverClients:     make(map[uuid.UUID]map[uuid.UUID]struct{}),
+		channelClients:    make(map[uuid.UUID]map[uuid.UUID]struct{}),
 		voiceChannelUsers: make(map[uuid.UUID]map[uuid.UUID]struct{}),
 		voiceUserChannel:  make(map[uuid.UUID]voiceUserEntry),
 		register:          make(chan *Client),
@@ -90,6 +109,24 @@ func (h *Hub) SetVoiceLeaveCallback(fn func(userID, serverID, channelID uuid.UUI
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onVoiceLeave = fn
+}
+
+// SetUserDisconnectCallback registers the callback invoked when a client
+// disconnects, so the caller can persist the resulting offline status to the
+// database. The callback is run in a new goroutine to avoid blocking the
+// hub's event loop.
+func (h *Hub) SetUserDisconnectCallback(fn func(user *models.User)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onUserDisconnect = fn
+}
+
+// SetClientGoneCallback registers the callback invoked when a user's
+// current connection unregisters; see Hub.onClientGone.
+func (h *Hub) SetClientGoneCallback(fn func(c *Client)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onClientGone = fn
 }
 
 // Run starts the hub's main loop
@@ -113,26 +150,67 @@ func (h *Hub) registerClient(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Add to main client map
-	h.clients[client.UserID] = client
+	conns := h.clients[client.UserID]
+	for _, c := range conns {
+		if c == client {
+			return // identified twice on one socket
+		}
+	}
+	h.clients[client.UserID] = append(conns, client)
 
 	// Add to server client maps
 	for _, serverID := range client.ServerIDs {
 		if h.serverClients[serverID] == nil {
-			h.serverClients[serverID] = make(map[uuid.UUID]*Client)
+			h.serverClients[serverID] = make(map[uuid.UUID]struct{})
 		}
-		h.serverClients[serverID][client.UserID] = client
+		h.serverClients[serverID][client.UserID] = struct{}{}
 	}
 
-	HubLog.Info("Client registered", "user_id", client.UserID, "server_count", len(client.ServerIDs))
+	HubLog.Info("Client registered", "user_id", client.UserID, "server_count", len(client.ServerIDs), "connections", len(conns)+1)
 }
 
-// unregisterClient removes a client from the hub
+// unregisterClient removes a client from the hub. The user stays online
+// while any of their other connections is open; only the last one closing
+// takes them out of every server and channel and announces them offline.
 func (h *Hub) unregisterClient(client *Client) {
 	h.mu.Lock()
 
-	if _, ok := h.clients[client.UserID]; !ok {
+	conns := h.clients[client.UserID]
+	idx := -1
+	for i, c := range conns {
+		if c == client {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
 		h.mu.Unlock()
+		return // never registered (didn't identify)
+	}
+	remaining := append(conns[:idx:idx], conns[idx+1:]...)
+
+	// The user's voice session ends if this is the connection that joined
+	// (it carried the audio), or if no connection is left at all.
+	voiceEntry, wasInVoice := h.voiceUserChannel[client.UserID]
+	wasInVoice = wasInVoice && (voiceEntry.conn == client || len(remaining) == 0)
+
+	if len(remaining) > 0 {
+		h.clients[client.UserID] = remaining
+		if wasInVoice {
+			h.removeVoiceLocked(client.UserID, voiceEntry.channelID)
+		}
+		client.closeSend()
+		cb := h.onVoiceLeave
+		goneCb := h.onClientGone
+		h.mu.Unlock()
+
+		if goneCb != nil {
+			go goneCb(client)
+		}
+		if wasInVoice && cb != nil {
+			go cb(client.UserID, voiceEntry.serverID, voiceEntry.channelID)
+		}
+		HubLog.Info("Client unregistered; user still connected", "user_id", client.UserID, "connections", len(remaining))
 		return
 	}
 
@@ -141,16 +219,8 @@ func (h *Hub) unregisterClient(client *Client) {
 	serverIDs := make([]uuid.UUID, len(client.ServerIDs))
 	copy(serverIDs, client.ServerIDs)
 
-	// Capture voice channel membership before removing from maps
-	voiceEntry, wasInVoice := h.voiceUserChannel[client.UserID]
 	if wasInVoice {
-		delete(h.voiceUserChannel, client.UserID)
-		if ch := h.voiceChannelUsers[voiceEntry.channelID]; ch != nil {
-			delete(ch, client.UserID)
-			if len(ch) == 0 {
-				delete(h.voiceChannelUsers, voiceEntry.channelID)
-			}
-		}
+		h.removeVoiceLocked(client.UserID, voiceEntry.channelID)
 	}
 
 	// Remove from main client map
@@ -175,19 +245,42 @@ func (h *Hub) unregisterClient(client *Client) {
 	}
 
 	// Close the client's send channel
-	close(client.send)
+	client.closeSend()
 
 	cb := h.onVoiceLeave
+	disconnectCb := h.onUserDisconnect
+	goneCb := h.onClientGone
 
 	h.mu.Unlock()
 
+	if goneCb != nil {
+		go goneCb(client)
+	}
+
 	HubLog.Info("Client unregistered", "user_id", client.UserID)
 
-	// Broadcast offline presence to all servers this user was in
+	// Broadcast offline presence to all servers this user was in.
+	//
+	// Real bug fixed 2026-09-13: this broadcast is the ONLY thing that ever
+	// told anyone this user went offline -- the offline status was never
+	// persisted to the database, only announced live to whichever clients
+	// happened to be connected at that exact moment. A user who disconnected
+	// while no other client was around to receive the broadcast (or who
+	// simply lost power/network without a clean close) stayed "online"
+	// forever in storage, since SetOnline()+UpdateUserStatus() (client.go,
+	// on identify) is the only other place status is ever written. The next
+	// person to connect would then read that stale "online" status straight
+	// out of the database via SERVER_CREATE's Users[] list, showing a member
+	// as online whose machine had been off for weeks. onUserDisconnect below
+	// closes that gap by actually persisting the offline status, the same
+	// way HandlePresenceUpdate already does for an explicit /status change.
 	if user != nil && len(serverIDs) > 0 {
 		offlineUser := *user
 		offlineUser.Status = models.StatusOffline
 		h.BroadcastPresenceUpdate(&offlineUser, serverIDs)
+		if disconnectCb != nil {
+			go disconnectCb(&offlineUser)
+		}
 	}
 
 	// If the user was in a voice channel, run DB cleanup + broadcast leave event
@@ -205,24 +298,20 @@ func (h *Hub) broadcastMessage(msg *BroadcastMessage) {
 
 	switch {
 	case msg.UserID != nil:
-		// Send to specific user
-		if client, ok := h.clients[*msg.UserID]; ok {
-			targets = []*Client{client}
-		}
+		// Send to every connection of one user
+		targets = h.clients[*msg.UserID]
 
 	case msg.ServerID != nil:
 		// Send to all users in server
-		if clients, ok := h.serverClients[*msg.ServerID]; ok {
-			for _, client := range clients {
-				targets = append(targets, client)
-			}
+		for userID := range h.serverClients[*msg.ServerID] {
+			targets = append(targets, h.clients[userID]...)
 		}
 
 	case msg.ChannelID != nil:
 		// Send to all users in channel
-		if clients, ok := h.channelClients[*msg.ChannelID]; ok {
-			for _, client := range clients {
-				targets = append(targets, client)
+		if users, ok := h.channelClients[*msg.ChannelID]; ok {
+			for userID := range users {
+				targets = append(targets, h.clients[userID]...)
 			}
 			HubLog.Debug("Broadcasting to channel", "channel_id", msg.ChannelID, "client_count", len(targets))
 		} else {
@@ -253,11 +342,54 @@ func (h *Hub) NextSequence() int64 {
 	return h.sequence
 }
 
-// GetClient returns a client by user ID
+// GetClient returns userID's most recent connection, or nil. For plugin
+// service accounts (one process each) that's the plugin's connection.
 func (h *Hub) GetClient(userID uuid.UUID) *Client {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.clients[userID]
+	if conns := h.clients[userID]; len(conns) > 0 {
+		return conns[len(conns)-1]
+	}
+	return nil
+}
+
+// ConnectionCount returns the number of live connections (a user signed in
+// twice counts twice); ConnectedClientCount counts users.
+func (h *Hub) ConnectionCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	n := 0
+	for _, conns := range h.clients {
+		n += len(conns)
+	}
+	return n
+}
+
+// Connections returns every live connection.
+func (h *Hub) Connections() []*Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var out []*Client
+	for _, conns := range h.clients {
+		out = append(out, conns...)
+	}
+	return out
+}
+
+// DisconnectUser closes every live WebSocket connection of userID. Each
+// connection's own ReadPump then fails and unregisters it through the
+// normal path. Used when a plugin is stopped or its token rotated (so a
+// process that authenticated with the old token can't keep acting), and
+// for kicks, bans and timeouts.
+func (h *Hub) DisconnectUser(userID uuid.UUID) {
+	h.mu.RLock()
+	conns := append([]*Client(nil), h.clients[userID]...)
+	h.mu.RUnlock()
+	for _, client := range conns {
+		if client.conn != nil {
+			client.conn.Close()
+		}
+	}
 }
 
 // GetOnlineUsers returns a list of online user IDs for a server
@@ -275,19 +407,19 @@ func (h *Hub) GetOnlineUsers(serverID uuid.UUID) []uuid.UUID {
 }
 
 // JoinVoiceChannel records that a user is now in a voice channel.
-// If the user was already in another voice channel (same server), they are moved.
-func (h *Hub) JoinVoiceChannel(userID, serverID, channelID uuid.UUID) {
+// If the user was already in another voice channel (same server), they are
+// moved. conn is the connection that joined (its closing ends the session);
+// nil keeps the previous one (an admin moving someone).
+func (h *Hub) JoinVoiceChannel(userID, serverID, channelID uuid.UUID, conn *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	// Remove from previous voice channel if any
 	if prev, ok := h.voiceUserChannel[userID]; ok {
-		if ch := h.voiceChannelUsers[prev.channelID]; ch != nil {
-			delete(ch, userID)
-			if len(ch) == 0 {
-				delete(h.voiceChannelUsers, prev.channelID)
-			}
+		if conn == nil {
+			conn = prev.conn
 		}
+		h.removeVoiceLocked(userID, prev.channelID)
 	}
 
 	// Add to new voice channel
@@ -295,7 +427,7 @@ func (h *Hub) JoinVoiceChannel(userID, serverID, channelID uuid.UUID) {
 		h.voiceChannelUsers[channelID] = make(map[uuid.UUID]struct{})
 	}
 	h.voiceChannelUsers[channelID][userID] = struct{}{}
-	h.voiceUserChannel[userID] = voiceUserEntry{serverID: serverID, channelID: channelID}
+	h.voiceUserChannel[userID] = voiceUserEntry{serverID: serverID, channelID: channelID, conn: conn}
 }
 
 // LeaveVoiceChannel removes a user from their current voice channel.
@@ -304,13 +436,18 @@ func (h *Hub) LeaveVoiceChannel(userID uuid.UUID) {
 	defer h.mu.Unlock()
 
 	if entry, ok := h.voiceUserChannel[userID]; ok {
-		if ch := h.voiceChannelUsers[entry.channelID]; ch != nil {
-			delete(ch, userID)
-			if len(ch) == 0 {
-				delete(h.voiceChannelUsers, entry.channelID)
-			}
+		h.removeVoiceLocked(userID, entry.channelID)
+	}
+}
+
+// removeVoiceLocked forgets userID's voice membership. h.mu must be held.
+func (h *Hub) removeVoiceLocked(userID, channelID uuid.UUID) {
+	delete(h.voiceUserChannel, userID)
+	if ch := h.voiceChannelUsers[channelID]; ch != nil {
+		delete(ch, userID)
+		if len(ch) == 0 {
+			delete(h.voiceChannelUsers, channelID)
 		}
-		delete(h.voiceUserChannel, userID)
 	}
 }
 
@@ -332,21 +469,21 @@ func (h *Hub) GetVoiceUsers(channelID uuid.UUID) []uuid.UUID {
 	return users
 }
 
-// JoinChannel adds a client to a channel's client list
+// JoinChannel adds an online user to a channel's broadcast list.
 func (h *Hub) JoinChannel(userID, channelID uuid.UUID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if len(h.clients[userID]) == 0 {
+		return
+	}
 	if h.channelClients[channelID] == nil {
-		h.channelClients[channelID] = make(map[uuid.UUID]*Client)
+		h.channelClients[channelID] = make(map[uuid.UUID]struct{})
 	}
-
-	if client, ok := h.clients[userID]; ok {
-		h.channelClients[channelID][userID] = client
-	}
+	h.channelClients[channelID][userID] = struct{}{}
 }
 
-// LeaveChannel removes a client from a channel's client list
+// LeaveChannel removes a user from a channel's broadcast list.
 func (h *Hub) LeaveChannel(userID, channelID uuid.UUID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -359,22 +496,27 @@ func (h *Hub) LeaveChannel(userID, channelID uuid.UUID) {
 	}
 }
 
-// AddClientToServer adds a client to a server's broadcast list
+// AddClientToServer adds an online user (all their connections) to a
+// server's broadcast list.
 func (h *Hub) AddClientToServer(userID, serverID uuid.UUID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.serverClients[serverID] == nil {
-		h.serverClients[serverID] = make(map[uuid.UUID]*Client)
+	conns := h.clients[userID]
+	if len(conns) == 0 {
+		return
 	}
-
-	if client, ok := h.clients[userID]; ok {
-		h.serverClients[serverID][userID] = client
+	if h.serverClients[serverID] == nil {
+		h.serverClients[serverID] = make(map[uuid.UUID]struct{})
+	}
+	h.serverClients[serverID][userID] = struct{}{}
+	for _, client := range conns {
 		client.ServerIDs = append(client.ServerIDs, serverID)
 	}
 }
 
-// RemoveClientFromServer removes a client from a server's broadcast list
+// RemoveClientFromServer removes a user (all their connections) from a
+// server's broadcast list.
 func (h *Hub) RemoveClientFromServer(userID, serverID uuid.UUID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -386,7 +528,7 @@ func (h *Hub) RemoveClientFromServer(userID, serverID uuid.UUID) {
 		}
 	}
 
-	if client, ok := h.clients[userID]; ok {
+	for _, client := range h.clients[userID] {
 		for i, id := range client.ServerIDs {
 			if id == serverID {
 				client.ServerIDs = append(client.ServerIDs[:i], client.ServerIDs[i+1:]...)
@@ -448,6 +590,31 @@ func (h *Hub) ConnectedClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
+}
+
+// PeopleOnlineCount is the number of people connected: distinct users, leaving
+// out plugin processes and their service accounts, and bots. This is the
+// "online" figure the Grapevine shows.
+func (h *Hub) PeopleOnlineCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	n := 0
+	for _, conns := range h.clients {
+		for _, c := range conns {
+			if isPerson(c) {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+func isPerson(c *Client) bool {
+	if c.IsPlugin {
+		return false
+	}
+	return c.User == nil || (!c.User.IsServiceAccount && !c.User.IsBot)
 }
 
 // IsUserOnline reports whether a user with the given ID has an active connection.

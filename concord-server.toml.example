@@ -24,7 +24,7 @@ interval_hours = 24  # Run pruning daily
 # Grapevine — decentralized server discovery (opt-in)
 [grapevine]
 enabled = false
-hub_url = "http://grapevine.concord.chat"  # Official hub; or point to your own concord-hub instance
+hub_url = "https://grapevine.concordchat.cc"  # Official hub; or point to your own concord-hub instance
 description = "A place to chat."
 category = ""   # e.g. "Gaming", "Technology", "Art", "Tabletop", "General"
 tags = []       # e.g. ["friendly", "18+", "english"]
@@ -41,3 +41,39 @@ public_port = 0
 # Hub→server signals are verified with an HMAC of the registration_secret.
 # server_id = ""
 # registration_secret = ""
+
+# Outgoing email — optional. With it, new accounts confirm their email with a
+# 6-character code and members can reset a forgotten password. Without it,
+# accounts work as before; reset a password with
+#   concord-server --reset-password someone@example.com
+# Check the settings with: concord-server --test-mail you@example.com
+# This file then holds a password: keep it readable only by the server.
+# [mail]
+# smtp_host = "smtp.gmail.com"
+# smtp_port = 587               # blank/0: 587 for starttls, 465 for tls
+# security = "starttls"         # "starttls", "tls" (port 465) or "none" (a local relay only)
+# smtp_username = "you@gmail.com"
+# smtp_password = "an app password"
+# from = "Concord <you@gmail.com>"
+# require_verification = true   # false: send reset codes only, never block sign-in
+
+# Voice relays (optional). Voice is peer-to-peer: STUN (below, the default)
+# connects most home networks directly, but two people behind strict routers
+# (many offices, schools, mobile networks) need a TURN server to relay.
+# Pick at most one way to configure TURN; with none, voice is STUN-only.
+[voice]
+# stun_urls = ["stun:stun.l.google.com:19302"]
+
+# 1. Any TURN service with a fixed login:
+# turn_urls     = ["turn:turn.example.com:3478", "turns:turn.example.com:5349"]
+# turn_username = "concord"
+# turn_password = "..."
+
+# 2. Your own coturn with use-auth-secret (static-auth-secret = this value):
+# turn_urls   = ["turn:turn.example.com:3478"]
+# turn_secret = "..."
+
+# 3. Cloudflare's TURN service (dashboard: Realtime > TURN > create a key;
+#    works wherever this server runs; 1,000 GB/month free at the time of writing):
+# cloudflare_turn_key_id = "..."
+# cloudflare_turn_token  = "..."

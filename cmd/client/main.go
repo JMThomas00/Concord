@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
@@ -13,9 +15,32 @@ import (
 	"github.com/concord-chat/concord/internal/themes"
 )
 
+// Version/GitCommit/BuildTime are populated at build time via the
+// Makefile's shared LDFLAGS ("-X main.Version=..." etc.) -- see
+// Settings > About. Defaults here keep a plain `go build`/`go run` (no
+// ldflags) sensible instead of showing empty strings.
+var (
+	Version   = "dev"
+	GitCommit = "unknown"
+	BuildTime = "unknown"
+)
+
 func main() {
-	// Set up logging to file for debugging
-	logFile, err := os.OpenFile("concord-client.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	// Set up logging to file for debugging. The log lives in ~/.concord/,
+	// alongside the rest of the client's local state, rather than at a path
+	// relative to the process's cwd -- a relative path silently failed
+	// whenever the client was launched from a directory the user can't write
+	// to (e.g. /usr/local/bin after a system-wide install), and every
+	// log.Printf call then fell through to stderr, corrupting the Bubbletea
+	// alt-screen with raw log text.
+	logPath := "concord-client.log"
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		dir := filepath.Join(home, ".concord")
+		if mkErr := os.MkdirAll(dir, 0o755); mkErr == nil {
+			logPath = filepath.Join(dir, "concord-client.log")
+		}
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
 		log.SetOutput(logFile)
 		defer logFile.Close()
@@ -70,6 +95,7 @@ func main() {
 	// Create application
 	app := client.NewApp(serversConfig.Servers, serversConfig.DefaultPreferences, configMgr, identity)
 	app.SetTheme(theme)
+	app.SetBuildInfo(Version, GitCommit, BuildTime)
 
 	// Zone manager for mouse hit-testing: components mark their rendered
 	// regions with zone.Mark() at View() time, and App.View() scans the
@@ -78,11 +104,30 @@ func main() {
 	// side. Must be initialized before the first render.
 	zone.NewGlobal()
 
+	// Ask the terminal how it can draw images (plugin panes), before the
+	// UI takes it over.
+	client.SetTerminalGraphics(client.DetectTerminalGraphics())
+
 	// Create Bubble Tea program
 	p := tea.NewProgram(
 		app,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+		// All Motion Tracking (xterm mode 1003), not Cell Motion Tracking
+		// (mode 1002): the latter only reports mouse movement while a button
+		// is held, which is why the grape logo's follow-the-cursor effect
+		// (steerGrapeLight) needed a button held down on Linux/Mac terminals
+		// to work at all. Windows was unaffected either way -- its native
+		// console mouse input doesn't negotiate this xterm protocol mode in
+		// the first place.
+		tea.WithMouseAllMotion(),
+		// All Motion Tracking means every pixel of mouse movement produces a
+		// MouseMsg, and Bubbletea calls model.View() unconditionally after
+		// every single message regardless of what Update() does with it --
+		// without this filter, just moving the mouse floods the app with a
+		// full Update+render pass per pixel, which starved real input
+		// processing badly enough to make the whole TUI unresponsive on a
+		// live report. See MouseHoverFilter's own comment (grape_logo.go).
+		tea.WithFilter(client.MouseHoverFilter),
 		// Lets the terminal tell us when the window regains focus, so Concord
 		// can force a full repaint on refocus -- see the tea.FocusMsg case in
 		// App.Update for why (a real rendering-glitch report on Linux/Wayland
@@ -94,17 +139,32 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 	}
+
+	// Updated from Settings' Updates page: start the new version in this
+	// terminal, as if it had been typed again.
+	if path := app.RestartPath(); path != "" {
+		log.Printf("Restarting into %s", path)
+		cmd := exec.Command(path, os.Args[1:]...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			if exit, ok := err.(*exec.ExitError); ok {
+				os.Exit(exit.ExitCode())
+			}
+			fmt.Fprintln(os.Stderr, "Concord couldn't restart:", err)
+			os.Exit(1)
+		}
+	}
 }
 
 func printBanner() {
 	banner := `
-   ____                              _ 
+   ____                              _
   / ___|___  _ __   ___ ___  _ __ __| |
  | |   / _ \| '_ \ / __/ _ \| '__/ _' |
  | |__| (_) | | | | (_| (_) | | | (_| |
   \____\___/|_| |_|\___\___/|_|  \__,_|
-                                       
-  Terminal Chat Client v0.1.0
+
+  Terminal Chat Client v%s
 `
-	fmt.Println(banner)
+	fmt.Printf(banner, Version)
 }

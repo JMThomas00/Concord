@@ -1,7 +1,7 @@
 # Concord — Claude Code Reference
 
-**A terminal-based chat application inspired by Discord**
-**Last Updated:** 2026-09-06
+**A terminal-based, self-hosted chat application**
+**Last Updated:** 2026-10-09
 
 ---
 
@@ -10,13 +10,13 @@
 Concord is a self-hosted, terminal-first chat platform built in Go. Each server is independently hosted (IRC-style decentralization). The client is a full TUI application built on the Charmbracelet stack. Voice channels use WebRTC P2P audio with Opus encoding, and an out-of-process plugin platform lets external programs (bots, integrations) attach to a server as privileged clients.
 
 **Module path:** `github.com/concord-chat/concord`
-**Current version:** v0.1.0 (pre-release, final QA; plugin platform live)
+**Current version:** v0.1.0 (released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
 
 ---
 
 ## Development Commands
 
-This repo has no CI config and no `.golangci.yml` — the commands below are the actual gate used session-to-session (see the Makefile's `test`/`fmt`/`lint` targets for the same thing in `make` form).
+This repo has no `.golangci.yml` — the commands below are the actual gate used session-to-session (see the Makefile's `test`/`fmt`/`lint` targets for the same thing in `make` form). `.github/workflows/release.yml` only builds/publishes tagged releases — it isn't a PR-gating CI check, so this remains the real day-to-day gate.
 
 ```bash
 # Full check — run this before considering any change done. The server, models,
@@ -26,12 +26,16 @@ This repo has no CI config and no `.golangci.yml` — the commands below are the
 go build -tags novoice ./...
 go vet -tags novoice ./...
 go test -tags novoice -count=1 ./...
+(cd sdk && go vet ./... && go test -count=1 ./...)   # the plugin SDK is its own module
+(cd sdk/pty && go vet ./... && go test -count=1 ./...)   # ...and terminal passthrough is another (its PTY test needs Linux/macOS)
 
 # Single package or test
 go test -tags novoice ./internal/server/...
 go test -tags novoice -run TestChannelOverwriteEndToEndOverWebSocket ./internal/server/... -v
 
-# Race detector — needs a real C toolchain (gcc) on PATH; not always available here.
+# Race detector — needs a C toolchain. On the Windows dev box, use MSYS2's clang
+# from PowerShell (gcc 16.2 is unreliable here, see Build System):
+#   $env:PATH = "C:\msys64\usr\bin;C:\msys64\mingw64\bin;$env:PATH"; $env:CC = "clang"; $env:CGO_ENABLED = "1"
 go test -race -tags novoice -count=1 ./...
 
 # Lint (golangci-lint, installed on demand by the Makefile target)
@@ -54,6 +58,70 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 - `voice_engine.go` — `//go:build !novoice` (real audio engine, CGO)
 - `voice_engine_stub.go` — `//go:build novoice` (stub, CGO-free)
 
+**Windows client static linking (added 2026-09-08):** `build-windows`'s client link step passes `CGO_LDFLAGS="-LC:/msys64/mingw64/lib -Wl,-Bstatic -lopusfile -logg -lopus -Wl,-Bdynamic -lm"` so `concord-client.exe` has no `libopus-0.dll`/`libopusfile-0.dll`/`libogg-0.dll` runtime dependency (only malgo's bundled `miniaudio.c` was ever static before this). **`pkg-config --static --libs opus opusfile` alone does NOT work** — it only adds transitive libs like `-logg`, but MinGW's linker still prefers each lib's `.dll.a` import archive over its `.a` static archive regardless of that flag; the explicit `-Wl,-Bstatic ... -Wl,-Bdynamic` wrap is what actually forces static resolution. Verify with `objdump -p build/concord-client.exe | grep "DLL Name"` (should show only `KERNEL32.dll`/`msvcrt.dll`) or by moving the exe to a directory with no MSYS2 DLLs on `PATH` and launching it.
+
+---
+
+## Distribution & Release
+
+**`.github/workflows/release.yml`** (has built every release since `v0.1.0-rc1`): triggers on a `v*` tag push or manual `workflow_dispatch`. Builds server+client(voice)+hub natively per-OS (`windows-latest` via MSYS2+clang mirroring `build-windows`, `macos-latest` via `brew install opus opusfile`, `ubuntu-latest` via `apt-get install libopus-dev libopusfile-dev`) — native runners sidestep the voice-enabled-cross-compilation problem entirely rather than trying to solve it. Publishes a **draft** GitHub Release with all three platforms' artifacts attached; review before publishing. The `dist` Makefile target remains the quick local CGO-disabled/`novoice`-only cross-compile path for ad-hoc protocol-level testing on another OS — this workflow is the real path to voice-included cross-platform releases.
+
+**`Dockerfile` / `docker-compose.yml` / `.dockerignore`** (in use: the official VPS and VM 113's test server both run them): multi-stage build (`golang:1.24-alpine` → `alpine:3.20`), contains only `concord-server` and `concord-hub` (both pure Go, no CGO) — the client is a TUI app and isn't a sensible container workload. Neither binary gets new non-interactive bootstrap config support; both already skip their first-run wizard whenever their config file exists, so the documented pattern is run-once-interactively-to-generate-config, then mount that file for all subsequent detached runs. See `docker-compose.yml`'s own top comment for the exact one-time setup steps.
+
+**The guided installer (To Do E/G, 2026-10-03): `cmd/install` (`concord-install`) + `internal/installer`.** The README's one line downloads `scripts/install.sh` (Linux/macOS) or `scripts/install.ps1` (Windows) from the latest release. Each fetches `concord-install-<os>-<arch>`, checks it against `SHA256SUMS`, and runs it with the terminal (`</dev/tty`).
+- **The program** is one Bubble Tea program (`cmd/install/model.go`):
+  - the grapes' entrance;
+  - the Huh questions (`views.go` `questions`): components, folders, server name/port/admin email, when it runs, Grapevine listing, hub peering;
+  - the Server Terms (embedded by the `legal` package) for a new server;
+  - a review (install / change / quit), then the checklist with grape quips;
+  - confetti, then "join the official server? open Concord now?";
+  - a summary printed to the terminal, so it stays.
+  - **Huh is pinned at v0.6.0:** later versions raise bubbles past the client's 0.20 (see the pinning rule in the SDK section).
+- **The work** (`internal/installer`, no terminal needed):
+  - `release.go` fetches a release (GitHub digest or `SHA256SUMS`);
+  - `configs.go` writes `concord-server.toml`/`grapevine-hub.toml` from mirrored structs, held to the real ones by `configs_test.go`, so the first-run wizards are skipped;
+  - `deps.go` finds and installs the client's missing libraries (Linux: `ldd` → apt/dnf/pacman/zypper; macOS: `otool` → Homebrew);
+  - `autostart.go` sets up starting: systemd system or user units, LaunchDaemon/LaunchAgent, or on Windows a hidden PowerShell launcher run by a SYSTEM boot task or the HKCU Run key;
+  - `steps.go` runs it all.
+  - A component whose settings file is already in its folder is **updated**: stopped, program swapped (renamed aside, which works on a running Windows exe), settings kept, restarted.
+- **Windows boot mode** (the default everywhere it's possible: "Always: in the background from startup"):
+  - `BootTaskScript` registers a SYSTEM scheduled task at startup that runs the program from its folder through `cmd /c … >> log`, with no time limit and restarts, plus a firewall rule;
+  - without an elevated prompt it runs once through UAC (`Runner.elevated`, `Start-Process -Verb RunAs`);
+  - its PowerShell parses (`TestBootTaskScriptsParse`), but it hasn't run for real yet.
+- **Two Huh v0.6 traps, both hit by Jordan:**
+  - **Group height:** a group measures its height when created, before it knows the width, so a wrapped description pushed the last field (the admin email) out of view while typing still went to it. Build forms with `formBuilder` (`style.go`), which sizes each group after the width is set.
+  - **Going back:** an Input checks itself on Shift+Tab, on blur and before leaving the group, so an invalid entry trapped you. `model.back` turns the checks off until the next key that isn't Shift+Tab.
+  - `TestEmailIsVisibleAndBackAlwaysWorks` drives the real form for both.
+- **The install record and the client's Updates page (2026-10-03):**
+  - **The record:** after each install the installer writes `~/.concord/install.json` (`internal/installer/record.go`: each component's folder, start mode and version). It's keyed on the *plan's* home, never `os.UserHomeDir`, so tests can't touch your real settings.
+  - **Modes for that record:**
+    - `--update` goes straight to the checklist, keeping settings;
+    - `--configure` asks every question again from the current settings (`LoadSettings`), and installing changes only those keys in the existing TOML (`reconfigure.go`), so the Grapevine registration and mail survive;
+    - `--uninstall` asks you to type "uninstall" (unless `--yes`), then removes everything (`uninstall.go`): services and start-up entries, PATH, the Windows Terminal profile, every folder including the server's database, and `~/.concord`.
+    - Files that are still in use on Windows (the running client) are deleted by a hidden PowerShell once its parent process exits.
+  - **Ctrl+U on the login screen** (`internal/client/updates.go`) shows what's installed and the latest release:
+    - **U/C/X** fetch `concord-install-<os>-<arch>` from the release (checked against its checksum) and run it with `--return` through `tea.ExecProcess`;
+    - X first asks you to type "uninstall";
+    - after a client update, Enter restarts into the new version (`App.RestartPath`, run by `cmd/client/main.go`);
+    - for trying it without a release: `CONCORD_INSTALLER=<path>` and `CONCORD_INSTALL_FROM=<folder>`.
+  - **Verified:** `TestRealInstall` now installs, updates and uninstalls on Windows and on VM 113 and finds nothing left.
+- **Never capture the output of something that starts a background process** (`Runner.launch`): it inherits the pipe, and `CombinedOutput` then waits forever. This hung the first Windows test.
+- **Official server and hub addresses** are `internal/official` (placeholders until the official VPS exists); the client's and server wizard's default hub use it too.
+- **The installer's grapes** are `internal/grapes`, a copy of the client's renderer (`TestInstallerGrapesMatchTheClients` keeps them identical; `go run ./tools/grapelogo -pkg grapes -out internal/grapes/logo_data.go`).
+- **Testing:**
+  - `make build-installer`, then `build/concord-install --from build --dry-run` walks everything and changes nothing;
+  - `go test ./cmd/install` drives every stage and a full dry run;
+  - `CONCORD_E2E_SRC=<binaries> go test -run TestRealInstall ./internal/installer` does a real install, start, update and teardown in a temp folder. Verified 2026-10-03 on Windows (Run-key launcher) and on VM 113 (systemd user units, `CONCORD_E2E_REAL_HOME=1`).
+  - **Boot mode across a real restart:** `TestBootStart` (`internal/installer/boot_e2e_test.go`, two runs with a reboot between). **Linux verified 2026-10-09** on VM 113 (systemd system units: both up within a minute of boot, then uninstalled cleanly). **Windows verified 2026-10-09** on Jordan's PC (SYSTEM tasks: both answering after the restart, then removed through one UAC prompt each).
+  - **A SYSTEM task is invisible to a normal user:** `schtasks /Query` says "Access is denied", which once made uninstall skip removing it silently (the programs kept running and their folders couldn't be deleted). `bootTaskExists` treats that answer, or the task's firewall rule, as "it's there".
+  - **Not yet run:** macOS at all, and Linux library installs.
+- **Release workflow changes (unverified until the next tag):**
+  - the Linux build moved to ubuntu-22.04 (older glibc, more distros);
+  - the server and hub are built with `CGO_ENABLED=0` everywhere;
+  - the Linux and macOS clients link Opus statically (warnings, not failures, if that doesn't take);
+  - a `build-portable` job cross-compiles the installer for all five platforms, plus server+hub archives for linux-arm64 and macos-x86_64;
+  - the release gets `SHA256SUMS` and both scripts.
+
 ---
 
 ## Protocol Specification
@@ -63,7 +131,7 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 { "op": 3, "d": { ... }, "s": 42, "t": "EVENT_NAME" }
 ```
 
-OpCodes are defined in `internal/protocol/messages.go` and now run through op `59`. Beyond the original chat/moderation/voice set, later ranges cover: `40-44` retention policy + custom titles, `45-48` voice signaling/moderation, `49-56` the plugin platform (remote-pane enter/input/resize/leave/frame, the generic plugin event envelope, plugin config get/set), `57` channel permission overwrites, `58` self-service nicknames, `59` P2P file-transfer signaling. Always check this file directly for the current, authoritative list rather than trusting a cached mental model of it — it has grown considerably since v0.1.0's initial protocol design.
+OpCodes are defined in `internal/protocol/messages.go` and now run through op `64` (`62` plugin manage, `63` request a thread, `64` mark a thread read). Beyond the original chat/moderation/voice set, later ranges cover: `40-44` retention policy + custom titles, `45-48` voice signaling/moderation, `49-56` the plugin platform (remote-pane enter/input/resize/leave/frame, the generic plugin event envelope, plugin config get/set), `57` channel permission overwrites, `58` self-service nicknames, `59` P2P file-transfer signaling, `60` typing-stop, `61` plugin install (admin-triggered fetch/verify/place, see Plugin Platform below). Always check this file directly for the current, authoritative list rather than trusting a cached mental model of it — it has grown considerably since v0.1.0's initial protocol design.
 
 ### Connection Flow
 ```
@@ -91,8 +159,8 @@ Schema and migrations live in `internal/database/sqlite.go`.
 ## Client Configuration
 
 Stored in `~/.concord/`:
-- `servers.json` — list of known servers (address, port, saved credentials, per-server notification overrides)
-- `config.json` — UI preferences (theme, display settings, audio settings, notification settings, identity)
+- `servers.json` — list of known servers (address, port, saved credentials, per-server notification overrides). `SavedCredentials.ProfileID` records which profile signed in there (see Accounts below)
+- `config.json` — UI preferences (theme, display settings, audio settings, notification settings) and the **profiles** (`identities` + `active_identity`; the legacy single `identity` field is kept equal to the active one and is converted on first load)
 - `shared_files.json` — local registry of files *you've* shared via `/attach` (`SharedFilesConfig`/`SharedFileEntry`), so they stay downloadable by others across your own client restarts — see Peer-to-Peer File Attachments below
 
 Key config structs: `AppConfig`, `UIConfig`, `AudioConfig`, `NotificationConfig`, `DisplayConfig`, `ServersConfig`, `ClientServerInfo`, `SharedFilesConfig`
@@ -103,7 +171,24 @@ Key config structs: `AppConfig`, `UIConfig`, `AudioConfig`, `NotificationConfig`
 
 `concord-server.toml` (auto-generated by first-run wizard; see `concord-server.toml.example` for the documented template).
 
-**Server flags:** `--debug`, `--hybrid` (log + dashboard side-by-side), `--dashboard` (dashboard only), `--setup` (re-run first-run wizard)
+**Server flags:** `--debug`, `--hybrid` (log + dashboard side-by-side), `--dashboard` (dashboard only), `--reconfigure` (re-run first-run wizard), `--test-mail <address>` (send a test email with `[mail]`, then exit), `--reset-password <email>` (give that account a temporary password and sign it out everywhere, then exit; for servers without mail)
+
+---
+
+## Accounts: email verification, password reset, profiles (2026-09-30)
+
+**Server** (`internal/server/accounts.go`, `mail.go`; DB in `internal/database/accounts.go`):
+- **Mail is optional.** `[mail]` in `concord-server.toml` (SMTP only: `smtp_host`, `smtp_port`, `security` = `starttls` default / `tls` / `none`, `smtp_username`, `smtp_password`, `from`, `require_verification`) is set up by the wizard's email step. `MailConfig.VerificationRequired()` is on whenever mail is configured, unless `require_verification = false`. A server without mail behaves as before.
+- **Codes:** 6 characters from an unambiguous alphabet. They're stored as a SHA-256 hash in `account_codes` (one per user and purpose: `verify`/`reset`/`change_email`), expire after 15 minutes, allow 5 wrong guesses, and have a 60s resend cooldown. A per-IP token bucket (`accountLimiter`, 20 burst / 20 per minute) covers login, register and every account route.
+- **Verification:** `users.email_verified` defaults to 1, so existing accounts are grandfathered. Registering on a verifying server answers **202** with no token and emails a code. Login answers 403 `{"code": "verification_required"}` until `POST /api/account/verify` succeeds. Admin-by-`admin_email` is granted only once that address is verified (`accountActivated`). The first-registrant owner grant is unchanged.
+- **Routes** (errors are JSON `{"error", "code"}`): `account/verify`, `account/resend` (needs the password), `account/fix` (correct an unverified account's email/username: the registration typo fix), `password/forgot` (same answer whether or not the address exists; 501 `mail_unavailable` without mail), `password/reset` (signs out every session). Bearer-token routes: `account/password` (signs out other sessions), `account/update` (username now and broadcast as `USER_UPDATE`; a new email waits in `users.pending_email` for `account/confirm-email` on verifying servers).
+- **Emails are compared without case** (`FindUserByEmail` falls back to `COLLATE NOCASE`; new registrations are stored lowercased). Every sign-in logs `from=<ip>`.
+- All HTTP routes are registered once, in `registerAPIRoutes` (all three run modes share it).
+
+**Client** (`account_api.go`, `account_screens.go`):
+- **Profiles:** several `LocalIdentity` per computer, each with a stable `ID`. On the login screen, **Ctrl+P** ("Not you?") opens Profiles: Enter switches (`signOutAll` clears every connection's token first, so nothing reconnects as the old profile), A adds (the identity form in `addingProfile` mode), E edits the alias/email (local, plus `account/update` on every server signed in now; pending email changes queue code screens), P changes the password (on every server: `syncPassword`), F forgets (twice; drops that profile's saved sign-ins).
+- **Auto sign-in** (`ConnectionManager.AutoConnectHTTP`) signs in with the email this profile last used on that server. It **registers only on a server this profile has never signed in to** (`SavedCredentials.belongsTo`). Anywhere else, a wrong password or a taken email is reported rather than creating a second account. If the server's account name differs from the profile's alias, the status bar says so (the 2026-09-29 RedOak/`notagh0st` → `gh0st` case).
+- **Code screen** (`ViewAccountCode`): opens for a new account awaiting verification, on unlock or when its server icon is selected (`App.pendingVerify`). Ctrl+R resends; Ctrl+E fixes the email/alias (also updates the profile). **Ctrl+F** on the login screen is **Forgot password**: pick a server, enter the emailed code and a new password. The client then changes it on every other server (with a live or saved session, or by signing in with the old password, which it still has), and unlocks. A server without mail switches the code field to a **temporary password** from the admin (`--reset-password`).
 
 ---
 
@@ -116,12 +201,14 @@ Parsed and handled in `internal/client/commands.go`.
 ## Voice Architecture
 
 - **Transport:** WebRTC DataChannels (SCTP, unreliable+unordered — UDP-like) via `pion/webrtc/v3`
-- **Codec:** Opus via `hraban/opus` — 20ms frames, 16-bit PCM captured by malgo
-- **Sample rates:** low=8kHz, medium=16kHz, high=24kHz, ultra=48kHz (configurable in Audio Settings)
+- **Codec:** Opus via `hraban/opus` — 20ms frames, 16-bit mono PCM at **48 kHz always** (`voiceSampleRate`), complexity 10, full band, in-band FEC. The Codec Quality preset only sets the bitrate: low 24k, medium 48k (default), high 64k, ultra 96k (`bitrateForPreset`).
+- **Microphone chain (2026-10-02, `sendFrame` + `voice_dsp.go`):** echo cancellation → input gain → 80 Hz low-cut (two biquads) → **RNNoise** noise suppression (`internal/rnnoise`, Xiph v0.1.1 vendored C, cgo; strength blends back (1-s)² of the original) → automatic levelling (speech-only, ±12 dB, soft limiter; `AutoLevelOff` turns it off). Settings from before were migrated once to noise suppression on at 80% (`AudioConfig.ProcessingVersion`).
+- **Packets and loss:** tag `0xC1` + big-endian uint16 sequence + Opus (`voicePacketHeader`). Receivers track sequences per sender (`rxSequence`): a gap of up to 5 frames is filled with PLC plus FEC from the next packet, late/duplicate packets are dropped. The old `0xC0` format (no sequence) is still played, but old clients drop `0xC1` packets, so everyone in a call needs this version.
 - **Signaling:** Server relays SDP offer/answer and ICE candidates via `OpVoiceSignal` (op 45)
+- **Voice belongs to its server, not the screen (2026-10-03, `voice_follow.go`):** `App.voiceConn` is the connection the call is on. Switching servers keeps the call; signals, speaking state, mute/deafen and leaving all go to `voiceConn`, and only its events touch the engine. Joining voice elsewhere leaves the old call first; only that server dropping ends it. The status bar shows `🔊 Server › channel` while another server is on screen.
 - **Collision resolution:** Peer with lexicographically lower UUID string sends the Offer
 - **Audio I/O:** `gen2brain/malgo` (miniaudio) with WASAPI on Windows
-- **VAD:** Voice Activity Detection with 300ms hold duration; PTT mode also supported
+- **VAD:** Voice Activity Detection with 300ms hold duration and adjustable sensitivity; with noise suppression on, it uses RNNoise's speech probability (`speechThreshold`) instead of loudness, so keyboards and coughs don't open the mic (no push-to-talk mode -- removed 2026-09-28, see git history)
 - **Build:** Default build includes voice (`!novoice` tag). Use `-tags novoice` for CGO-free build.
 
 ---
@@ -151,22 +238,127 @@ Hub REST routes are registered in `internal/hub/handlers.go` (`/v1/...`).
 
 ## Plugin Platform
 
-External programs attach to a Concord server as privileged clients — bots, integrations, anything that needs to read/post messages or drive a custom UI pane. Package `internal/plugins`; entry point `cmd/testplugin` is the minimal reference implementation (real plugins — Tukan, Mynah — live in sibling repos, not this one).
+External programs attach to a Concord server as privileged clients — bots, integrations, anything that needs to read/post messages or drive a custom UI pane. Package `internal/plugins`; entry point `cmd/testplugin` is the minimal reference implementation (real plugins — Tukan, Mynah, and the three games — live in their own repos, all on the SDK since 2026-09-28: Tukan hosts a board per channel through `pane.Host`, Mynah streams AI replies with `Conn.Stream`).
 
-- **Never compiled into or dynamically loaded by Concord.** A plugin is a folder dropped into the server's configured `plugins_dir` (`Plugins/<name>/`), containing its own OS binary plus a `plugin.toml` manifest (`internal/plugins/manifest.go`). Installing/upgrading a plugin is "drop a folder in, restart" — zero code changes on Concord's side.
+- **Never compiled into or dynamically loaded by Concord.** A plugin is a folder dropped into the server's configured `plugins_dir` (`Plugins/<name>/`), containing its own OS binary plus a `plugin.toml` manifest (`internal/plugins/manifest.go`). Installing, updating and removing a plugin never needs code changes on Concord's side, nor (since Phase 0c) a server restart: see the live lifecycle bullet below.
 - **Discovery → provision → spawn → identify**, in that order: `Registry.Discover` (`registry.go`) parses and validates every manifest in `plugins_dir`; `Manager.LoadAll`/`ensureInstalledPlugin` (`manager.go`) provisions a DB-backed service-account user + a hashed bearer token (`token.go`, same SHA-256-at-rest pattern as session tokens) the first time a plugin is seen; `process.Supervisor` (`process.go`) launches the manifest's per-OS entrypoint as a child process and restarts it on crash (backoff/max-restarts from `[process]`). The plugin process then dials the normal server WebSocket and authenticates with `OpIdentify{ClientType: "plugin"}` using that token.
 - **Two channel-interaction models**, both declared per `[[channel_kind]]` in the manifest: a plain relay channel (chat messages forwarded to the plugin, either because the plugin owns the channel or via `@mention` triggering) that renders as an ordinary text channel — used by chat-bot-style plugins like Mynah; or a **remote pane** (`remote_pane = true`) where the plugin pushes full rendered frames (`OpPluginPaneFrame`) and the client forwards raw key input (`OpPluginPaneInput`) for whichever viewers currently have that channel focused (`OpPluginPaneEnter`/`Resize`/`Leave`) — used by Tukan's kanban board.
-- **Generic, manifest-driven config UI** — both plugin-level settings (`[[server_config_field]]`) and per-channel-kind creation fields (`[[channel_kind.create_field]]`) are typed field descriptors (`text`/`number`/`boolean`/`select`/`channel_select`) rendered by one generic form on the client (`plugin_channel_form.go`, Settings > Plugins) — a new plugin never needs bespoke client-side UI code, just manifest entries.
-- **Multi-install of the same underlying plugin is supported** — two folders with the same binary but different `[plugin].id` run as fully independent installs (separate service account, process, channel, config). Set `[plugin].product` when several personas share one identity (e.g. Mynah's "Burt"/"Alice") so Settings > Plugins can group them.
+- **Generic, manifest-driven config UI** — both plugin-level settings (`[[server_config_field]]`) and per-channel-kind creation fields (`[[channel_kind.create_field]]`) are typed field descriptors (`text`/`number`/`boolean`/`select`/`channel_select`/`channel_multi_select`/`secret`, each with optional `help` text; `channel_multi_select` is comma-separated channel IDs, edited with a checklist, `channelPicker` in `plugin_fields.go`) rendered by one generic form on the client (`plugin_fields.go`'s `writePluginField`, used by both forms) — a new plugin never needs bespoke client-side UI code, just manifest entries. Values are validated server-side against the manifest (`plugins.ValidateValues`) before anything is saved, for both server settings and channel settings; a rejected save comes back per field (`PluginManageResult.FieldErrors`) and the form stays open to show it. `secret` fields (server settings only) are sealed with AES-GCM using `plugin-secrets.key`, which sits beside the database. Admin clients only ever see which secrets are set (`PluginInfo.SecretsSet`); the plugin receives the plaintext.
+- **Where plugin settings live in the client (2026-09-30).**
+  - **Channel settings** (`create_field`) sit behind a **Configure…** row on the Create/Edit Channel form (`renderChannelConfigPage`), never inline, so a long list can't push the form off screen. The form and every plugin settings page scroll (`newScrollSection`/`markFocus` in `settings_view.go`).
+  - **Plugin-wide settings** are on the **plugin's page**: Settings > Plugins > Enter (`plugin_page.go`). It shows the plugin's settings, or each instance with its settings, plus every channel using it (Enter edits one; **+ New channel** opens the create form with its type chosen).
+  - The channel-type list shows only the **current server's** plugin kinds (`currentServerKinds`), each plugin once (instance kinds are folded into their base).
+- **Instances (2026-09-30)** — `[plugin] instances = true` lets an admin run several named copies (personas, e.g. Mynah's "Alice"/"Burt") of **one install**.
+  - Stored in the `plugin_instances` table (`internal/database/plugin_instances.go`). `Manager` expands each base plugin into its instances (`internal/plugins/instances.go`, `withInstances`). An instance's manifest shares the base's folder, sets `BaseID`, and takes the instance name as `Name`. Each instance has its own ID (`<base>-<slug>`), service account, process, settings, channels and data dir.
+  - Managed through `OpPluginManage` actions `add_instance`/`rename_instance`/`remove_instance`/`adopt_instance` (plugin page keys: `+ Add instance`, N, R, T, X twice). Renaming also renames the service account. Removing keeps the account, settings and channels. Updating the base restarts every instance.
+  - The client's Plugins list (`PluginList`) hides instances; `AllPlugins` has everything.
+  - **Adopt** (M in the list) turns an older hand-copied persona folder (same `product`, its own `[plugin].id`) into an instance of the base, keeping its ID and so its account, channels and settings. Its folder moves to `.backup/<id>.adopted`. The old separate-folder approach still works, but is no longer the recommended one.
+- **@mention relay** (`internal/server/handlers.go`): a message in a channel the plugin doesn't own is forwarded when its `mention_enabled` setting is `"true"`, the message @mentions `mention_trigger` (empty = the plugin's/instance's `Name`), and the channel is in `mention_channels` (a `channel_multi_select`; empty = every channel). Owning channels and answering mentions combine, which gives dedicated-only, mention-only and hybrid modes. See `mention_relay_test.go`.
 - **A plugin only learns about its owned channels at identify/reconnect time** (`GetChannelsByPlugin`, pushed on every identify) — there's no separate "plugin channel registry" push mechanism, so if you add a new way for a plugin to need channel state, make sure it's covered by that same identify-time push, not just the live `CHANNEL_CREATE` event.
+- **Pane viewers and multiplayer (Phase 0b, 2026-09-27).** The server's routing table for remote panes is `PaneViewers` (`internal/server/pane_viewers.go`, handlers in `plugin_pane_handlers.go`).
+  - **Enter** is the only step that touches the DB: it checks channel ownership and View Channels, stamps `ViewerName`/`ViewerDisplayName`, and records the viewer. Input and Resize are relayed only from registered viewers; frames and viewer-directed events are delivered only to them.
+  - A frame with an empty `ViewerID` goes to every viewer of the channel.
+  - A viewer is tied to the **connection** that entered (`paneViewer.conn`): frames and viewer-directed events go to that connection only, and only it can type or resize. Opening the pane on a second device moves it there (the plugin gets a fresh Enter) and the first device is sent `leave_pane`; closing the first device then isn't a Leave.
+  - When a viewer's connection closes, the server sends the plugin a Leave itself (`Hub.SetClientGoneCallback`).
+  - When a plugin identifies, the server replays Enter (latest size, theme and names) for everyone already viewing its channels, so a restarted plugin repaints them with no action from the viewer.
+  - Enter and Resize carry the viewer's `PaneTheme` (palette + color profile).
+  - Event kinds Concord understands are the `protocol.PluginEvent*` constants: `notify`, `leave_pane`, `notify_user` (toast + badge to one member who can see the channel), `members` (request/reply: who can see a channel, online, viewing), and `pane_title` (border title).
+  - **Client (`plugin_pane.go`).** The wire lifecycle is driven by `syncPluginPane` on a short timer, scheduled from the `Update` wrapper, rather than from each code path that changes channel, layout or connection. It sends Enter once a selection has settled for 150ms (or immediately when focused), so arrowing past plugin channels sends nothing. It sends Resize whenever the size the pane was actually drawn at, or the theme, changes, and re-enters after a reconnect.
+  - **Keys and leaving a pane (2026-10-02).** A pane is a stop in the Tab ring like any channel's messages (channels → pane → members; pane channels skip the message box, `cycleFocus`). **Esc, Tab and Shift+Tab are Concord's unless the frame on screen claims them** (`PluginPaneFramePayload.Keys`; client code: `claim_keys`, which applies while its own frame shows): unclaimed, Esc and Shift+Tab go back to the channel list and Tab on to the members (`paneNavigationKey`). Plugins claim Esc only while there's something to cancel, Tab/Shift+Tab while a form is open (SDK: `pane.KeyClaimer`, `table.Typer`, `client.ClaimKeys`; `sdk/pty` claims all three while its program runs). The table kit's menu moved from Tab to **M**. **Ctrl+] is always reserved** and always hands focus back, as does `leave_pane`. The pane's border title says how to leave (Esc, or Ctrl+] while Esc is claimed). None of these closes the pane — it stays open and keeps updating, and only switching channel or server sends a real Leave.
+- **Trust boundary (Phase 0a of the plugin foundation plan, 2026-09-27).** A plugin is code the server runs with its own privileges, so everything plugin-admin-related (`OpPluginConfigGet/Set`, `OpPluginInstall`) requires the dedicated `PermissionManagePlugins` (bit 9), not `ManageServer`. Other rules:
+  - A plugin process inherits only an allowlist of the server's env vars (`pluginBaseEnv`, `internal/plugins/util.go`: paths, locale, temp, TLS roots, proxies) plus its manifest `[process.env]` and the `CONCORD_*` vars. Anything else a plugin needs must go in its manifest.
+  - Each plugin gets `CONCORD_PLUGIN_DATA_DIR` = `<plugins_dir>/../PluginData/<id>` (0700), which lives outside `Plugins/` so a reinstall never wipes it.
+  - The server rejects frames for channels the plugin doesn't own, and stamps each frame with the plugin connection's `Epoch`, so the client accepts a restarted plugin's reset `Seq`.
+  - The client strips every escape sequence from frames except SGR and OSC 8 (`sanitizePaneFrame`).
+  - Deleting a plugin channel (directly, or via its category) sends `CHANNEL_DELETE` to the owning plugin (`notifyOwningPlugin`).
+  - `channel_select` field values are channel **IDs**. The client shows them as `#name`, and `migrateChannelSelectNames` converts old name-valued settings at startup.
+  - A plugin reconnecting before its old socket's cleanup runs is just a second connection for a moment; the old one's cleanup only removes itself (see Multiple connections below).
+- **Live lifecycle (Phase 0c, 2026-09-27)** — install, update, uninstall, restart and rescan all happen without restarting Concord, driven by `OpPluginManage` (op 62, `PermissionManagePlugins`). `OpPluginInstall` (61) is kept as its install-only alias. Settings > Plugins keys: `I` install, `U` update, `R` restart, `X` uninstall (press twice), `S` rescan, `T` enable/disable, `M` adopt a persona copy as an instance, `Enter` the plugin's page (settings, instances, channels).
+  - **Actions run off the admin's read loop.** The outcome arrives as `EventPluginManageResult`, then the refreshed plugin list. Every change to the set of plugins pushes `EventPluginRegistryUpdate` to all clients. The client keeps each server's channel kinds on its own `ServerConnection` and uses the union as `App.pluginChannelKinds`, so new channel types are available without reconnecting.
+  - **`Manager` (`internal/plugins/manager.go`)** serializes every lifecycle operation behind `opMu`; `mu` guards the maps and the published `Registry`. A `Registry` is immutable once published (`with`/`without`/`Discover` build new ones).
+  - **`Supervisor` (`process.go`) is single-use**: every (re)start builds a new one with a fresh token. `Stop` is safe mid-spawn or mid-backoff and waits for the loop to exit, so a stopped plugin can't spawn again. Crash backoff doubles from `restart_backoff_seconds` (default 2s) up to 60s, and resets after a run of 60s or more. `max_restarts` counts consecutive crashes.
+  - **Stopping a plugin** also disconnects its service account (`onPluginStopped` → `Hub.DisconnectUser`).
+  - **Sources (no checksum or plugin ID to type):** an admin enters one thing, and `ResolveSource` (`internal/plugins/source.go`) turns it into a download:
+    - `owner/repo`, or its github.com URL → the latest release's `.zip` for the server's own OS and CPU (`pickAsset` matches `linux`/`windows`/`darwin` plus `amd64`/`x86_64`/`arm64`… as separate words in the asset name). A single platform-neutral zip is also accepted.
+    - Any other github.com link into the repo (its Releases page, a file view) → the same; a release's own page (`/releases/tag/<tag>`) → that release. People paste whatever is in their address bar, and before 2026-09-28 those links were downloaded as HTML and failed with "not a valid zip file"; a downloaded web page now gets an error saying what to type instead.
+    - A GitHub release-asset link → that file.
+    - Any other https link → that file.
+
+    Verification is automatic: GitHub's own per-asset `digest` (the REST API has published one for every release asset since 2025), else a `<url>.sha256` file, else https alone. The result message says which was used. The plugin ID comes from the archive's `plugin.toml`; for an update it must match the plugin being updated. An update with nothing typed uses the manifest's `[plugin].source_url`, so updating is `U`, Enter. An optional `SHA256` in the request still pins a checksum.
+  - **Fetching:** `FetchToStaging` downloads and verifies the archive, extracts it (a zip wrapped in a single top-level folder is unwrapped) into `Plugins/.staging/fetch-*/<id>`, validates the manifest and marks the entrypoint executable. Install is https-only except for loopback. Dot-folders under `Plugins/` are never treated as plugins. `DiscardStaged` only ever deletes a `.staging/fetch-*` slot: a bug that pointed it at an installed plugin's parent once deleted the whole plugins folder in tests. `.tar.gz` assets aren't supported yet; plugin releases should ship `.zip`.
+  - **`Update`:** moves the current folder to `Plugins/.backup/<id>`, swaps the new one in, starts it and waits for it to identify (`MarkRunning`, up to `startup_timeout_seconds`, default 20s). If it doesn't, the old version is restored and restarted automatically, and the failed one is kept at `.backup/<id>.failed`.
+  - **`Uninstall`** deletes only the plugin folder. `PluginData/<id>`, the service account and its channels are kept for a reinstall.
+  - `[plugin].source_url` is still only informational; there's no auto-update polling or catalog yet (Phase 2).
+- **Client parts: pictures and sounds (To Do D1, 2026-09-30 → 10-01).** A plugin's `client/` folder (`internal/plugins/client_bundle.go`: allowed types only, 50 MB cap, SHA-256 per file) is indexed at load, advertised to clients as `PluginClients` in READY and the registry update, and served at `GET /api/plugins/client/{id}/{path}` (Bearer auth, `internal/server/plugin_client.go`). The client fetches, verifies and caches files in `~/.concord/plugin-cache/<sha>` (`plugin_images.go`).
+  - **Pictures** ride on frames (`PaneImage{Asset, Col, Row, Cols, Rows}`). `graphics.go` detects Kitty, Sixel or iTerm2 once at startup (a Kitty query, `CSI 16 t` for the cell size, DA1). Settings > Display > Plugin Pictures can force a method or turn them off; everything else gets colored half-blocks, and macOS Terminal gets a hint naming better terminals.
+  - **Sixel and iTerm2 fight Bubble Tea's line-diff renderer.** Pictures are emitted as escape codes appended to the last line (printable text past the width is truncated), positioned by zero-width OSC markers (`\x1b]8337;N\x07`) inserted *after* splicing, and repainted only when rows under them change. Old pixels are erased with ECH, never by printing spaces. **Never use `ansi.Truncate`/`TruncateLeft` around markers**: they copy every escape sequence across the cut in both directions, which duplicated pictures. `cutCells` carries only SGR, and `styleAt` keeps the cell background under a picture.
+  - **Sounds**: the `play_sound` event plays WAV (8/16-bit PCM) or Ogg Opus through a separate malgo device (`sfx.go`, `sfx_stub.go` for `novoice`). Settings > Audio > Plugin Sounds has mute and volume (`AudioConfig.PluginSoundsMuted`/`PluginSoundVolume`).
+  - Author docs: `.claude/skills/concord/media.md` and `sdk/PROTOCOL.md`. Reference plugin: `JMThomas00/concord-tictactoe`.
+  - **Testing note:** if colors are missing in screenshots of a client launched from an agent session, check for `NO_COLOR=1` in that environment before suspecting Concord.
+- **Achievements, records and leaderboards (2026-10-03).**
+  - **Declared:** plugin.toml's `[[achievement]]` (id, name, description, tier, icon, secret; `internal/plugins/achievements.go`) and `[leaderboard] stat`/`label`. Advertised as `PluginBoards` in READY and the registry update.
+  - **Records:** a plugin sends one member's record with event kind `record` (`wire.PluginRecord`: stats plus unlocked ids; `Conn.SendRecord`). The server drops undeclared ids, keeps each unlock's first date, stores it in `plugin_records` (`internal/server/plugin_records.go`), and pushes `PLUGIN_RECORDS` to that member (all their records again on every sign-in).
+  - **Leaderboards:** `GET /api/plugins/leaderboard/{id}` ranks the top 10 by the stat's `num`, plus your place. `POST /api/account/leaderboard {"visible"}` keeps you off a server's boards (`users.leaderboard_hidden`; on by default).
+  - **Client:** `plugin_records.go` stores records, toasts fresh unlocks, and sums wins into Concord's own game achievements. Settings > About > **A** opens the Achievements page (`achievements_page.go`): a Concord tab, then one per plugin per server, alphabetical, each showing stats, leaderboard (V hides you, R refreshes) and achievements.
+  - **Table kit:** keeps every player's record (`sdk/table/records.go`: wins, losses, draws, streaks) and unlocks the standard achievements (`table.StandardAchievementsTOML` for plugin.toml), plus `Rules.Awards` for a game's own.
+- **Client code: sandboxed WebAssembly (To Do D2, 2026-10-01).** `[client] wasm`/`capabilities`/`publisher_key`; the module runs inside each viewer's client next to the pane (`internal/client/plugin_code.go`, wazero, one instance per open pane on its own goroutine, no filesystem/network, 256 MB, 2 s per event, then stopped).
+  - **ABI:** module `concord`, JSON: `next_event` (blocking pull), `call` (`{"fn"}`; negative = error code), `result`. Documented in `sdk/PROTOCOL.md`; the Go side is `sdk/client` (+ `sdk/client/clienttest` for plain `go test`). Capabilities: `pane` (frame/clear_frame/forward_keys/timer), `images`, `sound`, `storage` (1 MB per plugin+publisher in `~/.concord/plugin-data/`), `server` (`client_message` events both ways: `plugin.Handler.OnClientMessage` / `Conn.SendToClient`; members may send only that event kind, only for a pane they entered, ≤ 64 KB, `handleViewerClientMessage`).
+  - **Trust:** `<wasm>.sig` = ed25519 signature by `publisher_key` (`sdk/codesign`; `concord-plugin keygen` / `sign`). The server checks it at install (`FetchToStaging`) and before advertising (`VerifyClientCode`); clients check again. Consent (`plugin_code_consent.go`) asks in the pane (A allow / N not now / D don't allow), remembered per plugin + key in `~/.concord/plugin-code.json`; a changed key or new capabilities asks again. Settings > Display > Plugin Code (ask/never) and "Plugin Code Answers" (forget).
+  - **wazero's compiler crashed at random on Sequoia's i9-14900K** (different panic site each run, even single-threaded on identical input: hardware or a wazero bug, unresolved). So **the interpreter is the default**; `CONCORD_WASM_COMPILER=1` opts in to the compiler, whose panics are recovered with a permanent fallback to the interpreter. Revisit after testing on other hardware. wazero is pinned at **v1.11.0**: v1.12 needs Go 1.25.
+  - **Example:** `sdk/examples/reflex` (reaction-time game: all play in client code, server half keeps a leaderboard; `go run build.go` builds and signs). Author guide: `.claude/skills/concord/client-code.md`.
 
 ---
+
+## Plugin SDK (`sdk/`)
+
+Plugins are built on the SDK, a **separate Go module** nested in this repo: `github.com/JMThomas00/Concord/sdk`.
+
+- **Releases are git tags.** `sdk/vX.Y.Z` releases the SDK and `sdk/pty/vX.Y.Z` releases the terminal passthrough module. Published: `sdk/v0.1.0` and `sdk/pty/v0.1.1` (2026-09-28), then `sdk/v0.2.0` (network play), `sdk/v0.3.0` (`computer_level` channel setting, scaffolder fixes), `sdk/v0.4.0` (streamed replies: `PostMessage`, `EditMessage`, `Stream`) , `sdk/v0.4.1` (plugintest: stable author IDs via `UserID`, `DrainEvents`), `sdk/v0.4.2` (`PluginInfo.BaseID`/`AllowsInstances` for instances), `sdk/v0.5.0` (pane images and sounds: `Conn.FrameWithImages`, `Conn.PlaySound`, `pane.Imager`, table `Rules.Sound`), `sdk/v0.5.1` (standalone play against the computer: every earlier version rejected the computer's own moves), `sdk/v0.6.0` (client code: `sdk/client` + `clienttest`, `sdk/codesign`, `Handler.OnClientMessage`, `Conn.SendToClient`, `concord-plugin keygen`/`sign`) and `sdk/v0.7.0` (navigation-key claims: `Conn.SendFrame`, `pane.KeyClaimer`, `table.Typer`, `client.ClaimKeys`; the table menu moved from Tab to M), `sdk/v0.8.0` (`game_result`: the table kit tells each player how a game ended, for their achievements), `sdk/v0.9.0` (records: `Conn.SendRecord`, `wire.PluginRecord`; the table kit keeps records and standard achievements, `Rules.Awards`), `sdk/v0.10.0` (threads: `ChatMessage.ThreadID`, `SendThreadMessage`, `PostThreadMessage`, `Stream.ThreadID`; `plugintest.ThreadChatMessage`), with `sdk/pty/v0.1.2` (claims Esc/Tab/Shift+Tab while its program runs).
+- **Don't use `sdk/pty/v0.1.0`.** It was tagged before its `go.mod` named a real SDK version, and a published tag is never moved.
+- **After tagging either module,** bump the scaffolder's `--sdk-version`/`--pty-version` defaults (`sdk/cmd/concord-plugin/main.go`) so new plugins start on it.
+- **Before tagging `sdk/pty`,** make sure its `go.mod` requires an SDK version that's already tagged. Its `replace ../` only applies inside that module, so other repos ignore it. Concord's root `go.mod` uses it through `replace … => ./sdk`, so a change to both sides lands in one commit. The root `./...` does **not** include `sdk/`: test it with `cd sdk && go test ./...`; `make test` and `make fmt` do both. The Dockerfile copies `sdk/go.mod`/`go.sum` before `go mod download`.
+
+- **`sdk/wire`** is the single definition of everything a plugin sends or receives. `internal/protocol` **aliases** the plugin payload types (`PluginPane*`, `PluginEvent*`, `PaneTheme`, `PluginInfo`/`PluginField`/`PluginConfigListPayload`, and the event-kind constants), so edit them in `sdk/wire`, not in `internal/protocol`. The SDK's slim mirrors of Concord's own types (opcodes, event names, `Channel`, `User`, chat messages) are held to the server's actual JSON by `internal/protocol/wire_contract_test.go`.
+- **`sdk/plugin`** is the runtime:
+  - `ConfigFromEnv()` returns ok=false when not launched by Concord (run standalone).
+  - `Run(ctx, cfg, Handler)` identifies, reconnects with backoff, and exits on `ErrRejected`. Callbacks run one at a time on one goroutine, in order.
+  - `Conn` has helpers: `Frame`/`Broadcast` (automatic per-frame `Seq`), `Notify`, `NotifyUser`, `SetTitle`, `LeavePane`, `SendMessage`, `EditMessage`, `Typing`, and three that block (call them from a goroutine, not a callback): `RequestMembers`, `PostMessage` (returns the new message ID, from Concord echoing a plugin's own post with its nonce) and `Stream` (a reply written as it arrives: posted with `stream: writing`, grown by edits that don't mark it edited, finished with `stream: done`, split past 2000 bytes; the client shows a cursor and closes unfinished markdown meanwhile, `streamingMarkdown`).
+  - `Run` returns only after the callback in progress finishes, however it ends.
+- **`sdk/pane`** runs Bubble Tea models as panes: one model per viewer, fed `tea.WindowSizeMsg` and rebuilt `tea.KeyMsg`s (`pane.KeyMsg`).
+  - `Host.Broadcast(channel, msg)` re-renders every viewer of a channel after shared state changes.
+  - `tea.Quit` hands that viewer's keys back to Concord.
+  - Frames are clamped to the pane (`pane.Fit`), rendered in true color, and downsampled per viewer with `colorprofile`.
+  - Cursor-blink commands are skipped without being called, since calling one blocks about 530ms (the Tukan lesson).
+- **`sdk/table`** hosts turn-based games. A game implements `Game` (`Turn`/`Play`/`Outcome`; moves are strings, and saved games are just the move list replayed) plus `Rules.NewBoard`, a Bubble Tea board that reads and moves through a `*Seat`. The kit supplies everything else:
+  - **Seating modes**, from the channel's `seating` create_field: `seats` (one table, sit down), `challenge` (a lobby: challenge members, accept or decline) or `private` (only the two players see a game). `allow_spectators` and `computer_opponent` are the other channel settings it reads.
+  - **Table menu.** Tab is reserved for it (sit, stand, resign, rematch, add computer, lobby); every other key goes to the board.
+  - **Computer opponent** via `Rules.AI`, run off the event loop and posted back with `Conn.Post`.
+  - **Turn notifications:** a "your turn" `notify_user` when the next player isn't watching.
+  - **Saving:** JSON under `$CONCORD_PLUGIN_DATA_DIR/tables/`.
+  - **Change batching:** changes made during one event are saved and redrawn once, at the end of it (`Kit.flush`).
+  - **Standalone play:** `table.RunLocal(rules, opts)` runs the same board as a terminal game: hotseat, against the computer, or **over the network** (`netplay.go`).
+    - One player hosts on TCP port 7412 (or any free port) and is shown their LAN addresses and a 6-character join code; the other joins with `address code`. Moves travel as JSON lines, and the host sits in seat 0.
+    - Both sides validate every move and number it, so drift disconnects rather than diverging.
+    - A board's `tea.Quit` is ignored standalone (`noQuit`); it only means "hand keys back" inside Concord.
+- **`sdk/pty`** is a **separate module** (`github.com/JMThomas00/Concord/sdk/pty`). It runs an unmodified terminal program in a pseudo-terminal behind an `x/vt` emulator and shows it in a channel. One viewer drives (the first; `Options.Shared` lets everyone type), and the pane title says who. It's Linux/macOS only (Windows needs ConPTY). It's its own module because `x/vt` needs newer x/ansi/runewidth/colorprofile, which would otherwise float into the client (see the pinning rule below).
+- **`sdk/cmd/concord-plugin new <name> --template game|pane|bot|pty [--sdk path]`** scaffolds a plugin repo:
+  - `main.go`, `plugin.toml`, a README and `.gitignore`;
+  - `release.go` (pure Go, so no make or zip is needed), which builds `dist/<id>_<os>_<arch>.zip` for linux/darwin/windows × amd64/arm64 and stamps the git tag into `plugin.toml`;
+  - a GitHub Actions workflow that attaches those zips to a release on each `v*` tag.
+
+  The zips are exactly what `ResolveSource`/`pickAsset` look for. Its templates use `<% %>` delimiters, because TOML's `[[channel_kind]]` collides with `[[ ]]`.
+- **`sdk/examples/tictactoe`** is the reference game: rules, board, a three-level computer, one binary for standalone and plugin, and a `plugin.toml`. The table kit's tests run against it. The full games are their own repos: `JMThomas00/concord-checkers`, `concord-tak` and `concord-chess` (each `engine/` + `game/`, perft-tested, released as `v0.1.0`).
+- **The `/concord` skill** (`.claude/skills/concord/`: `SKILL.md` plus topic guides) teaches an agent to build, test, package and install plugins using only the SDK. Keep it in step with the SDK: a changed helper, key, field type or install step belongs in the matching guide.
+- **`sdk/PROTOCOL.md`** is the wire protocol for plugins written in other languages.
+- **`sdk/plugintest`** is a fake Concord server for plugin unit tests. It sends Enter, Key, Type, Resize and Leave, plus channels, settings, chat and custom events, and reads back frames, events and chat. It also flags frames sent to non-viewers, frames taller than the pane, and a non-increasing `Seq`.
+- **`cmd/testplugin`** is the smallest SDK plugin, and the server and client integration tests spawn it against the real server.
+- **Keep the SDK's shared dependencies pinned to Concord's versions** (bubbletea, bubbles, lipgloss, x/ansi, colorprofile, runewidth, go-colorful, x/term). Go's module resolution takes the highest version any module asks for, so an SDK `go mod tidy` that floats one of them upgrades the client's UI stack too. This happened once: bubbles went 0.20 → 1.0 and runewidth 0.0.16 → 0.0.19. After tidying the SDK, check `git diff go.mod` at the root.
 
 ## Permissions & Channel Overwrites
 
 - **Base model**: a `Permission` bitfield (`internal/models/role.go`) on each `Role`; a member's effective permissions are the union (OR) of their roles' bitfields. `PermissionAdministrator`, and the server owner regardless of roles, bypass every check.
 - **Channel-level overwrites** (added post-v0.1.0-initial-scope, part of the same initiative that added plugins/nicknames/attachments): a channel can carry per-role or per-member Allow/Deny/Inherit overwrites, resolved by `hasChannelPermission` in `internal/server/handlers.go` — member-specific overwrite wins over any role overwrite, which wins over the `@everyone` overwrite, which falls back to the role-bitfield result if left at `Inherit`. Owner/Administrator bypass this resolution entirely, same as the base model.
-- **Only `PermissionSendMessages` and `PermissionAttachFiles` currently route through `hasChannelPermission`.** Don't assume every permission the Roles editor lets you toggle is actually enforced server-side for a given action — check whether the relevant handler calls `hasChannelPermission` (or does its own role-bitfield check) before relying on it. `PermissionCreateInvite` in particular is defined but unused — invites are a designed-but-not-built feature (no code exists yet).
+- **Only `PermissionSendMessages`, `PermissionAttachFiles`, `PermissionViewChannels` (plugin pane Enter/Resize/Input and opening a thread only), and since 2026-10-09 `PermissionConnect` (joining voice) and `PermissionSpeak` (without it you join voice server-muted) currently route through `hasChannelPermission`.** `` gets Connect, Speak and Use Voice Activity by default; existing servers got them once through `runOnce` (`internal/database/sqlite.go`, table `migrations_done`), the place for any data migration that mustn't repeat on every start. Don't assume every permission the Roles editor lets you toggle is actually enforced server-side for a given action — check whether the relevant handler calls `hasChannelPermission` (or does its own role-bitfield check) before relying on it. `PermissionCreateInvite` in particular is defined but unused — invites are a designed-but-not-built feature (no code exists yet).
 - **Self-service nicknames**: `PermissionChangeNickname` is granted to `@everyone` by default, letting any member `/nick` themselves via `OpSetNickname` (op 58) with no admin action needed. `PermissionManageNicknames` is required only to rename *someone else's* nickname — a separate, older feature (`/title`, its own permission) already existed for custom titles and is unaffected by this.
 - **`@everyone`'s role permissions are editable via `OpUpdateRole`, same as any other role** — the client's Roles > Permissions Editor deliberately supports opening it, and this is the intended way to grant default server-wide access (e.g. Attach Files) without a dedicated extra role. `HandleUpdateRole` (`internal/server/handlers.go`) only rejects an attempt to *rename* `@everyone` (`req.Name != role.Name`); a bug once had it reject the whole request for any edit at all, silently discarding permission changes — fixed 2026-09-06, see `role_update_test.go`.
 
@@ -178,27 +370,61 @@ External programs attach to a Concord server as privileged clients — bots, int
 
 Because there's no server storage, **the sender must stay online for anyone to download** — this is a deliberate design tradeoff, not a bug, and should be communicated as such in any UI/error text touching this path. A local send registry (`~/.concord/shared_files.json`, see Client Configuration above) lets a client's previously-shared files remain downloadable across that client's own restarts.
 
-- **Save destination**: `/download` opens the OS's native Save As dialog (`github.com/sqweek/dialog` — pure `syscall`/Win32 on Windows, no CGO; Cocoa/CGO on macOS; shells out to zenity/kdialog on Linux) via `commands.go`'s `handleDownload`, rather than silently writing into `~/Downloads`. Cancelling the dialog aborts the download cleanly; if the dialog itself errors (e.g. no display), it falls back to the old default-directory behavior instead of failing the command. The chosen path flows through `FileTransferEngine.RequestDownload`'s `destPath` parameter to `resolveDownloadPath` (pure, unit-tested) — a non-empty `destPath` is used exactly as chosen (the dialog already handled overwrite confirmation), while an empty one preserves the original `downloadDir` + `uniqueDownloadPath` collision-safe naming.
+- **Save destination**: `/download` opens the OS's native Save As dialog (`github.com/sqweek/dialog` — pure `syscall`/Win32 on Windows, no CGO; Cocoa/CGO on macOS; GTK3+X11/CGO on Linux, so Linux builds need `libgtk-3-dev` and the resulting binary links libgtk-3) via `commands.go`'s `handleDownload` → `promptSavePath` (`save_dialog.go`; CGO-free non-Windows builds like `make dist` get `save_dialog_nocgo.go`, which always reports the dialog unavailable so the Downloads-folder fallback applies), rather than silently writing into `~/Downloads`. Cancelling the dialog aborts the download cleanly; if the dialog itself errors (e.g. no display), it falls back to the old default-directory behavior instead of failing the command. The chosen path flows through `FileTransferEngine.RequestDownload`'s `destPath` parameter to `resolveDownloadPath` (pure, unit-tested) — a non-empty `destPath` is used exactly as chosen (the dialog already handled overwrite confirmation), while an empty one preserves the original `downloadDir` + `uniqueDownloadPath` collision-safe naming.
 - **Alt+M message-highlight mode has an `A` key** that copies a highlighted message's attachment ID to the clipboard — there's no mouse-based text selection in the TUI, so this is the only practical way to get the exact UUID for pasting into `/download`.
 - **`emitDone` must never use a drop-if-not-ready channel send.** Progress ticks (`FileTransferProgressMsg`) are fine to drop — another follows almost immediately — but a transfer's one-shot terminal event is not: a real bug shipped where both used the same non-blocking `select { ...; default: }` pattern, and on a fast transfer the UI couldn't drain progress ticks fast enough to keep the (32-slot buffered) event channel from filling up, silently dropping the done event and leaving the status bar stuck at the last percentage that made it through — even though the transfer itself completed successfully. Fixed by making `emitDone` block until there's room (bounded only by `e.quit`, so it can't leak past engine shutdown). See `TestEmitDoneDeliversEvenWhenEventChannelIsFull` — it's written to actually fail against the old drop-based implementation, not just pass against the fix.
 
 ---
+
+## Threads (2026-10-09; vault: "Concord - Threads Plan")
+
+Side conversations kept in one box where they started.
+- **Data:** a reply in a thread has `messages.thread_id` = the thread's first message (one level deep: posting with any message in a thread resolves to its first, `resolveThread`). `thread_follows` (user, thread, `last_read_at`) is the only new table; summaries (count, latest reply, participants) are computed from the replies (`internal/database/threads.go`). **SQLite aggregates lose their column type** (`MIN(created_at)` comes back as text), so don't scan one into a `time.Time`.
+- **Server** (`internal/server/threads.go`): channel history leaves replies out and gives each first message a `Thread` summary with the reader's own `Following`/`Unread`; a deleted first message with replies stays as an empty `deleted` header. `OpRequestThread` (63) → `THREAD_MESSAGES`; `OpThreadRead` (64) → `THREAD_UPDATE` to that user's connections. Every reply or deletion broadcasts `THREAD_UPDATE` to the channel with `Followers` (it can't carry each member's state). Following: the starter, everyone who replies, anyone .
+- **Client** (`threads.go`, `threads_find.go`): the channel's message list holds only top-level messages; replies live in `ServerConnection.Threads`. The chat draws, and message navigation moves through, `visibleMessages()` (expanded threads' replies after their first message), so **any code that indexes the selected message must use `visibleMessages()`, not `GetMessages`**. Boxed messages render 4 columns narrower and are wrapped by `boxThreadSegment`. Keys: Alt+M then **T** (reply in the thread; the box posts there until Esc), **Enter** on a first message (expand/minimise), **Alt+T** / `/threads` (the list). The chat box's bottom edge shows `N active threads · M unread · Alt+T` (`embedChatBottom`); Settings > Notifications > Thread Replies in the Channel adds an optional line.
+- Tests: `internal/server/threads_test.go` (wire level), `internal/client/threads_test.go`, `threads_e2e_test.go` (a real client against a real server).
 
 ## Settings Pages (client)
 
 | View | Access | Status |
 |---|---|---|
 | Theme Browser | Settings > Theme | ✅ Full |
-| Display Settings | Settings > Display | ✅ Full (live preview) |
-| Notification Settings | Settings > Notifications | ✅ Full (per-server overrides) |
-| Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, PTT, codec) |
-| Help & Guide | Settings > Help | ✅ Full (glamour markdown) |
+| Display Settings | Settings > Display | ✅ Full (live preview; Plugin Pictures; **Voice Level** style for the members panel: bar, slider, wave, ring or off, `voice_level.go`) |
+| Notification Settings | Settings > Notifications | ✅ Full — two sections: **Desktop Notifications** (OS-native popup mode off/mentions/all, scope all-servers/current-server — `notifications.go`, `beeep.Notify`) and **Audio Notifications** (sound/bell alerts, per-server overrides) |
+| Audio Settings | Settings > Audio | ✅ Full (device picker, VAD, noise suppression, echo cancellation, codec, plugin sounds; scrolls) |
+| Help & Guide | Settings > Help | ✅ Full (glamour markdown, theme-derived style — `buildThemedGlamourStyle`) |
+| About | Settings > About | ✅ Full (client build info; server build info once connected; the mood code (L lock, N new), collection, cellar; A opens Achievements: Concord + one tab per plugin with stats and leaderboards, `about.go`, `achievements_page.go`) |
 | Server Management | Ctrl+B | ✅ Full (add/edit/remove servers) |
 | Server Settings | In-server panel | ✅ Full |
 | ↳ Channels | Channels tab | ✅ Full (create/delete/rename/reorder) |
 | ↳ Roles | Roles tab | ✅ Full (CRUD, permissions editor, display order) |
 | ↳ Members | Members tab | ✅ Full (list, kick/ban/role assign) |
-| ↳ Messages | Messages tab | ✅ Full (retention policies, prune) |
+| ↳ Messages | Messages tab | ✅ Full (retention policies incl. per-channel custom overrides, prune) |
+| ↳ Plugins | Plugins tab | ✅ Full (enable/disable, config, admin install via `OpPluginInstall`) |
+| ↳ About | About tab | ✅ Full (connected server's build info) |
+
+Chat messages themselves render markdown too (bold/italic/inline code/fenced code/lists, plus clickable OSC 8 links and @mention highlighting) via a separate, minimal-feature-set glamour renderer — see `internal/client/message_markdown.go` and `buildChatGlamourStyle`. Deliberately excludes glamour's Table/Linkify extensions (goldmark's GFM Linkify auto-links bare URLs, and glamour's own link renderer then prints the link text and href as two separate visible runs — confirmed via `TestProbeChatGlamourPipeline`); Concord substitutes/restores URLs itself instead via an opaque placeholder token, both for that reason and to keep its own OSC 8/zone-marked clickable-link behavior.
+
+**Login/register logo area:** a random text banner (326, `banners_generated.go`; `tools/extract_banners.go` skips fonts that read as broken text, like Stacey) in a fixed-height slot so the form never moves; Ctrl+R shuffles it with one of 8 intro animations (`banner_anim.go`). Beside it, when there's room, the **shaded grape logo** (`grape_logo.go`), on every login-stage page (Settings > About had it until 2026-10-02): a Go port of the concord-site project's ASCII renderer (github.com/Anthoneyq/concord-site, `app.js` + `data/logo.py`). The eight grapes are spheres shaded per character like donut.c under a light that powers on, orbits when idle, and follows clicks/drags; leaf and stem are traced characters. `grape_logo_data.go` is generated by `go run ./tools/grapelogo` from `ConcordLogo.png`; `go run ./tools/grapelogo -cols 50 -json` reproduces the site's `logo.json` byte-for-byte (verified 2026-09-27), and the shading matched the site's JS exactly across multiple light angles. The light's start/stop lives in the `Update` wrapper (`syncGrapeLight`), not in individual navigation paths.
+
+**Login experience (2026-10-02, vault: "Concord - Login Experience Plan").** Everything before the main window is one **login stage**, with effects drawn over finished frames, so pages know nothing about them:
+- **Frames as cells:** `fx_canvas.go` parses a frame into styled cells and writes it back (wide characters kept whole). `View` = `applyFx(view0())`. Effects run on one ~30 fps ticker started from the `Update` wrapper (`syncFx`, `fx.go`), like the grape light.
+- **Moods (`mood.go`):** each launch picks one option per layer (loading screen, transition, background, grape style, banner colouring, light, frame accents), with common/rare/legendary tiers, reproducible from a 5-character code (`#K7Q2M`). **Settings > Display > Surprise Me** is full / calm / off; off (or Panel Animations off) stills everything, and NO_COLOR makes it calm. `DisplayConfig.MoodLock` keeps one mood.
+- **Stage pages (`stage.go`):** `stagePage` lays a page under the grapes and banner with the site's typography. Every page reserves `stageRows` (12) with hints at the bottom, and `formHintRows` is pinned to 2, so the grapes stay put (`TestStagePagesKeepTheGrapesPinned`). Page and step changes play a transition (`stageKey`). Errors shake the form (zone `stage-form`) and flush the grapes red; successes glow the leaf.
+- **Screens:** loading screens on every launch (`loading_screen.go`; the first launch gets a welcome), the connecting screen after unlock and the main window's burst (`connecting.go`), code boxes (`code_boxes.go`), grape styles (`logo_styles.go`), backgrounds (`atmosphere.go`), banner colourings (`banner_colours.go`), easter eggs (`eggs.go`) and screensavers after 90 s idle (`screensaver.go`).
+- **Collection:** `~/.concord/collection.json` (`collection.go`): options seen per layer, banners, eggs, achievements (`achievements.go`, toasts top right). Nothing is sent anywhere.
+- **Second round (2026-10-02/03):**
+  - **More layers and screens:** moments (`moments.go`: jazz, arcade, noir, synthwave), seasons, glitches, name banners from a pixel font (`banner_name.go`), wine labels, fortunes, streaks and the almanac (`vintage.go`), and more loading screens (`loading_cartridges.go`: DOS, Concord 64, happy grapes, vine). Hold space for slow motion.
+  - **More transitions and screensavers:** dial-up, page curl, blinds and dissolve; Life, maze, flying bottles and Falling Bunches (`screensaver_more.go`).
+  - **Disco:** "disco" typed on About arms a disco login for the next launch (`DisplayConfig.Disco`, used up by that launch).
+  - **Photo grapes** (`logo_photo.go`, legendary): a real picture on Kitty/Sixel/iTerm2, placed in `View` *after* `applyFx`, because the cell parser drops picture escapes.
+  - **Main window** (`main_moods.go`): grape empty channels, grape typing verbs, `/grape` `/disco` `/mood` `/vintage` `/collection`, celebrations, a quiet-hours moon, and chat, voice and game achievements with tiers. Games report `game_result` (`sdk/table` → `wire.PluginGameResultPayload`).
+  - **The Cellar** on About lists the legendaries you've seen.
+- **Gotchas:**
+  - **Backgrounds must be sparse:** dense fills (plasma, mosaic, the lava strip were all removed) show the gaps kept around text as dark boxes.
+  - **`faint(col, pal, k)`:** `k` is how faint (0 = the colour, 1 = the dark).
+  - The main window's landing is a scan line (`landing`, `connecting.go`), not the old edges-meeting burst.
+- **No sounds,** by decision, so nothing needs the audio device.
 
 ---
 
@@ -208,7 +434,7 @@ Because there's no server storage, **the sender must stay online for anyone to d
 
 Selected themes: dracula, alucard-dark, alucard-light, catppuccin-mocha, gruvbox, nord, tokyo-night, onedark, everforest-dark-hard, kanagawa-wave, solarized-dark, terminal-default, and many more.
 
-**Custom themes: just add a TOML file to `internal/themes/themes/` and rebuild** — `ListAvailableThemes()`/`GetTheme()` read the embedded directory at runtime via `fs.ReadDir`, there is no generated file to regenerate. (The root-level `generate_themes.go` predates this and is not part of the live discovery path — don't rely on it; a theme file with no test coverage referencing it by name can silently sit unreachable-but-present, which is exactly what happened to `terminal-default` before 2026-09-06.) Always add a small test asserting a new theme name appears in `ListAvailableThemes()`, per `internal/themes/terminal_default_test.go`.
+**User themes need no rebuild:** a `~/.concord/themes/<name>.toml` file adds a new theme, or overrides a built-in one with the same name (`GetTheme` checks that folder first; `ListAvailableThemes` appends its names). **Bundled themes: add a TOML file to `internal/themes/themes/` and rebuild** — `ListAvailableThemes()`/`GetTheme()` read the embedded directory at runtime via `fs.ReadDir`, there is no generated file to regenerate. (The root-level `generate_themes.go` predates this and is not part of the live discovery path — don't rely on it; a theme file with no test coverage referencing it by name can silently sit unreachable-but-present, which is exactly what happened to `terminal-default` before 2026-09-06.) Always add a small test asserting a new theme name appears in `ListAvailableThemes()`, per `internal/themes/terminal_default_test.go`.
 
 **`terminal-default`** is the "follow the terminal/OS theme live" option — every color field is either a bare ANSI palette index ("0"-"15", passed through to the terminal's own current palette, never pre-resolved to RGB) or an empty string (no escape code emitted at all, so the terminal's own default fg/bg shows through). This is what makes an OS-level theme switch (e.g. Omarchy re-theming the terminal emulator) repaint Concord automatically on the next redraw, with no reconnect or restart. It is not the global fresh-install default (that's still Dracula, set in `config.go`/`app.go`/`tos_view.go`) — a user opts into it explicitly via `/theme terminal-default`.
 
@@ -224,12 +450,14 @@ Selected themes: dracula, alucard-dark, alucard-light, catppuccin-mocha, gruvbox
 
 ### Server
 - **Hub pattern:** Single goroutine owns client map; sends/receives via Go channels (thread-safe)
+- **Per-user voice volume in the members panel (2026-10-02):** with a voice member selected (Tab to the members, ↑/↓), ←/→ change their volume by 5% (0–200%, `PerUserVolumes`); in the slider style, click, drag or scroll the slider. Styles are drawn in `voice_level.go`; the Audio page and the member menu's volume use the same slider look.
+- **Multiple connections per account** (2026-09-28): `Hub.clients` maps a user to **all** their live connections. Anything sent to a user, server or channel reaches every one; a user is announced offline only when their last connection closes; voice belongs to the connection that joined (`voiceUserEntry.conn`), so closing another device doesn't drop the call. Replies to a request (plugin action results, the plugin list) go to the requesting connection via `Handlers.dispatchTo`, not `SendToUser`. `Client.Send` is safe after close (`sendMu`/`sendClosed`, closed through `closeSend`), since slow work can finish after its connection is gone. Kick/ban/timeout use `DisconnectUser`, which closes every connection.
 - **Per-client goroutine:** Each WebSocket connection gets isolated goroutines for read/write
 - **Auth flow:** HTTP POST /login → session token → OpIdentify → OpReady
 - **Voice signaling:** Server is a dumb relay — forwards VoiceSignal payloads without inspecting them
 
 ### Security
-- bcrypt cost 14 for passwords
+- bcrypt (`bcrypt.DefaultCost`, 10) for passwords — earlier notes said 14; the code has always used the default
 - SHA-256 token hashing before DB storage
 - Credentials never logged
 - Soft-deletes for messages (audit trail preserved)
@@ -240,8 +468,8 @@ Selected themes: dracula, alucard-dark, alucard-light, catppuccin-mocha, gruvbox
 ## Known Issues / Remaining Work
 
 1. **Voice multi-user mesh** — P2P WebRTC with N>2 clients has not been fully stress-tested. The ICE/STUN negotiation and mesh complexity (N×(N-1) peer connections) need validation.
-2. **Message retention UI** — The 'N' (channel override) and 'D' (delete override) options in Server Settings > Messages need to be wired up.
-3. **Most permissions still only checked at the role-bitfield level, not the overwrite-aware path** — see Permissions & Channel Overwrites above; only `PermissionSendMessages`/`PermissionAttachFiles` go through `hasChannelPermission`. A permission the Roles editor lets you toggle isn't guaranteed to be enforced for the action it implies.
-4. **Invites (`PermissionCreateInvite`) are unbuilt** — the permission bit exists, no invite-generation/redemption code does. Deferred to its own future initiative.
-5. **Auto re-connect after server offline** — Users currently have to re-login after a server goes offline and comes back. Seamless reconnect with saved token should be implemented.
-6. **`-race` needs a real C toolchain** — unavailable on some machines this project is developed from; a concurrency bug can slip through a normal `go test` pass. Worth an explicit `-race` run (see Development Commands) whenever touching shared state (connection lifecycle, plugin supervision, the hub's client map) if a toolchain is available.
+2. **Most permissions still only checked at the role-bitfield level, not the overwrite-aware path** — see Permissions & Channel Overwrites above; only Send Messages, Attach Files, View Channels (panes, threads), Connect and Speak go through `hasChannelPermission`. A permission the Roles editor lets you toggle isn't guaranteed to be enforced for the action it implies.
+3. **Invites (`PermissionCreateInvite`) are unbuilt** — the permission bit exists, no invite-generation/redemption code does. Deferred to its own future initiative.
+4. **`-race` needs a real C toolchain** — unavailable on some machines this project is developed from; a concurrency bug can slip through a normal `go test` pass. Worth an explicit `-race` run (see Development Commands) whenever touching shared state (connection lifecycle, plugin supervision, the hub's client map) if a toolchain is available.
+5. ~~One live connection per account~~ — fixed 2026-09-28 (see Multiple connections per account above). It had shown up as an install form stuck on "Working…" and new channels not appearing, because a second computer signed in as the same user was getting them.
+6. **Not yet verified for real:** macOS at all (install, client, boot mode), group voice with 3+ people and a TURN relay in use, and the installer's Linux library installs. See Distribution & Release above.

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/google/uuid"
+
+	"github.com/JMThomas00/Concord/sdk/wire"
 )
 
 // OpCode represents the type of WebSocket message
@@ -13,33 +15,33 @@ type OpCode int
 
 const (
 	// Client -> Server operations
-	OpIdentify       OpCode = 0  // Initial authentication
-	OpHeartbeat      OpCode = 1  // Keep-alive ping
-	OpRequestGuild   OpCode = 2  // Request server data
-	OpSendMessage    OpCode = 3  // Send a chat message
-	OpTypingStart    OpCode = 4  // User started typing
-	OpPresenceUpdate OpCode = 5  // Update user status
-	OpVoiceStateUpdate OpCode = 6 // Voice channel join/leave (v2)
-	OpChannelCreate    OpCode = 7 // Create channel
-	OpChannelUpdate    OpCode = 8 // Update channel
-	OpChannelDelete    OpCode = 9 // Delete channel
-	OpRequestMessages  OpCode = 16 // Request message history
-	OpRoleAssign       OpCode = 17 // Assign a role to a member
-	OpRoleRemove       OpCode = 18 // Remove a role from a member
-	OpKickMember       OpCode = 19 // Kick a member from the server
-	OpBanMember        OpCode = 20 // Ban a member from the server
-	OpMuteMember       OpCode = 21 // Server-mute a member
-	OpWhisper          OpCode = 22 // Send an ephemeral DM to another connected user
-	OpPinMessage       OpCode = 23 // Pin a message in a channel
-	OpUnpinMessage     OpCode = 24 // Unpin a message from a channel
-	OpTimeoutMember    OpCode = 25 // Temporarily ban a member for X minutes
-	OpUnbanMember      OpCode = 26 // Unban a member from the server
-	OpCreateRole       OpCode = 27 // Create a new role
-	OpUpdateRole       OpCode = 28 // Update an existing role
-	OpDeleteRole       OpCode = 29 // Delete a role
-	OpUnmuteMember     OpCode = 32 // Unmute a server-muted member
-	OpEditMessage      OpCode = 30 // Edit message content
-	OpDeleteMessage    OpCode = 31 // Delete message (soft-delete)
+	OpIdentify              OpCode = 0  // Initial authentication
+	OpHeartbeat             OpCode = 1  // Keep-alive ping
+	OpRequestGuild          OpCode = 2  // Request server data
+	OpSendMessage           OpCode = 3  // Send a chat message
+	OpTypingStart           OpCode = 4  // User started typing
+	OpPresenceUpdate        OpCode = 5  // Update user status
+	OpVoiceStateUpdate      OpCode = 6  // Voice channel join/leave (v2)
+	OpChannelCreate         OpCode = 7  // Create channel
+	OpChannelUpdate         OpCode = 8  // Update channel
+	OpChannelDelete         OpCode = 9  // Delete channel
+	OpRequestMessages       OpCode = 16 // Request message history
+	OpRoleAssign            OpCode = 17 // Assign a role to a member
+	OpRoleRemove            OpCode = 18 // Remove a role from a member
+	OpKickMember            OpCode = 19 // Kick a member from the server
+	OpBanMember             OpCode = 20 // Ban a member from the server
+	OpMuteMember            OpCode = 21 // Server-mute a member
+	OpWhisper               OpCode = 22 // Send an ephemeral DM to another connected user
+	OpPinMessage            OpCode = 23 // Pin a message in a channel
+	OpUnpinMessage          OpCode = 24 // Unpin a message from a channel
+	OpTimeoutMember         OpCode = 25 // Temporarily ban a member for X minutes
+	OpUnbanMember           OpCode = 26 // Unban a member from the server
+	OpCreateRole            OpCode = 27 // Create a new role
+	OpUpdateRole            OpCode = 28 // Update an existing role
+	OpDeleteRole            OpCode = 29 // Delete a role
+	OpUnmuteMember          OpCode = 32 // Unmute a server-muted member
+	OpEditMessage           OpCode = 30 // Edit message content
+	OpDeleteMessage         OpCode = 31 // Delete message (soft-delete)
 	OpGetRetentionPolicy    OpCode = 40 // Get retention policy for server/channel
 	OpSetRetentionPolicy    OpCode = 41 // Update retention policy
 	OpDeleteRetentionPolicy OpCode = 42 // Remove channel override
@@ -72,6 +74,36 @@ const (
 	// relayed between the two clients involved.
 	OpFileTransferSignal OpCode = 59
 
+	// OpTypingStop (60): C→S. Sent when the composer empties without
+	// sending (backspaced to nothing, cleared, or the user switched away)
+	// so peers stop seeing "X is typing..." immediately instead of waiting
+	// out the timeout. Reuses TypingStartPayload's shape as-is -- sending a
+	// message already triggers the equivalent clear server-side via a
+	// direct StopTyping call, this covers the "stopped without sending"
+	// case that had no signal at all before.
+	OpTypingStop OpCode = 60
+
+	// OpPluginInstall (61): C→S, admin-only (PermissionManagePlugins). Fetch,
+	// checksum-verify, place and start a new plugin from a release archive
+	// URL. Kept for older clients; equivalent to OpPluginManage with
+	// Action "install".
+	OpPluginInstall OpCode = 61
+
+	// OpPluginManage (62): C→S, admin-only (PermissionManagePlugins). Every
+	// live plugin lifecycle action -- install, update, uninstall, restart,
+	// rescan -- see PluginManageRequest. Answered with
+	// EventPluginManageResult, then the refreshed plugin list.
+	OpPluginManage OpCode = 62
+
+	// OpRequestThread (63): C→S. A thread's replies (ThreadRequest),
+	// answered with EventThreadMessages. Channel history carries only each
+	// thread's summary, so a client loads the replies when it opens one.
+	OpRequestThread OpCode = 63
+
+	// OpThreadRead (64): C→S. "I've read this thread" (ThreadReadPayload),
+	// so its unread mark clears on every device signed in to the account.
+	OpThreadRead OpCode = 64
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -86,57 +118,57 @@ type EventType string
 
 const (
 	// Connection events
-	EventReady            EventType = "READY"
-	EventResumed          EventType = "RESUMED"
-	
+	EventReady   EventType = "READY"
+	EventResumed EventType = "RESUMED"
+
 	// Server events
-	EventServerCreate     EventType = "SERVER_CREATE"
-	EventServerUpdate     EventType = "SERVER_UPDATE"
-	EventServerDelete     EventType = "SERVER_DELETE"
-	EventServerMemberAdd  EventType = "SERVER_MEMBER_ADD"
+	EventServerCreate       EventType = "SERVER_CREATE"
+	EventServerUpdate       EventType = "SERVER_UPDATE"
+	EventServerDelete       EventType = "SERVER_DELETE"
+	EventServerMemberAdd    EventType = "SERVER_MEMBER_ADD"
 	EventServerMemberRemove EventType = "SERVER_MEMBER_REMOVE"
 	EventServerMemberUpdate EventType = "SERVER_MEMBER_UPDATE"
-	
+
 	// Channel events
-	EventChannelCreate    EventType = "CHANNEL_CREATE"
-	EventChannelUpdate    EventType = "CHANNEL_UPDATE"
-	EventChannelDelete    EventType = "CHANNEL_DELETE"
-	
+	EventChannelCreate EventType = "CHANNEL_CREATE"
+	EventChannelUpdate EventType = "CHANNEL_UPDATE"
+	EventChannelDelete EventType = "CHANNEL_DELETE"
+
 	// Message events
-	EventMessageCreate    EventType = "MESSAGE_CREATE"
-	EventMessageUpdate    EventType = "MESSAGE_UPDATE"
-	EventMessageDelete    EventType = "MESSAGE_DELETE"
-	EventMessageReactionAdd EventType = "MESSAGE_REACTION_ADD"
+	EventMessageCreate         EventType = "MESSAGE_CREATE"
+	EventMessageUpdate         EventType = "MESSAGE_UPDATE"
+	EventMessageDelete         EventType = "MESSAGE_DELETE"
+	EventMessageReactionAdd    EventType = "MESSAGE_REACTION_ADD"
 	EventMessageReactionRemove EventType = "MESSAGE_REACTION_REMOVE"
-	EventMessagesHistory  EventType = "MESSAGES_HISTORY"
-	EventMessagePin       EventType = "MESSAGE_PIN"
-	EventMessageUnpin     EventType = "MESSAGE_UNPIN"
+	EventMessagesHistory       EventType = "MESSAGES_HISTORY"
+	EventMessagePin            EventType = "MESSAGE_PIN"
+	EventMessageUnpin          EventType = "MESSAGE_UNPIN"
 
 	// User events
-	EventPresenceUpdate   EventType = "PRESENCE_UPDATE"
-	EventTypingStart      EventType = "TYPING_START"
-	EventTypingStop       EventType = "TYPING_STOP"
-	EventUserUpdate       EventType = "USER_UPDATE"
-	
+	EventPresenceUpdate EventType = "PRESENCE_UPDATE"
+	EventTypingStart    EventType = "TYPING_START"
+	EventTypingStop     EventType = "TYPING_STOP"
+	EventUserUpdate     EventType = "USER_UPDATE"
+
 	// Whisper events
-	EventWhisperCreate    EventType = "WHISPER_CREATE"
+	EventWhisperCreate EventType = "WHISPER_CREATE"
 
 	// System message events
-	EventSystemMessage    EventType = "SYSTEM_MESSAGE"
+	EventSystemMessage EventType = "SYSTEM_MESSAGE"
 
 	// Role events
-	EventRoleCreate       EventType = "ROLE_CREATE"
-	EventRoleUpdate       EventType = "ROLE_UPDATE"
-	EventRoleDelete       EventType = "ROLE_DELETE"
-	EventTitleUpdate      EventType = "TITLE_UPDATE"
-	EventNicknameUpdate   EventType = "NICKNAME_UPDATE"
+	EventRoleCreate     EventType = "ROLE_CREATE"
+	EventRoleUpdate     EventType = "ROLE_UPDATE"
+	EventRoleDelete     EventType = "ROLE_DELETE"
+	EventTitleUpdate    EventType = "TITLE_UPDATE"
+	EventNicknameUpdate EventType = "NICKNAME_UPDATE"
 
 	// Moderation events
-	EventMemberKicked     EventType = "MEMBER_KICKED"
-	EventMemberBanned     EventType = "MEMBER_BANNED"
-	EventMemberUnbanned   EventType = "MEMBER_UNBANNED"
-	EventMemberMuted      EventType = "MEMBER_MUTED"
-	EventMemberUnmuted    EventType = "MEMBER_UNMUTED"
+	EventMemberKicked   EventType = "MEMBER_KICKED"
+	EventMemberBanned   EventType = "MEMBER_BANNED"
+	EventMemberUnbanned EventType = "MEMBER_UNBANNED"
+	EventMemberMuted    EventType = "MEMBER_MUTED"
+	EventMemberUnmuted  EventType = "MEMBER_UNMUTED"
 
 	// Retention policy events
 	EventRetentionPolicyUpdate EventType = "RETENTION_POLICY_UPDATE"
@@ -152,21 +184,26 @@ const (
 	EventFileTransferSignal EventType = "FILE_TRANSFER_SIGNAL" // S→C relay of a download request or WebRTC SDP/ICE signal
 
 	// Plugin platform events
-	EventPluginPaneFrame  EventType = "PLUGIN_PANE_FRAME"  // S→C: relay plugin's rendered frame to the viewer
-	EventPluginPaneInput  EventType = "PLUGIN_PANE_INPUT"  // S→plugin: relay a viewer's input
-	EventPluginPaneEnter  EventType = "PLUGIN_PANE_ENTER"  // S→plugin: relay viewer-entered
-	EventPluginPaneLeave  EventType = "PLUGIN_PANE_LEAVE"  // S→plugin: relay viewer-left
-	EventPluginPaneResize EventType = "PLUGIN_PANE_RESIZE" // S→plugin: relay resize
-	EventPluginEvent      EventType = "PLUGIN_EVENT"       // S→C or S→plugin: generic relay
-	EventPluginConfigUpdate EventType = "PLUGIN_CONFIG_UPDATE" // S→C: plugin list/config changed
+	EventPluginPaneFrame      EventType = "PLUGIN_PANE_FRAME"      // S→C: relay plugin's rendered frame to the viewer
+	EventPluginPaneInput      EventType = "PLUGIN_PANE_INPUT"      // S→plugin: relay a viewer's input
+	EventPluginPaneEnter      EventType = "PLUGIN_PANE_ENTER"      // S→plugin: relay viewer-entered
+	EventPluginPaneLeave      EventType = "PLUGIN_PANE_LEAVE"      // S→plugin: relay viewer-left
+	EventPluginPaneResize     EventType = "PLUGIN_PANE_RESIZE"     // S→plugin: relay resize
+	EventPluginEvent          EventType = "PLUGIN_EVENT"           // S→C or S→plugin: generic relay
+	EventPluginConfigUpdate   EventType = "PLUGIN_CONFIG_UPDATE"   // S→C: plugin list/config changed
+	EventPluginManageResult   EventType = "PLUGIN_MANAGE_RESULT"   // S→C: outcome of an OpPluginManage/OpPluginConfigSet
+	EventPluginRegistryUpdate EventType = "PLUGIN_REGISTRY_UPDATE" // S→C: installed channel kinds changed live
+	EventPluginRecords        EventType = "PLUGIN_RECORDS"         // S→C: your plugin records (achievements, stats), on sign-in and when one changes
+	EventThreadMessages       EventType = "THREAD_MESSAGES"        // S→C: a thread's replies, answering OpRequestThread
+	EventThreadUpdate         EventType = "THREAD_UPDATE"          // S→C: a thread's summary changed (a reply, a deletion, a read)
 )
 
 // Message represents a WebSocket message envelope
 type Message struct {
 	Op   OpCode          `json:"op"`
 	Data json.RawMessage `json:"d,omitempty"`
-	Seq  *int64          `json:"s,omitempty"`  // Sequence number for dispatches
-	Type EventType       `json:"t,omitempty"`  // Event type for dispatches
+	Seq  *int64          `json:"s,omitempty"` // Sequence number for dispatches
+	Type EventType       `json:"t,omitempty"` // Event type for dispatches
 }
 
 // NewMessage creates a new protocol message
@@ -200,7 +237,7 @@ func NewDispatch(eventType EventType, seq int64, data interface{}) (*Message, er
 
 // IdentifyPayload is sent by the client to authenticate
 type IdentifyPayload struct {
-	Token      string            `json:"token"`
+	Token      string               `json:"token"`
 	Properties ConnectionProperties `json:"properties,omitempty"`
 	// ClientType distinguishes a plugin process from a normal user client.
 	// Empty/"user" (default) = normal client; "plugin" = authenticate via a
@@ -222,11 +259,17 @@ type HeartbeatPayload struct {
 
 // SendMessagePayload is sent when a user sends a message
 type SendMessagePayload struct {
-	ChannelID   uuid.UUID            `json:"channel_id"`
-	Content     string               `json:"content"`
-	ReplyToID   *uuid.UUID           `json:"reply_to_id,omitempty"`
-	Nonce       string               `json:"nonce,omitempty"` // Client-generated ID for deduplication
-	Attachments []models.Attachment  `json:"attachments,omitempty"`
+	ChannelID   uuid.UUID           `json:"channel_id"`
+	Content     string              `json:"content"`
+	ReplyToID   *uuid.UUID          `json:"reply_to_id,omitempty"`
+	// ThreadID posts the message into a thread: the ID of the thread's
+	// first message, or of any message in it (the server resolves it).
+	ThreadID    *uuid.UUID          `json:"thread_id,omitempty"`
+	Nonce       string              `json:"nonce,omitempty"` // Client-generated ID for deduplication
+	Attachments []models.Attachment `json:"attachments,omitempty"`
+	// Stream is StreamWriting for a plugin reply that will grow by edits
+	// (ignored from human clients).
+	Stream string `json:"stream,omitempty"`
 }
 
 // EditMessagePayload is sent to edit a message
@@ -234,7 +277,16 @@ type EditMessagePayload struct {
 	MessageID uuid.UUID `json:"message_id"`
 	ChannelID uuid.UUID `json:"channel_id"`
 	Content   string    `json:"content"`
+	// Stream (StreamWriting/StreamDone) marks a step of a reply being
+	// written, which doesn't count as an edit. Only the author may send it.
+	Stream string `json:"stream,omitempty"`
 }
+
+// Stream states for a streamed reply; see sdk/wire.
+const (
+	StreamWriting = wire.StreamWriting
+	StreamDone    = wire.StreamDone
+)
 
 // DeleteMessagePayload is sent to delete a message
 type DeleteMessagePayload struct {
@@ -255,12 +307,12 @@ type PresenceUpdatePayload struct {
 
 // ChannelCreateRequest is sent by clients to create a channel
 type ChannelCreateRequest struct {
-	ServerID   uuid.UUID           `json:"server_id"`
-	Name       string              `json:"name"`
-	Type       models.ChannelType  `json:"type"`
-	CategoryID *uuid.UUID          `json:"category_id,omitempty"`
-	Position   int                 `json:"position,omitempty"`
-	MaxUsers   int                 `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
+	ServerID   uuid.UUID          `json:"server_id"`
+	Name       string             `json:"name"`
+	Type       models.ChannelType `json:"type"`
+	CategoryID *uuid.UUID         `json:"category_id,omitempty"`
+	Position   int                `json:"position,omitempty"`
+	MaxUsers   int                `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
 
 	// Plugin-provided channels (Type == models.ChannelTypePlugin)
 	PluginID          string            `json:"plugin_id,omitempty"`
@@ -270,15 +322,15 @@ type ChannelCreateRequest struct {
 
 // ChannelUpdateRequest is sent by clients to update a channel
 type ChannelUpdateRequest struct {
-	ServerID   uuid.UUID         `json:"server_id"`
-	ChannelID  uuid.UUID         `json:"channel_id"`
-	Name       *string           `json:"name,omitempty"`
+	ServerID   uuid.UUID           `json:"server_id"`
+	ChannelID  uuid.UUID           `json:"channel_id"`
+	Name       *string             `json:"name,omitempty"`
 	Type       *models.ChannelType `json:"type,omitempty"` // nil = keep existing type
-	CategoryID *uuid.UUID        `json:"category_id,omitempty"`
-	Position   *int              `json:"position,omitempty"`   // Deprecated - kept for compatibility
-	SortOrder  *int              `json:"sort_order,omitempty"` // NEW: Use for all ordering operations
-	IsLocked   *bool             `json:"is_locked,omitempty"`
-	MaxUsers   *int              `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
+	CategoryID *uuid.UUID          `json:"category_id,omitempty"`
+	Position   *int                `json:"position,omitempty"`   // Deprecated - kept for compatibility
+	SortOrder  *int                `json:"sort_order,omitempty"` // NEW: Use for all ordering operations
+	IsLocked   *bool               `json:"is_locked,omitempty"`
+	MaxUsers   *int                `json:"max_users,omitempty"` // Voice channel capacity (0 = unlimited)
 
 	// PluginConfig carries updated create_fields values for a plugin channel
 	// (Type == models.ChannelTypePlugin). Absent/empty means "leave as-is" —
@@ -295,8 +347,8 @@ type ChannelDeleteRequest struct {
 // MessageHistoryRequest requests historical messages for a channel
 type MessageHistoryRequest struct {
 	ChannelID uuid.UUID  `json:"channel_id"`
-	Limit     int        `json:"limit,omitempty"`     // Default: 200
-	Before    *uuid.UUID `json:"before,omitempty"`    // Pagination
+	Limit     int        `json:"limit,omitempty"`  // Default: 200
+	Before    *uuid.UUID `json:"before,omitempty"` // Pagination
 }
 
 // RoleAssignRequest assigns a role to a member
@@ -335,7 +387,7 @@ type MuteMemberRequest struct {
 	ServerID  uuid.UUID `json:"server_id"`
 	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
 	UserID    uuid.UUID `json:"user_id"`
-	Mute      bool      `json:"mute"` // true=mute, false=unmute
+	Mute      bool      `json:"mute"`               // true=mute, false=unmute
 	Duration  int       `json:"duration,omitempty"` // Duration in minutes (0 = permanent)
 }
 
@@ -352,7 +404,7 @@ type TimeoutMemberRequest struct {
 type UnbanMemberRequest struct {
 	ServerID  uuid.UUID `json:"server_id"`
 	ChannelID uuid.UUID `json:"channel_id"` // Channel where command was issued
-	Username  string    `json:"username"`    // Username to unban (can't use UserID since they're not a member)
+	Username  string    `json:"username"`   // Username to unban (can't use UserID since they're not a member)
 }
 
 // UnmuteMemberRequest unmutes a server-muted member
@@ -367,7 +419,7 @@ type CreateRoleRequest struct {
 	ServerID      uuid.UUID `json:"server_id"`
 	ChannelID     uuid.UUID `json:"channel_id"` // Channel where command was issued (for system message)
 	Name          string    `json:"name"`
-	Permissions   uint64    `json:"permissions"`    // Permission bitfield
+	Permissions   uint64    `json:"permissions"` // Permission bitfield
 	Color         int       `json:"color"`
 	DisplayOrder  *int      `json:"display_order,omitempty"` // Member panel sort order (lower = top)
 	IsHoisted     bool      `json:"is_hoisted"`
@@ -380,7 +432,7 @@ type UpdateRoleRequest struct {
 	ChannelID     uuid.UUID `json:"channel_id"` // Channel where command was issued (for system message)
 	RoleID        uuid.UUID `json:"role_id"`
 	Name          string    `json:"name"`
-	Permissions   uint64    `json:"permissions"`    // Permission bitfield
+	Permissions   uint64    `json:"permissions"` // Permission bitfield
 	Color         int       `json:"color"`
 	DisplayOrder  *int      `json:"display_order,omitempty"` // Member panel sort order (lower = top)
 	IsHoisted     bool      `json:"is_hoisted"`
@@ -424,10 +476,10 @@ type UnpinMessageRequest struct {
 
 // MessagePinPayload is dispatched when a message is pinned or unpinned
 type MessagePinPayload struct {
-	ChannelID uuid.UUID      `json:"channel_id"`
+	ChannelID uuid.UUID       `json:"channel_id"`
 	Message   *models.Message `json:"message"`
-	PinnedBy  *models.User   `json:"pinned_by"`
-	Timestamp time.Time      `json:"timestamp"`
+	PinnedBy  *models.User    `json:"pinned_by"`
+	Timestamp time.Time       `json:"timestamp"`
 }
 
 // SystemMessagePayload represents a system-generated message (moderation actions, etc.)
@@ -446,15 +498,28 @@ type HelloPayload struct {
 
 // ReadyPayload is sent after successful authentication
 type ReadyPayload struct {
-	SessionID   string           `json:"session_id"`
-	User        *models.User     `json:"user"`
-	Servers     []*models.Server `json:"servers"`
+	SessionID       string            `json:"session_id"`
+	User            *models.User      `json:"user"`
+	Servers         []*models.Server  `json:"servers"`
 	PrivateChannels []*models.Channel `json:"private_channels,omitempty"`
-	ResumeURL   string           `json:"resume_url,omitempty"`
+	ResumeURL       string            `json:"resume_url,omitempty"`
 	// PluginChannelKinds advertises every channel kind installed plugins
 	// provide, so the client can render/create plugin channels generically
 	// without any plugin-specific code compiled in.
 	PluginChannelKinds []PluginChannelKindInfo `json:"plugin_channel_kinds,omitempty"`
+	// PluginClients lists the client-side parts (images, sounds, code) of
+	// the plugins that ship one, fetched from /api/plugins/client/.
+	PluginClients []PluginClientInfo `json:"plugin_clients,omitempty"`
+	// PluginBoards declares each plugin's achievements and leaderboard, for
+	// Settings > About > Achievements.
+	PluginBoards []PluginBoardInfo `json:"plugin_boards,omitempty"`
+	// ServerVersion/ServerGitCommit/ServerBuildTime report the connected
+	// server's own build identity, for Server Settings > About -- piggybacks
+	// on Ready since it's already sent once per connection, no new opcode
+	// needed.
+	ServerVersion   string `json:"server_version,omitempty"`
+	ServerGitCommit string `json:"server_git_commit,omitempty"`
+	ServerBuildTime string `json:"server_build_time,omitempty"`
 }
 
 // PluginChannelKindInfo is the client-facing description of one channel kind
@@ -466,17 +531,13 @@ type PluginChannelKindInfo struct {
 	Icon         string        `json:"icon"`
 	RemotePane   bool          `json:"remote_pane"`
 	CreateFields []PluginField `json:"create_fields,omitempty"`
-}
-
-// PluginField describes one manifest-declared, generically-rendered config
-// field (used for both channel-creation fields and server-config fields).
-type PluginField struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label"`
-	Type     string   `json:"type"` // text | number | boolean | select | channel_select
-	Options  []string `json:"options,omitempty"`
-	Default  string   `json:"default,omitempty"`
-	Required bool     `json:"required,omitempty"`
+	// Instances: InstanceName is the owning plugin's (or instance's) name;
+	// BaseID is set when PluginID is an instance of another plugin, and
+	// AllowsInstances when the base plugin can have several. The client
+	// lists an instanced plugin's kind once and asks which instance.
+	InstanceName    string `json:"instance_name,omitempty"`
+	BaseID          string `json:"base_id,omitempty"`
+	AllowsInstances bool   `json:"allows_instances,omitempty"`
 }
 
 // ServerCreatePayload is sent for each server the user is a member of (after READY)
@@ -494,9 +555,10 @@ type ServerCreatePayload struct {
 // MessageCreatePayload is dispatched when a message is created
 type MessageCreatePayload struct {
 	*models.Message
-	Author *models.User   `json:"author"`
+	Author *models.User         `json:"author"`
 	Member *models.ServerMember `json:"member,omitempty"`
-	Nonce  string         `json:"nonce,omitempty"`
+	Nonce  string               `json:"nonce,omitempty"`
+	Stream string               `json:"stream,omitempty"` // StreamWriting while a plugin reply is still being written
 }
 
 // MessageHistoryPayload contains historical messages for a channel
@@ -511,8 +573,55 @@ type MessageHistoryPayload struct {
 type MessageDisplay struct {
 	*models.Message
 	Author    *models.User         `json:"author"`
-	Member    *models.ServerMember `json:"member,omitempty"` // Author's server membership (nickname), nil for system/plugin authors
+	Member    *models.ServerMember `json:"member,omitempty"`    // Author's server membership (nickname), nil for system/plugin authors
 	Recipient *models.User         `json:"recipient,omitempty"` // For whispers only
+	// Thread summarises the replies to this message when it starts a
+	// thread (channel history only; replies themselves come by thread).
+	Thread *ThreadSummary `json:"thread,omitempty"`
+}
+
+// ThreadSummary is what a channel shows of a thread without loading it:
+// how many replies, the latest one, and who's in it. Following and Unread
+// are the receiving user's own: they follow a thread they started, posted
+// in or were @mentioned in, and it's unread when a reply came after they
+// last read it.
+type ThreadSummary struct {
+	ThreadID     uuid.UUID       `json:"thread_id"` // the first message's ID
+	ChannelID    uuid.UUID       `json:"channel_id"`
+	ReplyCount   int             `json:"reply_count"`
+	LastReplyAt  *time.Time      `json:"last_reply_at,omitempty"`
+	LastReply    *MessageDisplay `json:"last_reply,omitempty"`
+	Participants []uuid.UUID     `json:"participants,omitempty"` // up to 5, the first message's author first
+	Following    bool            `json:"following,omitempty"`
+	Unread       bool            `json:"unread,omitempty"`
+	// Followers is set on a THREAD_UPDATE broadcast to the whole channel,
+	// which can't carry each member's own Following/Unread: a client
+	// follows the thread when it's listed, and a reply from someone else
+	// makes it unread. A THREAD_UPDATE sent to one user (after a read)
+	// carries their own Following/Unread instead.
+	Followers []uuid.UUID `json:"followers,omitempty"`
+}
+
+// ThreadRequest asks for a thread's replies (OpRequestThread), oldest first,
+// the newest Limit of them (default and most 200).
+type ThreadRequest struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ThreadID  uuid.UUID `json:"thread_id"`
+	Limit     int       `json:"limit,omitempty"`
+}
+
+// ThreadMessagesPayload answers OpRequestThread (EventThreadMessages).
+type ThreadMessagesPayload struct {
+	ChannelID uuid.UUID         `json:"channel_id"`
+	ThreadID  uuid.UUID         `json:"thread_id"`
+	Messages  []*MessageDisplay `json:"messages"`
+	Summary   *ThreadSummary    `json:"summary,omitempty"`
+}
+
+// ThreadReadPayload marks a thread read up to now (OpThreadRead).
+type ThreadReadPayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ThreadID  uuid.UUID `json:"thread_id"`
 }
 
 // MessageUpdatePayload is dispatched when a message is edited
@@ -521,6 +630,7 @@ type MessageUpdatePayload struct {
 	ChannelID uuid.UUID  `json:"channel_id"`
 	Content   string     `json:"content,omitempty"`
 	EditedAt  *time.Time `json:"edited_at,omitempty"`
+	Stream    string     `json:"stream,omitempty"` // StreamWriting or StreamDone for a streamed reply
 }
 
 // MessageDeletePayload is dispatched when a message is deleted
@@ -532,21 +642,21 @@ type MessageDeletePayload struct {
 
 // TypingStartEventPayload is dispatched when a user starts typing
 type TypingStartEventPayload struct {
-	ChannelID uuid.UUID    `json:"channel_id"`
-	ServerID  uuid.UUID    `json:"server_id,omitempty"`
-	UserID    uuid.UUID    `json:"user_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	ServerID  uuid.UUID `json:"server_id,omitempty"`
+	UserID    uuid.UUID `json:"user_id"`
 	// Username is carried directly here (not just resolved client-side from
 	// the server's member list) because a plugin's own service-account user
 	// is deliberately never added as a ServerMember — without this, a bot's
 	// typing indicator has no name to resolve to and falls back to a raw
 	// truncated UUID.
-	Username  string       `json:"username"`
+	Username string `json:"username"`
 	// IsBot marks this typist as a plugin's own service-account connection
 	// (c.IsPlugin server-side) rather than a real human — lets the client
 	// render "Alice is thinking" instead of "Alice is typing" for any Mynah
 	// persona, without hardcoding any particular plugin's name.
-	IsBot     bool         `json:"is_bot"`
-	Timestamp time.Time    `json:"timestamp"`
+	IsBot     bool                 `json:"is_bot"`
+	Timestamp time.Time            `json:"timestamp"`
 	Member    *models.ServerMember `json:"member,omitempty"`
 }
 
@@ -566,9 +676,9 @@ type PresenceUpdateEventPayload struct {
 
 // ServerMemberAddPayload is dispatched when a member joins a server
 type ServerMemberAddPayload struct {
-	ServerID uuid.UUID           `json:"server_id"`
+	ServerID uuid.UUID            `json:"server_id"`
 	Member   *models.ServerMember `json:"member"`
-	User     *models.User        `json:"user"`
+	User     *models.User         `json:"user"`
 }
 
 // ServerMemberRemovePayload is dispatched when a member leaves a server
@@ -616,8 +726,8 @@ type UpdateChannelOverwriteRequest struct {
 
 // ChannelDeletePayload is dispatched when a channel is deleted
 type ChannelDeletePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ServerID  uuid.UUID `json:"server_id,omitempty"`
+	ChannelID uuid.UUID          `json:"channel_id"`
+	ServerID  uuid.UUID          `json:"server_id,omitempty"`
 	Type      models.ChannelType `json:"type,omitempty"`
 }
 
@@ -639,105 +749,93 @@ type ReactionPayload struct {
 // activity notifications; reusable for anything else a plugin needs later
 // without a protocol change).
 
-// PluginPaneEnterPayload is sent when a client opens a remote-pane plugin channel.
-type PluginPaneEnterPayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"` // Server-stamped on relay; ignored if client-supplied
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-}
-
-// PluginPaneResizePayload reports a viewport size change for an active pane.
-type PluginPaneResizePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-}
-
-// PluginPaneInputPayload forwards one keypress from a viewer to the plugin
-// owning the channel. Runes/KeyType let a bubbletea-based plugin reconstruct
-// a real tea.KeyMsg; KeyString is provided for non-bubbletea plugins.
-type PluginPaneInputPayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
-	KeyType   int       `json:"key_type"`
-	Runes     []rune    `json:"runes,omitempty"`
-	Alt       bool      `json:"alt,omitempty"`
-	KeyString string    `json:"key_string"`
-}
-
-// PluginPaneLeavePayload is sent when a client navigates away from a plugin channel.
-type PluginPaneLeavePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id,omitempty"`
-}
-
-// PluginPaneFramePayload is pushed by a plugin process (as its service-account
-// client) with the rendered View() for one specific viewer.
-type PluginPaneFramePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-	ViewerID  uuid.UUID `json:"viewer_id"`
-	Frame     string    `json:"frame"`
-	Seq       int64     `json:"seq"` // Monotonic per viewer; client drops frames with Seq <= last-applied
-}
-
-// PluginEventPayload is the generic, opaque envelope for anything that isn't
-// pane rendering — e.g. a plugin posting a "notify" event to trigger a system
-// message. Kind is plugin-defined; Concord special-cases "notify" (posts to
-// the admin-configured activity channel) and, when ViewerID is set, relays
-// the envelope unchanged to that specific viewer's own client via
-// EventPluginEvent — e.g. a plugin telling one viewer's pane to close
-// itself (Kind "leave_pane") without needing a dedicated opcode.
-type PluginEventPayload struct {
-	PluginID string          `json:"plugin_id"`
-	Kind     string          `json:"kind"`
-	Payload  json.RawMessage `json:"payload"`
-	ViewerID uuid.UUID       `json:"viewer_id,omitempty"`
-}
-
-// PluginNotifyEventPayload is the Payload shape for PluginEventPayload{Kind: "notify"}.
-type PluginNotifyEventPayload struct {
-	Content string `json:"content"`
-}
-
-// PluginPaneClosePayload is the Payload shape for
-// PluginEventPayload{Kind: "leave_pane"} — tells the named viewer's client
-// to leave a plugin pane it's currently displaying, e.g. because the
-// plugin's own UI reached a state (its main/top-level view) where a
-// designated "quit" keypress should back out to Concord's own navigation
-// instead of being interpreted by the plugin.
-type PluginPaneClosePayload struct {
-	ChannelID uuid.UUID `json:"channel_id"`
-}
-
-// PluginInfo describes one installed plugin for the Settings > Plugins UI.
-type PluginInfo struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	// Product names the underlying plugin family this install belongs to
-	// (e.g. "Mynah" for a persona install named "Burt") — set only when the
-	// manifest declares [plugin].product; empty for plugins where Name
-	// already is the whole identity (e.g. Tukan).
-	Product      string        `json:"product,omitempty"`
-	Version      string        `json:"version"`
-	Enabled      bool          `json:"enabled"`
-	Status       string        `json:"status"`
-	LastError    string        `json:"last_error,omitempty"`
-	ConfigFields []PluginField `json:"config_fields,omitempty"`
-	ConfigValues map[string]string `json:"config_values,omitempty"`
-}
-
-// PluginConfigListPayload answers OpPluginConfigGet.
-type PluginConfigListPayload struct {
-	Plugins []PluginInfo `json:"plugins"`
-}
-
 // PluginConfigGetRequest requests the installed plugin list + config for the
 // Settings > Plugins page. ServerID gates the request behind that server's
 // PermissionManageServer, same as the rest of Server Settings.
 type PluginConfigGetRequest struct {
 	ServerID uuid.UUID `json:"server_id"`
+}
+
+// PluginInstallRequest is sent by a server admin (Settings > Plugins >
+// install new plugin) to have the server fetch, checksum-verify, and place
+// a new plugin from a release archive URL. See OpPluginInstall and
+// internal/plugins/install.go's InstallFromURL for what this covers and
+// what it explicitly doesn't (no update-in-place, no live pickup without a
+// restart -- first slice only).
+type PluginInstallRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	PluginID  string    `json:"plugin_id"`  // becomes the new plugin's folder name
+	SourceURL string    `json:"source_url"` // a release archive (.zip) URL
+	SHA256    string    `json:"sha256"`     // expected hex-encoded checksum of that archive
+}
+
+// PluginManage actions.
+const (
+	PluginActionInstall   = "install"   // SourceURL + SHA256 → new plugin, started live
+	PluginActionUpdate    = "update"    // SourceURL + SHA256 → replace, roll back if it won't start
+	PluginActionUninstall = "uninstall" // stop + delete the folder (data, channels kept)
+	PluginActionRestart   = "restart"   // stop + start with a fresh token
+	PluginActionRescan    = "rescan"    // pick up folders added/removed/changed on disk
+	// Instances of a plugin that allows several (see plugins/instances.go).
+	PluginActionAddInstance    = "add_instance"    // PluginID (base) + Name → a new instance, started live
+	PluginActionRenameInstance = "rename_instance" // PluginID + Name (also renames its account)
+	PluginActionRemoveInstance = "remove_instance" // PluginID → stopped and forgotten (account, settings, channels, data kept)
+	PluginActionAdoptInstance  = "adopt_instance"  // PluginID (a separate install) + TargetID → it becomes an instance
+)
+
+// PluginManageRequest drives OpPluginManage. PluginID is required for every
+// action except rescan.
+type PluginManageRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	Action    string    `json:"action"`
+	PluginID  string    `json:"plugin_id,omitempty"`
+	SourceURL string    `json:"source_url,omitempty"`
+	SHA256    string    `json:"sha256,omitempty"`
+	// Name names an instance (add_instance, rename_instance); TargetID is
+	// the plugin an adopted install becomes an instance of (adopt_instance).
+	Name     string `json:"name,omitempty"`
+	TargetID string `json:"target_id,omitempty"`
+}
+
+// PluginManageResult reports how an OpPluginManage (or a config save) went.
+// FieldErrors, for a config save, maps field keys to what's wrong with them.
+type PluginManageResult struct {
+	Action      string            `json:"action"`
+	PluginID    string            `json:"plugin_id,omitempty"`
+	OK          bool              `json:"ok"`
+	Message     string            `json:"message,omitempty"`
+	FieldErrors map[string]string `json:"field_errors,omitempty"`
+}
+
+// PluginRegistryPayload carries the full current set of plugin channel
+// kinds (EventPluginRegistryUpdate), replacing what READY advertised.
+type PluginRegistryPayload struct {
+	PluginChannelKinds []PluginChannelKindInfo `json:"plugin_channel_kinds"`
+	PluginClients      []PluginClientInfo      `json:"plugin_clients,omitempty"`
+	PluginBoards       []PluginBoardInfo       `json:"plugin_boards,omitempty"`
+}
+
+// PluginClientInfo describes a plugin's client-side part: the files in its
+// client/ folder, each with its size and SHA-256, so the client can fetch
+// (GET /api/plugins/client/{plugin_id}/{path}), verify and cache them.
+// Instances share their base plugin's files.
+type PluginClientInfo struct {
+	PluginID     string             `json:"plugin_id"`
+	Name         string             `json:"name,omitempty"`
+	Version      string             `json:"version"`
+	Hash         string             `json:"hash"` // of the whole bundle
+	Files        []PluginClientFile `json:"files"`
+	WASM         string             `json:"wasm,omitempty"`
+	Capabilities []string           `json:"capabilities,omitempty"`
+	PublisherKey string             `json:"publisher_key,omitempty"`
+}
+
+// PluginClientFile is one file of a plugin's client part; Path is
+// relative to its client/ folder.
+type PluginClientFile struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
 }
 
 // PluginConfigSetRequest is sent by clients (server admins) to update a
@@ -759,15 +857,15 @@ type ErrorPayload struct {
 
 // Common error codes
 const (
-	ErrorCodeUnknown           = 0
-	ErrorCodeUnauthorized      = 4001
-	ErrorCodeInvalidPayload    = 4002
-	ErrorCodeNotFound          = 4003
-	ErrorCodeForbidden         = 4004
-	ErrorCodeRateLimited       = 4005
-	ErrorCodeServerError       = 4006
-	ErrorCodeSessionInvalid    = 4007
-	ErrorCodeSessionTimeout    = 4008
+	ErrorCodeUnknown              = 0
+	ErrorCodeUnauthorized         = 4001
+	ErrorCodeInvalidPayload       = 4002
+	ErrorCodeNotFound             = 4003
+	ErrorCodeForbidden            = 4004
+	ErrorCodeRateLimited          = 4005
+	ErrorCodeServerError          = 4006
+	ErrorCodeSessionInvalid       = 4007
+	ErrorCodeSessionTimeout       = 4008
 	ErrorCodeAlreadyAuthenticated = 4009
 )
 
@@ -808,12 +906,12 @@ type RetentionPolicyUpdatePayload struct {
 
 // MessagesPrunedPayload is dispatched when messages are pruned
 type MessagesPrunedPayload struct {
-	ServerID     uuid.UUID                   `json:"server_id"`
+	ServerID     uuid.UUID                        `json:"server_id"`
 	ChannelStats map[uuid.UUID]*models.PruneStats `json:"channel_stats"`
-	TriggerType  string                      `json:"trigger_type"` // "manual" or "automatic"
-	TriggeredBy  *uuid.UUID                  `json:"triggered_by,omitempty"`
-	ExecutedAt   time.Time                   `json:"executed_at"`
-	TotalDeleted int                         `json:"total_deleted"`
+	TriggerType  string                           `json:"trigger_type"` // "manual" or "automatic"
+	TriggeredBy  *uuid.UUID                       `json:"triggered_by,omitempty"`
+	ExecutedAt   time.Time                        `json:"executed_at"`
+	TotalDeleted int                              `json:"total_deleted"`
 }
 
 // AssignTitleRequest assigns a custom title to a member
@@ -899,10 +997,21 @@ type VoiceStateEventPayload struct {
 type VoiceServerUpdatePayload struct {
 	ServerID  uuid.UUID `json:"server_id"`
 	ChannelID uuid.UUID `json:"channel_id"`
-	Token     string    `json:"token"`              // ephemeral session token
-	Endpoint  string    `json:"endpoint"`           // server host:port for signaling relay
+	Token     string    `json:"token"`    // ephemeral session token
+	Endpoint  string    `json:"endpoint"` // server host:port for signaling relay
 	STUNUrls  []string  `json:"stun_urls"`
 	TURNUrls  []string  `json:"turn_urls,omitempty"`
+	// ICEServers is the full list for WebRTC: STUN, and TURN relays with
+	// their (often short-lived) logins, from the server's [voice] settings.
+	// Clients use it when present, and STUNUrls otherwise (older servers).
+	ICEServers []ICEServer `json:"ice_servers,omitempty"`
+}
+
+// ICEServer is one STUN or TURN server, as WebRTC's RTCIceServer.
+type ICEServer struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username,omitempty"`
+	Credential string   `json:"credential,omitempty"`
 }
 
 // VoiceSignalPayload relays a WebRTC SDP offer/answer or ICE candidate between
@@ -910,7 +1019,7 @@ type VoiceServerUpdatePayload struct {
 type VoiceSignalPayload struct {
 	TargetUserID uuid.UUID       `json:"target_user_id"`
 	ChannelID    uuid.UUID       `json:"channel_id"`
-	Type         string          `json:"type"`                // "offer", "answer", "candidate"
+	Type         string          `json:"type"` // "offer", "answer", "candidate"
 	SDP          string          `json:"sdp,omitempty"`
 	Candidate    json.RawMessage `json:"candidate,omitempty"` // RTCIceCandidateInit JSON
 }
@@ -920,7 +1029,7 @@ type VoiceSignalPayload struct {
 type VoiceSignalRelayPayload struct {
 	SourceUserID uuid.UUID       `json:"source_user_id"`
 	ChannelID    uuid.UUID       `json:"channel_id"`
-	Type         string          `json:"type"`                // "offer", "answer", "candidate"
+	Type         string          `json:"type"` // "offer", "answer", "candidate"
 	SDP          string          `json:"sdp,omitempty"`
 	Candidate    json.RawMessage `json:"candidate,omitempty"` // RTCIceCandidateInit JSON
 }
@@ -976,4 +1085,115 @@ type MoveVoicePayload struct {
 	ServerID  uuid.UUID `json:"server_id"`
 	UserID    uuid.UUID `json:"user_id"`    // user to move
 	ChannelID uuid.UUID `json:"channel_id"` // destination voice channel
+}
+
+// ── Plugin wire types ───────────────────────────────────────────────────────
+//
+// Everything a plugin process sends or receives is defined once, in the
+// plugin SDK's wire package (sdk/wire, module github.com/JMThomas00/Concord/sdk),
+// and aliased here -- so Concord and every plugin built on the SDK share the
+// exact same shapes. Change them there, not here.
+
+type (
+	PaneTheme                  = wire.PaneTheme
+	PluginPaneEnterPayload     = wire.PluginPaneEnterPayload
+	PluginPaneResizePayload    = wire.PluginPaneResizePayload
+	PluginPaneInputPayload     = wire.PluginPaneInputPayload
+	PluginPaneLeavePayload     = wire.PluginPaneLeavePayload
+	PluginPaneFramePayload     = wire.PluginPaneFramePayload
+	PluginEventPayload         = wire.PluginEventPayload
+	PluginNotifyEventPayload   = wire.PluginNotifyEventPayload
+	PluginPaneClosePayload     = wire.PluginPaneClosePayload
+	PluginNotifyUserPayload    = wire.PluginNotifyUserPayload
+	PluginMembersRequest       = wire.PluginMembersRequest
+	PluginMembersResponse      = wire.PluginMembersResponse
+	PluginMember               = wire.PluginMember
+	PluginPaneTitlePayload     = wire.PluginPaneTitlePayload
+	PluginPlaySoundPayload     = wire.PluginPlaySoundPayload
+	PluginGameResultPayload    = wire.PluginGameResultPayload
+	PluginRecord               = wire.PluginRecord
+	PluginStat                 = wire.PluginStat
+	PluginUnlock               = wire.PluginUnlock
+	PluginClientMessagePayload = wire.PluginClientMessagePayload
+	PaneImage                  = wire.PaneImage
+	PluginField                = wire.PluginField
+	PluginInfo                 = wire.PluginInfo
+	PluginConfigListPayload    = wire.PluginConfigListPayload
+)
+
+// PluginEventPayload.Kind values Concord understands; see sdk/wire.
+const (
+	PluginEventNotify        = wire.PluginEventNotify
+	PluginEventLeavePane     = wire.PluginEventLeavePane
+	PluginEventNotifyUser    = wire.PluginEventNotifyUser
+	PluginEventMembers       = wire.PluginEventMembers
+	PluginEventPaneTitle     = wire.PluginEventPaneTitle
+	PluginEventPlaySound     = wire.PluginEventPlaySound
+	PluginEventClientMessage = wire.PluginEventClientMessage
+	PluginEventGameResult    = wire.PluginEventGameResult
+	PluginEventRecord        = wire.PluginEventRecord
+)
+
+// The navigation keys a pane frame can claim; see sdk/wire.
+const (
+	PaneKeyEsc      = wire.PaneKeyEsc
+	PaneKeyTab      = wire.PaneKeyTab
+	PaneKeyShiftTab = wire.PaneKeyShiftTab
+)
+
+// PaneNavigationKeys are every key a pane frame can claim.
+var PaneNavigationKeys = wire.PaneNavigationKeys
+
+// MaxClientMessageBytes caps a client_message's Data; see sdk/wire.
+const MaxClientMessageBytes = wire.MaxClientMessageBytes
+
+// PluginBoardInfo is what a plugin declares about achievements: the ones
+// members can unlock, and which stat its leaderboard ranks by.
+type PluginBoardInfo struct {
+	PluginID         string                  `json:"plugin_id"`
+	Name             string                  `json:"name"`
+	Achievements     []PluginAchievementInfo `json:"achievements,omitempty"`
+	LeaderboardStat  string                  `json:"leaderboard_stat,omitempty"`
+	LeaderboardLabel string                  `json:"leaderboard_label,omitempty"`
+}
+
+// PluginAchievementInfo is one declared achievement.
+type PluginAchievementInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Tier        string `json:"tier,omitempty"` // bronze, silver, gold
+	Icon        string `json:"icon,omitempty"`
+	Secret      bool   `json:"secret,omitempty"`
+}
+
+// PluginRecordsPayload carries your records (EventPluginRecords): all of
+// them after sign-in, then each one as it changes.
+type PluginRecordsPayload struct {
+	Records []PluginRecordInfo `json:"records"`
+}
+
+// PluginRecordInfo is your record for one plugin.
+type PluginRecordInfo struct {
+	PluginID string       `json:"plugin_id"`
+	Record   PluginRecord `json:"record"`
+}
+
+// LeaderboardResponse answers GET /api/plugins/leaderboard/{plugin_id}:
+// the top members by the plugin's leaderboard stat, and where you stand.
+type LeaderboardResponse struct {
+	PluginID string             `json:"plugin_id"`
+	Label    string             `json:"label"`
+	Entries  []LeaderboardEntry `json:"entries"`
+	You      *LeaderboardEntry  `json:"you,omitempty"`
+	Hidden   bool               `json:"hidden"` // you keep yourself off the leaderboards
+}
+
+// LeaderboardEntry is one place on a leaderboard.
+type LeaderboardEntry struct {
+	Rank     int       `json:"rank"`
+	UserID   uuid.UUID `json:"user_id"`
+	Username string    `json:"username"`
+	Value    string    `json:"value"`
+	Num      float64   `json:"num"`
 }

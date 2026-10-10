@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +42,11 @@ type Client struct {
 
 	// Buffered channel of outbound messages
 	send chan *protocol.Message
+	// sendMu guards sendClosed, so Send from another goroutine (a plugin
+	// action finishing after this connection dropped) never writes to a
+	// closed channel.
+	sendMu     sync.Mutex
+	sendClosed bool
 
 	// User information (set after authentication)
 	UserID    uuid.UUID
@@ -66,15 +72,26 @@ type Client struct {
 
 	// Handlers for processing messages
 	handlers *Handlers
+
+	// connEpoch uniquely identifies this connection (see
+	// PluginPaneFramePayload.Epoch).
+	connEpoch int64
 }
+
+// nextConnEpoch hands out connEpoch values; starting from the process start
+// time keeps them distinct across a server restart too.
+var nextConnEpoch atomic.Int64
+
+func init() { nextConnEpoch.Store(time.Now().UnixNano()) }
 
 // NewClient creates a new client instance
 func NewClient(conn *websocket.Conn, hub *Hub, handlers *Handlers) *Client {
 	return &Client{
-		conn:     conn,
-		hub:      hub,
-		send:     make(chan *protocol.Message, sendBufferSize),
-		handlers: handlers,
+		conn:      conn,
+		hub:       hub,
+		send:      make(chan *protocol.Message, sendBufferSize),
+		handlers:  handlers,
+		connEpoch: nextConnEpoch.Add(1),
 	}
 }
 
@@ -182,6 +199,21 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 	case protocol.OpTypingStart:
 		c.requireAuth(func() {
 			c.handlers.HandleTypingStart(c, msg)
+		})
+
+	case protocol.OpTypingStop:
+		c.requireAuth(func() {
+			c.handlers.HandleTypingStop(c, msg)
+		})
+
+	case protocol.OpRequestThread:
+		c.requireAuth(func() {
+			c.handlers.HandleRequestThread(c, msg)
+		})
+
+	case protocol.OpThreadRead:
+		c.requireAuth(func() {
+			c.handlers.HandleThreadRead(c, msg)
 		})
 
 	case protocol.OpPresenceUpdate:
@@ -384,6 +416,16 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleSetPluginConfig(c, msg)
 		})
 
+	case protocol.OpPluginInstall:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginInstall(c, msg)
+		})
+
+	case protocol.OpPluginManage:
+		c.requireAuth(func() {
+			c.handlers.HandlePluginManage(c, msg)
+		})
+
 	case protocol.OpUpdateChannelOverwrite:
 		c.requireAuth(func() {
 			c.handlers.HandleUpdateChannelOverwrite(c, msg)
@@ -470,6 +512,11 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		User:               user,
 		Servers:            servers,
 		PluginChannelKinds: c.handlers.PluginChannelKindInfos(),
+		PluginClients:      c.handlers.PluginClientInfos(),
+		PluginBoards:       c.handlers.PluginBoardInfos(),
+		ServerVersion:      c.handlers.version,
+		ServerGitCommit:    c.handlers.gitCommit,
+		ServerBuildTime:    c.handlers.buildTime,
 	}
 
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
@@ -543,6 +590,9 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		}
 	}
 
+	// Their plugin records (achievements, stats), for Settings > About.
+	c.handlers.sendRecords(c)
+
 	// Broadcast presence update to all servers
 	c.hub.BroadcastPresenceUpdate(user, serverIDs)
 
@@ -577,8 +627,11 @@ func (c *Client) identifyAsPlugin(token string) {
 	}
 
 	readyPayload := &protocol.ReadyPayload{
-		SessionID: c.SessionID,
-		User:      user,
+		SessionID:       c.SessionID,
+		User:            user,
+		ServerVersion:   c.handlers.version,
+		ServerGitCommit: c.handlers.gitCommit,
+		ServerBuildTime: c.handlers.buildTime,
 	}
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
 	if err != nil {
@@ -589,14 +642,14 @@ func (c *Client) identifyAsPlugin(token string) {
 
 	// A plugin has no other way to learn its own server_config_field values
 	// at cold start (or after a crash-restart): OpPluginConfigGet is gated
-	// behind PermissionManageServer for a human client, and HandleSetPluginConfig's
+	// behind PermissionManagePlugins for a human client, and HandleSetPluginConfig's
 	// own targeted push only fires when an admin actually changes something —
 	// silent after every process restart otherwise. Push it once here too, right
 	// alongside Ready, so a plugin's config-dependent behavior (e.g. an AI
 	// Passthrough install's mention_enabled) is correct from its very first
 	// message, not just from the next time an admin happens to re-save it.
 	if installed, err := c.handlers.db.GetInstalledPlugin(pluginID); err == nil && installed != nil {
-		info := c.handlers.buildPluginInfo(installed)
+		info := c.handlers.buildPluginInfo(installed, true)
 		if configMsg, err := protocol.NewMessage(protocol.OpDispatch, protocol.PluginConfigListPayload{Plugins: []protocol.PluginInfo{info}}); err == nil {
 			configMsg.Type = protocol.EventPluginConfigUpdate
 			c.send <- configMsg
@@ -621,6 +674,11 @@ func (c *Client) identifyAsPlugin(token string) {
 	} else {
 		PluginLog.Warn("failed to load plugin's channels for identify-time sync", "plugin_id", pluginID, "error", err)
 	}
+
+	// Anyone already looking at one of this plugin's panes (it crashed and
+	// restarted, or started after they opened it) gets repainted now --
+	// after the channel sync above, so the plugin knows the channel first.
+	c.handlers.replayPaneEnters(c, pluginID)
 
 	AuthLog.Info("Plugin authenticated successfully", "plugin_id", pluginID, "service_user_id", user.ID)
 }
@@ -673,11 +731,7 @@ func (c *Client) sendError(code int, message string) {
 		Data: data,
 	}
 
-	select {
-	case c.send <- msg:
-	default:
-		ClientLog.Warn("Failed to send error, buffer full", "user_id", c.UserID, "error_code", code)
-	}
+	c.Send(msg) // safe even if the connection has closed meanwhile
 }
 
 // sendInvalidSession sends an INVALID_SESSION message
@@ -699,10 +753,25 @@ func (c *Client) sendInvalidSession(reason string) {
 
 // Send sends a message to the client
 func (c *Client) Send(msg *protocol.Message) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendClosed {
+		return
+	}
 	select {
 	case c.send <- msg:
 	default:
 		ClientLog.Warn("Client send buffer full, dropping message", "user_id", c.UserID, "op", msg.Op)
+	}
+}
+
+// closeSend closes the outbound channel once; later Sends are dropped.
+func (c *Client) closeSend() {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.send)
 	}
 }
 

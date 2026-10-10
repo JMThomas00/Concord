@@ -3,8 +3,10 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,20 +15,22 @@ import (
 
 // ServersConfig represents the top-level configuration structure for ~/.concord/servers.json
 type ServersConfig struct {
-	Version            int                   `json:"version"`
-	Servers            []*ClientServerInfo   `json:"servers"`
-	DefaultPreferences *DefaultPreferences   `json:"default_preferences,omitempty"`
+	Version            int                 `json:"version"`
+	Servers            []*ClientServerInfo `json:"servers"`
+	DefaultPreferences *DefaultPreferences `json:"default_preferences,omitempty"`
 }
 
 // DefaultPreferences stores default user preferences for new server registrations
 type DefaultPreferences struct {
-	Username              string `json:"username,omitempty"`
-	Email                 string `json:"email,omitempty"`
-	AutoConnectOnStartup  bool   `json:"auto_connect_on_startup"`
+	Username             string `json:"username,omitempty"`
+	Email                string `json:"email,omitempty"`
+	AutoConnectOnStartup bool   `json:"auto_connect_on_startup"`
 }
 
-// LocalIdentity stores the user's single identity used across all servers
+// LocalIdentity is one profile: who you are on every server you join.
+// A computer can hold several (a shared or family computer); one is active.
 type LocalIdentity struct {
+	ID       string `json:"id,omitempty"` // stable key; set when first saved
 	Alias    string `json:"alias"`
 	Email    string `json:"email"`
 	Password string `json:"password"` // plaintext in v0.1; will be encrypted in a future version
@@ -34,24 +38,67 @@ type LocalIdentity struct {
 
 // AppConfig represents UI preferences stored in ~/.concord/config.json
 type AppConfig struct {
-	Version       int            `json:"version"`
-	UI            UIConfig       `json:"ui"`
-	Identity      *LocalIdentity `json:"identity,omitempty"`
-	TermsAccepted bool           `json:"terms_accepted"` // Whether user has accepted Terms of Service
+	Version int      `json:"version"`
+	UI      UIConfig `json:"ui"`
+	// Identity is the active profile, kept for configs written before
+	// profiles (and read by older clients). Identities holds them all.
+	Identity       *LocalIdentity   `json:"identity,omitempty"`
+	Identities     []*LocalIdentity `json:"identities,omitempty"`
+	ActiveIdentity string           `json:"active_identity,omitempty"`
+	TermsAccepted  bool             `json:"terms_accepted"` // Whether user has accepted Terms of Service
+}
+
+// profiles returns the config's profiles and the active one's ID, folding
+// in a pre-profiles Identity.
+func (c *AppConfig) profiles() ([]*LocalIdentity, string) {
+	list := c.Identities
+	active := c.ActiveIdentity
+	if len(list) == 0 && c.Identity != nil {
+		list = []*LocalIdentity{c.Identity}
+	}
+	for _, p := range list {
+		if p.ID == "" {
+			p.ID = uuid.NewString()
+		}
+	}
+	if c.Identity != nil && active == "" {
+		for _, p := range list {
+			if strings.EqualFold(p.Email, c.Identity.Email) {
+				active = p.ID
+			}
+		}
+	}
+	if active == "" && len(list) > 0 {
+		active = list[0].ID
+	}
+	return list, active
+}
+
+// setProfiles stores the profiles and which one is active.
+func (c *AppConfig) setProfiles(list []*LocalIdentity, active string) {
+	c.Identities, c.ActiveIdentity, c.Identity = list, active, nil
+	for _, p := range list {
+		if p.ID == active {
+			c.Identity = p
+		}
+	}
+	if c.Identity == nil {
+		c.ActiveIdentity = ""
+	}
 }
 
 // UIConfig holds UI-related preferences
 type UIConfig struct {
-	Theme               string                       `json:"theme"`
-	ShowMembersList     bool                         `json:"show_members_list"`
-	CollapsedCategories map[string]map[string]bool   `json:"collapsed_categories,omitempty"` // serverID -> categoryID -> collapsed
-	MutedChannels       []string                     `json:"muted_channels,omitempty"`       // channel UUIDs
-	MutedServers        []string                     `json:"muted_servers,omitempty"`        // client server UUIDs
-	LastBannerIndex     int                          `json:"last_banner_index"`              // Index of last displayed banner
-	Notifications       NotificationConfig           `json:"notifications"`
-	Display             DisplayConfig                `json:"display"`
-	Audio               AudioConfig                  `json:"audio"`
-	HubURLs             []string                     `json:"hub_urls,omitempty"` // Grapevine hub URLs; nil = use built-in default
+	Theme               string                     `json:"theme"`
+	ShowMembersList     bool                       `json:"show_members_list"`
+	CollapsedCategories map[string]map[string]bool `json:"collapsed_categories,omitempty"` // serverID -> categoryID -> collapsed
+	MutedChannels       []string                   `json:"muted_channels,omitempty"`       // channel UUIDs
+	MutedServers        []string                   `json:"muted_servers,omitempty"`        // client server UUIDs
+	LastBannerIndex     int                        `json:"last_banner_index"`              // Index of last displayed banner
+	Notifications       NotificationConfig         `json:"notifications"`
+	Display             DisplayConfig              `json:"display"`
+	Audio               AudioConfig                `json:"audio"`
+	HubURLs             []string                   `json:"hub_urls,omitempty"` // Grapevine hub URLs; nil = use built-in default
 }
 
 // defaultAudioConfig fills in zero-value fields with sensible defaults.
@@ -63,10 +110,13 @@ func defaultAudioConfig(c AudioConfig) AudioConfig {
 		c.OutputVolume = 1.0
 	}
 	if c.VADThreshold == 0 {
-		c.VADThreshold = 0.4
+		c.VADThreshold = 0.08
 	}
-	if c.PTTKey == "" {
-		c.PTTKey = "ctrl+space"
+	if c.NoiseSuppressStrength == 0 {
+		c.NoiseSuppressStrength = 0.5
+	}
+	if c.EchoCancellationStrength == 0 {
+		c.EchoCancellationStrength = 0.5
 	}
 	if c.CodecPreset == "" {
 		c.CodecPreset = "medium"
@@ -74,54 +124,120 @@ func defaultAudioConfig(c AudioConfig) AudioConfig {
 	if c.PerUserVolumes == nil {
 		c.PerUserVolumes = make(map[string]float64)
 	}
+	if c.PluginSoundVolume == 0 {
+		c.PluginSoundVolume = 0.8
+	}
+	// Version 1 (2026-10-02): noise suppression became RNNoise. The old
+	// gate's settings don't carry over, so it's switched on for everyone,
+	// at a strength that removes most noise; people can turn it down.
+	if c.ProcessingVersion < 1 {
+		c.NoiseSuppress = true
+		c.NoiseSuppressStrength = math.Max(c.NoiseSuppressStrength, 0.8)
+		c.ProcessingVersion = 1
+	}
 	return c
 }
 
 // AudioConfig holds audio device and voice preferences
 type AudioConfig struct {
-	InputDevice      string             `json:"input_device"`       // "" = system default
-	InputDeviceName  string             `json:"input_device_name"`  // friendly display name
-	OutputDevice     string             `json:"output_device"`      // "" = system default
-	OutputDeviceName string             `json:"output_device_name"` // friendly display name
-	InputGain        float64            `json:"input_gain"`         // 0.0–2.0, default 1.0
-	OutputVolume     float64            `json:"output_volume"`      // 0.0–1.0, default 1.0
-	VADEnabled       bool               `json:"vad_enabled"`        // Voice Activity Detection
-	VADThreshold     float64            `json:"vad_threshold"`      // 0.0–1.0, default 0.4
-	PTTEnabled       bool               `json:"ptt_enabled"`        // Push-to-Talk mode
-	PTTKey           string             `json:"ptt_key"`            // default "ctrl+space"
-	NoiseSuppress    bool               `json:"noise_suppress"`     // Noise suppression
-	EchoCancellation bool               `json:"echo_cancellation"`  // Echo cancellation
-	CodecPreset      string             `json:"codec_preset"`       // "low" / "medium" / "high"
-	PerUserVolumes   map[string]float64 `json:"per_user_volumes"`   // userID → 0.0–2.0
+	InputDevice              string             `json:"input_device"`               // "" = system default
+	InputDeviceName          string             `json:"input_device_name"`          // friendly display name
+	OutputDevice             string             `json:"output_device"`              // "" = system default
+	OutputDeviceName         string             `json:"output_device_name"`         // friendly display name
+	InputGain                float64            `json:"input_gain"`                 // 0.0–2.0, default 1.0
+	OutputVolume             float64            `json:"output_volume"`              // 0.0–1.0, default 1.0
+	VADEnabled               bool               `json:"vad_enabled"`                // Voice Activity Detection
+	VADThreshold             float64            `json:"vad_threshold"`              // raw RMS gate, default 0.08 -- see vadThresholdMin/Max in audio_settings_view.go for the realistic range the UI exposes as "Sensitivity"
+	NoiseSuppress            bool               `json:"noise_suppress"`             // Noise suppression (RNNoise, see VoiceEngine.sendFrame and internal/rnnoise)
+	NoiseSuppressStrength    float64            `json:"noise_suppress_strength"`    // 0.0–1.0, default 0.8 -- the noise left is (1-strength)², see mixDenoised
+	AutoLevelOff             bool               `json:"auto_level_off"`             // turn off automatic levelling (autoLevel, voice_dsp.go), on by default
+	ProcessingVersion        int                `json:"processing_version"`         // which voice processing these settings were last migrated for
+	EchoCancellation         bool               `json:"echo_cancellation"`          // Echo cancellation (adaptive NLMS filter, see VoiceEngine.aecFilt / voice_aec.go)
+	EchoCancellationStrength float64            `json:"echo_cancellation_strength"` // 0.0–1.0, default 0.5 -- NLMS adaptation aggressiveness (see aecMuForStrength)
+	CodecPreset              string             `json:"codec_preset"`               // "low" / "medium" / "high"
+	PerUserVolumes           map[string]float64 `json:"per_user_volumes"`           // userID → 0.0–2.0
+
+	// Plugin sounds (game moves, alerts): their own volume, and a mute.
+	PluginSoundVolume float64 `json:"plugin_sound_volume"` // 0.0–1.0, default 0.8
+	PluginSoundsMuted bool    `json:"plugin_sounds_muted"`
 }
 
 // NotificationConfig holds notification and sound alert preferences
 type NotificationConfig struct {
-	SoundsMuted  bool   `json:"sounds_muted"`   // Master mute for all notification sounds
-	MentionsOnly bool   `json:"mentions_only"`  // Only play sounds for @mention messages
-	BellOnMention bool  `json:"bell_on_mention"` // Write terminal bell \a on every @mention
-	MentionSound string `json:"mention_sound"`  // Sound name for @mention alerts
-	MessageSound string `json:"message_sound"`  // Sound name for regular message alerts
+	SoundsMuted   bool   `json:"sounds_muted"`    // Master mute for all notification sounds
+	MentionsOnly  bool   `json:"mentions_only"`   // Only play sounds for @mention messages
+	BellOnMention bool   `json:"bell_on_mention"` // Write terminal bell \a on every @mention
+	MentionSound  string `json:"mention_sound"`   // Sound name for @mention alerts
+	MessageSound  string `json:"message_sound"`   // Sound name for regular message alerts
+
+	// Desktop (OS-native) popup notifications -- independent of the sound
+	// settings above. Zero values ("") are deliberately the safe/off
+	// defaults so upgrading an existing config.json never starts firing
+	// surprise popups for users who never opted in.
+	DesktopNotifyMode  string `json:"desktop_notify_mode"`  // "" / "off" (default), "mentions", "all"
+	DesktopNotifyScope string `json:"desktop_notify_scope"` // "" / "all_servers" (default), "current_server"
+
+	// In-app toasts for new messages (toasts.go), on by default: ""
+	// (all messages), "mentions" or "off"; and from "" (all servers) or
+	// "current_server". The unread counts in the channel list show either way.
+	ToastMode  string `json:"toast_mode,omitempty"`
+	ToastScope string `json:"toast_scope,omitempty"`
+	// ToastOrder: "" keeps the newest at the bottom of the stack (dismissed
+	// first); "oldest" queues them, the oldest at the bottom.
+	ToastOrder string `json:"toast_order,omitempty"`
+	// ToastSide: "" (left, over the server and channel columns) or "right"
+	// (over the members panel). ToastStyle: "" (full cards) or "compact"
+	// (two lines each).
+	ToastSide  string `json:"toast_side,omitempty"`
+	ToastStyle string `json:"toast_style,omitempty"`
+	// ThreadLines: a line in the channel when someone replies in a thread:
+	// "" (off, the default), "followed" (threads you follow or were
+	// mentioned in) or "all" (threads_find.go).
+	ThreadLines string `json:"thread_lines,omitempty"`
 }
 
 // DisplayConfig holds display and appearance preferences
 type DisplayConfig struct {
-	TimestampFormat    string `json:"timestamp_format"`     // "12h" or "24h"; empty = "24h"
-	TimestampStyle     string `json:"timestamp_style"`      // "absolute" or "relative"; empty = "absolute"
-	MessageDensity     string `json:"message_density"`      // "compact", "normal", "spacious"; empty = "normal"
-	ShowAvatars        bool   `json:"show_avatars"`         // show colored circle avatars in chat headers
-	ShowDateSeps       bool   `json:"show_date_seps"`       // show date separator lines between days
-	GroupingGapMins    int    `json:"grouping_gap_mins"`    // minutes before new header shown; 0 = default (5)
-	ServerListCollapsed  bool `json:"server_list_collapsed"`  // false = expanded (default), true = collapsed
-	MembersListCollapsed bool `json:"members_list_collapsed"` // false = expanded (default), true = collapsed
+	TimestampFormat      string `json:"timestamp_format"`       // "12h" or "24h"; empty = "24h"
+	TimestampStyle       string `json:"timestamp_style"`        // "absolute" or "relative"; empty = "absolute"
+	MessageDensity       string `json:"message_density"`        // "compact", "normal", "spacious"; empty = "normal"
+	ShowAvatars          bool   `json:"show_avatars"`           // show colored circle avatars in chat headers
+	ShowDateSeps         bool   `json:"show_date_seps"`         // show date separator lines between days
+	GroupingGapMins      int    `json:"grouping_gap_mins"`      // minutes before new header shown; 0 = default (5)
+	ServerListCollapsed  bool   `json:"server_list_collapsed"`  // false = expanded (default), true = collapsed
+	MembersListCollapsed bool   `json:"members_list_collapsed"` // false = expanded (default), true = collapsed
 
 	// Members panel display options (false = show, true = hide — matches Go zero value = show by default)
-	MembersHideVUMeter bool `json:"members_hide_vu_meter"` // hide the voice level bar row
-	MembersHideQuality bool `json:"members_hide_quality"`  // hide the connection quality bar
+	MembersHideVUMeter bool `json:"members_hide_vu_meter"` // hide the voice level bar row (superseded by VoiceLevelStyle; kept in step for older clients)
+	// VoiceLevelStyle is how voice levels show in the members panel:
+	// "bar", "slider", "wave", "ring" or "off" (voice_level.go). "" means
+	// "bar", or "off" when MembersHideVUMeter is set.
+	VoiceLevelStyle    string `json:"voice_level_style,omitempty"`
+	MembersHideQuality bool   `json:"members_hide_quality"` // hide the connection quality bar
 
 	// Animation options
 	DisablePanelAnimations bool   `json:"disable_panel_animations"` // skip slide-in/out for settings and server panels
-	TypingAnimation        string `json:"typing_animation"`          // "" = "braille"; see typingAnimNames for valid values
+	TypingAnimation        string `json:"typing_animation"`         // "" = "braille"; see typingAnimNames for valid values
+
+	// Surprise is how lively the login stage is (mood.go): "" (full),
+	// "calm" or "off". MoodLock is a mood code to use on every launch
+	// instead of a random one ("" = random).
+	Surprise string `json:"surprise,omitempty"`
+	MoodLock string `json:"mood_lock,omitempty"`
+	// Disco arms a disco party for the next launch ("disco" typed on Settings >
+	// About; used up by that launch).
+	Disco bool `json:"disco,omitempty"`
+	// NoLoadingScreen and NoScreensaver turn those off (Settings > Display).
+	NoLoadingScreen bool `json:"no_loading_screen,omitempty"`
+	NoScreensaver   bool `json:"no_screensaver,omitempty"`
+
+	// Images says how plugin images are drawn: "" or "auto" (the best this
+	// terminal supports), "kitty", "sixel", "iterm2", "blocks" or "off".
+	Images string `json:"images,omitempty"`
+
+	// PluginCode says whether plugins' client code may run: "" asks for
+	// each plugin first (plugin_code_consent.go), "never" turns it off.
+	PluginCode string `json:"plugin_code,omitempty"`
 }
 
 // ServerSoundOverride stores per-server sound settings, overriding global defaults.
@@ -137,8 +253,8 @@ type ServerSoundOverride struct {
 // serving them to downloaders after a restart (the server never stores the
 // bytes, only this client remembers where the original file lives on disk).
 type SharedFilesConfig struct {
-	Version int                          `json:"version"`
-	Files   map[string]SharedFileEntry   `json:"files"` // key: attachment ID
+	Version int                        `json:"version"`
+	Files   map[string]SharedFileEntry `json:"files"` // key: attachment ID
 }
 
 // SharedFileEntry records where a shared attachment's source file lives locally.
@@ -492,28 +608,145 @@ func (cm *ConfigManager) GetClientServers() []*ClientServerInfo {
 	return config.Servers
 }
 
-// SaveIdentity saves the user's local identity to config.json
+// profilesMu serializes read-modify-write of the profiles and of saved
+// server sign-ins, which several connections can finish at once.
+var profilesMu sync.Mutex
+
+// SaveIdentity saves a profile (adding it, or replacing the one with the
+// same ID) and makes it the active one.
 func (cm *ConfigManager) SaveIdentity(identity *LocalIdentity) error {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
 	config, err := cm.LoadAppConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load app config: %w", err)
 	}
-	config.Identity = identity
+	list, _ := config.profiles()
+	if identity.ID == "" {
+		identity.ID = uuid.NewString()
+	}
+	replaced := false
+	for i, p := range list {
+		if p.ID == identity.ID {
+			list[i], replaced = identity, true
+		}
+	}
+	if !replaced {
+		list = append(list, identity)
+	}
+	config.setProfiles(list, identity.ID)
 	return cm.SaveAppConfig(config)
 }
 
-// GetIdentity returns the stored local identity, or nil if not configured
+// GetIdentity returns the active profile, or nil if there is none.
 func (cm *ConfigManager) GetIdentity() *LocalIdentity {
-	config, err := cm.LoadAppConfig()
-	if err != nil {
-		return nil
+	list, active := cm.Profiles()
+	for _, p := range list {
+		if p.ID == active {
+			return p
+		}
 	}
-	return config.Identity
+	return nil
 }
 
-// SaveServerToken saves an auth token and userID for a server after successful auto-connect
+// Profiles returns every saved profile and the active one's ID. A config
+// from before profiles is converted (and saved) the first time, so each
+// profile's ID stays the same from then on.
+func (cm *ConfigManager) Profiles() ([]*LocalIdentity, string) {
+	config, err := cm.LoadAppConfig()
+	if err != nil {
+		return nil, ""
+	}
+	// profiles() fills in missing IDs, so decide whether to save first.
+	convert := config.ActiveIdentity == "" || len(config.Identities) == 0 || needsIDs(config.Identities)
+	list, active := config.profiles()
+	if convert && len(list) > 0 {
+		profilesMu.Lock()
+		config.setProfiles(list, active)
+		_ = cm.SaveAppConfig(config)
+		profilesMu.Unlock()
+	}
+	return list, active
+}
+
+func needsIDs(list []*LocalIdentity) bool {
+	for _, p := range list {
+		if p.ID == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// SetActiveProfile makes the profile with id the active one.
+func (cm *ConfigManager) SetActiveProfile(id string) error {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
+	config, err := cm.LoadAppConfig()
+	if err != nil {
+		return err
+	}
+	list, _ := config.profiles()
+	config.setProfiles(list, id)
+	return cm.SaveAppConfig(config)
+}
+
+// ForgetProfile removes a profile from this computer, along with its saved
+// server sign-ins. If it was active, the first remaining one (if any)
+// becomes active; the new active ID is returned ("" when none are left).
+func (cm *ConfigManager) ForgetProfile(id string) (string, error) {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
+	config, err := cm.LoadAppConfig()
+	if err != nil {
+		return "", err
+	}
+	list, active := config.profiles()
+	var kept []*LocalIdentity
+	var forgotten *LocalIdentity
+	for _, p := range list {
+		if p.ID == id {
+			forgotten = p
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	if active == id {
+		active = ""
+		if len(kept) > 0 {
+			active = kept[0].ID
+		}
+	}
+	config.setProfiles(kept, active)
+	if err := cm.SaveAppConfig(config); err != nil {
+		return "", err
+	}
+	if servers, err := cm.LoadServers(); err == nil && forgotten != nil {
+		changed := false
+		for _, s := range servers.Servers {
+			if s.SavedCredentials != nil && s.SavedCredentials.belongsTo(forgotten) {
+				s.SavedCredentials, s.UserID, changed = nil, uuid.Nil, true
+			}
+		}
+		if changed {
+			_ = cm.SaveServers(servers)
+		}
+	}
+	return active, nil
+}
+
+// SaveServerToken saves an auth token and userID for a server after
+// successful auto-connect, for the profile that signed in.
 func (cm *ConfigManager) SaveServerToken(serverID uuid.UUID, email, token string, userID uuid.UUID) error {
+	return cm.SaveServerSignIn(serverID, "", email, token, userID)
+}
+
+// SaveServerSignIn records that profileID signed in to a server as email.
+func (cm *ConfigManager) SaveServerSignIn(serverID uuid.UUID, profileID, email, token string, userID uuid.UUID) error {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
 	creds := &SavedCredentials{
+		ProfileID:           profileID,
 		Email:               email,
 		Token:               token,
 		AutoConnect:         true,

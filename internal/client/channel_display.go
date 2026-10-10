@@ -3,6 +3,7 @@ package client
 import (
 	"sort"
 
+	"github.com/google/uuid"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
 )
@@ -10,20 +11,31 @@ import (
 // pluginKindOptions returns every plugin-provided channel kind advertised at
 // READY, in a stable order — used by the channel-creation type selector so
 // the same list appears in the same order across renders.
+//
+// Only the current server's plugins are offered (a channel can only be
+// created on the server whose plugin owns it), and a plugin with several
+// instances is listed once: the Configure page asks which instance.
 func (a *App) pluginKindOptions() []protocol.PluginChannelKindInfo {
-	if len(a.pluginChannelKinds) == 0 {
+	var out []protocol.PluginChannelKindInfo
+	for _, k := range a.currentServerKinds() {
+		if k.BaseID == "" {
+			out = append(out, k)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].PluginID+":"+out[i].Kind < out[j].PluginID+":"+out[j].Kind
+	})
+	return out
+}
+
+// currentServerKinds is the plugin channel kinds the current server offers.
+func (a *App) currentServerKinds() []protocol.PluginChannelKindInfo {
+	if a.activeConn == nil {
 		return nil
 	}
-	keys := make([]string, 0, len(a.pluginChannelKinds))
-	for k := range a.pluginChannelKinds {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]protocol.PluginChannelKindInfo, len(keys))
-	for i, k := range keys {
-		out[i] = a.pluginChannelKinds[k]
-	}
-	return out
+	a.activeConn.mu.RLock()
+	defer a.activeConn.mu.RUnlock()
+	return append([]protocol.PluginChannelKindInfo(nil), a.activeConn.PluginChannelKinds...)
 }
 
 // pluginChannelKind looks up the READY-advertised metadata for a
@@ -83,15 +95,69 @@ func (a *App) isRemotePaneChannel(ch *models.Channel) bool {
 	return ok && info.RemotePane
 }
 
-// textChannelNames returns the current server's text channel names, used to
-// populate "channel_select" plugin config fields (e.g. an activity
-// notification channel picker) without hardcoding any plugin's field semantics.
-func (a *App) textChannelNames() []string {
-	var names []string
+// textChannelIDs returns the current server's text channel IDs, the option
+// list for "channel_select" plugin config fields (e.g. an activity
+// notification channel picker). The stored value is the channel's ID -- what
+// the server and plugins resolve it by, and stable across renames -- while
+// pluginFieldValueLabel shows the name.
+func (a *App) textChannelIDs() []string {
+	var ids []string
 	for _, ch := range a.getCurrentChannels() {
 		if ch.Type == models.ChannelTypeText {
-			names = append(names, ch.Name)
+			ids = append(ids, ch.ID.String())
 		}
 	}
-	return names
+	return ids
+}
+
+// pluginFieldValueLabel is how a boolean/select/channel_select plugin field
+// value is shown in a form: channel IDs become "#name", and a value that
+// doesn't resolve to a current channel is shown as-is.
+func (a *App) pluginFieldValueLabel(f protocol.PluginField, val string) string {
+	if f.Type == "channel_multi_select" {
+		return a.channelNames(val)
+	}
+	if val == "" {
+		return "(none)"
+	}
+	if f.Type == "channel_select" {
+		if id, err := uuid.Parse(val); err == nil {
+			for _, ch := range a.getCurrentChannels() {
+				if ch.ID == id {
+					return "#" + ch.Name
+				}
+			}
+			return "(deleted channel)"
+		}
+	}
+	return val
+}
+
+// setPluginChannelKinds records the plugin channel kinds one server offers
+// and rebuilds a.pluginChannelKinds as the union over every connection, so
+// a live install/uninstall on one server doesn't disturb another's.
+func (a *App) setPluginChannelKinds(sc *ServerConnection, kinds []protocol.PluginChannelKindInfo) {
+	if sc != nil {
+		sc.mu.Lock()
+		sc.PluginChannelKinds = kinds
+		sc.mu.Unlock()
+	}
+	all := make(map[string]protocol.PluginChannelKindInfo)
+	var conns []*ServerConnection
+	if a.connMgr != nil {
+		conns = a.connMgr.GetAllConnections()
+	}
+	for _, c := range conns {
+		c.mu.RLock()
+		for _, kind := range c.PluginChannelKinds {
+			all[kind.PluginID+":"+kind.Kind] = kind
+		}
+		c.mu.RUnlock()
+	}
+	if sc != nil && (a.connMgr == nil || a.connMgr.GetConnection(sc.ServerID) != sc) {
+		for _, kind := range kinds { // a connection the manager doesn't track (tests)
+			all[kind.PluginID+":"+kind.Kind] = kind
+		}
+	}
+	a.pluginChannelKinds = all
 }

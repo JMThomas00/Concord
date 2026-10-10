@@ -56,6 +56,22 @@ func (a *App) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 // just re-pointed at the "chat-panel" zone instead of the old hand-derived
 // isCursorOverChatViewport).
 func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
+	// A voice member's slider: click or drag along it to set their volume
+	// (voice_level.go). Other styles' volume badge is just a label to click
+	// through to the member's menu.
+	if msg.Button == tea.MouseButtonLeft && (msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionMotion) &&
+		a.voiceLevelStyle() == "slider" {
+		if id, frac, ok := a.resolveVolumeZone(msg.X, msg.Y); ok {
+			a.setFocus(FocusUserList)
+			for i, m := range a.buildFlatMemberList() {
+				if m.User != nil && m.User.ID == id {
+					a.selectedMemberIndex = i
+				}
+			}
+			a.setMemberVolume(id, frac*maxMemberVolume)
+			return nil
+		}
+	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return nil
 	}
@@ -69,6 +85,19 @@ func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
 
 	if z := zone.Get("chat-viewport-content"); z != nil && z.InBounds(msg) {
 		_, relY := z.Pos(msg)
+		// A thread's top edge (+ / −) expands or minimises it (threads.go).
+		if threadID, ok := a.threadBorderLines[a.chatViewport.YOffset+relY]; ok {
+			a.toggleThread(threadID)
+			return nil
+		}
+		// An in-channel "↳ who replied in a thread" line opens that thread.
+		if threadID, ok := a.threadNoticeLines[a.chatViewport.YOffset+relY]; ok {
+			for _, m := range a.activeConn.GetMessages(a.currentChannel.ID) {
+				if m.ID == threadID {
+					return a.jumpToThread(m)
+				}
+			}
+		}
 		if idx, ok := resolveMessageAtLine(a.messageLineOffsets, a.chatViewport.YOffset, relY); ok {
 			return a.selectMessageAtIndex(idx)
 		}
@@ -140,10 +169,7 @@ func (a *App) resolveClickedStatusBarHint(msg tea.MouseMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	if zoneInBounds("statusbar-help", msg) {
-		result, err := a.commandHandler.Execute(&Command{Name: "help"})
-		if err == nil {
-			a.openHelpModal(result)
-		}
+		a.openHelpFinder("")
 		return nil, true
 	}
 	if zoneInBounds("statusbar-quit", msg) {
@@ -171,7 +197,7 @@ func (a *App) resolveClickedLink(msg tea.MouseMsg) (string, bool) {
 	if a.activeConn == nil || a.currentChannel == nil {
 		return "", false
 	}
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	for _, m := range messages {
 		links := a.extractLinksFromMessage(m)
 		for i, link := range links {
@@ -320,9 +346,9 @@ func (a *App) selectMessageAtIndex(idx int) tea.Cmd {
 	if a.activeConn == nil || a.currentChannel == nil {
 		return nil
 	}
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
-	if idx < 0 || idx >= len(messages) {
-		return nil
+	messages := a.visibleMessages()
+	if idx < 0 || idx >= len(messages) || isSystemDisplay(messages[idx]) {
+		return nil // system lines (plugin notices) aren't selectable
 	}
 	a.messageNavMode = true
 	a.inMessageEditMode = false

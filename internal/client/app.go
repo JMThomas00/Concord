@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"image"
 	"log"
 	"os"
 	"os/exec"
@@ -32,7 +33,7 @@ type View int
 
 const (
 	ViewToS           View = iota // First-run: Terms of Service acceptance
-	ViewIdentitySetup               // First-run: set up local identity
+	ViewIdentitySetup             // First-run: set up local identity
 	ViewLogin
 	ViewRegister
 	ViewMain
@@ -42,6 +43,9 @@ const (
 	ViewServerManagement
 	ViewAddServer
 	ViewThemeBrowser
+	ViewProfiles    // the profiles saved on this computer
+	ViewAccountCode // enter an emailed code (verify, reset, confirm email)
+	ViewUpdates     // Ctrl+U on the login screen: is there a newer Concord? (updates.go)
 )
 
 // FocusArea represents which area of the UI has focus
@@ -53,7 +57,7 @@ const (
 	FocusChat
 	FocusInput
 	FocusUserList
-	FocusMessageNav                   // Message navigation mode
+	FocusMessageNav // Message navigation mode
 )
 
 // App represents the main application state
@@ -69,16 +73,77 @@ type App struct {
 	focus FocusArea
 
 	// Theme
-	theme  *themes.Theme
-	styles *themes.Styles
-	banner Banner // Static banner chosen at startup
+	theme       *themes.Theme
+	styles      *themes.Styles
+	banner      Banner // chosen at startup; Ctrl+R on login/register shuffles it
+	bannerIndex int    // index of banner in banners, for no-repeat shuffling
 
-	// Local identity (single identity across all servers)
+	// Login/register banner intro animation (see banner_anim.go). nil when
+	// no animation is running; bannerAnimGen invalidates stale ticks.
+	bannerAnim          *bannerAnimState
+	bannerAnimGen       int
+	lastBannerAnimStyle int
+
+	// Shaded grape logo light (see grape_logo.go); nil while the logo isn't
+	// on screen or animations are disabled.
+	grapeLight *grapeLightState
+	grapeGen   int
+
+	// The login experience (fx.go, mood.go, collection.go): this launch's
+	// mood, the transitions and backgrounds drawn over frames, and the
+	// collection and achievement toasts.
+	mood       mood
+	fx         fxState
+	collection *Collection
+	toasts     []*toast
+
+	// bannerShuffled: Ctrl+R picked the banner, so it may be any size
+	// (otherwise it keeps clear of a scene's object; scenes_site.go).
+	bannerShuffled bool
+	toastRects []toastRect // where the toasts were last drawn, for clicks (toasts.go)
+	// The main window's side panels as last drawn (renderMainView): the
+	// server and channel columns, and the members panel. Toasts stay inside
+	// one of them (toastArea).
+	toastLeftW, toastRightW int
+	leaderboards map[string]*leaderboardState // by server and plugin (plugin_records.go)
+	loading    *loadingState // the launch's loading screen while it plays
+
+	// Easter eggs and screensavers (eggs.go, screensaver.go).
+	egg         *eggState
+	eggKeys     []string    // the last few keys, for typed eggs
+	grapeClicks []time.Time // recent clicks on the grapes
+	discoNow    bool        // this launch is the disco party (armed by typing "disco" on About)
+	nameBanner  string      // this launch's banner is the profile's name (banner_name.go), or ""
+	fortune     string      // this launch's fortune (vintage.go)
+	updates     *updateState // the Updates page (updates.go)
+	photoCache  image.Image // the picture grapes (logo_photo.go)
+	photoKey    string      // the theme colour they were drawn in
+	saver       *saverState
+	lastInput   time.Time
+	grapeReact  *grapeReaction   // the grapes reacting to a problem or a success (stage.go)
+	connecting  *connectingState // the screen after unlocking while servers connect
+
+	// Scroll positions for the channel list and members panels (see
+	// panel_scroll.go).
+	channelScroll panelScroll
+	memberScroll  panelScroll
+
+	// The active profile: who you are on every server (Ctrl+P switches)
 	localIdentity *LocalIdentity
 
+	// Account screens (account_screens.go): Profiles, and the emailed-code
+	// screen. pendingVerify holds servers whose new account is waiting for
+	// its verification code (server ID → the email it went to).
+	profilesState *ProfilesState
+	codeState     *AccountCodeState
+	pendingVerify map[uuid.UUID]string
+	addingProfile bool // the identity form is adding a profile, not the first one
+	formHintRows  int  // rows of shortcut hints under the login/register form (layoutBannerScreen)
+	stageStable   int  // the last stage page's reserved height (stage.go), for currentLockup
+
 	// Multi-server connection management
-	connMgr    *ConnectionManager      // Manages all server connections
-	connEvents chan tea.Msg           // Event channel for async connection events
+	connMgr    *ConnectionManager // Manages all server connections
+	connEvents chan tea.Msg       // Event channel for async connection events
 
 	// Client-side server list (from servers.json)
 	clientServers       []*ClientServerInfo
@@ -89,14 +154,14 @@ type App struct {
 	activeConn *ServerConnection
 
 	// Protocol server state (from READY message)
-	currentServer *models.Server  // Currently selected protocol server
-	protocolServerIndex int        // Index in activeConn.Servers
+	currentServer       *models.Server // Currently selected protocol server
+	protocolServerIndex int            // Index in activeConn.Servers
 
 	// Channel state
 	currentChannel      *models.Channel
 	channelIndex        int
-	channelTree         *ChannelTree          // Hierarchical channel tree
-	collapsedCategories map[uuid.UUID]bool    // Per-server collapsed category state
+	channelTree         *ChannelTree       // Hierarchical channel tree
+	collapsedCategories map[uuid.UUID]bool // Per-server collapsed category state
 
 	// Default user preferences
 	defaultPreferences *DefaultPreferences
@@ -139,9 +204,9 @@ type App struct {
 	addServerError   string
 
 	// Manage Servers (Settings sub-page)
-	pingResults         map[uuid.UUID]*PingResult
-	editingServerID     *uuid.UUID // Set when editing an existing server
-	editingServerIndex  int        // Index in clientServers of the server being edited
+	pingResults           map[uuid.UUID]*PingResult
+	editingServerID       *uuid.UUID // Set when editing an existing server
+	editingServerIndex    int        // Index in clientServers of the server being edited
 	deleteConfirmServerID *uuid.UUID // Server awaiting delete confirmation
 
 	// Status message
@@ -157,7 +222,30 @@ type App struct {
 	typingUsernames map[uuid.UUID]string    // userID → username carried on the event itself, for typists (e.g. plugin service accounts) with no ServerMember row to resolve from
 	typingIsBot     map[uuid.UUID]bool      // userID → whether the typist is a plugin's own service account ("is thinking" vs. "is typing")
 	typingFrame     int                     // current animation frame index
+	typingTicking   bool                    // the typing animation's ticker is running (only while someone types)
 	lastTypingSent  time.Time               // when we last sent OpTypingStart
+
+	// lastKeystrokeAt is updated at the top of every handleKeyPress call,
+	// regardless of which key or which view handles it -- see its use in
+	// the "enter" case's ViewMain/FocusInput branch for why: a real,
+	// live-reported bug (2026-09-13) where pasting multi-line text sent
+	// each line as its own message in rapid-fire succession. Root cause is
+	// platform-specific but has no platform-specific fix available: on
+	// Windows, bubbletea's native console-input reader (key_windows.go)
+	// has no concept of "paste" at all -- ReadConsoleInput just replays
+	// pasted text as a flood of ordinary synthetic keystrokes, including a
+	// real KeyEnter for every embedded newline, completely indistinguishable
+	// from a deliberate press at the tea.KeyMsg level (Paste is never set
+	// on that code path). A POSIX terminal without bracketed-paste support
+	// hits the same failure mode for the same reason. Since there's no
+	// reliable "this came from a paste" signal on any of these paths, this
+	// times the gap since the previous keystroke instead: a burst of
+	// machine-replayed keystrokes lands microseconds to low-single-digit
+	// milliseconds apart, far faster than any real human types (even a
+	// very fast typist rarely sustains sub-20ms gaps, and essentially
+	// never right before a deliberate Enter-to-send). See
+	// pasteBurstKeyThreshold.
+	lastKeystrokeAt time.Time
 
 	// Theme browser state
 	themeBrowserState *ThemeBrowserState
@@ -187,11 +275,13 @@ type App struct {
 
 	// Voice engine state (nil when not in a voice channel)
 	voiceEngine   *VoiceEngine
-	voiceSigOut   chan VoiceSignalOut // engine → server: WebRTC signals
-	voiceEventOut chan interface{}    // engine → bubbletea: state events
-	voiceQuit     chan struct{}       // closed by stopVoiceEngine to unblock waiting cmds
-	voiceQuality  map[uuid.UUID]int     // userID → latest ICE RTT ms (-1 = unknown)
-	voiceLevels   map[uuid.UUID]float32 // userID → latest RMS output level (0.0–1.0)
+	voiceSigOut   chan VoiceSignalOut     // engine → server: WebRTC signals
+	voiceEventOut chan interface{}        // engine → bubbletea: state events
+	voiceConn     *ServerConnection        // the server your voice is on, even while another is on screen (voice_follow.go)
+	voiceQuit     chan struct{}           // closed by stopVoiceEngine to unblock waiting cmds
+	voiceQuality  map[uuid.UUID]int       // userID → latest ICE RTT ms (-1 = unknown)
+	voiceLevels   map[uuid.UUID]float32   // userID → latest RMS output level (0.0–1.0)
+	voiceHistory  map[uuid.UUID][]float32 // recent levels per user, for the wave style (voice_level.go)
 
 	// File transfer engine state — lazily created on first use and kept alive
 	// for the app's lifetime (unlike voice, transfers aren't tied to joining
@@ -207,12 +297,12 @@ type App struct {
 	pendingFileTransferCmd tea.Cmd
 
 	// Server list panel animation
-	serverListAnimWidth int  // current animated width (22 expanded, 8 collapsed)
-	serverListAnimating  bool
+	serverListAnimWidth int // current animated width (22 expanded, 8 collapsed)
+	serverListAnimating bool
 
 	// Members panel animation
-	membersAnimWidth int  // current animated width (30 expanded, 8 collapsed)
-	membersAnimating  bool
+	membersAnimWidth int // current animated width (30 expanded, 8 collapsed)
+	membersAnimating bool
 
 	// Full-panel slide animations
 	settingsAnimFrame   int  // 0=hidden, panelAnimMaxFrames=fully visible
@@ -231,6 +321,76 @@ type App struct {
 	// exactly how a real terminal/GUI scrollbar drag behaves.
 	helpScrollDragging bool
 
+	// helpResizing/helpResizeGen debounce Help & Guide's markdown re-render
+	// across a live window-drag resize. renderHelpMarkdown does a full
+	// goldmark+chroma pass over the whole document (~40ms measured on a
+	// high-end desktop CPU, worse on weaker hardware) and used to run
+	// synchronously on every single tea.WindowSizeMsg tick -- a drag-resize
+	// fires many of those in quick succession, so the render loop was
+	// getting blocked repeatedly, which a real live report (2026-09-11)
+	// showed as both very slow redraws while widening and garbled/torn
+	// frames while narrowing. helpResizeGen is bumped on every resize tick;
+	// helpResizeSettleCmd schedules a check 150ms later that only takes
+	// effect if no newer resize has happened since (helpResizeGen still
+	// matches) -- see the WindowSizeMsg/helpResizeSettledMsg handling in
+	// Update() and the gated cache check in renderHelpContent.
+	helpResizing  bool
+	helpResizeGen int
+
+	// inPasteBurst/pasteBurstGen/cachedMainView cut the cost of a
+	// machine-replayed paste burst (see lastKeystrokeAt's doc comment) the
+	// same way helpResizing cuts the cost of a live drag-resize: a real,
+	// live-reported bug (2026-09-13) where pasting longer text visibly
+	// "streamed in" -- because bubbletea's event loop runs a full
+	// Update()+View() cycle for EVERY replayed keystroke with no batching
+	// (confirmed in tea.go's eventLoop), and View()'s ViewMain path
+	// (renderMainView, ~1.7ms measured, plus zone.Scan's own ~1.5ms full-string
+	// mouse-zone pass over the result) both re-run unconditionally every
+	// single time even though nothing but the input box's text actually
+	// changed. Neither the sidebar/channel list/user list content nor the
+	// mouse-click zones they register can possibly have changed mid-paste, so
+	// re-deriving them hundreds of times in a fraction of a second is pure
+	// waste -- and it's exactly what the user was seeing "streamed in".
+	//
+	// While inPasteBurst is true, View() skips renderMainView+zone.Scan
+	// entirely and replays cachedMainView (the last fully-rendered,
+	// already-zone-scanned frame) unchanged -- bubbletea's renderer diffs an
+	// unchanged frame and skips the terminal write too, so this also avoids
+	// hundreds of wasted terminal writes, not just CPU. The tradeoff -- the
+	// input box's visible text doesn't update on every single replayed
+	// keystroke during the burst -- is the right one here: a real paste
+	// normally appears to the user as one atomic chunk of text landing in the
+	// box, not a character-by-character typewriter effect, so freezing the
+	// frame until the burst settles and then jumping straight to the final,
+	// fully-pasted text is closer to correct behavior, not a regression.
+	// pasteBurstGen/pasteBurstSettleCmd/pasteBurstSettledMsg mirror
+	// helpResizeGen/helpResizeSettleCmd/helpResizeSettledMsg's exact
+	// stale-tick-is-a-safe-no-op debounce shape -- see those and the
+	// tea.KeyMsg/pasteBurstSettledMsg handling in Update().
+	inPasteBurst   bool
+	pasteBurstGen  int
+	cachedMainView string
+
+	// Build identity, set once at startup via SetBuildInfo -- see
+	// Settings > About. Server counterparts (serverVersion/etc.) are
+	// per-connection, not per-app, since each connected server reports its
+	// own build info at Ready time -- see ServerConnection.
+	clientVersion   string
+	restartPath     string // set when an update wants Concord restarted (updates.go)
+	clientGitCommit string
+	clientBuildTime string
+
+	// messageRenderCache caches renderMessageContent's glamour-rendered
+	// output per message ID -- glamour is much heavier than the old
+	// plain-regex styling it replaced, and every visible message gets
+	// re-rendered on every redraw. Each entry's own width/theme fields
+	// (see messageRenderCacheEntry) are checked on read, so a resize or
+	// theme change alone doesn't require touching every entry -- but the
+	// map is still fully cleared on either (see SetTheme and the
+	// tea.WindowSizeMsg handler) rather than left to accumulate one stale
+	// entry per message per past width/theme for the life of the session.
+	messageRenderCache map[uuid.UUID]messageRenderCacheEntry
+
 	// AFK tracking
 	lastActivityTime time.Time
 	isAFK            bool
@@ -247,11 +407,28 @@ type App struct {
 
 	// Reply state (Teams-style quoted replies)
 	replyTarget *MessageDisplay // Message being replied to
+	// Threads (threads.go): which threads are expanded, the thread the
+	// message box posts into (its first message) and its opening words, and
+	// the chat lines holding a thread's top edge (a click there opens it).
+	expandedThreads   map[uuid.UUID]bool
+	threadTarget      *MessageDisplay
+	threadQuote       string
+	threadBorderLines map[int]uuid.UUID
+	// Finding threads (threads_find.go): the Alt+T list, the bottom edge's
+	// "↳ who replied" and until when, and the chat lines holding an
+	// in-channel reply notice (a click opens that thread).
+	threadList        *threadListState
+	threadFlash       string
+	threadFlashUntil  time.Time
+	threadNoticeLines map[int]uuid.UUID
+	// updateAvailable is a newer release found at startup (updates.go):
+	// the login screen's tip offers it in place of the Grapevine tip.
+	updateAvailable string
 	replyQuote  string          // Ellipsized first line for display
 
 	// Edit message state
-	editingMessageID  *uuid.UUID // Message being edited
-	editingChannelID  *uuid.UUID // Channel of message being edited
+	editingMessageID *uuid.UUID // Message being edited
+	editingChannelID *uuid.UUID // Channel of message being edited
 
 	// Delete message state (confirmation)
 	deleteConfirmMessageID *uuid.UUID // Message awaiting delete confirmation
@@ -260,8 +437,8 @@ type App struct {
 	// Link browser state
 	linkBrowserState *LinkBrowserState
 
-	// Help modal state
-	helpModalState *HelpModalState
+	// Help fuzzy finder state (nil when closed) -- see help_finder.go
+	helpFinderState *HelpFinderState
 
 	// Member panel navigation state
 	selectedMemberIndex int                // Index in flattened member list
@@ -276,6 +453,17 @@ type App struct {
 	// The client never needs plugin-specific code — see plugin_pane.go.
 	pluginChannelKinds map[string]protocol.PluginChannelKindInfo
 	pluginPane         *PluginPaneState
+	// Plugin images (plugin_images.go): fetched client files, the raster
+	// images the current render placed, and what was last painted.
+	pluginAssets *pluginAssets
+	sfx          *sfxPlayer // plugin sounds (sfx.go), opened on first use
+	// Plugin client code (plugin_code.go): the runtime, created on first
+	// use, the remembered consent answers, and plugins declined this session.
+	codeHost      *codeHost
+	codeDecisions *codeDecisions
+	codeNotNow    map[string]bool
+	paneRasters   []rasterImage
+	rasterState   rasterState
 }
 
 // Position represents a cursor position in a message (for Level 2 navigation)
@@ -310,12 +498,6 @@ const (
 // beyond that it scrolls, following SelectedIndex.
 const linkBrowserVisibleRows = 10
 
-// HelpModalState holds the state for the help modal overlay
-type HelpModalState struct {
-	Content      string // Multi-line help text to display
-	ScrollOffset int    // For future scrolling support (start at 0)
-}
-
 // MemberContextMenu holds the state for the member action context menu
 type MemberContextMenu struct {
 	TargetMember  *MemberDisplay
@@ -349,6 +531,7 @@ type MessageDisplay struct {
 	IsWhisper     bool // Ephemeral DM from /whisper
 	IsSystem      bool // Server-wide moderation/system announcement
 	IsDeleted     bool // Soft-deleted; rendered as [message deleted] placeholder
+	Streaming     bool // A plugin reply still being written (protocol.StreamWriting): shown with a cursor, unfinished markdown closed off
 	IsBotAuthor   bool // Author is a plugin's own service account (models.User.IsServiceAccount) — never grouped under a shared header with an adjacent message, even the same author's own within the grouping window, since e.g. two of Mynah's replies landing close together answer two different questions and reading as one merged reply is actively misleading
 }
 
@@ -632,14 +815,24 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	input.Placeholder = "Type a message..."
 	input.CharLimit = 2000
 	input.SetWidth(50)
-	input.SetHeight(4)  // 4 rows of text (matches layout slot: 2 borders + 4 content = 6 rows)
+	input.SetHeight(5) // 5 rows of text (matches layout slot: 2 borders + 5 content = 7 rows)
 	input.ShowLineNumbers = false
 	input.Prompt = "" // remove the default "> " prompt gutter character
 	// Configure keybindings: Enter sends the message (handled in handleKeyPress).
-	// Ctrl+Enter or Ctrl+J inserts a newline in the compose box.
-	// - Ctrl+Enter: works in Windows Terminal and terminals with CSI u support
-	// - Ctrl+J: sends ASCII 0x0A (LF), distinct from 0x0D (CR/Enter) in all terminals
-	// - Shift+Enter: kept as fallback for kitty/modern terminal emulators
+	// Ctrl+J is the only ONE of these guaranteed to actually reach us as a
+	// distinct key: it sends ASCII 0x0A (LF), which is unambiguous from
+	// 0x0D (CR/Enter) on every platform. Ctrl+Enter/Shift+Enter are kept
+	// registered in case some terminal/protocol combo does report them
+	// distinctly (e.g. a POSIX terminal with CSI u / modifyOtherKeys
+	// support), but don't rely on either -- confirmed live (2026-09-13,
+	// Windows Terminal/PowerShell) that Ctrl+Enter does NOT work there:
+	// bubbletea's own Windows console-input reader (key_windows.go's
+	// keyType()) maps VK_RETURN to KeyEnter unconditionally, discarding
+	// the Ctrl/Shift modifier state before Concord's code ever sees the
+	// event -- there is no key wired to this app that can distinguish
+	// them on that platform. This isn't fixable here short of patching
+	// bubbletea itself; Ctrl+J is what Settings/Help & Guide document as
+	// the reliable shortcut for exactly this reason.
 	input.KeyMap.InsertNewline.SetKeys("ctrl+enter", "ctrl+j", "shift+enter")
 	// Remove background color to match terminal background
 	input.FocusedStyle.Base = input.FocusedStyle.Base.Background(lipgloss.NoColor{})
@@ -761,11 +954,14 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 	identityPasswordConfirm.CharLimit = 128
 
 	app := &App{
+		pendingVerify:           map[uuid.UUID]string{},
 		view:                    startView,
 		focus:                   FocusServerIcons, // Start on server list; user navigates into a channel before typing
 		theme:                   theme,
 		styles:                  styles,
 		banner:                  banner,
+		bannerIndex:             newBannerIndex,
+		lastBannerAnimStyle:     -1,
 		connMgr:                 connMgr,
 		connEvents:              connEvents,
 		localIdentity:           identity,
@@ -864,11 +1060,33 @@ func (a *App) initLoginView() {
 // Init implements tea.Model
 func (a *App) Init() tea.Cmd {
 	a.lastActivityTime = time.Now()
+	a.startMood()
+	a.pickNameBanner()
+	a.pickFortune()
+	a.launched()
+	a.recordMood()
+	a.discoverBanner(a.bannerIndex)
+	a.fx.prevView, a.fx.prevKey = a.view, a.stageKey()
+	a.fx.stageAt = time.Now()
+	a.startLoading()
+	a.lastInput = time.Now()
+	if cal := a.calendar(); cal != "" {
+		a.findEgg(cal)
+	}
 	cmds := []tea.Cmd{
+		a.syncFx(),
+		idleCheck(),
 		textinput.Blink,
 		a.waitForConnEvent(),
 		tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }),
-		tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }),
+	}
+	if cmd := a.startupUpdateCheck(); cmd != nil { // updates.go
+		cmds = append(cmds, cmd)
+	}
+	if (a.view == ViewLogin || a.view == ViewRegister) && a.loading == nil {
+		if cmd := a.startBannerAnim(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 	// Auto-connect all known servers when identity is configured
 	if a.localIdentity != nil {
@@ -960,13 +1178,50 @@ func (a *App) scheduleReconnect(serverID uuid.UUID) tea.Cmd {
 
 	delay := strategy.NextDelay(attemptCount)
 
-	return func() tea.Msg {
-		// Notify about retry
+	retryingCmd := func() tea.Msg {
+		return ConnectionRetryingMsg{ServerID: serverID, AttemptCount: attemptCount, NextDelay: delay}
+	}
+	sleepThenReconnectCmd := func() tea.Msg {
 		time.Sleep(delay)
 
 		// Attempt reconnection
 		return a.connectServerAsync(serverID, token)()
 	}
+
+	return tea.Batch(retryingCmd, sleepThenReconnectCmd)
+}
+
+// retryConnectionNow immediately attempts to reconnect a disconnected or
+// errored server, bypassing whatever's left of scheduleReconnect's backoff
+// delay (ctrl+r, see handleKeyPress). Both StateDisconnected (the state
+// right after a drop, during the first reconnect cycle's sleep) and
+// StateError (a failed attempt, during a later cycle's sleep) count as
+// "a reconnect is pending" -- scheduleReconnect's own ConnectionRetryingMsg
+// fires in both cases without changing sc.State, so gating on StateError
+// alone would silently no-op during that first cycle. If an automatic
+// scheduleReconnect attempt is already sleeping in the background, this
+// races it harmlessly -- both just end up sending the same
+// connectServerAsync attempt, and whichever ConnectionReadyMsg/
+// ConnectionFailedMsg lands last is the one that sticks. Not worth a
+// cancellation token for that.
+func (a *App) retryConnectionNow(serverID uuid.UUID) tea.Cmd {
+	sc := a.connMgr.GetConnection(serverID)
+	if sc == nil {
+		return nil
+	}
+	state := sc.GetState()
+	if state != StateError && state != StateDisconnected {
+		return nil
+	}
+
+	sc.mu.RLock()
+	token := sc.Token
+	sc.mu.RUnlock()
+
+	a.statusMessage = "Retrying connection now..."
+	a.statusError = false
+
+	return a.connectServerAsync(serverID, token)
 }
 
 // autoConnectServer performs HTTP-only login/register for a server in the background.
@@ -980,23 +1235,125 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 		}
 
 		// HTTP login/register only — WebSocket connection follows via connectServerAsync
-		result := a.connMgr.AutoConnectHTTP(serverID, id.Email, id.Alias, id.Password)
+		var saved *SavedCredentials
+		if s := a.serverByID(serverID); s != nil {
+			saved = s.SavedCredentials
+		}
+		result := a.connMgr.AutoConnectHTTP(serverID, id, saved)
 		return AutoConnectMsg{
-			ServerID: result.ServerID,
-			UserID:   result.UserID,
-			Email:    result.Email,
-			Token:    result.Token,
-			Err:      result.Err,
+			ServerID:          result.ServerID,
+			UserID:            result.UserID,
+			Username:          result.Username,
+			Email:             result.Email,
+			Token:             result.Token,
+			Err:               result.Err,
+			NeedsVerification: result.NeedsVerification,
+			ProfileID:         id.ID,
 		}
 	}
 }
 
-// Update implements tea.Model
+// Update implements tea.Model. The grape logo's light (grape_logo.go) is
+// started and stopped here, after every message, so no individual
+// navigation path has to remember to do it.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a.noteInput(msg) {
+		return a, nil // it woke the screen from its screensaver
+	}
+	if skipped, cmd := a.skipLoading(msg); skipped {
+		return a, cmd
+	}
+	a.watchEggKeys(msg)
+	if m, ok := msg.(tea.MouseMsg); ok {
+		a.watchGrapeClicks(m)
+	}
+	if _, ok := msg.(idleCheckMsg); ok {
+		return a, tea.Batch(a.handleIdleCheck(), a.syncFx())
+	}
+	if a.skipConnecting(msg) {
+		return a, nil
+	}
+	switch m := msg.(type) {
+	case grapeTickMsg:
+		return a, a.handleGrapeTick(m)
+	case fxTickMsg:
+		return a, a.handleFxTick(m)
+	case leaderboardMsg:
+		a.handleLeaderboard(m)
+		return a, nil
+	case startupUpdateMsg:
+		a.handleStartupUpdate(m)
+		return a, nil
+	case updateCheckedMsg:
+		a.handleUpdateChecked(m)
+		return a, nil
+	case installerReadyMsg:
+		return a, a.runInstaller(m)
+	case installerDoneMsg:
+		return a, a.installerDone(m)
+	case codeAcceptedMsg:
+		// Falls through, so the page change gets its transition.
+		if a.codeState == m.st {
+			a.closeCodeScreen(true)
+		}
+	case paneCheckMsg:
+		return a, a.syncPluginPane()
+	case codeMsg:
+		// Plugin client code wants something; then wait for its next.
+		return a, tea.Batch(a.handleCodeMsg(m), a.codeHost.listen())
+	case pluginAssetMsg:
+		// A plugin file arrived (this re-render shows it) or failed.
+		if m.err != nil {
+			log.Printf("plugin file: %v", m.err)
+		}
+		return a, nil
+	case tea.MouseMsg:
+		if a.clickToast(m) {
+			return a, nil // a click on a toast: it opened its channel, or just went away
+		}
+		if cmd, ok := a.clickAchTab(m); ok {
+			return a, cmd // a tab on Settings > About > Achievements
+		}
+		// Plain hover motion (no button held) is handled -- and dropped --
+		// by MouseHoverFilter (grape_logo.go) before it ever reaches here,
+		// via tea.WithFilter in main.go. Anything that does reach this case
+		// is a real click/drag/wheel event that needs full processing.
+		a.steerGrapeLight(m)
+	}
+	model, cmd := a.update(msg)
+	if check := a.schedulePaneCheck(); check != nil {
+		cmd = tea.Batch(cmd, check)
+	}
+	if start := a.syncGrapeLight(); start != nil {
+		cmd = tea.Batch(cmd, start)
+	}
+	if start := a.syncFx(); start != nil {
+		cmd = tea.Batch(cmd, start)
+	}
+	if swap := a.ensureBannerFits(); swap != nil {
+		cmd = tea.Batch(cmd, swap)
+	}
+	// Sixel/iTerm2 pixels stay on screen until text is drawn over them;
+	// when a pane's images go away, repaint everything once.
+	if a.rasterState.clear {
+		a.rasterState.clear = false
+		cmd = tea.Batch(cmd, tea.ClearScreen)
+	}
+	return model, cmd
+}
+
+func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// Captured during the tea.KeyMsg case below (before a.input's own
+	// value can change) and consumed after the later `switch a.view`
+	// block, once a.input.Update(msg) has actually applied the keystroke
+	// -- see that later check's own comment for why the ordering matters.
+	wasComposing := false
 
 	switch msg := msg.(type) {
 	case afkCheckMsg:
+		a.voiceTick(30 * time.Second) // voice achievements (main_moods.go)
 		// Check if the user has been idle for 10 minutes
 		if time.Since(a.lastActivityTime) >= 10*time.Minute && !a.isAFK && a.activeConn != nil {
 			a.isAFK = true
@@ -1010,6 +1367,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Re-schedule the AFK check
 		cmds = append(cmds, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return afkCheckMsg{t} }))
+
+	case threadFlashDoneMsg:
+		// The bottom edge's "↳ who replied" is over (threads_find.go): redraw.
+		return a, nil
 
 	case exitNavModeMsg:
 		a.messageNavMode = false
@@ -1041,7 +1402,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.rebuildTypingUsers()
 			}
 		}
-		cmds = append(cmds, tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) }))
+		// Keep ticking only while someone is typing: every tick redraws the
+		// screen, and ten redraws a second while idle kept a whole CPU core
+		// busy (unusable on 256-colour terminals). The next TYPING_START
+		// starts it again.
+		a.typingTicking = false
+		if len(a.typingExpiry) > 0 {
+			cmds = append(cmds, a.startTypingTick())
+		}
 
 	case serverListAnimTickMsg:
 		target := 22
@@ -1089,6 +1457,30 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.memberContextMenu.AnimFrame < contextMenuMaxFrames {
 				cmds = append(cmds, contextMenuAnimTick())
 			}
+		}
+
+	case helpResizeSettledMsg:
+		// Only act if no newer resize has happened since this timer was
+		// scheduled -- see helpResizing's doc comment for the full debounce
+		// design. A stale tick (superseded by a later resize) is a no-op;
+		// that later resize's own timer will be the one that actually lands.
+		if msg.gen == a.helpResizeGen {
+			a.helpResizing = false
+		}
+
+	case bannerAnimTickMsg:
+		if cmd := a.handleBannerAnimTick(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case pasteBurstSettledMsg:
+		// Same stale-tick-is-a-safe-no-op shape as helpResizeSettledMsg above
+		// -- see inPasteBurst's doc comment. Once the burst truly ends,
+		// clearing the flag lets the very next View() call fall through to a
+		// real renderMainView()+zone.Scan() pass and refresh cachedMainView,
+		// so the frozen frame catches up to the fully-pasted text in one jump.
+		if msg.gen == a.pasteBurstGen {
+			a.inPasteBurst = false
 		}
 
 	case settingsPanelAnimTickMsg:
@@ -1165,33 +1557,40 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Store current view before handling key
 		viewBeforeKey := a.view
+		// Captured BEFORE handleKeyPress/a.input.Update -- see the
+		// consuming check after the later `switch a.view` block.
+		wasComposing = a.view == ViewMain && a.focus == FocusInput && len(a.input.Value()) > 0
+		listWasOpen := a.threadList != nil // the Alt+T list keeps its keys (threads_find.go)
 		cmd := a.handleKeyPress(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+		if listWasOpen {
+			return a, tea.Batch(cmds...)
+		}
+		// See inPasteBurst's doc comment: handleKeyPress may have just
+		// flagged this keystroke as part of a machine-replayed paste burst.
+		// Schedule (or re-schedule) the settle check that eventually clears
+		// it, mirroring helpResizeGen/helpResizeSettleCmd exactly -- a stale
+		// tick from an earlier keystroke in the same burst is a safe no-op
+		// once pasteBurstGen has moved on.
+		if a.inPasteBurst {
+			a.pasteBurstGen++
+			cmds = append(cmds, pasteBurstSettleCmd(a.pasteBurstGen))
 		}
 		// If view changed, skip component updates (view transition handled)
 		if a.view != viewBeforeKey {
 			return a, tea.Batch(cmds...)
 		}
-		// Send typing indicator when composing (throttled to once per 4 seconds).
-		// Only send if there's actual text in the input box — this way the indicator
-		// automatically clears when the message is sent (input empties).
-		if a.view == ViewMain && a.focus == FocusInput &&
-			len(a.input.Value()) > 0 &&
-			a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil &&
-			time.Since(a.lastTypingSent) > 2*time.Second {
-			a.lastTypingSent = time.Now()
-			serverID := a.currentClientServer.ID
-			channelID := a.currentChannel.ID
-			cmds = append(cmds, func() tea.Msg {
-				_ = a.connMgr.SendTyping(serverID, channelID)
-				return nil
-			})
-		}
 
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		// Every cached message render is keyed in part on viewport width --
+		// a resize invalidates all of them at once; see messageRenderCache's
+		// own doc comment for why this clears the whole map rather than
+		// leaving now-unreachable old-width entries to accumulate.
+		a.messageRenderCache = nil
 		// updateViewportSize sets chatViewport.Width/Height using the same layout
 		// math as renderMainView/renderChatPanel, so updateChatContent below renders
 		// with correct line widths (fixes blank chat on first load).
@@ -1200,7 +1599,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.updateChatContent()
 			a.scrollToBottom()
 		}
-		a.resizePluginPane()
+
+		// Debounce Help & Guide's expensive full-document re-render across a
+		// live drag-resize -- see helpResizing's doc comment. renderHelpContent
+		// keeps showing its last-computed (possibly stale-width) lines until
+		// this settle tick actually lands with no newer resize superseding it.
+		a.helpResizing = true
+		a.helpResizeGen++
+		cmds = append(cmds, helpResizeSettleCmd(a.helpResizeGen))
 
 	case tea.FocusMsg:
 		// Real report (2026-09-06, Omarchy/Hyprland): the input box's
@@ -1228,10 +1634,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// renderMainView) instead of the old hand-derived isCursorOverChatViewport
 		// -- same behavior, no more duplicated layout math.
 		if a.view == ViewMain && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
+			up := msg.Type == tea.MouseWheelUp
 			if z := zone.Get("chat-panel"); z != nil && z.InBounds(msg) {
 				var cmd tea.Cmd
 				a.chatViewport, cmd = a.chatViewport.Update(msg)
 				cmds = append(cmds, cmd)
+			} else if z := zone.Get("channel-list"); z != nil && z.InBounds(msg) {
+				a.channelScroll.wheel(up)
+			} else if id, _, ok := a.resolveVolumeZone(msg.X, msg.Y); ok {
+				// Over someone's volume slider or badge: turn it up or down.
+				step := memberVolumeStep
+				if !up {
+					step = -step
+				}
+				a.setMemberVolume(id, a.memberVolume(id)+step)
+			} else if z := zone.Get("user-list"); z != nil && z.InBounds(msg) {
+				a.memberScroll.wheel(up)
 			}
 		}
 		// Help & Guide page mouse wheel scrolling (works regardless of FocusOnForm)
@@ -1246,6 +1664,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					s.HelpScrollOffset++
 				}
 			}
+			// About scrolls the same way, and so does its Achievements page.
+			if s != nil && s.SelectedCategory == settingsCatAbout {
+				scroll := &s.AboutScroll
+				if s.AboutAch {
+					scroll = &s.AboutAchScroll
+				}
+				if msg.Type == tea.MouseWheelUp {
+					*scroll = max(0, *scroll-3)
+				} else {
+					*scroll += 3 // clamped when drawn
+				}
+			}
 		}
 
 	case ServerScopedMsg:
@@ -1253,30 +1683,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := a.handleServerScopedMessage(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
-		}
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
-
-	case ConnectedMsg:
-		a.statusMessage = "Connected to server"
-		a.statusError = false
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
-
-	case DisconnectedMsg:
-		a.statusMessage = "Disconnected from server"
-		a.statusError = true
-		// A dropped connection can't relay a leave_pane signal — the
-		// plugin has no way to ask Concord to release the pane over a
-		// connection that no longer exists, and 'q' has nothing to reach
-		// either. Without this, a viewer who'd focused a plugin pane
-		// before the connection dropped would be stuck: every key
-		// captured by the pane guards in handleKeyPress/Update, no
-		// escape route left. Release it here instead, the same way a
-		// clean leave_pane would.
-		if a.pluginPane != nil {
-			a.leavePluginPane()
-			a.focus = FocusChannelList
 		}
 		// Re-subscribe to connection events
 		cmds = append(cmds, a.waitForConnEvent())
@@ -1295,18 +1701,56 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.loginError = msg.Error
 		a.statusError = true
 
+	case accountCodeMsg:
+		if cmd := a.applyAccountCodeResult(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case profileEditResultMsg:
+		if cmd := a.applyProfileEditResult(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case passwordChangedMsg:
+		if cmd := a.applyPasswordChanged(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case AutoConnectMsg:
-		if msg.Err != nil {
+		if a.localIdentity == nil || msg.ProfileID != a.localIdentity.ID {
+			break // signed in as a profile that's since been switched away from
+		}
+		if msg.NeedsVerification {
+			if a.pendingVerify == nil {
+				a.pendingVerify = map[uuid.UUID]string{}
+			}
+			a.pendingVerify[msg.ServerID] = msg.Email
+			name := a.codeServerName(msg.ServerID)
+			a.statusMessage = fmt.Sprintf("%s sent a verification code to %s.", name, msg.Email)
+			a.statusError = false
+			// Straight to the code screen once unlocked; before that (the
+			// login screen) unlocking opens it.
+			if a.view == ViewMain && a.codeState == nil {
+				a.openCodeScreen(codeModeVerify, msg.ServerID, msg.Email)
+			}
+		} else if msg.Err != nil {
 			log.Printf("Auto-connect failed for server %s: %v", msg.ServerID, msg.Err)
-			a.statusMessage = fmt.Sprintf("Could not connect to server: %v", msg.Err)
+			a.statusMessage = fmt.Sprintf("Could not sign in to %s: %v", a.codeServerName(msg.ServerID), msg.Err)
 			a.statusError = true
 		} else if msg.Token != "" {
 			// Save token to disk for future sessions
 			go func() {
-				if err := a.configMgr.SaveServerToken(msg.ServerID, msg.Email, msg.Token, msg.UserID); err != nil {
+				if err := a.configMgr.SaveServerSignIn(msg.ServerID, msg.ProfileID, msg.Email, msg.Token, msg.UserID); err != nil {
 					log.Printf("Failed to save server token: %v", err)
 				}
 			}()
+			// The server's account for this email belongs to someone else
+			// by name: say so rather than quietly posting as them.
+			if msg.Username != "" && !strings.EqualFold(msg.Username, a.localIdentity.Alias) {
+				a.statusMessage = fmt.Sprintf("On %s you're signed in as %s, not %s: %s belongs to that account there. To be %s, use another email (Ctrl+P on the login screen).",
+					a.codeServerName(msg.ServerID), msg.Username, a.localIdentity.Alias, msg.Email, a.localIdentity.Alias)
+				a.statusError = true
+			}
 			// Select this server in UI if none is active yet (first to auth wins)
 			if a.activeConn == nil {
 				for i, cs := range a.clientServers {
@@ -1321,8 +1765,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the race where READY arrives before activeConn is set
 			cmds = append(cmds, a.connectServerAsync(msg.ServerID, msg.Token))
 		}
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
+		// AutoConnectMsg is a direct Cmd result (see autoConnectServer), never
+		// something delivered via connEvents -- do NOT re-subscribe here. Doing
+		// so used to leak one permanently-blocked waitForConnEvent listener per
+		// AutoConnectMsg, since connEvents only ever carries ServerScopedMsg
+		// (see connection_manager.go's four eventChan sends) and nothing would
+		// ever satisfy the extra listener.
 
 	case ConnectionReadyMsg:
 		// Set connection state to ready
@@ -1334,15 +1782,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update status bar
 		a.statusMessage = "Connected to server"
 		a.statusError = false
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
+		// ConnectionReadyMsg is a direct Cmd result too (see connectServerAsync)
+		// -- same reasoning as AutoConnectMsg above, no connEvents re-subscribe.
 
 	case ConnectionFailedMsg:
 		sc := a.connMgr.GetConnection(msg.ServerID)
 		if sc != nil {
 			sc.SetState(StateError)
 			sc.LastError = fmt.Errorf("%s", msg.Error)
-			a.statusMessage = fmt.Sprintf("Connection failed: %s", msg.Error)
+			if msg.Retry {
+				a.statusMessage = fmt.Sprintf("Connection failed: %s (ctrl+r to retry now)", msg.Error)
+			} else {
+				a.statusMessage = fmt.Sprintf("Connection failed: %s", msg.Error)
+			}
 			a.statusError = true
 
 			if msg.Retry {
@@ -1351,7 +1803,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ConnectionRetryingMsg:
-		a.statusMessage = fmt.Sprintf("Reconnecting (attempt %d)...", msg.AttemptCount)
+		a.statusMessage = fmt.Sprintf("Reconnecting (attempt %d)... (ctrl+r to retry now)", msg.AttemptCount)
 		a.statusError = false
 
 	case ServerPingResultMsg:
@@ -1405,21 +1857,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.voiceLevels = make(map[uuid.UUID]float32)
 		}
 		a.voiceLevels[msg.UserID] = msg.Level
+		a.recordVoiceLevel(msg.UserID, msg.Level)
 		if a.voiceEngine != nil {
 			cmds = append(cmds, a.waitForVoiceEvent())
 		}
 
 	case voiceLocalSpeakingMsg:
-		// Forward local speaking state to server so others see the indicator.
-		if a.activeConn != nil && a.activeConn.Connection != nil {
-			chID := a.activeConn.CurrentVoiceChannelID
+		// Forward local speaking state to the voice server so others see the indicator.
+		if vc := a.voiceServer(); vc != nil && vc.Connection != nil {
+			chID := vc.CurrentVoiceChannelID
 			if chID != uuid.Nil {
 				payload := &protocol.VoiceSpeakingPayload{
 					ChannelID:  chID,
 					IsSpeaking: msg.speaking,
 				}
 				if wsMsg, err := protocol.NewMessage(protocol.OpVoiceSpeaking, payload); err == nil {
-					_ = a.activeConn.Connection.Send(wsMsg)
+					_ = vc.Connection.Send(wsMsg)
 				}
 			}
 		}
@@ -1429,7 +1882,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case VoiceSignalOut:
 		// Forward WebRTC signal (offer/answer/candidate) to the target peer via server relay.
-		if a.activeConn != nil && a.activeConn.Connection != nil {
+		// ...over the voice server's connection, which needn't be the one on screen.
+		if vc := a.voiceServer(); vc != nil && vc.Connection != nil {
 			payload := &protocol.VoiceSignalPayload{
 				TargetUserID: msg.TargetUserID,
 				ChannelID:    msg.ChannelID,
@@ -1438,7 +1892,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Candidate:    msg.Candidate,
 			}
 			if wsMsg, err := protocol.NewMessage(protocol.OpVoiceSignal, payload); err == nil {
-				_ = a.activeConn.Connection.Send(wsMsg)
+				_ = vc.Connection.Send(wsMsg)
 			}
 		}
 		if a.voiceEngine != nil {
@@ -1515,8 +1969,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ErrorMsg:
 		a.statusMessage = msg.Error
 		a.statusError = true
-		// Re-subscribe to connection events
-		cmds = append(cmds, a.waitForConnEvent())
+		// A bare top-level ErrorMsg is a direct Cmd result (add_server_view.go,
+		// identity_setup_view.go, message send/edit failures, etc.) -- never
+		// something delivered via connEvents, so no connEvents re-subscribe
+		// here. The ErrorMsg connEvents CAN carry arrives wrapped inside
+		// ServerScopedMsg and is handled entirely within
+		// handleServerScopedMessage instead (see its own case ErrorMsg below),
+		// which never reaches this top-level switch.
 	}
 
 	// Update focused component
@@ -1536,7 +1995,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := a.updateAddServerForm(msg)
 		cmds = append(cmds, cmd)
 	case ViewMain:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && a.focus == FocusChat && a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && a.paneFocused() {
 			// A remote-pane plugin channel replaces both the chat viewport and
 			// the message entry field — every key not already claimed by a
 			// global keybind above forwards to the owning plugin process.
@@ -1546,7 +2005,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// without this check the same keypress that moves Concord's own
 			// list cursor would also leak into the plugin's board as a
 			// spurious cursor move.
-			a.forwardPluginPaneInput(keyMsg)
+			cmds = append(cmds, a.forwardPluginPaneInput(keyMsg))
 		} else if a.focus == FocusInput && !a.messageNavMode {
 			// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode.
 			// Exception: skip forwarding alt+left/alt+b on a completely empty
@@ -1557,10 +2016,67 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 				a.updateMentionPopup()
 			}
+		} else if keyMsg, ok := msg.(tea.KeyMsg); ok && a.focus == FocusChat && !a.messageNavMode && keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
+			// Typing with the messages focused starts a message (as the
+			// Help guide says): the text went nowhere before, since the
+			// viewport only scrolls. Arrows and PgUp/PgDn still scroll.
+			// Not in message navigation (Alt+M), whose letters are commands
+			// (r, t, e…): they were landing in the message box too.
+			a.focus = FocusInput
+			cmds = append(cmds, a.input.Focus())
+			var cmd tea.Cmd
+			a.input, cmd = a.input.Update(msg)
+			cmds = append(cmds, cmd)
+			a.updateMentionPopup()
 		} else if a.focus == FocusChat {
 			var cmd tea.Cmd
 			a.chatViewport, cmd = a.chatViewport.Update(msg)
 			cmds = append(cmds, cmd)
+		}
+	}
+
+	// Typing indicator start/stop signals. Deliberately placed here, after
+	// a.input.Update(msg) has already run above (ViewMain's FocusInput
+	// branch) -- not inside the tea.KeyMsg case itself. That case runs
+	// BEFORE this function's later `switch a.view` block applies the
+	// keystroke to a.input, so a check placed there always reads the
+	// PRE-keystroke value; wasComposing and "is it empty now" would then
+	// be reading the exact same stale snapshot, and the two conditions can
+	// never both be true in the same call. Confirmed live 2026-09-08: the
+	// backspace-to-empty stop signal never fired at all (not even one
+	// keystroke late) because of this, unlike the "start typing" half,
+	// which merely showed the indicator one keystroke later than
+	// necessary -- easy to miss until the stop case made it obviously
+	// broken. Both halves are checked here now, after the real update.
+	if _, ok := msg.(tea.KeyMsg); ok {
+		if a.view == ViewMain && a.focus == FocusInput &&
+			a.activeConn != nil && a.currentChannel != nil && a.currentClientServer != nil {
+			if len(a.input.Value()) > 0 && time.Since(a.lastTypingSent) > 2*time.Second {
+				a.lastTypingSent = time.Now()
+				serverID := a.currentClientServer.ID
+				channelID := a.currentChannel.ID
+				cmds = append(cmds, func() tea.Msg {
+					_ = a.connMgr.SendTyping(serverID, channelID)
+					return nil
+				})
+			} else if wasComposing && len(a.input.Value()) == 0 {
+				// The input box just emptied (backspaced to nothing,
+				// Ctrl+U/clear, Escape, or the message was just sent) --
+				// tell peers we stopped typing right away instead of
+				// leaving them staring at "X is typing..." for up to the
+				// full 5s server/client timeout. Sending a message
+				// already triggers this same clear server-side
+				// (handlers.go's message-send path calls StopTyping
+				// directly), so this duplicates that in the send case --
+				// harmless, StopTyping is a no-op if there's nothing to
+				// clear.
+				serverID := a.currentClientServer.ID
+				channelID := a.currentChannel.ID
+				cmds = append(cmds, func() tea.Msg {
+					_ = a.connMgr.SendTypingStop(serverID, channelID)
+					return nil
+				})
+			}
 		}
 	}
 
@@ -1598,9 +2114,40 @@ func isEmptyTextareaWordNavKey(msg tea.Msg, input textarea.Model) bool {
 
 // View implements tea.Model
 func (a *App) View() string {
+	a.paneRasters = nil
+	if a.loading != nil && a.width > 0 && a.height > 0 {
+		return a.renderLoading(time.Now())
+	}
+	if a.saver != nil && a.width > 0 && a.height > 0 {
+		return a.renderSaver(time.Now())
+	}
+	if a.connecting != nil && a.view == ViewMain {
+		return a.renderConnecting(time.Now())
+	}
+	out := a.applyFx(a.view0())
+	if a.photoGrapes() {
+		out = a.placePhoto(out) // after the effects, which would drop its escape codes
+	}
+	overlay := a.showHubBrowser || a.linkBrowserState != nil || a.helpFinderState != nil || a.memberContextMenu != nil
+	return a.paintRasterImages(out, a.paneRasters, overlay)
+}
+
+// view0 renders the screen; View then paints any Sixel or iTerm2 images
+// over it (plugin_images.go).
+func (a *App) view0() string {
 	// Hub browser is a full-screen overlay; render it before the normal view switch.
 	if a.showHubBrowser {
 		return zone.Scan(a.renderHubBrowserView())
+	}
+
+	// See inPasteBurst's doc comment: skip the expensive renderMainView()+
+	// zone.Scan() pass entirely during a detected paste burst and replay the
+	// last fully-rendered frame instead -- none of the overlays below can be
+	// active mid-paste in practice, but they're excluded explicitly anyway
+	// since none of them are what cachedMainView captured.
+	if a.view == ViewMain && a.inPasteBurst && a.cachedMainView != "" &&
+		a.linkBrowserState == nil && a.helpFinderState == nil && a.memberContextMenu == nil {
+		return a.cachedMainView
 	}
 
 	var baseView string
@@ -1609,6 +2156,14 @@ func (a *App) View() string {
 		baseView = a.renderToSView()
 	case ViewIdentitySetup:
 		baseView = a.renderIdentitySetupView()
+	case ViewProfiles:
+		if a.profilesState != nil {
+			baseView = a.renderProfilesView()
+		}
+	case ViewAccountCode:
+		if a.codeState != nil {
+			baseView = a.renderAccountCodeView()
+		}
 	case ViewLogin:
 		baseView = a.renderLoginView()
 	case ViewRegister:
@@ -1635,6 +2190,10 @@ func (a *App) View() string {
 				baseView = clipPanelRight(baseView, animWidth, a.width)
 			}
 		}
+	case ViewUpdates:
+		if a.updates != nil {
+			baseView = a.renderUpdatesView()
+		}
 	case ViewThemeBrowser:
 		baseView = a.renderThemeBrowserView()
 	default:
@@ -1646,9 +2205,9 @@ func (a *App) View() string {
 		return zone.Scan(a.renderLinkBrowserOverlay(baseView))
 	}
 
-	// Render help modal overlay if active
-	if a.helpModalState != nil {
-		return zone.Scan(a.renderHelpModalOverlay(baseView))
+	// Render help finder overlay if active
+	if a.helpFinderState != nil {
+		return zone.Scan(a.renderHelpFinderOverlay(baseView))
 	}
 
 	// Render member context menu overlay if active
@@ -1656,22 +2215,51 @@ func (a *App) View() string {
 		return zone.Scan(a.renderMemberContextMenuOverlay(baseView))
 	}
 
-	return zone.Scan(baseView)
+	rendered := zone.Scan(baseView)
+	// Keep cachedMainView fresh on every real render so the fast path above
+	// always has an up-to-date frame ready to replay the next time a burst
+	// is detected -- see inPasteBurst's doc comment.
+	if a.view == ViewMain {
+		a.cachedMainView = rendered
+	}
+	return rendered
 }
+
+// pasteBurstKeyThreshold is how close together two keystrokes have to land
+// for the second to be treated as part of a machine-replayed paste burst
+// rather than deliberate human input -- see lastKeystrokeAt's doc comment.
+const pasteBurstKeyThreshold = 20 * time.Millisecond
 
 // handleKeyPress handles keyboard input
 func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
+	sinceLastKeystroke := time.Since(a.lastKeystrokeAt)
+	a.lastKeystrokeAt = time.Now()
+	if sinceLastKeystroke < pasteBurstKeyThreshold {
+		a.inPasteBurst = true
+	}
+
+	// Threads (threads_find.go): the open Alt+T list takes every key, and
+	// Alt+T opens it from anywhere in the main window.
+	if a.view == ViewMain && a.threadList != nil {
+		return a.handleThreadListKey(msg)
+	}
+	if a.view == ViewMain && msg.String() == "alt+t" {
+		a.openThreadList()
+		return nil
+	}
+
 	// A remote-pane plugin channel captures every key, full stop — every
 	// global keybind below (tab cycling focus, [ / ] toggling panels,
 	// ctrl+s opening Settings, etc.) would otherwise fire on the very same
 	// keypress the pane also receives via forwardPluginPaneInput later in
 	// Update(), corrupting both at once: e.g. tab simultaneously cycling
 	// Concord's own focus AND advancing a field inside the plugin's form.
-	// There's no client-side escape key reserved for leaving the pane —
-	// the plugin itself decides when that's safe (e.g. only from its own
-	// main view, not mid-form) and asks Concord to leave via
-	// EventPluginEvent{Kind: "leave_pane"} (see the EventPluginEvent case
-	// in the connection-event dispatch switch, not this function).
+	// The one exception is paneLeaveKey (Ctrl+]), reserved by Concord and
+	// never forwarded, so a viewer can always get out of any plugin -- even
+	// one that's hung or never sends leave_pane. A plugin can also hand
+	// focus back itself (e.g. on 'q' from its main view) via
+	// EventPluginEvent{Kind: "leave_pane"}. Either way the pane stays open
+	// and keeps updating; only key capture ends.
 	//
 	// Gated on a.focus == FocusChat, not just a.pluginPane being set:
 	// navigateChannelList calls selectChannel — and therefore
@@ -1683,7 +2271,12 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// it. Tab into FocusChat (the same deliberate step needed to scroll an
 	// ordinary channel's messages) before the pane starts capturing
 	// everything.
-	if a.view == ViewMain && a.focus == FocusChat && a.pluginPane != nil && a.currentChannel != nil && a.pluginPane.ChannelID == a.currentChannel.ID {
+	//
+	// Since 2026-10-02 Esc, Tab and Shift+Tab are Concord's too, unless the
+	// frame on screen claims them (paneNavigationKey): a pane is a stop in
+	// the Tab ring like any channel's messages.
+	if a.paneFocused() {
+		a.paneNavigationKey(msg)
 		return nil
 	}
 
@@ -1697,12 +2290,29 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return a.handleLinkBrowserKey(msg)
 	}
 
+	// Help finder intercepts all keys when visible -- unlike the old
+	// static help modal it replaced (which only ever handled Esc,
+	// everything else fell through to the input box underneath), typing
+	// here needs to reach the finder's own query, not the chat input.
+	if a.helpFinderState != nil {
+		return a.handleHelpFinderKey(msg)
+	}
+
 	// Route to view-specific handlers first
 	if a.view == ViewToS {
 		return a.handleToSKey(msg)
 	}
 	if a.view == ViewIdentitySetup {
 		return a.handleIdentitySetupKey(msg)
+	}
+	if a.view == ViewProfiles && a.profilesState != nil {
+		return a.handleProfilesKey(msg)
+	}
+	if a.view == ViewUpdates && a.updates != nil {
+		return a.handleUpdatesKey(msg)
+	}
+	if a.view == ViewAccountCode && a.codeState != nil {
+		return a.handleAccountCodeKey(msg)
 	}
 	if a.view == ViewThemeBrowser {
 		return a.handleThemeBrowserKey(msg)
@@ -1712,14 +2322,6 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	}
 	if a.view == ViewServerManagement {
 		return a.handleServerManagementKey(msg)
-	}
-
-	// PTT toggle: intercept before view-specific key routing.
-	if a.voiceEngine != nil && a.audioConfig.PTTEnabled && a.audioConfig.PTTKey != "" {
-		if msg.String() == a.audioConfig.PTTKey {
-			a.voiceEngine.TogglePTT()
-			return nil
-		}
 	}
 
 	// Member context menu letter shortcuts: when the action list is visible (not slider mode),
@@ -1739,40 +2341,36 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return tea.Quit
 
 	case "ctrl+m":
-		// Toggle self-mute in voice channel
-		if a.view == ViewMain && a.activeConn != nil && a.currentClientServer != nil {
-			a.activeConn.mu.RLock()
-			vs := a.activeConn.VoiceStates[a.activeConn.User.ID]
-			a.activeConn.mu.RUnlock()
-			if vs != nil {
-				payload := &protocol.VoiceStateUpdatePayload{
-					ServerID:       vs.ServerID,
-					ChannelID:      &vs.ChannelID,
-					IsSelfMuted:    !vs.IsSelfMuted,
-					IsSelfDeafened: vs.IsSelfDeafened,
-				}
-				_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+		// Toggle self-mute in voice, wherever your voice is.
+		if a.view == ViewMain {
+			if _, vs := a.myVoiceState(); vs != nil {
+				a.sendMyVoiceState(!vs.Muted, vs.Deafened)
 			}
 		}
 		return nil
 
 	case "ctrl+d":
-		// Toggle self-deafen in voice channel
-		if a.view == ViewMain && a.activeConn != nil && a.currentClientServer != nil {
-			a.activeConn.mu.RLock()
-			vs := a.activeConn.VoiceStates[a.activeConn.User.ID]
-			a.activeConn.mu.RUnlock()
-			if vs != nil {
-				payload := &protocol.VoiceStateUpdatePayload{
-					ServerID:       vs.ServerID,
-					ChannelID:      &vs.ChannelID,
-					IsSelfMuted:    vs.IsSelfMuted,
-					IsSelfDeafened: !vs.IsSelfDeafened,
-				}
-				_ = a.connMgr.SendVoiceStateUpdate(a.currentClientServer.ID, payload)
+		// Toggle self-deafen in voice, wherever your voice is.
+		if a.view == ViewMain {
+			if _, vs := a.myVoiceState(); vs != nil {
+				a.sendMyVoiceState(vs.Muted, !vs.Deafened)
 			}
 		}
 		return nil
+
+	case "ctrl+r":
+		// Login/register easter egg: a different Concord banner, animated in.
+		// (Ctrl, not a bare "r" -- the password field has focus here.)
+		if a.view == ViewLogin || a.view == ViewRegister {
+			return a.shuffleBanner()
+		}
+		// Manual "retry now" for a server stuck in StateError -- bypasses
+		// whatever's left of the automatic reconnect's backoff delay.
+		// No-op (falls through, returns nil below) if the active server
+		// isn't actually in an error state.
+		if a.view == ViewMain && a.currentClientServer != nil {
+			return a.retryConnectionNow(a.currentClientServer.ID)
+		}
 
 	case "ctrl+s":
 		// Context-aware: Open Settings from login/main view, otherwise cycle servers
@@ -1795,9 +2393,36 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "ctrl+t":
-		// Open theme browser from login or main view
-		if a.view == ViewLogin || a.view == ViewMain {
+		// Open the theme browser from the main view (on the login screen
+		// themes are in Settings, and Ctrl+U is Updates).
+		if a.view == ViewMain {
 			a.openThemeBrowser(a.view)
+			return nil
+		}
+
+	case "ctrl+u":
+		if a.view == ViewLogin {
+			return a.openUpdates()
+		}
+
+	case "ctrl+p":
+		// Profiles: switch who's signing in, add, edit or forget one.
+		if a.view == ViewLogin && a.localIdentity != nil {
+			a.openProfiles()
+			return nil
+		}
+
+	case "ctrl+x":
+		// Dismiss the bottom toast (toasts.go); the next drops into its place.
+		if a.dismissBottomToast() {
+			return nil
+		}
+
+	case "ctrl+f":
+		// Forgot password: reset it with a code emailed by one of your
+		// servers, then use it everywhere.
+		if a.view == ViewLogin && a.localIdentity != nil {
+			a.openCodeScreen(codeModeForgot, uuid.Nil, a.localIdentity.Email)
 			return nil
 		}
 
@@ -1826,6 +2451,28 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "tab":
 		if a.view == ViewAddServer {
 			a.cycleAddServerFocus()
+		} else if a.view == ViewMain && a.focus == FocusInput && sinceLastKeystroke < pasteBurstKeyThreshold {
+			// A real, serious bug found live (2026-09-13): a literal tab
+			// character is extremely common in pasted content (most code
+			// snippets indent with one), and an ordinary Tab press here
+			// means "cycle focus to the next panel" -- so a tab-indented
+			// line arriving mid-paste-replay (see lastKeystrokeAt's doc
+			// comment for why paste replays as individual keystrokes with
+			// no way to flag them as such) would silently yank focus off
+			// the compose box mid-message. Everything typed after that
+			// then lands wherever focus ended up instead -- observed
+			// live landing on the members panel, where a subsequent "r"
+			// (the very next letter, from mid-word) triggered its own
+			// "assign role to selected member" shortcut, which overwrote
+			// the entire compose box with a "/role assign @user " template
+			// and swallowed the rest of the paste into that instead of the
+			// intended message. Insert a literal tab instead of cycling
+			// focus -- textarea's own sanitizer (runeutil, see its
+			// default replaceTab) converts it to 4 spaces automatically,
+			// so pasted code keeps its indentation rather than losing it
+			// outright.
+			a.input.InsertRune('\t')
+			return nil
 		} else if a.view == ViewMain && a.focus == FocusInput {
 			// @mention completion takes priority — works inside slash commands too
 			if a.showMentionPopup && len(a.mentionSuggestions) > 0 {
@@ -1936,7 +2583,15 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.view == ViewAddServer {
 			return a.handleAddServerSubmit()
 		}
-		// In message navigation Level 1: Enter transitions to Level 2
+		// In message navigation Level 1: Enter on a thread's first message
+		// expands or minimises the thread (threads.go)...
+		if a.messageNavMode && !a.inMessageEditMode {
+			if m := a.selectedMessage(); m != nil && m.ThreadID == nil && a.threadPartOf(a.visibleMessages(), a.messageNavIndex).root {
+				a.toggleThread(m.ID)
+				return nil
+			}
+		}
+		// ...and anywhere else transitions to Level 2
 		if a.messageNavMode && !a.inMessageEditMode {
 			a.inMessageEditMode = true
 			a.messageCursorLine = 0
@@ -1954,6 +2609,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				// Select the server and go to login if not connected
 				if a.serverIndex < len(a.clientServers) {
 					a.switchToClientServer(a.serverIndex)
+					// A new account waiting for its emailed code: enter it.
+					if email, ok := a.pendingVerify[a.clientServers[a.serverIndex].ID]; ok {
+						a.openCodeScreen(codeModeVerify, a.clientServers[a.serverIndex].ID, email)
+						return nil
+					}
 					if a.activeConn == nil || a.activeConn.GetState() != StateReady {
 						a.view = ViewLogin
 						a.initLoginView()
@@ -1980,7 +2640,9 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 					a.stopVoiceEngine()
 					a.statusMessage = "Left voice channel."
 				} else {
-					// Join voice
+					// Join voice (leaving a call on another server first:
+					// you're only ever in one).
+					a.leaveVoiceElsewhere()
 					chID := a.currentChannel.ID
 					payload := &protocol.VoiceStateUpdatePayload{
 						ServerID:  a.currentServer.ID,
@@ -1991,18 +2653,24 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				}
 				return nil
 			}
-			// If focused on input, send message
+			// If focused on input, send message -- unless this Enter is
+			// suspiciously close on the heels of the previous keystroke,
+			// which means it's almost certainly one line-ending of a
+			// multi-line paste being replayed as individual keystrokes
+			// (see lastKeystrokeAt's doc comment), not a deliberate,
+			// isolated Enter-to-send. Insert a real newline instead, the
+			// same as a genuine Ctrl+J/Ctrl+Enter would, so pasted text
+			// lands as one reviewable multi-line draft.
 			if a.focus == FocusInput {
+				if sinceLastKeystroke < pasteBurstKeyThreshold {
+					a.input.InsertRune('\n')
+					return nil
+				}
 				return a.handleSendMessage()
 			}
 		}
 
 	case "esc":
-		// Close help modal if active
-		if a.helpModalState != nil {
-			a.closeHelpModal()
-			return nil
-		}
 		// Volume slider: Esc exits slider mode back to the action list.
 		if a.memberContextMenu != nil && a.memberContextMenu.VolumeSlider != nil {
 			a.memberContextMenu.VolumeSlider = nil
@@ -2044,6 +2712,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.showMentionPopup {
 			a.showMentionPopup = false
 			a.mentionSuggestions = nil
+			return nil
+		}
+		// Leave the thread the message box is posting into
+		if a.threadTarget != nil {
+			a.threadTarget = nil
+			a.threadQuote = ""
+			a.statusMessage = "Left the thread: messages go to the channel"
+			a.statusError = false
 			return nil
 		}
 		// Clear reply state if active
@@ -2098,12 +2774,12 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Enter Level 1: Message Selection Mode
 		if a.view == ViewMain && (a.focus == FocusChat || a.focus == FocusInput) &&
 			a.activeConn != nil && a.currentChannel != nil {
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
-			if len(messages) > 0 {
+			messages := a.visibleMessages()
+			if last := lastSelectable(messages); last >= 0 {
 				a.messageNavMode = true
 				a.inMessageEditMode = false // Start in Level 1 (message selection)
 				a.focus = FocusMessageNav
-				a.messageNavIndex = len(messages) - 1 // Start at newest message
+				a.messageNavIndex = last // the newest message (system lines are skipped)
 				a.messageSelectionStart = nil         // Clear any previous selection
 				a.messageSelectionEnd = nil
 				a.input.Blur()
@@ -2151,7 +2827,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			if a.activeConn == nil || a.currentChannel == nil {
 				return nil
 			}
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 
@@ -2160,7 +2836,20 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				a.replyQuote = extractFirstLineWithEllipsis(msg.Content, 60)
 
 				// Clear input and return command to exit nav mode AFTER component updates
-				a.input.SetValue("")  // Clear any stray input
+				a.input.SetValue("") // Clear any stray input
+				return func() tea.Msg {
+					return exitNavModeMsg{setFocus: true}
+				}
+			}
+		}
+
+	case "t", "T":
+		// Reply in the selected message's thread, starting one if it has
+		// none (threads.go); the message box posts there until Esc.
+		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
+			if m := a.selectedMessage(); m != nil && !m.IsSystem {
+				a.startThreadReply(m)
+				a.input.SetValue("")
 				return func() tea.Msg {
 					return exitNavModeMsg{setFocus: true}
 				}
@@ -2173,7 +2862,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			if a.activeConn == nil || a.currentChannel == nil || a.activeConn.User == nil {
 				return nil
 			}
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 
@@ -2185,7 +2874,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				}
 
 				// Pre-fill input with message content
-				a.input.SetValue(msg.Content)  // This replaces any content, so should be clean
+				a.input.SetValue(msg.Content) // This replaces any content, so should be clean
 
 				// Track editing state
 				a.editingMessageID = &msg.ID
@@ -2204,7 +2893,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			if a.activeConn == nil || a.currentChannel == nil || a.activeConn.User == nil {
 				return nil
 			}
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 
@@ -2244,7 +2933,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case "l":
 		// In message navigation mode: open link(s) in selected message
 		if a.messageNavMode && a.activeConn != nil && a.currentChannel != nil {
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex >= 0 && a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 				links := a.extractLinksFromMessage(msg)
@@ -2279,7 +2968,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// the only practical way to get the exact UUID out of the "[file] ... —
 		// /download <id>" line for pasting into /download.
 		if a.messageNavMode && a.activeConn != nil && a.currentChannel != nil {
-			messages := a.activeConn.GetMessages(a.currentChannel.ID)
+			messages := a.visibleMessages()
 			if a.messageNavIndex >= 0 && a.messageNavIndex < len(messages) {
 				msg := messages[a.messageNavIndex]
 				if len(msg.Attachments) == 0 {
@@ -2402,6 +3091,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorInMessage(-1, 0, true) // dx = -1 (left), clear selection
 		}
+		// Members panel: turn the selected voice member down (voice_level.go).
+		if a.focus == FocusUserList && a.adjustSelectedMemberVolume(-memberVolumeStep) {
+			return nil
+		}
 		if a.focus == FocusChannelList {
 			a.handleCollapseCategory()
 		}
@@ -2424,6 +3117,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Level 2: Move cursor right one character
 		if a.messageNavMode && a.inMessageEditMode {
 			return a.moveCursorInMessage(1, 0, true) // dx = 1 (right), clear selection
+		}
+		// Members panel: turn the selected voice member up (voice_level.go).
+		if a.focus == FocusUserList && a.adjustSelectedMemberVolume(memberVolumeStep) {
+			return nil
 		}
 		if a.focus == FocusChannelList {
 			a.handleExpandCategory()
@@ -2540,6 +3237,10 @@ func (a *App) cycleFocus() {
 	case FocusChannelList:
 		a.focus = FocusChat
 	case FocusChat:
+		if a.onPaneChannel() {
+			a.focus = FocusUserList // a pane has no message box
+			return
+		}
 		a.focus = FocusInput
 		a.input.Focus()
 	case FocusInput:
@@ -2563,6 +3264,10 @@ func (a *App) cycleFocusReverse() {
 		a.focus = FocusChat
 		a.input.Blur()
 	case FocusUserList:
+		if a.onPaneChannel() {
+			a.focus = FocusChat // a pane has no message box
+			return
+		}
 		a.focus = FocusInput
 		a.input.Focus()
 	}
@@ -2721,18 +3426,30 @@ func (a *App) navigateMessage(delta int) tea.Cmd {
 		return nil
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if len(messages) == 0 {
 		return nil
 	}
 
-	// Update index with wrapping
-	a.messageNavIndex += delta
-	if a.messageNavIndex < 0 {
-		a.messageNavIndex = 0
-	} else if a.messageNavIndex >= len(messages) {
-		a.messageNavIndex = len(messages) - 1
+	// Step over system lines (plugin notices, moderation, /vintage): they
+	// aren't messages you can select, reply to or copy.
+	step := 1
+	if delta < 0 {
+		step = -1
 	}
+	idx := a.messageNavIndex
+	for moved := 0; moved < abs(delta); {
+		next := idx + step
+		for next >= 0 && next < len(messages) && isSystemDisplay(messages[next]) {
+			next += step
+		}
+		if next < 0 || next >= len(messages) {
+			break // nothing selectable further that way
+		}
+		idx = next
+		moved++
+	}
+	a.messageNavIndex = idx
 
 	// PRE-CALCULATE scroll position BEFORE updating content
 	linePos := a.calculateMessageLinePosition(a.messageNavIndex)
@@ -2776,7 +3493,7 @@ func (a *App) copyMessageToClipboard() tea.Cmd {
 		return nil
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
 		return nil
 	}
@@ -2809,130 +3526,106 @@ func (a *App) copyMessageToClipboard() tea.Cmd {
 // renderUserList: voice channel groups first, then role sections, then regular members.
 // This guarantees selectedMemberIndex always matches the highlighted row.
 func (a *App) buildFlatMemberList() []*MemberDisplay {
-	if a.activeConn == nil {
-		return nil
+	voice, online, offline := a.memberSections()
+	var flatList []*MemberDisplay
+	for _, g := range voice {
+		flatList = append(flatList, g.members...)
 	}
+	flatList = append(flatList, online...)
+	return append(flatList, offline...)
+}
 
+// memberVoiceGroup is one voice channel's members, listed at the top of the
+// members panel.
+type memberVoiceGroup struct {
+	name     string
+	position int
+	members  []*MemberDisplay
+}
+
+// isOnlineStatus reports whether a presence status counts as online (the
+// ONLINE group) rather than offline or invisible (the OFFLINE group).
+func isOnlineStatus(s models.UserStatus) bool {
+	return s == models.StatusOnline || s == models.StatusIdle || s == models.StatusDND
+}
+
+// memberSections splits the members into the panel's sections, in display
+// order: voice channels (by channel position), then ONLINE, then OFFLINE.
+// Within online/offline, members sort by their highest hoisted role (role
+// DisplayOrder, then role name; no role last), then username. Both
+// renderUserList and buildFlatMemberList (keyboard selection) use this, so
+// the two can't disagree about order.
+func (a *App) memberSections() (voice []memberVoiceGroup, online, offline []*MemberDisplay) {
+	if a.activeConn == nil {
+		return nil, nil, nil
+	}
 	a.activeConn.mu.RLock()
 	members := a.activeConn.Members
 	voiceStates := a.activeConn.VoiceStates
 	channels := a.activeConn.Channels
 	a.activeConn.mu.RUnlock()
 
-	var flatList []*MemberDisplay
-
-	// ── 1. Voice channel groups (rendered first) ──────────────────────────────
-	type voiceGroup struct {
-		channelID uuid.UUID
-		position  int
-		name      string
-		members   []*MemberDisplay
-	}
-	voiceUserSet := make(map[uuid.UUID]struct{})
-	groupMap := make(map[uuid.UUID]*voiceGroup)
-
-	for userID, vs := range voiceStates {
-		voiceUserSet[userID] = struct{}{}
-		if _, exists := groupMap[vs.ChannelID]; !exists {
-			name := vs.ChannelID.String()[:8] // fallback if channel not found
-			pos := 0
-			for _, chList := range channels {
-				for _, ch := range chList {
-					if ch.ID == vs.ChannelID {
-						name = ch.Name
-						pos = ch.Position
-						break
-					}
+	groups := make(map[uuid.UUID]*memberVoiceGroup)
+	for _, vs := range voiceStates {
+		if _, ok := groups[vs.ChannelID]; ok {
+			continue
+		}
+		g := &memberVoiceGroup{name: vs.ChannelID.String()[:8]} // fallback if the channel isn't known
+		for _, chList := range channels {
+			for _, ch := range chList {
+				if ch.ID == vs.ChannelID {
+					g.name, g.position = ch.Name, ch.Position
 				}
 			}
-			groupMap[vs.ChannelID] = &voiceGroup{channelID: vs.ChannelID, position: pos, name: name}
 		}
+		groups[vs.ChannelID] = g
 	}
+
 	for _, m := range members {
 		if vs, ok := voiceStates[m.User.ID]; ok {
-			if grp, ok := groupMap[vs.ChannelID]; ok {
-				grp.members = append(grp.members, m)
+			if g, ok := groups[vs.ChannelID]; ok {
+				g.members = append(g.members, m)
+				continue
 			}
 		}
-	}
-	var voiceGroups []voiceGroup
-	for _, g := range groupMap {
-		voiceGroups = append(voiceGroups, *g)
-	}
-	sort.Slice(voiceGroups, func(i, j int) bool {
-		if voiceGroups[i].position != voiceGroups[j].position {
-			return voiceGroups[i].position < voiceGroups[j].position
-		}
-		return voiceGroups[i].name < voiceGroups[j].name
-	})
-	for i := range voiceGroups {
-		sort.Slice(voiceGroups[i].members, func(a, b int) bool {
-			return voiceGroups[i].members[a].User.Username < voiceGroups[i].members[b].User.Username
-		})
-		flatList = append(flatList, voiceGroups[i].members...)
-	}
-
-	// ── 2. Role sections (same insertion-sort as renderUserList) ──────────────
-	type roleSect struct {
-		role    *models.Role
-		members []*MemberDisplay
-	}
-	roleSectionMap := make(map[uuid.UUID]*roleSect)
-	var roleSectionOrder []uuid.UUID
-	var regularMembers []*MemberDisplay
-
-	for _, m := range members {
-		if _, inVoice := voiceUserSet[m.User.ID]; inVoice {
-			continue // already added in voice groups above
-		}
-		if m.HighestRole != nil {
-			rs, exists := roleSectionMap[m.HighestRole.ID]
-			if !exists {
-				rs = &roleSect{role: m.HighestRole}
-				roleSectionMap[m.HighestRole.ID] = rs
-				roleSectionOrder = append(roleSectionOrder, m.HighestRole.ID)
-			}
-			rs.members = append(rs.members, m)
+		if isOnlineStatus(m.User.Status) {
+			online = append(online, m)
 		} else {
-			regularMembers = append(regularMembers, m)
+			offline = append(offline, m)
 		}
 	}
 
-	// Insertion sort matching renderUserList: DisplayOrder ASC, secondary role name ASC.
-	for i := 1; i < len(roleSectionOrder); i++ {
-		for j := i; j > 0; j-- {
-			curr := roleSectionMap[roleSectionOrder[j]]
-			prev := roleSectionMap[roleSectionOrder[j-1]]
-			currOrder := curr.role.DisplayOrder
-			prevOrder := prev.role.DisplayOrder
-			shouldSwap := false
-			if currOrder < prevOrder {
-				shouldSwap = true
-			} else if currOrder == prevOrder {
-				shouldSwap = curr.role.Name < prev.role.Name
-			}
-			if shouldSwap {
-				roleSectionOrder[j], roleSectionOrder[j-1] = roleSectionOrder[j-1], roleSectionOrder[j]
-			} else {
-				break
-			}
+	for _, g := range groups {
+		sort.Slice(g.members, func(i, j int) bool { return g.members[i].User.Username < g.members[j].User.Username })
+		voice = append(voice, *g)
+	}
+	sort.Slice(voice, func(i, j int) bool {
+		if voice[i].position != voice[j].position {
+			return voice[i].position < voice[j].position
 		}
-	}
-	for _, roleID := range roleSectionOrder {
-		rs := roleSectionMap[roleID]
-		sort.Slice(rs.members, func(i, j int) bool {
-			return rs.members[i].User.Username < rs.members[j].User.Username
-		})
-		flatList = append(flatList, rs.members...)
-	}
-
-	// ── 3. Regular members (no role, not in voice) ────────────────────────────
-	sort.Slice(regularMembers, func(i, j int) bool {
-		return regularMembers[i].User.Username < regularMembers[j].User.Username
+		return voice[i].name < voice[j].name
 	})
-	flatList = append(flatList, regularMembers...)
 
-	return flatList
+	byRoleThenName := func(list []*MemberDisplay) {
+		sort.SliceStable(list, func(i, j int) bool {
+			ri, rj := list[i].HighestRole, list[j].HighestRole
+			switch {
+			case ri != nil && rj == nil:
+				return true
+			case ri == nil && rj != nil:
+				return false
+			case ri != nil && rj != nil && ri.ID != rj.ID:
+				if ri.DisplayOrder != rj.DisplayOrder {
+					return ri.DisplayOrder < rj.DisplayOrder
+				}
+				return ri.Name < rj.Name
+			}
+			return list[i].User.Username < list[j].User.Username
+		})
+	}
+	byRoleThenName(online)
+	byRoleThenName(offline)
+	return voice, online, offline
 }
 
 // navigateMemberList navigates through the member list
@@ -3739,19 +4432,6 @@ func resolveLinkBrowserRowIndex(scrollOffset int, digit string, totalLinks int) 
 	return idx, true
 }
 
-// openHelpModal opens the help modal with the provided content
-func (a *App) openHelpModal(content string) {
-	a.helpModalState = &HelpModalState{
-		Content:      content,
-		ScrollOffset: 0,
-	}
-}
-
-// closeHelpModal closes the help modal
-func (a *App) closeHelpModal() {
-	a.helpModalState = nil
-}
-
 // openURL opens a URL in the default browser
 func (a *App) openURL(url string) tea.Cmd {
 	return func() tea.Msg {
@@ -3840,7 +4520,7 @@ func (a *App) moveCursorInMessage(dx, dy int, clearSelection bool) tea.Cmd {
 		return nil
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
 		return nil
 	}
@@ -3934,7 +4614,7 @@ func (a *App) getSelectedText() string {
 		return ""
 	}
 
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	messages := a.visibleMessages()
 	if a.messageNavIndex < 0 || a.messageNavIndex >= len(messages) {
 		return ""
 	}
@@ -4102,9 +4782,6 @@ func (a *App) switchToClientServer(index int) {
 		return
 	}
 
-	// Stop voice engine when leaving the current server.
-	a.stopVoiceEngine()
-
 	a.serverIndex = index
 	a.currentClientServer = a.clientServers[index]
 
@@ -4228,6 +4905,7 @@ func (a *App) selectChannel(index int) {
 	}
 	a.channelIndex = index
 	a.currentChannel = channels[index]
+	a.channelBirthday(a.currentChannel) // main_moods.go
 
 	// Clear typing indicators from the previous channel
 	a.clearTypingState()
@@ -4245,6 +4923,13 @@ func (a *App) selectChannel(index int) {
 
 	// Leave whatever plugin pane was active before switching.
 	a.leavePluginPane()
+
+	// A category is only a place in the list: the chat shows what's in it
+	// (renderCategoryOverview), with no history to fetch.
+	if a.currentChannel != nil && a.currentChannel.Type == models.ChannelTypeCategory {
+		a.updateChatContent()
+		return
+	}
 
 	if a.currentChannel != nil && a.isRemotePaneChannel(a.currentChannel) {
 		a.enterPluginPane(a.currentChannel)
@@ -4337,8 +5022,9 @@ func (a *App) updateChatContent() {
 		return
 	}
 
-	// Get messages for current channel
-	messages := a.activeConn.GetMessages(a.currentChannel.ID)
+	// Get messages for current channel, with expanded threads' replies (threads.go)
+	messages := a.visibleMessages()
+	a.threadBorderLines = make(map[int]uuid.UUID)
 
 	// Get viewport width for full-width backgrounds
 	viewportWidth := a.chatViewport.Width
@@ -4356,8 +5042,21 @@ func (a *App) updateChatContent() {
 	lineOffsets := make([]int, len(messages))
 	runningLines := 0
 
+	// The optional in-channel thread lines, placed in time order among the
+	// messages (threads_find.go); a click on one opens its thread.
+	notices := a.channelNotices()
+	a.threadNoticeLines = make(map[int]uuid.UUID)
+	writeNotice := func(n threadNotice, line int) {
+		a.threadNoticeLines[line] = n.threadID
+		content.WriteString(a.noticeLine(n) + "\n\n")
+	}
+
 	for i, msg := range messages {
 		msgStartLen := content.Len()
+		for len(notices) > 0 && msg.ThreadID == nil && notices[0].at.Before(msg.CreatedAt) {
+			writeNotice(notices[0], runningLines+strings.Count(content.String()[msgStartLen:], "\n"))
+			notices = notices[1:]
+		}
 
 		// Check if this message is selected in navigation mode
 		// Level 1: Highlight entire message with selection background
@@ -4372,6 +5071,8 @@ func (a *App) updateChatContent() {
 		messageContentWithCursor := msg.Content
 		if isInLevel2 && !isSystemMsg {
 			messageContentWithCursor = a.insertCursorIntoMessage(msg.Content)
+		} else if msg.Streaming {
+			messageContentWithCursor = streamingMarkdown(msg.Content)
 		}
 
 		// Note: Reply quotes are now embedded inline in message content (press 'r' to reply)
@@ -4382,7 +5083,7 @@ func (a *App) updateChatContent() {
 		if i > 0 && !isSystemMsg && !msg.IsBotAuthor {
 			prev := messages[i-1]
 			prevIsSystem := prev.IsSystem || prev.AuthorName == "System"
-			if !prevIsSystem && prev.AuthorID == msg.AuthorID {
+			if !prevIsSystem && prev.AuthorID == msg.AuthorID && a.sameThreadGroup(messages, i) {
 				gap := msg.CreatedAt.Sub(prev.CreatedAt)
 				gapMins := float64(5)
 				if a.uiConfig != nil && a.uiConfig.Display.GroupingGapMins > 0 {
@@ -4395,7 +5096,8 @@ func (a *App) updateChatContent() {
 		}
 
 		// Date separator: render a ──── Day ──── divider between days when enabled
-		if a.uiConfig != nil && a.uiConfig.Display.ShowDateSeps && !isSystemMsg {
+		// (not between a thread's replies, which sit inside its box)
+		if a.uiConfig != nil && a.uiConfig.Display.ShowDateSeps && !isSystemMsg && msg.ThreadID == nil {
 			msgDate := msg.CreatedAt.Truncate(24 * time.Hour)
 			if !lastRenderedDate.IsZero() && !msgDate.Equal(lastRenderedDate) {
 				now := time.Now()
@@ -4421,6 +5123,15 @@ func (a *App) updateChatContent() {
 				content.WriteString("\n")
 			}
 			lastRenderedDate = msgDate
+		}
+
+		// A message in a thread box is drawn 4 columns narrower, then boxed
+		// below (boxThreadSegment).
+		segStart := content.Len()
+		part := a.threadPartOf(messages, i)
+		w := viewportWidth
+		if part.boxed {
+			w = viewportWidth - 4
 		}
 
 		if showHeader && !isSystemMsg {
@@ -4511,7 +5222,7 @@ func (a *App) updateChatContent() {
 					// Right-align with highlight and symmetric right padding
 					headerStyle := lipgloss.NewStyle().
 						Background(lipgloss.Color(a.theme.Colors.Selection)).
-						Width(viewportWidth).
+						Width(w).
 						Align(lipgloss.Right).
 						PaddingRight(2)
 					headerLine = headerStyle.Render(plainHeader)
@@ -4519,7 +5230,7 @@ func (a *App) updateChatContent() {
 					// Left-align with highlight and left padding
 					headerStyle := lipgloss.NewStyle().
 						Background(lipgloss.Color(a.theme.Colors.Selection)).
-						Width(viewportWidth).
+						Width(w).
 						PaddingLeft(2)
 					headerLine = headerStyle.Render(plainHeader)
 				}
@@ -4528,13 +5239,13 @@ func (a *App) updateChatContent() {
 				if msg.IsOwn {
 					// Right-align with symmetric right padding
 					lineStyle := lipgloss.NewStyle().
-						Width(viewportWidth).
+						Width(w).
 						Align(lipgloss.Right).
 						PaddingRight(2)
 					headerLine = lineStyle.Render(header)
 				} else {
 					// Left-align with left padding to match right side visual spacing
-					lineStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
+					lineStyle := lipgloss.NewStyle().Width(w).PaddingLeft(2)
 					headerLine = lineStyle.Render(header)
 				}
 			}
@@ -4565,25 +5276,30 @@ func (a *App) updateChatContent() {
 
 			// Truncate message if too long (leave room for bars + padding)
 			msgContent := msg.Content
-			maxMsgLen := viewportWidth - 20 // Reserve ~10 chars per side for bars and padding
+			maxMsgLen := w - 20 // Reserve ~10 chars per side for bars and padding
 			if maxMsgLen < 30 {
 				maxMsgLen = 30
 			}
 
-			// Simple rune-based truncation
-			msgRunes := []rune(msgContent)
-			if len(msgRunes) > maxMsgLen {
-				msgContent = string(msgRunes[:maxMsgLen-1]) + "…"
+			// A long one (/vintage, a plugin's notice) wraps onto more
+			// centered lines rather than being cut off.
+			if len([]rune(msgContent)) > maxMsgLen {
+				wrapped := lipgloss.NewStyle().Width(maxMsgLen).Align(lipgloss.Center).Render(msgContent)
+				var lines []string
+				for _, l := range strings.Split(wrapped, "\n") {
+					lines = append(lines, lipgloss.PlaceHorizontal(w, lipgloss.Center, textStyle.Render(strings.TrimSpace(l))))
+				}
+				contentLine = strings.Join(lines, "\n")
+			} else {
+				// Build the line: bars + message + bars (with space padding)
+				line := barStyle.Render(leftBar) + textStyle.Render(msgContent) + barStyle.Render(rightBar)
+
+				// Center the line in the viewport
+				contentLine = lipgloss.PlaceHorizontal(w, lipgloss.Center, line)
 			}
-
-			// Build the line: bars + message + bars (with space padding)
-			line := barStyle.Render(leftBar) + textStyle.Render(msgContent) + barStyle.Render(rightBar)
-
-			// Center the line in the viewport
-			contentLine = lipgloss.PlaceHorizontal(viewportWidth, lipgloss.Center, line)
 		} else if msg.IsWhisper {
 			// Whisper: render with alignment based on ownership
-			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, viewportWidth, msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(w), msg.IsOwn)
 			// Apply whisper styling (orange/italic) to the rendered content
 			whisperStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(a.theme.Colors.Orange)).
@@ -4592,40 +5308,48 @@ func (a *App) updateChatContent() {
 		} else {
 			// Regular messages — highlight @mentions of the current user
 			// Pass alignment based on message ownership
-			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, viewportWidth, msg.IsOwn)
+			contentLine = a.renderMessageContent(msg.ID.String(), messageContentWithCursor, messageWrapWidth(w), msg.IsOwn)
 		}
 
 		// Apply width and highlighting
 		if isSelected || isInLevel2 {
+			// contentLine is markdown-rendered (renderMessageContent) and
+			// carries its own ANSI resets after every heading/bold/code
+			// span -- each one would otherwise cancel the highlight
+			// background applied below partway through the message,
+			// leaving disconnected boxes instead of one solid highlight.
+			// See reassertBackgroundAfterResets's own doc comment.
+			contentLine = reassertBackgroundAfterResets(contentLine, a.theme.Colors.Selection)
+
 			// Apply highlight with alignment
 			if msg.IsOwn {
 				// Right-align with highlight and symmetric right padding
 				contentStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
-					Width(viewportWidth).
+					Width(w).
 					Align(lipgloss.Right).
-					PaddingRight(2)
-				contentLine = contentStyle.Render(contentLine)
+					PaddingRight(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			} else {
 				// Left-align with highlight and left padding
 				contentStyle := lipgloss.NewStyle().
 					Background(lipgloss.Color(a.theme.Colors.Selection)).
-					Width(viewportWidth).
-					PaddingLeft(2)
-				contentLine = contentStyle.Render(contentLine)
+					Width(w).
+					PaddingLeft(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			}
 		} else {
 			// No highlight - apply width for proper formatting
 			if msg.IsOwn {
 				contentStyle := lipgloss.NewStyle().
-					Width(viewportWidth).
+					Width(w).
 					Align(lipgloss.Right).
-					PaddingRight(2)
-				contentLine = contentStyle.Render(contentLine)
+					PaddingRight(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			} else {
 				// Left-align with left padding to match right side visual spacing
-				contentStyle := lipgloss.NewStyle().Width(viewportWidth).PaddingLeft(2)
-				contentLine = contentStyle.Render(contentLine)
+				contentStyle := lipgloss.NewStyle().Width(w).PaddingLeft(messageGutterWidth)
+				contentLine = styleMessageLines(contentLine, contentStyle)
 			}
 		}
 		content.WriteString(contentLine)
@@ -4633,7 +5357,7 @@ func (a *App) updateChatContent() {
 		// Peer-to-peer attachment manifest (if any). The server never has the
 		// file's bytes -- this just tells the reader who to request it from.
 		for _, att := range msg.Attachments {
-			attLine := formatAttachmentLine(att, viewportWidth, msg.IsOwn, a.theme)
+			attLine := formatAttachmentLine(att, w, msg.IsOwn, a.theme)
 			content.WriteString(attLine)
 			content.WriteString("\n")
 		}
@@ -4643,21 +5367,42 @@ func (a *App) updateChatContent() {
 		if a.uiConfig != nil {
 			density = a.uiConfig.Display.MessageDensity
 		}
+		spacing := "\n\n" // "normal" or unset
 		switch density {
 		case "compact":
-			content.WriteString("\n") // no blank line
+			spacing = "\n" // no blank line
 		case "spacious":
 			if showHeader {
-				content.WriteString("\n\n\n") // extra gap before new sender groups
-			} else {
-				content.WriteString("\n\n")
+				spacing = "\n\n\n" // extra gap before new sender groups
 			}
-		default: // "normal" or unset
-			content.WriteString("\n\n")
+		}
+
+		if part.boxed {
+			// Wrap this message's lines in its thread's box (threads.go).
+			// The spacing after it goes outside the box once it closes,
+			// and between messages inside it otherwise.
+			before, seg := content.String()[:segStart], content.String()[segStart:]
+			if part.root {
+				a.threadBorderLines[runningLines+strings.Count(before[msgStartLen:], "\n")] = msg.ID
+			}
+			boxed, closed := a.boxThreadSegment(seg, part, viewportWidth, len(spacing)-1)
+			content.Reset()
+			content.WriteString(before)
+			content.WriteString(boxed)
+			if closed {
+				content.WriteString(spacing[1:])
+			}
+		} else {
+			content.WriteString(spacing)
 		}
 
 		lineOffsets[i] = runningLines
 		runningLines += strings.Count(content.String()[msgStartLen:], "\n")
+	}
+
+	for _, n := range notices { // replies after the channel's last message
+		writeNotice(n, runningLines)
+		runningLines += 2
 	}
 
 	a.messageLineOffsets = lineOffsets
@@ -4707,133 +5452,172 @@ func osc8Link(url, styledText string) string {
 	return "\033]8;;" + url + st + styledText + "\033]8;;" + st
 }
 
-// renderMessageContent renders a message's text, styling @mentions and URLs.
-// msgID (the message's UUID string) gives each link within it a stable zone
-// ID (see zone.Mark below) so a mouse click on rendered link text can be
+// messageGutterWidth is the fixed left/right padding every rendered message
+// line reserves (PaddingLeft/PaddingRight(2) below) regardless of ownership.
+// messageWrapWidth uses the same constant so glamour never wraps a line any
+// wider than what that padding will actually leave room for -- see
+// styleMessageLines's doc comment for what goes wrong when the two disagree.
+const messageGutterWidth = 2
+
+// messageWrapWidth is the width to hand renderMessageContent so its
+// glamour-wrapped output already fits within the gutter the caller reserves
+// afterward via PaddingLeft/PaddingRight, rather than wrapping to the full
+// viewport width and asking lipgloss's own per-render word-wrap to shrink it
+// again later (see styleMessageLines).
+func messageWrapWidth(viewportWidth int) int {
+	w := viewportWidth - messageGutterWidth
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// renderMessageContent renders a message's text as markdown -- bold,
+// italic, inline code, fenced code blocks, and simple lists via glamour,
+// themed to match the active Concord theme (buildChatGlamourStyle) -- then
+// overlays @mention/@everyone/@here highlighting and clickable OSC 8 links
+// on top of glamour's own output. msgID (the message's UUID string) gives
+// each link within it a stable zone ID (see zone.Mark in
+// restoreURLPlaceholders) so a mouse click on rendered link text can be
 // resolved back to the exact URL -- see handleMainViewMouse in mouse.go.
+//
+// Cached per message ID (a.messageRenderCache) since glamour rendering is
+// meaningfully heavier than the plain-regex styling this replaced, and
+// every visible message re-renders on every redraw.
+// styleMessageLines applies style to content one already-wrapped line at a
+// time, rejoining with "\n", instead of handing the whole (possibly
+// multi-line) block to a single style.Render() call.
+//
+// Real bug found live (2026-09-13): renderMessageContent/renderChatMarkdownBody
+// already word-wrap a message's markdown to viewportWidth via glamour before
+// returning it. Passing that multi-line result to ONE lipgloss
+// Width(viewportWidth).Render() call doesn't just pad/align it -- lipgloss
+// performs its OWN word-wrap on any input line that doesn't fit the target
+// width, and PaddingRight(2)/PaddingLeft(2) shrinks the usable width by 2
+// columns from what the content was originally wrapped to. Any glamour-
+// wrapped line within 2 columns of the full width (common in any
+// reasonably long message) would then get silently re-wrapped a second
+// time, breaking it again -- confirmed by reproducing it directly:
+// lipgloss.NewStyle().Width(20).PaddingRight(2).Render() on a line longer
+// than 18 visible columns splits it across several new lines instead of
+// leaving it alone. That's the mechanism behind the "weird" wrapping
+// (stray single words dangling on their own line) reported for a long,
+// multi-line pasted message -- worse at moderate widths, where more lines
+// happen to land within 2 columns of the boundary, and less visible once
+// the terminal's widened enough that fewer lines are that close to it.
+func styleMessageLines(content string, style lipgloss.Style) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = style.Render(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (a *App) renderMessageContent(msgID, text string, width int, rightAlign bool) string {
-	// Determine current user's alias
+	cacheID, cacheable := uuid.Parse(msgID)
+	if cacheable == nil {
+		if entry, ok := a.messageRenderCache[cacheID]; ok &&
+			entry.Text == text && entry.Width == width && entry.Theme == a.theme.Meta.Name {
+			return entry.Rendered
+		}
+	}
+
+	// A reply quote is permanently embedded as the message's own first
+	// line at send time (see handleSendMessage's quotedContent) -- peel it
+	// off and keep its existing fixed dim-italic treatment untouched;
+	// everything else goes through markdown rendering.
+	quotePrefix := ""
+	body := text
+	firstLine := text
+	rest := ""
+	if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+		firstLine = text[:nl]
+		rest = text[nl+1:]
+	}
+	if strings.HasPrefix(firstLine, "↩ ") {
+		replyStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")). // Dim gray (same as input box)
+			Italic(true)
+		quotePrefix = replyStyle.Render(firstLine) + "\n"
+		body = rest
+	}
+
 	var alias string
 	if a.activeConn != nil && a.activeConn.User != nil {
 		alias = a.activeConn.User.Username
 	}
 
-	msgStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Semantic.ChatFg))
-	mentionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Semantic.ChatMention)).
-		Bold(true)
-	linkStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Cyan)).
-		Underline(true)
+	rendered := quotePrefix + a.renderChatMarkdownBody(msgID, body, width, alias)
 
-	// linkIndex counts links across the whole message (not reset per line),
-	// so each gets a unique, stable zone ID for the message's lifetime.
+	if cacheable == nil {
+		if a.messageRenderCache == nil {
+			a.messageRenderCache = make(map[uuid.UUID]messageRenderCacheEntry)
+		}
+		a.messageRenderCache[cacheID] = messageRenderCacheEntry{
+			Text: text, Width: width, Theme: a.theme.Meta.Name, Rendered: rendered,
+		}
+	}
+	return rendered
+}
+
+// renderChatMarkdownBody runs the actual glamour + URL/mention pipeline
+// over a message's body (already stripped of any reply-quote first line).
+// See newChatMarkdownRenderer's doc comment for why URLs are substituted
+// with placeholders before glamour ever sees them, rather than zone-marked
+// in a post-pass the way @mentions are.
+func (a *App) renderChatMarkdownBody(msgID, body string, width int, alias string) string {
+	if body == "" {
+		return ""
+	}
+
+	substituted, urls := extractURLPlaceholders(body)
+
+	wrapWidth := width
+	if wrapWidth < 10 {
+		wrapWidth = 10
+	}
+	fallback := func() string {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Semantic.ChatFg)).Render(body)
+	}
+	r, err := newChatMarkdownRenderer(a.theme, wrapWidth)
+	if err != nil {
+		return fallback()
+	}
+	out, err := r.Render(substituted)
+	if err != nil {
+		return fallback()
+	}
+
+	// Trim the leading/trailing blank lines glamour's paragraph handling
+	// still adds even with Document margin/prefix/suffix zeroed out (same
+	// trim renderHelpMarkdown already does for its own document-level
+	// blank lines).
+	lines := strings.Split(out, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	linkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Underline(true)
+	mentionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Semantic.ChatMention)).Bold(true)
 	linkIndex := 0
-
-	// renderLine processes a single line (no \n) applying URL and @mention styling.
-	renderLine := func(line string) string {
-		// Check if this is a reply quote line (starts with "↩")
-		if strings.HasPrefix(line, "↩ ") {
-			// Apply gray italic styling to the entire quote line
-			replyStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("240")).  // Dim gray (same as input box)
-				Italic(true)
-			return replyStyle.Render(line)
-		}
-
-		var out strings.Builder
-		seg := line
-		for len(seg) > 0 {
-			urlLoc := urlRegex.FindStringIndex(seg)
-			mentionLoc := []int{-1, -1}
-			everyoneLoc := []int{-1, -1}
-
-			// Check for @everyone or @here
-			if idx := strings.Index(strings.ToLower(seg), "@everyone"); idx != -1 {
-				everyoneLoc = []int{idx, idx + len("@everyone")}
-			} else if idx := strings.Index(strings.ToLower(seg), "@here"); idx != -1 {
-				everyoneLoc = []int{idx, idx + len("@here")}
-			}
-
-			// Check for personal mention
-			if alias != "" {
-				token := "@" + alias
-				if idx := strings.Index(strings.ToLower(seg), strings.ToLower(token)); idx != -1 {
-					mentionLoc = []int{idx, idx + len(token)}
-				}
-			}
-
-			useURL := urlLoc != nil
-			useMention := mentionLoc[0] != -1
-			useEveryone := everyoneLoc[0] != -1
-
-			// Determine which match comes first
-			if useURL && useMention {
-				if mentionLoc[0] < urlLoc[0] {
-					useURL = false
-				} else {
-					useMention = false
-				}
-			}
-			if useURL && useEveryone {
-				if everyoneLoc[0] < urlLoc[0] {
-					useURL = false
-				} else {
-					useEveryone = false
-				}
-			}
-			if useMention && useEveryone {
-				if everyoneLoc[0] < mentionLoc[0] {
-					useMention = false
-				} else {
-					useEveryone = false
-				}
-			}
-
-			switch {
-			case useEveryone:
-				if everyoneLoc[0] > 0 {
-					out.WriteString(msgStyle.Render(seg[:everyoneLoc[0]]))
-				}
-				out.WriteString(mentionStyle.Render(seg[everyoneLoc[0]:everyoneLoc[1]]))
-				seg = seg[everyoneLoc[1]:]
-			case useMention:
-				if mentionLoc[0] > 0 {
-					out.WriteString(msgStyle.Render(seg[:mentionLoc[0]]))
-				}
-				out.WriteString(mentionStyle.Render(seg[mentionLoc[0]:mentionLoc[1]]))
-				seg = seg[mentionLoc[1]:]
-			case useURL:
-				if urlLoc[0] > 0 {
-					out.WriteString(msgStyle.Render(seg[:urlLoc[0]]))
-				}
-				rawURL := seg[urlLoc[0]:urlLoc[1]]
-				zoneID := fmt.Sprintf("link:%s:%d", msgID, linkIndex)
-				linkIndex++
-				out.WriteString(zone.Mark(zoneID, osc8Link(rawURL, linkStyle.Render(rawURL))))
-				seg = seg[urlLoc[1]:]
-			default:
-				out.WriteString(msgStyle.Render(seg))
-				seg = ""
-			}
-		}
-		return out.String()
-	}
-
-	// Process each newline-separated line independently and apply Width() per line.
-	// Applying Width() to the whole multi-line string causes lipgloss to
-	// miscount visible characters when OSC 8 sequences are on a continuation
-	// line, which shifts the link far to the right with blank space before it.
-	lines := strings.Split(text, "\n")
-	renderedLines := make([]string, len(lines))
-
-	// Just render each line with styling (mentions, links) - no width/alignment here
-	// Width and alignment will be handled by the caller
 	for i, line := range lines {
-		renderedLines[i] = renderLine(line)
+		// glamour pads every line with individually ANSI-wrapped trailing
+		// spaces out to the full wrapWidth (confirmed live 2026-09-08) --
+		// harmless for Help & Guide (always left-aligned), but for a chat
+		// message it leaves the caller's own Width().Align(Right) wrap
+		// (own messages, app.go) with a line that's already the full
+		// viewport width and nothing left to redistribute, so the message
+		// renders stuck at the left edge instead of right-aligned. Strip
+		// it here so callers get a line only as wide as its real content.
+		line = trimTrailingRenderedPadding(line)
+		line = restoreURLPlaceholders(line, msgID, urls, &linkIndex, linkStyle)
+		line = highlightMentions(line, alias, mentionStyle)
+		lines[i] = line
 	}
-	return strings.Join(renderedLines, "\n")
+	return strings.Join(lines, "\n")
 }
 
 // scrollToBottom scrolls the chat to the bottom
@@ -4889,6 +5673,7 @@ func (a *App) currentUserRoleLevel() roleLevel {
 type typingDisplayUser struct {
 	Name  string
 	IsBot bool
+	Verb  string // a grape verb instead of "is typing" (main_moods.go), or ""
 }
 
 // rebuildTypingUsers refreshes a.typingUsers from the current typingExpiry map,
@@ -4919,7 +5704,7 @@ func (a *App) rebuildTypingUsers() {
 		} else {
 			name = uid.String()[:8]
 		}
-		users = append(users, typingDisplayUser{Name: name, IsBot: a.typingIsBot[uid]})
+		users = append(users, typingDisplayUser{Name: name, IsBot: a.typingIsBot[uid], Verb: a.typingVerb(uid)})
 	}
 	sort.Slice(users, func(i, j int) bool { return users[i].Name < users[j].Name })
 	a.typingUsers = users
@@ -4939,7 +5724,7 @@ func (a *App) clearTypingState() {
 // so that chatViewport.Width is correct before updateChatContent() is called.
 func (a *App) updateViewportSize() {
 	// Must match renderMainView exactly — use animated widths, not hardcoded defaults
-	availableWidth := a.width - 1
+	availableWidth := a.width
 	serverIconsWidth := a.serverListAnimWidth
 	if serverIconsWidth < 10 {
 		serverIconsWidth = 10
@@ -4964,15 +5749,14 @@ func (a *App) updateViewportSize() {
 
 	// Set textarea width — matches renderChatPanel line 919
 	a.input.SetWidth(interiorWidth - 2)
-	a.input.SetHeight(4)
+	a.input.SetHeight(5)
 
-	// Set viewport dimensions — matches renderChatPanel lines 922-924
-	// panelHeight = a.height - 2 (status bar + top padding)
-	// inputHeight = 6, headerHeight = 2
+	// Set viewport dimensions — must match renderChatPanel's chatHeight math
+	// (the input box; the channel title and typing indicator live in the
+	// chat box's own top and bottom borders, not separate rows).
 	panelHeight := a.height - 2
-	inputHeight := 6
-	headerHeight := 2
-	chatHeight := panelHeight - inputHeight - headerHeight
+	inputHeight := 7
+	chatHeight := panelHeight - inputHeight
 	if interiorWidth > 0 {
 		a.chatViewport.Width = interiorWidth
 	}
@@ -5003,6 +5787,12 @@ func (a *App) calculateMessageLinePosition(messageIndex int) int {
 func (a *App) handleSendMessage() tea.Cmd {
 	content := strings.TrimSpace(a.input.Value())
 	if content == "" {
+		return nil
+	}
+	if !strings.HasPrefix(content, "/") && a.currentChannel != nil && a.currentChannel.Type == models.ChannelTypeCategory {
+		// Keep what was typed: it belongs in one of the group's channels.
+		a.statusMessage = "That's a channel group: pick a channel in it to post."
+		a.statusError = true
 		return nil
 	}
 
@@ -5055,6 +5845,18 @@ func (a *App) handleSendMessage() tea.Cmd {
 		serverID := a.currentClientServer.ID
 		channelID := a.currentChannel.ID
 
+		// In a thread: post there, and stay there until Esc (threads.go)
+		if t := a.threadTarget; t != nil {
+			threadID := t.ID
+			a.onMessageSent(serverID) // main_moods.go
+			return func() tea.Msg {
+				if err := a.connMgr.SendThreadMessage(serverID, channelID, threadID, content); err != nil {
+					return ErrorMsg{Error: fmt.Sprintf("Failed to send message: %v", err)}
+				}
+				return nil
+			}
+		}
+
 		// If replying, embed quote inline in message content
 		var replyToID *uuid.UUID
 		if a.replyTarget != nil {
@@ -5067,6 +5869,7 @@ func (a *App) handleSendMessage() tea.Cmd {
 			a.replyQuote = ""
 		}
 
+		a.onMessageSent(serverID) // main_moods.go
 		return func() tea.Msg {
 			if err := a.connMgr.SendMessage(serverID, channelID, content, replyToID); err != nil {
 				return ErrorMsg{Error: fmt.Sprintf("Failed to send message: %v", err)}
@@ -5097,13 +5900,12 @@ func (a *App) handleSlashCommand(input string) tea.Cmd {
 		return pumpCmd
 	}
 
-	// Special handling for help command - display in modal overlay
-	if cmd.Name == "help" {
-		a.openHelpModal(result)
-	} else {
-		a.statusMessage = result
-		a.statusError = false
-	}
+	// /help opens the interactive fuzzy finder directly (handleHelp calls
+	// openHelpFinder itself and returns "", mirroring /theme's no-args
+	// "open the interactive browser" pattern) -- no special-casing needed
+	// here, unlike the old plain-text modal this replaced.
+	a.statusMessage = result
+	a.statusError = false
 	return pumpCmd
 }
 
@@ -5217,42 +6019,14 @@ func (a *App) handleTabCompletion() {
 	// Remove the leading slash and get the partial command
 	partial := strings.TrimPrefix(input, "/")
 
-	// Available commands
-	commands := []string{
-		"attach",
-		"ban",
-		"create-channel",
-		"create-category",
-		"create-group",
-		"create-role",
-		"delete-channel",
-		"delete-category",
-		"delete-group",
-		"download",
-		"help",
-		"kick",
-		"links",
-		"move-channel",
-		"mute",
-		"pin",
-		"rename-channel",
-		"role",
-		"roles",
-		"status",
-		"theme",
-		"timeout",
-		"title",
-		"unban",
-		"unmute",
-		"unpin",
-		"whisper",
-	}
-
-	// Find matching commands
+	// visibleSlashCommands (help_finder.go) is the single canonical list --
+	// used to be a separate hardcoded slice here that had drifted out of
+	// sync with handleHelp's own list (missing several mod/admin commands
+	// entirely, e.g. join-voice/leave-voice/nick/deafen-voice/move-voice).
 	var matches []string
-	for _, cmd := range commands {
-		if strings.HasPrefix(cmd, partial) {
-			matches = append(matches, cmd)
+	for _, cmd := range visibleSlashCommands(a.currentUserRoleLevel()) {
+		if strings.HasPrefix(cmd.Name, partial) {
+			matches = append(matches, cmd.Name)
 		}
 	}
 
@@ -5271,11 +6045,14 @@ func (a *App) handleTabCompletion() {
 
 // AutoConnectMsg carries the result of an auto-connect attempt
 type AutoConnectMsg struct {
-	ServerID uuid.UUID
-	UserID   uuid.UUID
-	Email    string
-	Token    string
-	Err      error
+	ServerID          uuid.UUID
+	UserID            uuid.UUID
+	Username          string // the account's name on the server
+	Email             string
+	Token             string
+	Err               error
+	NeedsVerification bool   // the account must enter an emailed code first
+	ProfileID         string // the profile that signed in
 }
 
 // ConnectedMsg indicates successful connection
@@ -5353,6 +6130,40 @@ const panelAnimMaxFrames = 60
 type settingsPanelAnimTickMsg struct{}
 type srvMgmtPanelAnimTickMsg struct{}
 
+// helpResizeSettledMsg carries the resize generation it was scheduled
+// against, so a stale timer (superseded by a later resize before it fired)
+// can recognize itself as stale and no-op -- see helpResizing's doc comment.
+type helpResizeSettledMsg struct{ gen int }
+
+// helpResizeSettleCmd fires once, 150ms after being scheduled, checking
+// whether the resize that scheduled it was the last one to happen.
+func helpResizeSettleCmd(gen int) tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+		return helpResizeSettledMsg{gen: gen}
+	})
+}
+
+// pasteBurstSettledMsg carries the burst generation it was scheduled
+// against, so a stale timer (superseded by a later keystroke in the same
+// burst before it fired) can recognize itself as stale and no-op -- see
+// inPasteBurst's doc comment.
+type pasteBurstSettledMsg struct{ gen int }
+
+// pasteBurstSettleCmd fires once, pasteBurstSettleDelay after being
+// scheduled, checking whether the keystroke that scheduled it was the last
+// one to land. The delay is deliberately much shorter than
+// helpResizeSettleCmd's 150ms -- it only needs to comfortably clear
+// pasteBurstKeyThreshold's 20ms keystroke-to-keystroke gap, not debounce a
+// slow human action like a mouse drag, so a small value keeps the frozen
+// frame's catch-up jump feeling instant once a paste actually finishes.
+const pasteBurstSettleDelay = 40 * time.Millisecond
+
+func pasteBurstSettleCmd(gen int) tea.Cmd {
+	return tea.Tick(pasteBurstSettleDelay, func(time.Time) tea.Msg {
+		return pasteBurstSettledMsg{gen: gen}
+	})
+}
+
 func settingsPanelAnimTick() tea.Cmd {
 	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
 		return settingsPanelAnimTickMsg{}
@@ -5418,8 +6229,20 @@ type ProtocolMsg struct {
 func (a *App) SetTheme(theme *themes.Theme) {
 	a.theme = theme
 	a.styles = theme.BuildStyles()
+	// Message markdown rendering is theme-derived (buildChatGlamourStyle) --
+	// every cached entry is now stale.
+	a.messageRenderCache = nil
 	// Refresh chat viewport with new theme colors
 	a.updateChatContent()
+}
+
+// SetBuildInfo records the client binary's own build identity, called once
+// at startup from cmd/client/main.go with the vars the Makefile's ldflags
+// populate. Read by Settings > About.
+func (a *App) SetBuildInfo(version, gitCommit, buildTime string) {
+	a.clientVersion = version
+	a.clientGitCommit = gitCommit
+	a.clientBuildTime = buildTime
 }
 
 // SetToken sets the authentication token for the active connection
@@ -5466,7 +6289,29 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 				a.statusMessage = fmt.Sprintf("Disconnected from %s", a.currentClientServer.Name)
 			}
 			a.statusError = true
-			a.stopVoiceEngine()
+		}
+		if a.voiceConn == sc {
+			a.stopVoiceEngine() // the call was on this server
+		}
+		// A dropped connection can't relay a leave_pane signal -- the plugin
+		// has no way to ask Concord to release the pane over a connection
+		// that no longer exists, and 'q' has nothing to reach either.
+		// Without this, a viewer who'd focused a plugin pane before the
+		// connection dropped is stuck: every key is captured by the pane
+		// guards in handleKeyPress/Update, no escape route left. Release it
+		// here instead, the same way a clean leave_pane would. (This logic
+		// used to live in an unreachable top-level `case DisconnectedMsg`
+		// in Update() -- ConnectedMsg/DisconnectedMsg are always pre-wrapped
+		// in ServerScopedMsg before dispatch, so that case could never
+		// actually fire; moved here where DisconnectedMsg is genuinely
+		// handled, found while removing that dead code.)
+		// The pane itself stays on screen and re-enters on reconnect (see
+		// syncPluginPane); only key capture is released.
+		if a.pluginPane != nil && a.pluginPane.conn != nil && a.pluginPane.conn.ServerID == serverID {
+			if a.focus == FocusChat {
+				a.releasePaneFocus()
+			}
+			a.paneDisconnected()
 		}
 		if hasToken {
 			return a.scheduleReconnect(serverID)
@@ -5478,7 +6323,9 @@ func (a *App) handleServerScopedMessage(scopedMsg ServerScopedMsg) tea.Cmd {
 		if a.currentClientServer != nil && a.currentClientServer.ID == serverID {
 			a.statusMessage = fmt.Sprintf("Error: %s", msg.Error)
 			a.statusError = true
-			a.stopVoiceEngine()
+		}
+		if a.voiceConn == sc {
+			a.stopVoiceEngine() // the call was on this server
 		}
 	}
 
@@ -5539,16 +6386,18 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	sc.mu.Lock()
 	sc.User = payload.User
 	sc.Servers = payload.Servers
+	sc.ServerVersion = payload.ServerVersion
+	sc.ServerGitCommit = payload.ServerGitCommit
+	sc.ServerBuildTime = payload.ServerBuildTime
 	sc.mu.Unlock()
 
 	// Cache plugin-provided channel kinds so the client can render/create
 	// plugin channels generically without any plugin-specific code compiled in.
-	if a.pluginChannelKinds == nil {
-		a.pluginChannelKinds = make(map[string]protocol.PluginChannelKindInfo)
-	}
-	for _, kind := range payload.PluginChannelKinds {
-		a.pluginChannelKinds[kind.PluginID+":"+kind.Kind] = kind
-	}
+	a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
+	sc.mu.Lock()
+	sc.PluginClients = payload.PluginClients
+	sc.PluginBoards = payload.PluginBoards
+	sc.mu.Unlock()
 
 	// Mark as ready and clear any reconnect backoff state
 	sc.SetState(StateReady)
@@ -5605,6 +6454,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		// Store servers in the server connection
 		sc.mu.Lock()
 		sc.Servers = payload.Servers
+		sc.ServerVersion = payload.ServerVersion
+		sc.ServerGitCommit = payload.ServerGitCommit
+		sc.ServerBuildTime = payload.ServerBuildTime
 		sc.mu.Unlock()
 
 		log.Printf("READY received: User=%s, %d servers available", payload.User.Username, len(payload.Servers))
@@ -5657,6 +6509,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			sc.VoiceStates[vs.UserID] = vs
 		}
 		sc.mu.Unlock()
+		for _, vs := range payload.VoiceStates {
+			a.onVoiceJoin(vs.UserID, "", false) // already in voice: noted quietly
+		}
 
 		log.Printf("Received SERVER_CREATE for %s: %d channels, %d members, %d roles",
 			payload.Server.Name, len(payload.Channels), len(displays), len(payload.Roles))
@@ -5717,10 +6572,19 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			IsOwn:       payload.Author.ID == sc.User.ID,
 			ShowHeader:  true, // TODO: Implement message grouping
 			IsBotAuthor: payload.Author != nil && payload.Author.IsServiceAccount,
+			Streaming:   payload.Stream == protocol.StreamWriting,
 		}
 
-		// Add message to connection's message history
-		sc.AddMessage(payload.Message.ChannelID, display)
+		// Add message to connection's message history -- or, for a reply in
+		// a thread, to its thread (threads.go): it doesn't count as channel
+		// activity, and only notifies those following the thread or mentioned.
+		isThreadReply := payload.Message.ThreadID != nil
+		followsThread := false
+		if isThreadReply {
+			followsThread = a.addThreadReply(sc, display)
+		} else {
+			sc.AddMessage(payload.Message.ChannelID, display)
+		}
 
 		// Check for @mention (personal mention or @everyone/@here) — computed before
 		// the isCurrentChannel guard so sounds can fire regardless of active channel.
@@ -5735,9 +6599,12 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if payload.Message.MentionEveryone {
 			hasMention = true
 		}
+		if isThreadReply && !display.IsOwn {
+			a.noteThreadReply(sc, display, followsThread || hasMention) // the optional in-channel line (threads_find.go)
+		}
 
 		// Unread tracking: only for messages not in the currently viewed channel
-		if !isCurrentChannel && !isMutedChannel && !isMutedServer {
+		if !isCurrentChannel && !isMutedChannel && !isMutedServer && !isThreadReply {
 			if a.unreadCounts[serverID] == nil {
 				a.unreadCounts[serverID] = make(map[uuid.UUID]int)
 			}
@@ -5752,7 +6619,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		// Sound and desktop notification: fire for all non-own, non-muted messages.
 		// Sound plays even in the current channel; desktop popup only when away from it.
-		if !display.IsOwn && !isMutedChannel && !isMutedServer {
+		if !display.IsOwn && !isMutedChannel && !isMutedServer && (!isThreadReply || followsThread || hasMention) {
 			channelName := ""
 			for _, channels := range sc.Channels {
 				for _, ch := range channels {
@@ -5766,7 +6633,15 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			if sc.ServerInfo != nil {
 				srvName = sc.ServerInfo.Name
 			}
-			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
+			isCurrentServer := a.activeConn != nil && a.activeConn.ServerID == serverID
+			a.triggerMessageNotification(payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention, isCurrentChannel, isCurrentServer)
+			onScreen := isThreadReply && a.threadOnScreen(sc, payload.Message.ChannelID, *payload.Message.ThreadID)
+			if isThreadReply && !onScreen && shouldToast(a.notifConfig.ToastMode, a.notifConfig.ToastScope, hasMention, false, isCurrentServer) {
+				a.toastMessage(serverID, payload.Message.ChannelID, payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
+				a.markLastToastThread(*payload.Message.ThreadID, channelName)
+			} else if !isThreadReply && shouldToast(a.notifConfig.ToastMode, a.notifConfig.ToastScope, hasMention, isCurrentChannel, isCurrentServer) {
+				a.toastMessage(serverID, payload.Message.ChannelID, payload.Author.Username, srvName, channelName, payload.Message.Content, hasMention)
+			}
 		}
 
 		log.Printf("MESSAGE_CREATE: channel=%s, author=%s, activeConn=%v, currentChannel=%v",
@@ -5776,6 +6651,15 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		// Update UI if this is for the active connection and current channel
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			if a.currentChannel != nil && a.currentChannel.ID == payload.Message.ChannelID && isThreadReply {
+				// A thread reply changes its box, not the bottom of the chat:
+				// redraw without scrolling away from what the user is reading.
+				a.updateChatContent()
+				if !display.IsOwn && (followsThread || hasMention) && !a.threadOnScreen(sc, payload.Message.ChannelID, *payload.Message.ThreadID) {
+					return a.flashThreadReply(display.AuthorName)
+				}
+				return nil
+			}
 			if a.currentChannel != nil && a.currentChannel.ID == payload.Message.ChannelID {
 				// Message is for currently viewed channel - update chat viewport
 				log.Printf("Updating chat content for message in current channel")
@@ -5819,6 +6703,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.mu.Lock()
 		// Clear existing messages first
 		sc.Messages[payload.ChannelID] = nil
+		var historyThreads []protocol.ThreadSummary // applied once the lock is released (threads.go)
 
 		// Determine current user ID for IsOwn flag
 		var currentUserID uuid.UUID
@@ -5857,11 +6742,15 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				IsWhisper:     isWhisper,
 				IsSystem:      isSystem,
 				IsBotAuthor:   msgDisplay.Author != nil && msgDisplay.Author.IsServiceAccount,
+				IsDeleted:     msgDisplay.Deleted, // a deleted message still heading its thread
 			}
 			sc.Messages[payload.ChannelID] = append(
 				sc.Messages[payload.ChannelID],
 				display,
 			)
+			if msgDisplay.Thread != nil {
+				historyThreads = append(historyThreads, *msgDisplay.Thread)
+			}
 		}
 
 		// Populate pinned messages for this channel
@@ -5869,6 +6758,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			sc.PinnedMessages[payload.ChannelID] = payload.PinnedMessages
 		}
 		sc.mu.Unlock()
+		for _, sum := range historyThreads {
+			a.applyThreadSummary(sc, sum)
+		}
 
 		// Refresh chat if we're currently viewing this channel on this server
 		if a.activeConn != nil && a.activeConn.ServerID == serverID &&
@@ -5892,6 +6784,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				if msg.ID == payload.ID {
 					msg.Content = payload.Content
 					msg.EditedAt = payload.EditedAt
+					msg.Streaming = payload.Stream == protocol.StreamWriting
 					break
 				}
 			}
@@ -5904,6 +6797,25 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				a.updateChatContent()
 			}
 		}
+
+	case protocol.EventThreadUpdate:
+		var sum protocol.ThreadSummary
+		if err := json.Unmarshal(msg.Data, &sum); err != nil {
+			log.Printf("Failed to parse THREAD_UPDATE payload: %v", err)
+			return nil
+		}
+		a.applyThreadSummary(sc, sum)
+		if a.activeConn == sc && a.currentChannel != nil && a.currentChannel.ID == sum.ChannelID {
+			a.updateChatContent()
+		}
+
+	case protocol.EventThreadMessages:
+		var p protocol.ThreadMessagesPayload
+		if err := json.Unmarshal(msg.Data, &p); err != nil {
+			log.Printf("Failed to parse THREAD_MESSAGES payload: %v", err)
+			return nil
+		}
+		a.handleThreadMessages(sc, p)
 
 	case protocol.EventMessageDelete:
 		// Parse message delete payload
@@ -5919,6 +6831,14 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			if m.ID == payload.ID {
 				m.IsDeleted = true
 				break
+			}
+		}
+		for _, ts := range sc.Threads { // a reply in a thread (threads.go)
+			for i, r := range ts.replies {
+				if r.ID == payload.ID {
+					ts.replies = append(ts.replies[:i:i], ts.replies[i+1:]...)
+					break
+				}
 			}
 		}
 		sc.mu.Unlock()
@@ -6104,6 +7024,33 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			a.updateChatContent()
 		}
 
+	case protocol.EventUserUpdate:
+		// Someone changed their username (account settings, or a typo
+		// fixed from another device).
+		var user models.User
+		if err := json.Unmarshal(msg.Data, &user); err != nil || user.ID == uuid.Nil {
+			log.Printf("Failed to parse USER_UPDATE payload: %v", err)
+			return nil
+		}
+		sc.mu.Lock()
+		for _, member := range sc.Members {
+			if member.User != nil && member.User.ID == user.ID {
+				member.User.Username = user.Username
+				member.User.Discriminator = user.Discriminator
+			}
+		}
+		if sc.User != nil && sc.User.ID == user.ID {
+			sc.User.Username = user.Username
+			sc.User.Discriminator = user.Discriminator
+		}
+		sc.mu.Unlock()
+
+		// Refresh so the member list (and any already-rendered messages from
+		// this user, next time they post) pick up the new name immediately.
+		if a.activeConn != nil && a.activeConn.ServerID == serverID {
+			a.updateChatContent()
+		}
+
 	case protocol.EventWhisperCreate:
 		var whisperPayload protocol.WhisperCreatePayload
 		if err := json.Unmarshal(msg.Data, &whisperPayload); err != nil {
@@ -6239,7 +7186,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 		if a.activeConn != nil && a.activeConn.ServerID == serverID {
-			a.applyPluginPaneFrame(payload)
+			return a.applyPluginPaneFrame(payload)
 		}
 
 	case protocol.EventPluginEvent:
@@ -6248,19 +7195,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("Failed to parse PLUGIN_EVENT payload: %v", err)
 			return nil
 		}
-		if payload.Kind == "leave_pane" {
-			var closePayload protocol.PluginPaneClosePayload
-			if err := json.Unmarshal(payload.Payload, &closePayload); err != nil {
-				return nil
-			}
-			// Only act if this is still the pane currently showing — the
-			// plugin's signal could in principle arrive after the viewer
-			// already navigated elsewhere on their own.
-			if a.pluginPane != nil && a.pluginPane.ChannelID == closePayload.ChannelID {
-				a.leavePluginPane()
-				a.focus = FocusChannelList
-			}
-		}
+		a.handlePluginEvent(serverID, sc, payload)
 
 	case protocol.EventTypingStart:
 		var typingPayload protocol.TypingStartEventPayload
@@ -6288,6 +7223,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		a.typingIsBot[typingPayload.UserID] = typingPayload.IsBot
 		a.rebuildTypingUsers()
+		return a.startTypingTick()
 
 	case protocol.EventTypingStop:
 		var stopPayload protocol.TypingStopEventPayload
@@ -6498,7 +7434,6 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			}
 		}
 
-
 	case protocol.EventRoleUpdate:
 		// Parse role update payload
 		var roleData models.Role
@@ -6604,7 +7539,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 							}
 						}
 						a.serverManagementState.RoleList = roleList
-					a.statusMessage = "Role deleted successfully"
+						a.statusMessage = "Role deleted successfully"
 
 						// Adjust selection if needed
 						if a.serverManagementState.SelectedRole >= len(roleList) {
@@ -6634,19 +7569,50 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				if payload.Policy == nil || payload.Policy.ChannelID == nil {
 					a.serverManagementState.RetentionPolicy = payload.Policy
 				}
-				// Always apply the full override list when provided
-				if payload.ChannelOverrides != nil {
-					a.serverManagementState.ChannelOverrides = payload.ChannelOverrides
-					if a.serverManagementState.SelectedOverride >= len(payload.ChannelOverrides) {
-						a.serverManagementState.SelectedOverride = len(payload.ChannelOverrides) - 1
-					}
-					if a.serverManagementState.SelectedOverride < 0 {
-						a.serverManagementState.SelectedOverride = 0
-					}
+				// Always apply the full override list -- including an empty
+				// one. ChannelOverrides carries `json:"...,omitempty"`, so
+				// when the last override is deleted the server's freshly
+				// queried nil slice is omitted from the wire entirely and
+				// unmarshals back to nil here too; a `!= nil` guard would
+				// then skip applying exactly the "zero overrides remain"
+				// update, leaving the stale pre-deletion list on screen
+				// until the view was fully re-entered.
+				a.serverManagementState.ChannelOverrides = payload.ChannelOverrides
+				if a.serverManagementState.SelectedOverride >= len(payload.ChannelOverrides) {
+					a.serverManagementState.SelectedOverride = len(payload.ChannelOverrides) - 1
+				}
+				if a.serverManagementState.SelectedOverride < 0 {
+					a.serverManagementState.SelectedOverride = 0
 				}
 				a.statusMessage = "Retention policy updated"
 			}
 		}
+
+	case protocol.EventPluginRecords:
+		var recs protocol.PluginRecordsPayload
+		if err := json.Unmarshal(msg.Data, &recs); err == nil {
+			a.applyRecords(sc, recs)
+		}
+
+	case protocol.EventPluginRegistryUpdate:
+		var payload protocol.PluginRegistryPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			log.Printf("Failed to parse PLUGIN_REGISTRY_UPDATE payload: %v", err)
+			return nil
+		}
+		a.setPluginChannelKinds(sc, payload.PluginChannelKinds)
+		sc.mu.Lock()
+		sc.PluginClients = payload.PluginClients
+		sc.PluginBoards = payload.PluginBoards
+		sc.mu.Unlock()
+
+	case protocol.EventPluginManageResult:
+		var result protocol.PluginManageResult
+		if err := json.Unmarshal(msg.Data, &result); err != nil {
+			log.Printf("Failed to parse PLUGIN_MANAGE_RESULT payload: %v", err)
+			return nil
+		}
+		a.applyPluginManageResult(result)
 
 	case protocol.EventPluginConfigUpdate:
 		// Parse installed plugin list + config payload (response to
@@ -6659,9 +7625,10 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		if a.view == ViewServerManagement && a.serverManagementState != nil {
 			if a.serverManagementState.Categories[a.serverManagementState.SelectedCategory] == "Plugins" {
-				a.serverManagementState.PluginList = payload.Plugins
-				if a.serverManagementState.SelectedPlugin >= len(payload.Plugins) {
-					a.serverManagementState.SelectedPlugin = len(payload.Plugins) - 1
+				a.serverManagementState.AllPlugins = payload.Plugins
+				a.serverManagementState.PluginList = installedPlugins(payload.Plugins)
+				if a.serverManagementState.SelectedPlugin >= len(a.serverManagementState.PluginList) {
+					a.serverManagementState.SelectedPlugin = len(a.serverManagementState.PluginList) - 1
 				}
 				if a.serverManagementState.SelectedPlugin < 0 {
 					a.serverManagementState.SelectedPlugin = 0
@@ -6714,15 +7681,24 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				IsServerMuted:    payload.IsServerMuted,
 				IsServerDeafened: payload.IsServerDeafened,
 			}
+			_, wasInVoice := sc.VoiceStates[payload.UserID]
 			sc.VoiceStates[payload.UserID] = vs
 			if sc.User != nil && payload.UserID == sc.User.ID {
 				sc.CurrentVoiceChannelID = *payload.ChannelID
+			} else if !wasInVoice {
+				joinedName := ""
+				for _, m := range sc.Members {
+					if m.User != nil && m.User.ID == payload.UserID {
+						joinedName = m.User.Username
+					}
+				}
+				defer a.onVoiceJoin(payload.UserID, joinedName, true) // after the lock (main_moods.go)
 			}
 		}
 		sc.mu.Unlock()
 
 		// Keep the running engine's peer list in sync with the channel roster.
-		if a.voiceEngine != nil && sc.User != nil {
+		if a.voiceEngine != nil && sc == a.voiceConn && sc.User != nil {
 			if payload.UserID == sc.User.ID {
 				// We ourselves left (or were moved off) this channel — stop the engine.
 				if payload.ChannelID == nil {
@@ -6770,7 +7746,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("voice: VOICE_SIGNAL parse error: %v", err)
 			return nil
 		}
-		if a.voiceEngine != nil {
+		if a.voiceEngine != nil && sc == a.voiceConn {
 			a.voiceEngine.HandleSignal(sigPayload.SourceUserID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
 		}
 
@@ -6800,6 +7776,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 // skip the engine entirely and show a quiet status rather than a red error.
 func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServerUpdatePayload) tea.Cmd {
 	if !isVoiceSupported() {
+		a.voiceConn = sc
 		// Presence-only mode: user appears in the voice channel member list
 		// but no audio engine runs (stub build has no CGO audio).
 		a.statusMessage = "Joined voice channel (presence only — no mic/speaker in this build)"
@@ -6808,14 +7785,15 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 	}
 
 	a.stopVoiceEngine() // tear down any existing engine first
+	a.voiceConn = sc // voice stays with this server until you leave it
 
 	if sc.User == nil {
 		return nil
 	}
 
-	a.voiceSigOut   = make(chan VoiceSignalOut, 64)
+	a.voiceSigOut = make(chan VoiceSignalOut, 64)
 	a.voiceEventOut = make(chan interface{}, 64)
-	a.voiceQuit     = make(chan struct{})
+	a.voiceQuit = make(chan struct{})
 
 	engine := NewVoiceEngine(a.audioConfig, sc.User.ID, a.voiceSigOut, a.voiceEventOut)
 	a.voiceEngine = engine
@@ -6830,9 +7808,14 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 	}
 	sc.mu.RUnlock()
 
-	serverID  := payload.ServerID
+	serverID := payload.ServerID
 	channelID := payload.ChannelID
-	stunURLs  := payload.STUNUrls
+	// STUN and TURN from the server's [voice] settings; an older server sends
+	// STUN addresses only.
+	ice := payload.ICEServers
+	if len(ice) == 0 && len(payload.STUNUrls) > 0 {
+		ice = []protocol.ICEServer{{URLs: payload.STUNUrls}}
+	}
 
 	startCmd := func() (result tea.Msg) {
 		// Recover from any CGO/malgo panics (e.g. nil audio backend on some
@@ -6842,7 +7825,7 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 				result = VoiceEngineErrorMsg{Err: fmt.Errorf("voice engine panic: %v", r)}
 			}
 		}()
-		if err := engine.Start(serverID, channelID, stunURLs); err != nil {
+		if err := engine.Start(serverID, channelID, ice); err != nil {
 			return VoiceEngineErrorMsg{Err: err}
 		}
 		for _, uid := range existingPeers {
@@ -6857,13 +7840,14 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 // stopVoiceEngine tears down the running VoiceEngine and unblocks any pending
 // waitForVoiceEvent / waitForVoiceSignal commands via the quit channel.
 func (a *App) stopVoiceEngine() {
+	a.voiceConn = nil
 	if a.voiceEngine == nil {
 		return
 	}
 	engine := a.voiceEngine
 	a.voiceEngine = nil
 	a.voiceQuality = nil // stale data is useless after engine stops
-	a.voiceLevels  = nil
+	a.voiceLevels = nil
 	if a.voiceQuit != nil {
 		close(a.voiceQuit)
 		a.voiceQuit = nil
@@ -6874,7 +7858,7 @@ func (a *App) stopVoiceEngine() {
 // waitForVoiceEvent returns a Cmd that blocks until the engine pushes an event
 // (speaking state, peer connect/disconnect, ready, etc.) or the engine stops.
 func (a *App) waitForVoiceEvent() tea.Cmd {
-	ch   := a.voiceEventOut
+	ch := a.voiceEventOut
 	quit := a.voiceQuit
 	if ch == nil {
 		return nil
@@ -6896,7 +7880,7 @@ func (a *App) waitForVoiceEvent() tea.Cmd {
 // outbound WebRTC signal (offer / answer / ICE candidate) to forward to the
 // server, or the engine stops.
 func (a *App) waitForVoiceSignal() tea.Cmd {
-	ch   := a.voiceSigOut
+	ch := a.voiceSigOut
 	quit := a.voiceQuit
 	if ch == nil {
 		return nil
@@ -6989,4 +7973,14 @@ func (a *App) waitForFileTransferSignal() tea.Cmd {
 		}
 		return sig
 	}
+}
+
+// startTypingTick runs the typing indicator's animation, unless it's
+// already running. It stops by itself once nobody is typing.
+func (a *App) startTypingTick() tea.Cmd {
+	if a.typingTicking {
+		return nil
+	}
+	a.typingTicking = true
+	return tea.Tick(a.typingTickDuration(), func(t time.Time) tea.Msg { return typingTickMsg(t) })
 }

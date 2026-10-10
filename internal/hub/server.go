@@ -49,6 +49,8 @@ func (h *Hub) setupRoutes() {
 	h.mux.HandleFunc("POST /v1/join/{id}", h.handleJoin)
 	h.mux.HandleFunc("GET /v1/hubs", h.handleListHubs)
 	h.mux.HandleFunc("POST /v1/hubs", h.handleAddHub)
+	h.mux.HandleFunc("POST /v1/hubs/announce", h.handleAnnounce)
+	h.mux.HandleFunc("DELETE /v1/hubs/{id}", h.handleBlockHub)
 }
 
 // Start launches the background maintenance goroutines and begins serving HTTP.
@@ -63,6 +65,7 @@ func (h *Hub) Start() error {
 	go h.CleanupLoop()
 	// Always run: peer hubs can be added at runtime via POST /v1/hubs.
 	go h.FederationLoop(syncInterval)
+	go h.announceToPeers()
 
 	SysLog.Info("listening", "addr", h.srv.Addr)
 	return h.srv.ListenAndServe()
@@ -80,15 +83,14 @@ func (h *Hub) Stats() *Stats {
 
 // seedPeerHubs inserts [[peer_hubs]] from config into the DB on first run.
 func (h *Hub) seedPeerHubs() {
-	for _, pc := range h.config.PeerHubs {
-		if pc.URL == "" {
-			continue
-		}
-		ph := &PeerHub{Name: pc.Name, URL: pc.URL, IsActive: true}
-		if err := h.db.UpsertPeerHub(ph); err != nil {
-			FedLog.Error("seed peer hub failed", "url", pc.URL, "error", err)
-		} else {
-			FedLog.Info("peer hub registered", "name", pc.Name, "url", pc.URL)
-		}
+	added, removed, err := h.db.SyncConfigPeers(h.config.PeerHubs)
+	if err != nil {
+		FedLog.Error("peer hubs from the config failed", "error", err)
+	}
+	for _, u := range added {
+		FedLog.Info("peer hub registered", "url", u)
+	}
+	for _, u := range removed {
+		FedLog.Info("peer hub removed (no longer in grapevine-hub.toml)", "url", u)
 	}
 }

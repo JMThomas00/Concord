@@ -1,0 +1,95 @@
+# Concord reads this to install and run <%.Name%>. Admins never edit it: the
+# settings below appear as forms in Concord (Server Settings > Plugins for
+# server_config_field, the channel's own settings for create_field).
+
+[plugin]
+id = "<%.ID%>"
+name = "<%.Name%>"
+version = "0.1.0"            # release.go stamps the git tag here
+description = "Play <%.Name%> in a channel, against each other or the computer."
+source_url = "https://<%.Module%>"
+
+[process]
+restart_on_crash = true
+max_restarts = 5
+
+[process.entrypoint.linux]
+bin = "<%.ID%>"
+[process.entrypoint.darwin]
+bin = "<%.ID%>"
+[process.entrypoint.windows]
+bin = "<%.ID%>.exe"
+
+[[channel_kind]]
+kind = "<%.ChannelKind%>"
+display_name = "<%.Name%> Table"
+icon = "♟"                   # change to suit your game
+remote_pane = true
+
+  # How people find opponents -- the table kit's seating modes.
+  [[channel_kind.create_field]]
+  key = "seating"
+  label = "Seating"
+  type = "select"
+  options = ["seats", "challenge", "private"]
+  default = "seats"
+  help = "seats: one table, sit down to play · challenge: invite members from a lobby · private: your own games with chosen opponents"
+
+  [[channel_kind.create_field]]
+  key = "allow_spectators"
+  label = "Allow spectators"
+  type = "boolean"
+  default = "true"
+  help = "Let members who aren't playing watch games"
+
+  [[channel_kind.create_field]]
+  key = "computer_opponent"
+  label = "Computer opponent"
+  type = "boolean"
+  default = "true"
+  help = "Let players play against the computer"
+
+  [[channel_kind.create_field]]
+  key = "computer_level"
+  label = "Computer strength"
+  type = "select"
+  options = ["easy", "normal", "hard"]
+  default = "normal"
+  help = "How well the computer plays"
+
+# Achievements and the leaderboard. The table kit keeps every player's
+# record and unlocks these for you; members see them on Settings > About
+# > Achievements. Add your own with Rules.Awards and an entry here.
+[[achievement]]
+id = "first_win"
+name = "First Victory"
+description = "Win a game"
+tier = "bronze"
+
+[[achievement]]
+id = "wins_10"
+name = "Seasoned Player"
+description = "Win ten games"
+tier = "silver"
+
+[[achievement]]
+id = "wins_50"
+name = "Grandmaster of the Vineyard"
+description = "Win fifty games"
+tier = "gold"
+
+[[achievement]]
+id = "beat_computer"
+name = "Beat the Machine"
+description = "Beat the computer"
+icon = "🤖"
+
+[[achievement]]
+id = "streak_5"
+name = "On a Roll"
+description = "Win five games in a row"
+icon = "🔥"
+
+[leaderboard]
+stat = "wins"
+label = "Wins"

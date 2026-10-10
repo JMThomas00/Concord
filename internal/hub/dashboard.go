@@ -60,7 +60,7 @@ func (m DashboardModel) refresh() tea.Msg {
 	if peers, err := m.hub.db.ListPeerHubs(); err == nil {
 		data.peers = peers
 	}
-	if fed, err := m.hub.db.ListFederatedServers("", ""); err == nil {
+	if fed, err := m.hub.db.ListFederatedServers("", "", m.hub.federatedFreshSince(time.Now())); err == nil {
 		data.fedCount = len(fed)
 	}
 	return data

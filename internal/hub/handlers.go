@@ -84,9 +84,15 @@ func getBucket(ip string) *bucket {
 	return b
 }
 
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.SplitN(fwd, ",", 2)[0]
+// clientIP is the visitor's address: from real_ip_header when the hub sits
+// behind a trusted proxy (Cloudflare's "CF-Connecting-IP"), otherwise the
+// connection's own. Forwarded headers aren't trusted otherwise, since
+// anyone can send them to dodge the join rate limit.
+func (h *Hub) clientIP(r *http.Request) string {
+	if name := strings.TrimSpace(h.config.RealIPHeader); name != "" {
+		if v, _, _ := strings.Cut(r.Header.Get(name), ","); strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
 	}
 	// RemoteAddr is "host:port"
 	host, _, _ := strings.Cut(r.RemoteAddr, ":")
@@ -229,17 +235,23 @@ func (h *Hub) handleListServers(w http.ResponseWriter, r *http.Request) {
 
 	// Build public listings from local servers.
 	listings := make([]ServerListing, 0, len(servers))
+	local := make(map[string]bool, len(servers))
 	for _, s := range servers {
 		listings = append(listings, RegisteredServer(*s).ToListing())
+		local[s.ID] = true
 	}
 
-	// Append federated servers unless the caller is another hub pulling our list.
+	// Append federated servers unless the caller is another hub pulling our
+	// list. One registered here as well is already listed.
 	if q.Get("federation") != "1" {
-		fed, err := h.db.ListFederatedServers(category, query)
+		fed, err := h.db.ListFederatedServers(category, query, h.federatedFreshSince(time.Now()))
 		if err != nil {
 			ApiLog.Error("list federated failed", "error", err)
 		} else {
 			for _, s := range fed {
+				if local[s.ID] {
+					continue
+				}
 				listings = append(listings, *s)
 			}
 		}
@@ -262,7 +274,7 @@ func (h *Hub) handleGetServer(w http.ResponseWriter, r *http.Request) {
 
 // POST /v1/join/{id} — request connection details for a server (rate-limited)
 func (h *Hub) handleJoin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := h.clientIP(r)
 	if !getBucket(ip).allow() {
 		h.stats.JoinsRateLimited.Add(1)
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
@@ -341,8 +353,7 @@ func (h *Hub) proxyJoin(w http.ResponseWriter, serverID, originURL string) {
 	}
 	req.Header.Set(federationHopHeader, "1")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := h.peerClient(originURL, 15*time.Second).Do(req)
 	if err != nil {
 		ApiLog.Error("proxy join failed", "id", serverID, "via", originURL, "error", err)
 		writeError(w, http.StatusBadGateway, "origin hub unreachable")
@@ -360,7 +371,7 @@ func (h *Hub) proxyJoin(w http.ResponseWriter, serverID, originURL string) {
 // whitelist the incoming client. Synchronous: the caller must not reveal
 // connection details unless the server acknowledged the token.
 func (h *Hub) signalServer(srv *RegisteredServer, token string) error {
-	url := fmt.Sprintf("http://%s:%d/v1/grapevine/signal", srv.Host, srv.Port)
+	url := fmt.Sprintf("%s://%s:%d/v1/grapevine/signal", scheme(srv.Port), srv.Host, srv.Port)
 	payload := map[string]string{"join_token": token}
 	body, _ := json.Marshal(payload)
 	sig := SignBody(srv.RegistrationSecret, body)
@@ -441,4 +452,13 @@ func (h *Hub) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// scheme is how to reach a server on port: 443 is https (a server behind
+// Cloudflare or another TLS proxy), anything else plain http.
+func scheme(port int) string {
+	if port == 443 {
+		return "https"
+	}
+	return "http"
 }

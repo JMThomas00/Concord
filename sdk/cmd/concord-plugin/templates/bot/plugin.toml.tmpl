@@ -1,0 +1,41 @@
+# Concord reads this to install and run <%.Name%>. Admins never edit it: the
+# settings below appear as a form in Server Settings > Plugins.
+
+[plugin]
+id = "<%.ID%>"
+name = "<%.Name%>"
+version = "0.1.0"            # release.go stamps the git tag here
+description = "<%.Name%>, a chat bot."
+source_url = "https://<%.Module%>"
+
+[process]
+restart_on_crash = true
+max_restarts = 5
+
+[process.entrypoint.linux]
+bin = "<%.ID%>"
+[process.entrypoint.darwin]
+bin = "<%.ID%>"
+[process.entrypoint.windows]
+bin = "<%.ID%>.exe"
+
+# A channel the bot owns: every message in it is relayed to the bot.
+[[channel_kind]]
+kind = "<%.ChannelKind%>"
+display_name = "<%.Name%>"
+remote_pane = false
+
+[[server_config_field]]
+key = "prefix"
+label = "Command prefix"
+type = "text"
+default = "!"
+help = "Messages starting with this are commands, e.g. !roll 2d6"
+
+# Example of a secret: stored encrypted, shown to admins only as set/not set,
+# and delivered to the bot in OnConfig.
+[[server_config_field]]
+key = "api_key"
+label = "API key"
+type = "secret"
+help = "Only needed if you connect the bot to an outside service"

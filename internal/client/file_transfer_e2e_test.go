@@ -24,7 +24,7 @@ func init() {
 	// _test.go files have their own init() for this, invisible from here
 	// since this test lives in a different package. Without it, server.New()
 	// panics on its first Logger.Info call.
-	server.InitLogger(log.FatalLevel)
+	server.InitLogger(os.Stderr, log.FatalLevel)
 }
 
 // startFileTransferTestServer starts a real Concord server (the exact same

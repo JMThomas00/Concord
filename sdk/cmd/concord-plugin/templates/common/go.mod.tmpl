@@ -1,0 +1,20 @@
+module <%.Module%>
+
+go 1.24.2
+
+require github.com/JMThomas00/Concord/sdk <%.SDKVersion%>
+<%- if eq .Kind "pty"%>
+
+// Terminal passthrough is its own module (it needs a terminal emulator).
+require github.com/JMThomas00/Concord/sdk/pty <%.PTYVersion%>
+<%- end%>
+<%- if .SDKReplace%>
+
+// Building against a local Concord checkout; remove these once the SDK
+// version you need is released.
+replace github.com/JMThomas00/Concord/sdk => <%.SDKReplace%>
+<%- if eq .Kind "pty"%>
+
+replace github.com/JMThomas00/Concord/sdk/pty => <%.SDKReplace%>/pty
+<%- end%>
+<%- end%>

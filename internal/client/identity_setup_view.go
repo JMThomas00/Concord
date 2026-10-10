@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 )
 
 // initIdentitySetupForm resets the identity setup form to its initial state
@@ -68,20 +69,37 @@ func (a *App) cycleIdentityFocus(reverse bool) {
 // handleIdentitySetupKey handles key events on the identity setup view
 func (a *App) handleIdentitySetupKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
-	case "tab":
+	// One question at a time: Enter or Tab checks this answer before the
+	// next question, Shift+Tab goes back.
+	case "tab", "enter":
+		if a.identityFocus == 3 {
+			if msg.String() == "enter" {
+				return a.handleIdentitySetupSubmit()
+			}
+			return nil
+		}
+		if err := a.identityStepError(a.identityFocus); err != "" {
+			a.identityError = err
+			return nil
+		}
+		a.identityError = ""
 		a.cycleIdentityFocus(false)
+		a.celebrate()
 		return nil
 	case "shift+tab":
-		a.cycleIdentityFocus(true)
-		return nil
-	case "enter":
-		if a.identityFocus == 3 {
-			return a.handleIdentitySetupSubmit()
+		if a.identityFocus > 0 {
+			a.identityError = ""
+			a.cycleIdentityFocus(true)
 		}
-		a.cycleIdentityFocus(false)
 		return nil
 	case "esc":
-		// Nothing to go back to on first run
+		// Adding a profile goes back to the list; on first run there's
+		// nothing to go back to.
+		if a.addingProfile {
+			a.addingProfile = false
+			a.openProfiles()
+			a.profilesState.Back = ViewLogin
+		}
 		return nil
 	}
 	// Regular typing is handled by the component update section in Update()
@@ -93,33 +111,55 @@ func (a *App) handleIdentitySetupSubmit() tea.Cmd {
 	alias := strings.TrimSpace(a.identityAlias.Value())
 	email := strings.TrimSpace(a.identityEmail.Value())
 	password := a.identityPassword.Value()
-	confirm := a.identityPasswordConfirm.Value()
 
-	if alias == "" {
-		a.identityError = "Alias is required"
-		return nil
-	}
-	if email == "" {
-		a.identityError = "Email is required"
-		return nil
-	}
-	if !strings.Contains(email, "@") {
-		a.identityError = "Enter a valid email address"
-		return nil
-	}
-	if len(password) < 8 {
-		a.identityError = "Password must be at least 8 characters"
-		return nil
-	}
-	if password != confirm {
-		a.identityError = "Passwords do not match"
-		return nil
+	for step := 0; step < 4; step++ {
+		if err := a.identityStepError(step); err != "" {
+			// Back to the question with the problem.
+			for a.identityFocus != step {
+				a.cycleIdentityFocus(a.identityFocus > step)
+			}
+			a.identityError = err
+			return nil
+		}
 	}
 
 	identity := &LocalIdentity{
+		ID:       uuid.NewString(),
 		Alias:    alias,
-		Email:    email,
+		Email:    strings.ToLower(email),
 		Password: password,
+	}
+
+	if a.addingProfile {
+		// Another person on this computer: sign the current one out, save
+		// the new profile as active, and sign in as it everywhere.
+		for _, p := range a.profileList() {
+			if strings.EqualFold(p.Email, identity.Email) {
+				a.identityError = "A profile with that email is already on this computer (Esc, then pick it)"
+				return nil
+			}
+		}
+		a.addingProfile = false
+		a.signOutAll()
+		a.localIdentity = identity
+		a.identityError = ""
+		if err := a.configMgr.SaveIdentity(identity); err != nil {
+			a.identityError = "Failed to save profile: " + err.Error()
+			return nil
+		}
+		if len(a.clientServers) == 0 {
+			a.view = ViewAddServer
+			a.initAddServerForm()
+			return nil
+		}
+		a.view = ViewMain
+		a.focus = FocusServerIcons
+		a.statusMessage, a.statusError = "Signing in as "+alias+"…", false
+		var cmds []tea.Cmd
+		for _, s := range a.clientServers {
+			cmds = append(cmds, a.autoConnectServer(s.ID))
+		}
+		return tea.Batch(cmds...)
 	}
 
 	a.localIdentity = identity
@@ -143,88 +183,78 @@ func (a *App) handleIdentitySetupSubmit() tea.Cmd {
 	}
 }
 
-// renderIdentitySetupView renders the first-run identity configuration screen
-func (a *App) renderIdentitySetupView() string {
-	dialogWidth := 64
-	dialogHeight := 22
-
-	var content strings.Builder
-
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Align(lipgloss.Center).
-		Width(dialogWidth - 4)
-
-	content.WriteString(titleStyle.Render("Welcome to Concord"))
-	content.WriteString("\n\n")
-
-	subtitleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Align(lipgloss.Center).
-		Width(dialogWidth - 4)
-
-	content.WriteString(subtitleStyle.Render("Set up your identity once. It will be used across all servers."))
-	content.WriteString("\n\n")
-
-	if a.identityError != "" {
-		errStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(a.theme.Colors.Red)).
-			Width(dialogWidth - 4).
-			Align(lipgloss.Center)
-		content.WriteString(errStyle.Render(a.identityError))
-		content.WriteString("\n\n")
+// identityStepError checks one question's answer ("" when it's fine).
+func (a *App) identityStepError(step int) string {
+	switch step {
+	case 0:
+		if strings.TrimSpace(a.identityAlias.Value()) == "" {
+			return "Pick a name to show people (you can change it later)"
+		}
+	case 1:
+		email := strings.TrimSpace(a.identityEmail.Value())
+		if email == "" {
+			return "Enter your email address"
+		}
+		if !strings.Contains(email, "@") {
+			return "That doesn't look like an email address"
+		}
+	case 2:
+		if len(a.identityPassword.Value()) < 8 {
+			return "Use at least 8 characters"
+		}
+	case 3:
+		if a.identityPassword.Value() != a.identityPasswordConfirm.Value() {
+			return "The two passwords don't match"
+		}
 	}
+	return ""
+}
 
-	labelStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Purple)).
-		Bold(true).
-		Width(dialogWidth - 4)
+// renderIdentitySetupView renders the first-run setup (or a new profile)
+// on the login stage, one question at a time.
+func (a *App) renderIdentitySetupView() string {
+	label := "Welcome"
+	if a.addingProfile {
+		label = "New profile"
+	}
+	questions := []struct{ headline, accent, help, field string }{
+		{"What should we call you?", "call you", "The name people see. Change it any time.", "Alias"},
+		{"What's your email?", "email", "Servers send sign-in codes here. It stays on servers you join.", "Email"},
+		{"Pick a password", "password", "It unlocks Concord here and signs you in to your servers.", "Password"},
+		{"Once more, to be sure", "sure", "Type the same password again.", "Confirm"},
+	}
+	inputs := []string{a.identityAlias.View(), a.identityEmail.View(), a.identityPassword.View(), a.identityPasswordConfirm.View()}
+	step := min(max(a.identityFocus, 0), 3)
+	q := questions[step]
 
-	fieldStyle := lipgloss.NewStyle().
-		Padding(0, 1).
-		Width(dialogWidth - 6)
-
-	content.WriteString(labelStyle.Render("Alias (Display Name):"))
-	content.WriteString("\n")
-	content.WriteString(fieldStyle.Render(a.identityAlias.View()))
-	content.WriteString("\n\n")
-
-	content.WriteString(labelStyle.Render("Email:"))
-	content.WriteString("\n")
-	content.WriteString(fieldStyle.Render(a.identityEmail.View()))
-	content.WriteString("\n\n")
-
-	content.WriteString(labelStyle.Render("Password:"))
-	content.WriteString("\n")
-	content.WriteString(fieldStyle.Render(a.identityPassword.View()))
-	content.WriteString("\n\n")
-
-	content.WriteString(labelStyle.Render("Confirm Password:"))
-	content.WriteString("\n")
-	content.WriteString(fieldStyle.Render(a.identityPasswordConfirm.View()))
-	content.WriteString("\n\n")
-
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(a.theme.Colors.Comment)).
-		Italic(true).
-		Width(dialogWidth - 4).
-		Align(lipgloss.Center)
-
-	content.WriteString(helpStyle.Render("[Tab] Next  [Shift+Tab] Prev  [Enter] Confirm"))
-
-	dialogStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
-		Padding(1, 2).
-		Width(dialogWidth).
-		Height(dialogHeight)
-
-	dialog := dialogStyle.Render(content.String())
-
-	return lipgloss.NewStyle().
-		Width(a.width).
-		Height(a.height).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(dialog)
+	var b strings.Builder
+	b.WriteString(a.stageSteps(step, 4) + "\n\n")
+	b.WriteString(a.dim(q.help) + "\n\n")
+	b.WriteString(a.stageField(q.field, true, inputs[step]) + "\n")
+	switch step {
+	case 2:
+		b.WriteString(a.passwordGrapes(a.identityPassword.Value()) + "\n")
+	case 3:
+		if v := a.identityPasswordConfirm.Value(); v != "" {
+			if v == a.identityPassword.Value() {
+				b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Render("  ✓ They match") + "\n")
+			} else if !strings.HasPrefix(a.identityPassword.Value(), v) {
+				b.WriteString("\n" + a.dim("  ✗ Not the same yet") + "\n")
+			}
+		}
+	}
+	if a.identityError != "" {
+		b.WriteString("\n" + a.stageNotice(a.identityError, true))
+	}
+	hints := []keyHint{{"Enter", "Next"}}
+	if step == 3 {
+		hints = []keyHint{{"Enter", "Done"}}
+	}
+	if step > 0 {
+		hints = append(hints, keyHint{"Shift+Tab", "Back"})
+	}
+	if a.addingProfile {
+		hints = append(hints, keyHint{"Esc", "Cancel"})
+	}
+	return a.stagePageWith(label, a.stageSteps(step, 4), q.headline, q.accent, b.String(), hints)
 }

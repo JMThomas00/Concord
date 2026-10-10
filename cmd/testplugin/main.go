@@ -1,159 +1,80 @@
 // Command testplugin is the minimal "hello plugin" used to verify the
-// plugin platform end-to-end without needing Tukan built yet. It:
-//   - identifies to Concord as a plugin (OpIdentify, ClientType "plugin")
-//   - posts one activity notification on startup (OpPluginEvent, kind "notify")
+// plugin platform end-to-end, and the smallest example of a plugin built
+// on the SDK (sdk/plugin). It:
+//   - posts one activity notification each time it connects ("notify")
 //   - implements one zero-field remote-pane channel kind: a per-viewer
-//     keypress counter, proving the render/input relay round-trips
+//     keypress counter that greets each viewer by name, proving the
+//     render/input relay round-trips; "q" hands the keyboard back
 //
-// Its companion plugin.toml (in the same folder) declares the "counter"
-// channel kind and points [process.entrypoint.*] at this binary.
+// Its companion plugin.toml (internal/plugins/testdata/HelloPlugin) declares
+// the "counter" channel kind and points [process.entrypoint.*] at this binary.
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
-	"sync"
 
+	"github.com/JMThomas00/Concord/sdk/plugin"
+	"github.com/JMThomas00/Concord/sdk/wire"
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-	"github.com/concord-chat/concord/internal/protocol"
 )
 
 func main() {
-	wsURL := os.Getenv("CONCORD_WS_URL")
-	pluginID := os.Getenv("CONCORD_PLUGIN_ID")
-	token := os.Getenv("CONCORD_PLUGIN_TOKEN")
-	if wsURL == "" || pluginID == "" || token == "" {
-		log.Fatal("testplugin requires CONCORD_WS_URL, CONCORD_PLUGIN_ID, CONCORD_PLUGIN_TOKEN")
+	cfg, ok := plugin.ConfigFromEnv()
+	if !ok {
+		log.Fatal("testplugin only runs under Concord (CONCORD_WS_URL / CONCORD_PLUGIN_TOKEN aren't set)")
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		log.Fatalf("failed to connect to %s: %v", wsURL, err)
+	// Handler callbacks run one at a time, so this map needs no lock.
+	type viewer struct {
+		name  string
+		count int
 	}
-	defer conn.Close()
-
-	p := &plugin{conn: conn, pluginID: pluginID, counters: make(map[uuid.UUID]int)}
-
-	identify := protocol.IdentifyPayload{Token: token, ClientType: "plugin"}
-	if err := p.send(protocol.OpIdentify, identify); err != nil {
-		log.Fatalf("failed to send identify: %v", err)
-	}
-
-	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("connection closed: %v", err)
-			return
+	viewers := map[uuid.UUID]*viewer{}
+	draw := func(c *plugin.Conn, channelID, viewerID uuid.UUID) {
+		if v := viewers[viewerID]; v != nil {
+			if err := c.Frame(channelID, viewerID, renderCounter(v.name, v.count)); err != nil {
+				log.Printf("failed to push frame: %v", err)
+			}
 		}
-		var msg protocol.Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			continue
-		}
-		p.handle(&msg)
+	}
+
+	err := plugin.Run(ctx, cfg, plugin.Handler{
+		OnReady: func(c *plugin.Conn, _ *wire.User) {
+			log.Println("identified successfully, sending startup notification")
+			_ = c.Notify("Hello plugin is online.")
+		},
+		OnEnter: func(c *plugin.Conn, e wire.PluginPaneEnterPayload) {
+			viewers[e.ViewerID] = &viewer{name: e.ViewerDisplayName}
+			draw(c, e.ChannelID, e.ViewerID)
+		},
+		OnInput: func(c *plugin.Conn, e wire.PluginPaneInputPayload) {
+			if e.KeyString == "q" {
+				_ = c.LeavePane(e.ChannelID, e.ViewerID)
+				return
+			}
+			if v := viewers[e.ViewerID]; v != nil {
+				v.count++
+			}
+			draw(c, e.ChannelID, e.ViewerID)
+		},
+		OnResize: func(c *plugin.Conn, e wire.PluginPaneResizePayload) {
+			draw(c, e.ChannelID, e.ViewerID)
+		},
+		OnLeave: func(_ *plugin.Conn, e wire.PluginPaneLeavePayload) {
+			delete(viewers, e.ViewerID)
+		},
+	})
+	if err != nil && ctx.Err() == nil {
+		log.Fatal(err)
 	}
 }
 
-type plugin struct {
-	conn     *websocket.Conn
-	pluginID string
-	mu       sync.Mutex
-	counters map[uuid.UUID]int
-}
-
-func (p *plugin) send(op protocol.OpCode, data interface{}) error {
-	msg, err := protocol.NewMessage(op, data)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.conn.WriteMessage(websocket.TextMessage, raw)
-}
-
-func (p *plugin) handle(msg *protocol.Message) {
-	// READY is sent as a plain OpReady message (not a Dispatch), so it's
-	// identified by Op, not Type — every event after it arrives via
-	// OpDispatch and is identified by Type instead.
-	if msg.Op == protocol.OpReady {
-		log.Println("identified successfully, sending startup notification")
-		p.notify("Hello plugin is online.")
-		return
-	}
-
-	switch msg.Type {
-	case protocol.EventPluginPaneEnter:
-		var payload protocol.PluginPaneEnterPayload
-		if json.Unmarshal(msg.Data, &payload) == nil {
-			p.mu.Lock()
-			p.counters[payload.ViewerID] = 0
-			p.mu.Unlock()
-			p.renderFrame(payload.ChannelID, payload.ViewerID)
-		}
-
-	case protocol.EventPluginPaneInput:
-		var payload protocol.PluginPaneInputPayload
-		if json.Unmarshal(msg.Data, &payload) == nil {
-			p.mu.Lock()
-			p.counters[payload.ViewerID]++
-			p.mu.Unlock()
-			p.renderFrame(payload.ChannelID, payload.ViewerID)
-		}
-
-	case protocol.EventPluginPaneResize:
-		var payload protocol.PluginPaneResizePayload
-		if json.Unmarshal(msg.Data, &payload) == nil {
-			p.renderFrame(payload.ChannelID, payload.ViewerID)
-		}
-
-	case protocol.EventPluginPaneLeave:
-		var payload protocol.PluginPaneLeavePayload
-		if json.Unmarshal(msg.Data, &payload) == nil {
-			p.mu.Lock()
-			delete(p.counters, payload.ViewerID)
-			p.mu.Unlock()
-		}
-	}
-}
-
-func (p *plugin) renderFrame(channelID, viewerID uuid.UUID) {
-	p.mu.Lock()
-	count := p.counters[viewerID]
-	p.mu.Unlock()
-
-	frame := protocol.PluginPaneFramePayload{
-		ChannelID: channelID,
-		ViewerID:  viewerID,
-		Frame:     renderCounter(count),
-		Seq:       int64(count),
-	}
-	if err := p.send(protocol.OpPluginPaneFrame, frame); err != nil {
-		log.Printf("failed to push frame: %v", err)
-	}
-}
-
-func renderCounter(count int) string {
-	return "Hello Plugin — keypresses seen: " + strconv.Itoa(count) + "\n(press any key)"
-}
-
-func (p *plugin) notify(content string) {
-	payload := protocol.PluginNotifyEventPayload{Content: content}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	event := protocol.PluginEventPayload{
-		PluginID: p.pluginID,
-		Kind:     "notify",
-		Payload:  raw,
-	}
-	if err := p.send(protocol.OpPluginEvent, event); err != nil {
-		log.Printf("failed to send notify event: %v", err)
-	}
+func renderCounter(name string, count int) string {
+	return "Hello, " + name + "! Keypresses seen: " + strconv.Itoa(count) + "\n(press any key; q hands keys back to Concord)"
 }

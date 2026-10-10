@@ -1,18 +1,21 @@
 package client
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/concord-chat/concord/internal/themes"
 	zone "github.com/lrstanley/bubblezone"
+	ansitruncate "github.com/muesli/reflow/truncate"
 )
 
 // helpMarkdown is the full Concord user guide rendered via glamour.
 // Sections marked "Coming Soon" describe planned features not yet shipped.
 const helpMarkdown = `# Concord — User Guide
 
-Concord is a terminal-first, self-hosted chat application. Every server is independently operated — there is no central service or account system. Think IRC with Discord-style channels, roles, and voice.
+Concord is a terminal-first, self-hosted chat application. Every server is independently operated — there is no central service or account system. Servers have channels, roles and voice, and each one is run by whoever hosts it.
 
 ---
 
@@ -26,7 +29,14 @@ The first time you launch Concord, an identity setup screen appears. Fill in:
 - **Email** — used for server registration (not shared publicly)
 - **Password** — stored locally in ` + "`~/.concord/config.json`" + `; used when auto-registering on new servers
 
-Your identity is global to your machine. Concord automatically registers you on each server you join using these credentials.
+Your identity (a **profile**) is used on every server. Concord registers you automatically the first time you join a server, and signs you in after that.
+
+### Profiles, Forgotten Passwords and Email Codes
+
+- **Several people on one computer?** On the login screen, **Ctrl+P** (*Not you?*) lists the profiles saved here. **Enter** switches, **A** adds one, **E** edits the alias or email (servers you're signed in to are updated too), **P** changes the password everywhere, **F** forgets one.
+- **Forgot your password?** On the login screen, press **Ctrl+F**, pick a server, and enter the code it emails you with a new password. Concord then sets that password on your other servers too. If the server can't send email, ask its admin for a temporary password and enter that instead of the code.
+- **Verifying your email:** servers that send email ask new accounts for a 6-character code first. Enter it on the screen that appears. **Ctrl+R** resends it, and **Ctrl+E** fixes a typo in your email or alias. **Esc** puts it off; select the server and press **Enter** to come back to it.
+- If a server signs you in under a different name than your profile's alias, the status bar says so: that server's account for your email belongs to someone else. Use another email (another profile) to be yourself there.
 
 ### Adding Your First Server
 
@@ -54,71 +64,66 @@ Concord supports any number of servers simultaneously. Each server icon in the l
 
 Concord uses a four-panel layout. **Tab** cycles focus between panels:
 
-| Panel | Contents |
-|-------|----------|
-| Server List | Server icons column (left) |
-| Channel List | Channels and categories |
-| Chat | Message viewport and input |
-| Members | Member list (right) |
+- **Server List** — Server icons column (left)
+- **Channel List** — Channels and categories
+- **Chat** — Message viewport and input
+- **Members** — Member list (right)
 
 The focused panel is highlighted with a purple border. Start typing in the **Chat** panel — focus moves to the input box automatically when you press a printable key.
 
 ### Keyboard Shortcuts — Global
 
-| Key | Action |
-|-----|--------|
-| ` + "`Ctrl+Q`" + ` | Quit |
-| ` + "`Ctrl+S`" + ` | Open Settings |
-| ` + "`Ctrl+B`" + ` | Open Server Management (admin) |
-| ` + "`Ctrl+G`" + ` | Open Grapevine Hub Browser (login / add-server screens) |
-| ` + "`Ctrl+T`" + ` | Open Theme Browser |
-| ` + "`[`" + ` | Toggle server list panel (collapse / expand) |
-| ` + "`]`" + ` | Toggle members list panel (collapse / expand) |
-| ` + "`Tab`" + ` | Switch focus between panels |
-| ` + "`Esc`" + ` | Close overlay / cancel / go back |
+- ` + "`Ctrl+Q`" + ` — Quit
+- ` + "`Ctrl+S`" + ` — Open Settings
+- ` + "`Ctrl+B`" + ` — Open Server Management (admin)
+- ` + "`Ctrl+G`" + ` — Open Grapevine Hub Browser (login / add-server screens)
+- ` + "`Ctrl+P`" + ` — Switch, add or edit profiles (login screen)
+- ` + "`Ctrl+F`" + ` — Forgot password (login screen)
+- ` + "`Ctrl+T`" + ` — Open Theme Browser (main window; on the login screen, Settings > Theme)
+- ` + "`Ctrl+U`" + ` — Check for a newer Concord (login screen)
+- ` + "`Ctrl+X`" + ` — Dismiss the bottom in-app notification
+- ` + "`[`" + ` — Toggle server list panel (collapse / expand)
+- ` + "`]`" + ` — Toggle members list panel (collapse / expand)
+- ` + "`Tab`" + ` — Switch focus between panels
+- ` + "`Esc`" + ` — Close overlay / cancel / go back
 
 ### Keyboard Shortcuts — Channel List
 
-| Key | Action |
-|-----|--------|
-| ` + "`↑ / ↓`" + ` | Navigate channels |
-| ` + "`Enter`" + ` | Join selected channel (or join / leave voice) |
-| ` + "`← / → or H / L`" + ` | Collapse / expand a category |
-| ` + "`Shift+↑ / Shift+↓`" + ` | Reorder channel within its category |
+- ` + "`↑ / ↓`" + ` — Navigate channels
+- ` + "`Enter`" + ` — Join selected channel (or join / leave voice)
+- ` + "`← / → or H / L`" + ` — Collapse / expand a category
+- ` + "`Shift+↑ / Shift+↓`" + ` — Reorder channel within its category
 
 ### Keyboard Shortcuts — Chat
 
-| Key | Action |
-|-----|--------|
-| ` + "`PgUp / PgDn`" + ` | Scroll message history |
-| ` + "`Alt+M`" + ` | Enter message navigation mode |
-| ` + "`Ctrl+J or Ctrl+Enter`" + ` | Insert a newline in the input box |
-| ` + "`@`" + ` | Open @mention autocomplete popup |
-| ` + "`↑ / ↓`" + ` in popup | Navigate mention suggestions |
-| ` + "`Enter or Tab`" + ` in popup | Accept selected mention |
-| ` + "`Esc`" + ` in popup | Dismiss autocomplete |
+- ` + "`PgUp / PgDn`" + ` — Scroll message history
+- ` + "`Alt+M`" + ` — Enter message navigation mode
+- ` + "`Alt+T`" + ` — Threads in this channel (Enter opens one)
+- ` + "`Ctrl+J`" + ` — Insert a newline in the input box (works on every platform; Ctrl+Enter/Shift+Enter may also work depending on your terminal, but many — including Windows Terminal/PowerShell — can't tell them apart from a plain Enter)
+- ` + "`@`" + ` — Open @mention autocomplete popup
+- ` + "`↑ / ↓`" + ` in popup — Navigate mention suggestions
+- ` + "`Enter or Tab`" + ` in popup — Accept selected mention
+- ` + "`Esc`" + ` in popup — Dismiss autocomplete
 
 ### Message Navigation Mode (Alt+M)
 
 Press **Alt+M** from the chat panel to enter message navigation:
 
-- **Level 1** — ↑/↓ move between messages; **Ctrl+C** copies the full message; **L** opens link browser for URLs in the selected message; **A** copies a message's attachment ID (for pasting into /download) to the clipboard
+- **Level 1** — ↑/↓ move between messages; **Ctrl+C** copies the full message; **L** opens link browser for URLs in the selected message; **A** copies a message's attachment ID (for pasting into /download) to the clipboard; **T** replies in the message's thread (starting one); **Enter** on a thread's first message expands or minimises it
 - **Level 2** — press **Enter** on a message to enter edit mode; ←/→ move within the message; **Shift+←/→** select text; **Ctrl+C** copies selection
 - Press **Esc** to exit either level
 
 ### Keyboard Shortcuts — Members Panel
 
-| Key | Action |
-|-----|--------|
-| ` + "`↑ / ↓`" + ` | Navigate member list |
-| ` + "`Enter`" + ` | Open context menu for selected member |
-| ` + "`W`" + ` | Whisper (ephemeral DM) |
-| ` + "`M`" + ` | Mute / unmute (requires permission) |
-| ` + "`K`" + ` | Kick (requires permission) |
-| ` + "`B`" + ` | Ban (requires permission) |
-| ` + "`R / E`" + ` | Assign / remove role (requires permission) |
-| ` + "`V`" + ` | Adjust per-user volume (voice only) |
-| ` + "`X / D`" + ` | Voice mute / deafen (requires permission) |
+- ` + "`↑ / ↓`" + ` — Navigate member list
+- ` + "`Enter`" + ` — Open context menu for selected member
+- ` + "`W`" + ` — Whisper (ephemeral DM)
+- ` + "`M`" + ` — Mute / unmute (requires permission)
+- ` + "`K`" + ` — Kick (requires permission)
+- ` + "`B`" + ` — Ban (requires permission)
+- ` + "`R / E`" + ` — Assign / remove role (requires permission)
+- ` + "`V`" + ` — Adjust per-user volume (voice only)
+- ` + "`X / D`" + ` — Voice mute / deafen (requires permission)
 
 ---
 
@@ -126,57 +131,57 @@ Press **Alt+M** from the chat panel to enter message navigation:
 
 ### Sending Messages
 
-Type in the input box at the bottom of the chat panel and press **Enter** to send. Use **Ctrl+J** or **Ctrl+Enter** for a newline inside the message.
+Type in the input box at the bottom of the chat panel and press **Enter** to send. Use **Ctrl+J** for a newline inside the message — it's the one shortcut guaranteed to work the same way on every platform.
 
 ### Slash Commands
 
 Type ` + "`/`" + ` followed by a command name. Available to all users:
 
-| Command | Description |
-|---------|-------------|
-| ` + "`/help`" + ` | Show available commands |
-| ` + "`/whisper @user <msg>`" + ` | Send an ephemeral DM (alias: /w) |
-| ` + "`/links [N]`" + ` | List URLs from the last N messages (default: 20) |
-| ` + "`/theme [name]`" + ` | Open theme browser or apply a theme directly |
-| ` + "`/status <message>`" + ` | Set your status (` + "`/status clear`" + ` to remove) |
-| ` + "`/mute`" + ` | Mute the current channel (hide unread badges) |
-| ` + "`/unmute`" + ` | Unmute the current channel |
-| ` + "`/join-voice [#channel]`" + ` | Join a voice channel (or the currently selected one) |
-| ` + "`/leave-voice`" + ` | Leave the current voice channel |
+- ` + "`/help [query]`" + ` — Open the command finder (type to narrow by name or description, ↑/↓ to select, Enter to insert into the message box)
+- ` + "`/whisper @user <msg>`" + ` — Send an ephemeral DM (alias: /w)
+- ` + "`/links [N]`" + ` — List URLs from the last N messages (default: 20)
+- ` + "`/theme [name]`" + ` — Open theme browser or apply a theme directly
+- ` + "`/status <message>`" + ` — Set your status (` + "`/status clear`" + ` to remove)
+- ` + "`/mute`" + ` — Mute the current channel (hide unread badges)
+- ` + "`/unmute`" + ` — Unmute the current channel
+- ` + "`/join-voice [#channel]`" + ` — Join a voice channel (or the currently selected one)
+- ` + "`/leave-voice`" + ` — Leave the current voice channel
 
 Moderator commands:
 
-| Command | Description |
-|---------|-------------|
-| ` + "`/create-channel <name>`" + ` | Create a text channel |
-| ` + "`/create-group <name>`" + ` | Create a channel category |
-| ` + "`/delete-channel`" + ` | Delete the current channel |
-| ` + "`/rename-channel <name>`" + ` | Rename the current channel |
-| ` + "`/move-channel <group>`" + ` | Move current channel to a category |
-| ` + "`/lock / /unlock`" + ` | Restrict posting to moderators only |
-| ` + "`/mute @user [minutes]`" + ` | Server-mute a member |
-| ` + "`/kick @user [reason]`" + ` | Kick a member |
-| ` + "`/timeout @user <minutes>`" + ` | Temporarily ban a member |
-| ` + "`/pin [N]`" + ` | Pin the Nth most recent message |
-| ` + "`/mute-voice @user`" + ` | Server-mute a user in voice |
-| ` + "`/deafen-voice @user`" + ` | Server-deafen a user in voice |
-| ` + "`/unmute-voice @user`" + ` | Lift voice mute/deafen from a user |
+- ` + "`/create-channel <name>`" + ` — Create a text channel
+- ` + "`/create-group <name>`" + ` — Create a channel category
+- ` + "`/delete-channel`" + ` — Delete the current channel
+- ` + "`/rename-channel <name>`" + ` — Rename the current channel
+- ` + "`/move-channel <group>`" + ` — Move current channel to a category
+- ` + "`/lock / /unlock`" + ` — Restrict posting to moderators only
+- ` + "`/mute @user [minutes]`" + ` — Server-mute a member
+- ` + "`/kick @user [reason]`" + ` — Kick a member
+- ` + "`/timeout @user <minutes>`" + ` — Temporarily ban a member
+- ` + "`/pin [N]`" + ` — Pin the Nth most recent message
+- ` + "`/mute-voice @user`" + ` — Server-mute a user in voice
+- ` + "`/deafen-voice @user`" + ` — Server-deafen a user in voice
+- ` + "`/unmute-voice @user`" + ` — Lift voice mute/deafen from a user
 
 Admin commands:
 
-| Command | Description |
-|---------|-------------|
-| ` + "`/role assign|remove @user <role>`" + ` | Manage member roles |
-| ` + "`/create-role <name> [preset]`" + ` | Create a role (presets: text, moderator, admin) |
-| ` + "`/roles`" + ` | List all roles on this server |
-| ` + "`/title @user <title>`" + ` | Set a display title (` + "`/title @user clear`" + ` to remove) |
-| ` + "`/ban @user [reason]`" + ` | Permanently ban a member |
-| ` + "`/unban @user`" + ` | Lift a ban |
-| ` + "`/move-voice @user <channel>`" + ` | Force-move a user to a voice channel |
+- ` + "`/role assign|remove @user <role>`" + ` — Manage member roles
+- ` + "`/create-role <name> [preset]`" + ` — Create a role (presets: text, moderator, admin)
+- ` + "`/roles`" + ` — List all roles on this server
+- ` + "`/title @user <title>`" + ` — Set a display title (` + "`/title @user clear`" + ` to remove)
+- ` + "`/ban @user [reason]`" + ` — Permanently ban a member
+- ` + "`/unban @user`" + ` — Lift a ban
+- ` + "`/move-voice @user <channel>`" + ` — Force-move a user to a voice channel
 
 ### @Mentions
 
 Type ` + "`@`" + ` to open the autocomplete popup. Select a name with ↑/↓ and confirm with **Enter** or **Tab**. Mentioned messages are highlighted in your name colour. If **Bell on Mention** is enabled in Notification settings, a terminal bell fires on every @mention directed at you.
+
+### Threads
+
+Keep a side conversation in one place: **Alt+M**, arrow to a message, **T**, and type. The message box says **Replying in thread** until you press **Esc**. A thread sits where it started, in a box: minimised it shows the first message and the latest reply, with **+** and the reply count in its top edge (marked **new**, in cyan, when there's something you haven't read); **Enter** on it (or a click on its edge) expands it.
+
+New messages push threads up out of view, so the way back stays put: the chat box's bottom edge counts active and unread threads, and **Alt+T** (or ` + "`/threads`" + `) lists every thread in the channel; **Enter** opens one, expanded, ready to reply. You follow a thread you start, reply in or are  in: only those count as unread and send notifications. **Settings → Notifications → Thread Replies in the Channel** can also put a line in the channel when someone replies (off by default).
 
 ### Whispers (Ephemeral DMs)
 
@@ -200,28 +205,21 @@ Voice members appear at the top of the Members panel grouped by channel, separat
 
 ### Voice Controls
 
-| Key | Action |
-|-----|--------|
-| ` + "`Ctrl+M`" + ` | Toggle self-mute |
-| ` + "`Ctrl+D`" + ` | Toggle self-deafen |
-| ` + "`Ctrl+Space`" + ` (default) | Push-to-Talk (hold to transmit in PTT mode) |
+- ` + "`Ctrl+M`" + ` — Toggle self-mute
+- ` + "`Ctrl+D`" + ` — Toggle self-deafen
 
-### Voice Activity Detection vs Push-to-Talk
+### Voice Activity Detection
 
-**VAD** (Voice Activity Detection) transmits automatically when your microphone level exceeds the configured threshold. Because keyboard typing can trigger VAD false positives in a terminal, **Push-to-Talk is recommended** for most users.
-
-Switch between modes in **Settings → Audio → PTT Mode**. The PTT key is configurable (default: ` + "`Ctrl+Space`" + `).
+**VAD** (Voice Activity Detection) transmits automatically when your microphone level exceeds a configured threshold, so you don't have to hold anything down to talk. Toggle it and tune its sensitivity in **Settings → Audio → Voice Activity Detection**.
 
 ### Audio Quality (Codec Presets)
 
 Concord encodes voice using **Opus** (libopus). Four presets are available in **Settings → Audio → Codec Preset**:
 
-| Preset | Sample Rate | Bitrate | Best For |
-|--------|------------|---------|----------|
-| Low | 8 kHz | 8 kbps | Very low bandwidth |
-| Medium | 16 kHz | 32 kbps | Standard voice (default) |
-| High | 24 kHz | 64 kbps | High clarity |
-| Ultra | 48 kHz | 128 kbps | Near-transparent quality |
+- **Low** — 8 kHz, 8 kbps — very low bandwidth
+- **Medium** — 16 kHz, 32 kbps — standard voice (default)
+- **High** — 24 kHz, 64 kbps — high clarity
+- **Ultra** — 48 kHz, 128 kbps — near-transparent quality
 
 Changing the preset hot-reloads the bitrate without reconnecting. A sample rate change takes effect on the next voice session.
 
@@ -241,11 +239,9 @@ These can be hidden individually in **Settings → Display → Members Panel**.
 
 ### Channel Types
 
-| Type | Prefix | Description |
-|------|--------|-------------|
-| Text | ` + "`#`" + ` | Standard chat channel |
-| Voice | ` + "`♪`" + ` | Real-time audio channel |
-| Category | ` + "`▼`" + ` | Folder grouping channels |
+- **Text** (` + "`#`" + `) — Standard chat channel
+- **Voice** (` + "`♪`" + `) — Real-time audio channel
+- **Category** (` + "`▼`" + `) — Folder grouping channels
 
 ### Creating Channels & Categories
 
@@ -267,12 +263,10 @@ Roles define what members can do. Each role has a **colour**, **display order**,
 
 ### Built-in Permission Levels
 
-| Level | Can Do |
-|-------|--------|
-| Member | Read and send messages, use voice |
-| Moderator | + mute, kick, timeout, pin, manage channels |
-| Admin | + ban, manage roles, server configuration |
-| Owner | Full control, cannot be moderated |
+- **Member** — Read and send messages, use voice
+- **Moderator** — + mute, kick, timeout, pin, manage channels
+- **Admin** — + ban, manage roles, server configuration
+- **Owner** — Full control, cannot be moderated
 
 ### The Admin Bypass Rule
 
@@ -329,7 +323,15 @@ interval_hours = 24
 
 [grapevine]
 enabled = false   # opt-in public listing — see the Grapevine section
+
+[mail]            # optional: verification and password reset codes
+smtp_host = "smtp.gmail.com"
+smtp_username = "you@gmail.com"
+smtp_password = "an app password"
+from = "Concord <you@gmail.com>"
 ` + "```" + `
+
+**Email (optional).** With a ` + "`[mail]`" + ` section (the wizard's email step sets it up), new accounts confirm their email with a 6-character code before they can sign in, and members can reset a forgotten password themselves. Set ` + "`require_verification = false`" + ` to keep resets but never hold up sign-in. Check it with ` + "`concord-server --test-mail you@example.com`" + `. Without mail, accounts work as before, and ` + "`concord-server --reset-password someone@example.com`" + ` gives a member a temporary password.
 
 ### Voice Across the Internet (NAT)
 
@@ -360,18 +362,16 @@ CGO_ENABLED=0 go build -tags novoice -o build/concord-client-novoice.exe ./cmd/c
 
 Open **Settings → Manage Servers** and press **B** to browse servers via a hub. Before you have any servers (login screen or the Add Server dialog), **Ctrl+G** opens it directly.
 
-| Key | Action |
-|-----|--------|
-| ` + "`↑/↓ or j/k`" + ` | Navigate the server list |
-| ` + "`Enter`" + ` | Open server details |
-| ` + "`A`" + ` (in details) | Join — adds the server and opens login |
-| ` + "`/`" + ` | Search by name, description, or tags |
-| ` + "`Tab / Shift+Tab`" + ` | Cycle category filter |
-| ` + "`H / L`" + ` | Switch between your hubs |
-| ` + "`R`" + ` | Refresh the listing |
-| ` + "`+`" + ` | Add a hub by URL (pick discovered peer hubs with ` + "`↑/↓`" + `) |
-| ` + "`X`" + ` | Remove the selected hub (removing the last one restores the default) |
-| ` + "`Esc`" + ` | Back / close |
+- ` + "`↑/↓ or j/k`" + ` — Navigate the server list
+- ` + "`Enter`" + ` — Open server details
+- ` + "`A`" + ` (in details) — Join — adds the server and opens login
+- ` + "`/`" + ` — Search by name, description, or tags
+- ` + "`Tab / Shift+Tab`" + ` — Cycle category filter
+- ` + "`H / L`" + ` — Switch between your hubs
+- ` + "`R`" + ` — Refresh the listing
+- ` + "`+`" + ` — Add a hub by URL (pick discovered peer hubs with ` + "`↑/↓`" + `)
+- ` + "`X`" + ` — Remove the selected hub (removing the last one restores the default)
+- ` + "`Esc`" + ` — Back / close
 
 Servers listed by federated peer hubs appear under a ` + "`── via <hub> ──`" + ` header. Added hubs are saved to your client config.
 
@@ -386,7 +386,7 @@ Opt in during the server's **first-run wizard** (or later with ` + "`--reconfigu
 ` + "```" + `toml
 [grapevine]
 enabled = true
-hub_url = "http://grapevine.concord.chat"   # or your own hub
+hub_url = "https://grapevine.concordchat.cc"   # or your own hub
 description = "A place to chat."
 category = "Gaming"
 tags = ["friendly", "english"]
@@ -422,48 +422,51 @@ Over 40 themes are embedded, including **Dracula**, **Alucard Dark/Light**, **No
 
 ### Notifications
 
-| Field | Description |
-|-------|-------------|
-| Sounds Muted | Suppress all notification sounds |
-| Mentions Only | Only play sounds for @mentions directed at you |
-| Bell on Mention | Fire a terminal bell (` + "`\\a`" + `) on each @mention |
-| Mention Sound | Sound for @mention alerts |
-| Message Sound | Sound for all other messages |
-| Mute Manager | Per-server and per-channel mute overrides |
+**Desktop Notifications** — OS-native popups (Windows toast, macOS Notification Center, or Linux notification daemon, depending on your OS) for new messages:
+
+- **Desktop Notifications** — Off / @Mentions Only / All Messages
+- **Notify From** — All Connected Servers, or only the one you currently have open
+
+A popup never appears for a channel you're already viewing — only for messages you'd otherwise miss.
+
+**In-app notifications** — cards in the bottom-left corner, newest at the bottom, for messages, mentions (a yellow border) and achievements. They stay until you deal with them: click one to dismiss it (a message's opens its channel), or press ` + "`Ctrl+X`" + ` to dismiss the bottom one, and the next drops into its place. When more arrive than fit, the top card counts the rest.
+
+**Audio Notifications** — sound and terminal-bell alerts:
+
+- **Sounds Muted** — Suppress all notification sounds
+- **Mentions Only** — Only play sounds for @mentions directed at you
+- **Bell on Mention** — Fire a terminal bell (` + "`\\a`" + `) on each @mention
+- **Mention Sound** — Sound for @mention alerts
+- **Message Sound** — Sound for all other messages
+- **Mute Manager** — Per-server and per-channel mute overrides (silences both sounds and desktop popups)
 
 ### Display
 
-| Field | Description |
-|-------|-------------|
-| Timestamp Format | 12-hour or 24-hour clock |
-| Timestamp Style | Absolute (date+time) or Relative (e.g. "Today at 15:04") |
-| Message Density | Compact / Normal / Spacious |
-| Show Avatars | Coloured circle before each username |
-| Date Separators | ` + "`──── Today ────`" + ` dividers between days |
-| Message Grouping Gap | Minutes before a new header is shown for the same sender |
-| Show Members Panel | Toggle the right-hand members column |
-| Server List Panel | Expand or collapse the left server icon column |
-| Members Panel | Expand or collapse the right members column |
-| Voice Level Bar | Show/hide the ` + "`↑[████]`" + ` VU meter in Members |
-| Connection Quality | Show/hide the ` + "`◆◆◆◇`" + ` quality bar in Members |
-| Panel Animations | Enable/disable slide animations for Settings and Server Management panels |
-| Typing Animation | Style of the typing indicator spinner (8 options) |
+- **Timestamp Format** — 12-hour or 24-hour clock
+- **Timestamp Style** — Absolute (date+time) or Relative (e.g. "Today at 15:04")
+- **Message Density** — Compact / Normal / Spacious
+- **Show Avatars** — Coloured circle before each username
+- **Date Separators** — ` + "`──── Today ────`" + ` dividers between days
+- **Message Grouping Gap** — Minutes before a new header is shown for the same sender
+- **Show Members Panel** — Toggle the right-hand members column
+- **Server List Panel** — Expand or collapse the left server icon column
+- **Members Panel** — Expand or collapse the right members column
+- **Voice Level Bar** — Show/hide the ` + "`↑[████]`" + ` VU meter in Members
+- **Connection Quality** — Show/hide the ` + "`◆◆◆◇`" + ` quality bar in Members
+- **Panel Animations** — Enable/disable slide animations for Settings and Server Management panels
+- **Typing Animation** — Style of the typing indicator spinner (8 options)
 
 ### Audio
 
-| Field | Description |
-|-------|-------------|
-| Input Device | Microphone source (blank = system default) |
-| Output Device | Speaker/headphone output (blank = system default) |
-| Input Gain | Microphone amplification (0.0–2.0, default 1.0) |
-| Output Volume | Playback volume (0.0–1.0, default 1.0) |
-| Voice Activity Detection | Auto-transmit when mic exceeds the threshold |
-| VAD Threshold | Sensitivity for VAD (0.0–1.0) |
-| Push-to-Talk | Transmit only while PTT key is held |
-| PTT Key | Configurable key combination (default: Ctrl+Space) |
-| Noise Suppression | Reduce background noise |
-| Echo Cancellation | Reduce microphone echo |
-| Codec Preset | Opus quality preset (Low / Medium / High / Ultra) |
+- **Input Device** — Microphone source (blank = system default)
+- **Output Device** — Speaker/headphone output (blank = system default)
+- **Input Gain** — Microphone amplification (0.0–2.0, default 1.0)
+- **Output Volume** — Playback volume (0.0–1.0, default 1.0)
+- **Voice Activity Detection** — Auto-transmit when mic exceeds the threshold
+- **VAD Sensitivity** — How easily VAD triggers on quieter speech
+- **Noise Suppression** — Reduce background noise, with an adjustable strength
+- **Echo Cancellation** — Reduce your own playback echoing back to peers, with an adjustable strength
+- **Codec Preset** — Opus quality preset (Low / Medium / High / Ultra); changing this while in a voice channel needs a leave+rejoin to fully apply
 
 ---
 
@@ -488,15 +491,9 @@ A server-side bot framework with event hooks (message received, user joined, rea
 - **Ollama** (for local self-hosted models)
 - An in-client ` + "`/ai`" + ` command for inline compose assistance
 
-### 🔔 OS-Level Notifications
-
-*Coming in a future release*
-
-Desktop notifications for @mentions and DMs when Concord is running in the background, using the native notification system on Windows, macOS, and Linux.
-
 ---
 
-*Concord v0.1.0 — Built with Go, bubbletea, and lipgloss*
+*Concord — Built with Go, bubbletea, and lipgloss. See Settings > About for the exact build version.*
 *Source: github.com/JMThomas00/Concord*
 `
 
@@ -518,15 +515,31 @@ func (a *App) renderHelpContent(width, height int) string {
 	// ── TOP ──
 	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
 	top.writeLine(titleStyle.Render("Help & User Guide"))
-	top.writeLine(dimStyle.Render("Complete reference for Concord v0.1.0"))
+	top.writeLine(dimStyle.Render(fmt.Sprintf("Complete reference for Concord v%s", a.clientVersion)))
 	top.writeBlank()
 	top.writeLine(a.renderSeparator(layout.interiorWidth))
 
 	// ── MIDDLE — glamour-rendered markdown with inline scrollbar ──
-	// Cache rendered lines; invalidate when content width changes.
-	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderWidth != contentWidth) {
-		s.HelpRenderedLines = renderHelpMarkdown(contentWidth)
+	// Cache rendered lines; invalidate when content width OR the active
+	// theme changes -- the style is theme-derived now (buildThemedGlamourStyle),
+	// so a theme switch must re-render, not just a resize.
+	//
+	// The width check is additionally gated on !a.helpResizing: renderHelpMarkdown
+	// does a full goldmark+chroma pass over the whole document (~40ms
+	// measured on a high-end desktop CPU), and a live window-drag resize
+	// fires many WindowSizeMsg ticks in quick succession -- recomputing on
+	// every single one of them (real bug, live-reported 2026-09-11) blocked
+	// the render loop repeatedly, seen as very slow redraws while widening
+	// and garbled/torn frames while narrowing. While a resize is still in
+	// progress this deliberately keeps showing the last-computed (possibly
+	// stale-width) lines; the debounce timer in Update() clears helpResizing
+	// once the resize actually settles, and the next render then does the
+	// one real recompute at the final width. A theme switch isn't part of a
+	// resize drag, so it still always recomputes immediately regardless.
+	if s != nil && (s.HelpRenderedLines == nil || s.HelpRenderTheme != a.theme.Meta.Name || (!a.helpResizing && s.HelpRenderWidth != contentWidth)) {
+		s.HelpRenderedLines = renderHelpMarkdown(contentWidth, a.theme)
 		s.HelpRenderWidth = contentWidth
+		s.HelpRenderTheme = a.theme.Meta.Name
 	}
 
 	var allLines []string
@@ -594,6 +607,16 @@ func (a *App) renderHelpContent(width, height int) string {
 		if i < len(window) {
 			contentLine = window[i]
 		}
+		// Guards against the debounced resize cache briefly showing a line
+		// rendered at a wider, stale width than the current, now-narrower
+		// contentWidth. lipgloss.Style.Width alone only PADS short content
+		// -- given content already wider than the target, it word-WRAPS it
+		// into multiple lines rather than truncating, which would throw off
+		// this whole fixed-row-per-line loop (each row assumes exactly one
+		// physical line in, one out). ansitruncate.String actually cuts a
+		// single line down to a printable-cell width, ANSI-escape-aware, so
+		// wide stale content collapses back to one row instead of several.
+		contentLine = ansitruncate.String(contentLine, uint(contentWidth))
 		line := lipgloss.NewStyle().Width(contentWidth).Render(contentLine)
 
 		middleBuf.WriteString(line + markedGlyphs[i])
@@ -650,14 +673,14 @@ func helpScrollbarThumb(offset, totalLines, trackHeight int) (thumbPos, thumbSiz
 
 // renderHelpMarkdown renders the help markdown document via glamour and returns
 // it as a slice of lines ready for the scroll-window display.
-func renderHelpMarkdown(width int) []string {
+func renderHelpMarkdown(width int, theme *themes.Theme) []string {
 	wrapWidth := width - 2
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
 
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStylePath("dark"),
+		glamour.WithStyles(buildThemedGlamourStyle(theme)),
 		glamour.WithWordWrap(wrapWidth),
 	)
 	if err != nil {

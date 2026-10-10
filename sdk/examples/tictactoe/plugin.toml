@@ -1,0 +1,57 @@
+# The tic-tac-toe example as an installable Concord plugin. Build a release
+# zip with the example's binary next to this file (see the scaffolder's
+# release.go for the layout Concord's installer expects).
+
+[plugin]
+id = "tictactoe"
+name = "Tic-tac-toe"
+version = "0.1.0"
+description = "Tic-tac-toe in a channel: sit down, challenge a member, or play the computer."
+source_url = "https://github.com/JMThomas00/Concord"
+
+[process]
+restart_on_crash = true
+max_restarts = 5
+
+[process.entrypoint.linux]
+bin = "tictactoe"
+[process.entrypoint.darwin]
+bin = "tictactoe"
+[process.entrypoint.windows]
+bin = "tictactoe.exe"
+
+[[channel_kind]]
+kind = "table"
+display_name = "Tic-tac-toe"
+icon = "#"
+remote_pane = true
+
+  [[channel_kind.create_field]]
+  key = "seating"
+  label = "Seating"
+  type = "select"
+  options = ["seats", "challenge", "private"]
+  default = "seats"
+  help = "seats: one table, sit down to play · challenge: invite members from a lobby · private: your own games with chosen opponents"
+
+  [[channel_kind.create_field]]
+  key = "allow_spectators"
+  label = "Allow spectators"
+  type = "boolean"
+  default = "true"
+  help = "Let members who aren't playing watch games"
+
+  [[channel_kind.create_field]]
+  key = "computer_opponent"
+  label = "Computer opponent"
+  type = "boolean"
+  default = "true"
+  help = "Let players play against the computer"
+
+  [[channel_kind.create_field]]
+  key = "computer_level"
+  label = "Computer strength"
+  type = "select"
+  options = ["easy", "normal", "hard"]
+  default = "normal"
+  help = "How well the computer plays"

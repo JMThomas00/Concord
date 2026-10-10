@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/concord-chat/concord/legal"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,18 +61,31 @@ func newToSModel() (tosModel, error) {
 	return m, nil
 }
 
-// findToSFile searches for the ToS file in multiple locations
+// findToSFile searches for the ToS file relative to the running binary's own
+// location first (so it works no matter what the caller's cwd is — e.g. a
+// PATH symlink launched from an arbitrary directory), then falls back to the
+// old cwd-relative guesses for `go run`/dev use where the executable lives in
+// a temp build dir unrelated to the repo.
 func findToSFile(filename string) string {
-	// Try these paths in order:
-	// 1. ./legal/filename (running from root)
-	// 2. ../legal/filename (running from build/)
-	// 3. ../../legal/filename (running from nested folder)
+	var searchPaths []string
 
-	searchPaths := []string{
+	if exe, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
+		exeDir := filepath.Dir(exe)
+		searchPaths = append(searchPaths,
+			filepath.Join(exeDir, "legal", filename),
+			filepath.Join(exeDir, "..", "legal", filename),
+			filepath.Join(exeDir, "..", "..", "legal", filename),
+		)
+	}
+
+	searchPaths = append(searchPaths,
 		filepath.Join("legal", filename),
 		filepath.Join("..", "legal", filename),
 		filepath.Join("..", "..", "legal", filename),
-	}
+	)
 
 	for _, path := range searchPaths {
 		if _, err := os.Stat(path); err == nil {
@@ -86,7 +100,9 @@ func findToSFile(filename string) string {
 func renderServerToS(mdPath string, width int) (string, error) {
 	mdContent, err := os.ReadFile(mdPath)
 	if err != nil {
-		return "", fmt.Errorf("cannot read ToS file: %w", err)
+		// Release downloads and the Docker image have no legal folder
+		// beside the program: use the copy built into it.
+		mdContent, err = []byte(strings.ReplaceAll(legal.ServerTerms, "\r", "")), nil
 	}
 
 	r, err := glamour.NewTermRenderer(

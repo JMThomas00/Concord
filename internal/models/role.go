@@ -20,6 +20,10 @@ const (
 	PermissionBanMembers          Permission = 1 << 6
 	PermissionChangeNickname      Permission = 1 << 7
 	PermissionManageNicknames     Permission = 1 << 8
+	// Install, update, configure and enable/disable plugins. Separate from
+	// Manage Server because a plugin is code the server runs with its own
+	// privileges: granting this is granting that.
+	PermissionManagePlugins       Permission = 1 << 9
 	
 	// Text channel permissions
 	PermissionSendMessages        Permission = 1 << 10
@@ -118,7 +122,8 @@ func NewEveryoneRole(serverID uuid.UUID) *Role {
 			PermissionReadMessageHistory |
 			PermissionAddReactions |
 			PermissionManageChannels |
-			PermissionChangeNickname,
+			PermissionChangeNickname |
+			PermissionsVoice, // Connect, Speak, Use Voice Activity (enforced since 2026-10-09)
 		Position:    0,
 		IsHoisted:   false,
 		IsMentionable: false,
@@ -273,6 +278,7 @@ var PermissionNames = map[Permission]string{
 	PermissionBanMembers:          "Ban Members",
 	PermissionChangeNickname:      "Change Nickname",
 	PermissionManageNicknames:     "Manage Titles",
+	PermissionManagePlugins:       "Manage Plugins",
 	PermissionSendMessages:        "Send Messages",
 	PermissionSendMessagesThreads: "Send Messages in Threads",
 	PermissionCreateThreads:       "Create Threads",

@@ -1,10 +1,8 @@
 package client
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -197,17 +195,47 @@ func (c *Connection) SendMessage(channelID uuid.UUID, content string, replyTo *u
 	return c.Send(msg)
 }
 
+// SendThreadMessage posts a message into a thread (threadID: the thread's
+// first message).
+func (c *Connection) SendThreadMessage(channelID, threadID uuid.UUID, content string) error {
+	msg, err := protocol.NewMessage(protocol.OpSendMessage, &protocol.SendMessagePayload{
+		ChannelID: channelID,
+		Content:   content,
+		ThreadID:  &threadID,
+		Nonce:     uuid.New().String(),
+	})
+	if err != nil {
+		return err
+	}
+	return c.Send(msg)
+}
+
 // SendTyping sends a typing indicator
 func (c *Connection) SendTyping(channelID uuid.UUID) error {
 	payload := &protocol.TypingStartPayload{
 		ChannelID: channelID,
 	}
-	
+
 	msg, err := protocol.NewMessage(protocol.OpTypingStart, payload)
 	if err != nil {
 		return err
 	}
-	
+
+	return c.Send(msg)
+}
+
+// SendTypingStop tells the server we stopped typing without sending --
+// see OpTypingStop's doc comment in internal/protocol/messages.go.
+func (c *Connection) SendTypingStop(channelID uuid.UUID) error {
+	payload := &protocol.TypingStartPayload{
+		ChannelID: channelID,
+	}
+
+	msg, err := protocol.NewMessage(protocol.OpTypingStop, payload)
+	if err != nil {
+		return err
+	}
+
 	return c.Send(msg)
 }
 
@@ -475,115 +503,37 @@ type LoginResponse struct {
 	Token string       `json:"token"`
 }
 
-// Login authenticates with the server using email and password
+// Login authenticates with the server using email and password. A server
+// that's waiting for the account to verify its email answers with an
+// *APIError whose Code is "verification_required".
 func (c *Connection) Login(email, password string) (*models.User, string, error) {
-	// Parse server address to get HTTP URL
-	u, err := url.Parse(c.serverAddr)
-	if err != nil {
-		return nil, "", fmt.Errorf("invalid server address: %w", err)
+	var r sessionResponse
+	if _, err := postAPI(c.serverAddr, "/api/login", "", map[string]string{"email": email, "password": password}, &r); err != nil {
+		return nil, "", err
 	}
-
-	// Convert to HTTP scheme
-	if u.Scheme == "ws" {
-		u.Scheme = "http"
-	} else if u.Scheme == "wss" {
-		u.Scheme = "https"
-	}
-	u.Path = "/api/login"
-
-	// Create request body
-	reqBody := map[string]string{
-		"email":    email,
-		"password": password,
-	}
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Make HTTP request with timeout
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	resp, err := client.Post(u.String(), "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to connect to server: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("login failed: %s", string(body))
-	}
-
-	// Parse response
-	var loginResp LoginResponse
-	if err := json.Unmarshal(body, &loginResp); err != nil {
-		return nil, "", fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return loginResp.User, loginResp.Token, nil
+	return r.User, r.Token, nil
 }
 
-// Register creates a new account on the server
+// Register creates a new account on the server. On a server that verifies
+// emails the account isn't usable yet: the answer is the new user, no
+// token, and an *APIError with Code "verification_required".
 func (c *Connection) Register(username, email, password string) (*models.User, string, error) {
-	// Parse server address to get HTTP URL
-	u, err := url.Parse(c.serverAddr)
+	var r struct {
+		sessionResponse
+		VerificationRequired bool   `json:"verification_required"`
+		Email                string `json:"email"`
+		MailError            string `json:"mail_error"`
+	}
+	status, err := postAPI(c.serverAddr, "/api/register", "", map[string]string{"username": username, "email": email, "password": password}, &r)
 	if err != nil {
-		return nil, "", fmt.Errorf("invalid server address: %w", err)
+		return nil, "", err
 	}
-
-	// Convert to HTTP scheme
-	if u.Scheme == "ws" {
-		u.Scheme = "http"
-	} else if u.Scheme == "wss" {
-		u.Scheme = "https"
+	if status == http.StatusAccepted || r.VerificationRequired {
+		msg := "Check " + r.Email + " for a verification code."
+		if r.MailError != "" {
+			msg = r.MailError
+		}
+		return r.User, "", &APIError{Status: status, Code: apiVerificationRequired, Message: msg, Email: r.Email}
 	}
-	u.Path = "/api/register"
-
-	// Create request body
-	reqBody := map[string]string{
-		"username": username,
-		"email":    email,
-		"password": password,
-	}
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Make HTTP request with timeout
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	resp, err := client.Post(u.String(), "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to connect to server: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("registration failed: %s", string(body))
-	}
-
-	// Parse response
-	var loginResp LoginResponse
-	if err := json.Unmarshal(body, &loginResp); err != nil {
-		return nil, "", fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return loginResp.User, loginResp.Token, nil
+	return r.User, r.Token, nil
 }

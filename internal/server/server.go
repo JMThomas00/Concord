@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"runtime"
-	"strings"
 	"syscall"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +39,12 @@ type Config struct {
 	AdminEmail     string               `toml:"admin_email"`    // Admin email for auto-granting admin role
 	Grapevine      GrapevineConfig      `toml:"grapevine"`
 	PluginsDir     string               `toml:"plugins_dir"` // Folder scanned for plugin.toml subfolders at startup
+	Mail           MailConfig           `toml:"mail"`        // Outgoing email for verification and password reset (optional)
+	Voice          VoiceConfig          `toml:"voice"`       // STUN/TURN servers for voice calls (voice_ice.go; optional)
+	// RealIPHeader: the header a trusted proxy sets to each visitor's
+	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
+	// empty unless the server is reachable only through that proxy.
+	RealIPHeader string `toml:"real_ip_header,omitempty"`
 }
 
 // MessagePruningConfig configures automatic message pruning
@@ -62,6 +70,33 @@ func DefaultConfig() *Config {
 	}
 }
 
+// dashboardDisplayMode selects which of the two independent dashboard
+// renderers (if either) Run() uses. Hybrid (raw-ANSI cursor positioning,
+// panels above scrolling log output) and full-screen (a real Bubbletea
+// program, no log pane) are structurally different code paths, not two
+// settings of one bool -- see runWithHybridDashboard/runWithDashboard.
+type dashboardDisplayMode int
+
+const (
+	dashboardDisplayNone dashboardDisplayMode = iota
+	dashboardDisplayHybrid
+	dashboardDisplayFull
+)
+
+// resolveDashboardMode is the pure flag->mode decision cmd/server/main.go
+// uses -- factored out so the hybrid-wins-when-both-set precedence rule is
+// unit-testable without spinning up a real Server/tea.Program.
+func resolveDashboardMode(hybrid, dashboardOnly bool) dashboardDisplayMode {
+	switch {
+	case hybrid:
+		return dashboardDisplayHybrid
+	case dashboardOnly:
+		return dashboardDisplayFull
+	default:
+		return dashboardDisplayNone
+	}
+}
+
 // Server represents the Concord server
 type Server struct {
 	config        *Config
@@ -72,9 +107,9 @@ type Server struct {
 	httpServer    *http.Server
 
 	// Dashboard support
-	dashboardMode bool
-	dashboard     *dashboard.Model
-	stats         *StatsTracker
+	dashboardDisplay dashboardDisplayMode
+	dashboard        *dashboard.Model
+	stats            *StatsTracker
 
 	// Grapevine discovery
 	configPath      string
@@ -83,10 +118,16 @@ type Server struct {
 
 	// Plugin platform
 	plugins *plugins.Manager
+
+	// Accounts: outgoing mail (nil without [mail]) and the per-address
+	// limit on sign-in and account requests.
+	mailer        Mailer
+	accountLimits *accountLimiter
 }
 
 // New creates a new server instance
 func New(config *Config) (*Server, error) {
+	realIPHeader = strings.TrimSpace(config.RealIPHeader)
 	// Open database
 	db, err := database.New(config.DatabasePath)
 	if err != nil {
@@ -118,11 +159,25 @@ func New(config *Config) (*Server, error) {
 
 	// Create handlers
 	handlers := NewHandlers(db, hub, stats, pluginManager)
+	handlers.SetVoiceConfig(config.Voice) // STUN/TURN for voice calls (voice_ice.go)
+	if config.Voice.Relayed() {
+		Logger.Info("Voice: TURN relay configured", "cloudflare", config.Voice.CloudflareTURNKeyID != "")
+	}
 
 	// Register voice disconnect cleanup callback so the hub can trigger DB/broadcast
 	// cleanup without importing the handlers package (avoids circular dependency).
 	hub.SetVoiceLeaveCallback(func(userID, serverID, channelID uuid.UUID) {
 		handlers.handleVoiceLeave(userID, serverID, channelID)
+	})
+
+	// Persist a disconnecting user's offline status to the database -- see
+	// unregisterClient's own doc comment (hub.go) for the real bug this
+	// closes (a user's status previously stuck at "online" forever once no
+	// currently-connected client remained to receive the live broadcast).
+	hub.SetUserDisconnectCallback(func(user *models.User) {
+		if err := handlers.UpdateUserStatus(user); err != nil {
+			DBLog.Error("Failed to persist offline status on disconnect", "user_id", user.ID, "error", err)
+		}
 	})
 
 	// Create server
@@ -133,6 +188,7 @@ func New(config *Config) (*Server, error) {
 		db:              db,
 		stats:           stats,
 		grapevineTokens: newTokenStore(),
+		accountLimits:   newAccountLimiter(20, 20),
 		plugins:         pluginManager,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -142,10 +198,27 @@ func New(config *Config) (*Server, error) {
 			},
 		},
 	}
+	if config.Mail.Enabled() {
+		s.mailer = &smtpMailer{cfg: config.Mail}
+		AuthLog.Info("Outgoing mail configured", "smtp_host", config.Mail.SMTPHost, "verification_required", config.Mail.VerificationRequired())
+	}
 
 	pluginsDir := config.PluginsDir
 	if pluginsDir == "" {
 		pluginsDir = "Plugins"
+	}
+	handlers.SetPluginsDir(pluginsDir)
+	// Key for plugin "secret" settings: beside the database, so it lives on
+	// the same volume (Docker) and is backed up/restored together with it.
+	secretsKey := filepath.Join(filepath.Dir(config.DatabasePath), "plugin-secrets.key")
+	if box, err := plugins.LoadOrCreateSecretBox(secretsKey); err == nil {
+		handlers.SetPluginSecrets(box)
+	} else {
+		DBLog.Warn("plugin secret settings will be stored unencrypted", "error", err)
+	}
+	// Before any plugin starts, so none is ever handed a pre-migration value.
+	if reg, _ := plugins.Discover(pluginsDir); reg != nil {
+		migrateChannelSelectNames(db, reg)
 	}
 	if err := pluginManager.LoadAll(pluginsDir); err != nil {
 		DBLog.Warn("plugin platform failed to load", "error", err)
@@ -169,7 +242,7 @@ func (s *Server) saveConfig() error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(s.configPath, data, 0644)
+	return os.WriteFile(s.configPath, data, 0600)
 }
 
 // startGrapevine registers Grapevine routes on mux and starts the background client.
@@ -207,7 +280,7 @@ func (s *Server) startGrapevine(mux *http.ServeMux) {
 		publicHost,
 		publicPort,
 		func() int { return s.db.GetTotalMemberCount() },
-		func() int { return s.hub.ConnectedClientCount() },
+		func() int { return s.hub.PeopleOnlineCount() },
 		s.saveConfig,
 	)
 	s.grapevine.Start()
@@ -215,9 +288,14 @@ func (s *Server) startGrapevine(mux *http.ServeMux) {
 
 // Run starts the server
 func (s *Server) Run() error {
-	// If dashboard mode is enabled, use hybrid dashboard runner
-	if s.dashboardMode {
+	// Hybrid takes priority if somehow both were set (it's the more capable
+	// of the two -- panels plus live scrolling logs -- so it's the sensible
+	// fallback rather than silently picking full-screen instead).
+	switch s.dashboardDisplay {
+	case dashboardDisplayHybrid:
 		return s.runWithHybridDashboard()
+	case dashboardDisplayFull:
+		return s.runWithDashboard()
 	}
 
 	// Normal mode: Start the hub
@@ -233,10 +311,7 @@ func (s *Server) Run() error {
 
 	// Set up HTTP routes
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.HandleFunc("/api/register", s.handleRegister)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/health", s.handleHealth)
+	s.registerAPIRoutes(mux)
 	if s.config.Grapevine.Enabled {
 		s.startGrapevine(mux)
 	}
@@ -272,7 +347,12 @@ func (s *Server) handleShutdown() {
 
 	<-sigChan
 	Logger.Warn("Shutting down server...")
+	s.Shutdown()
+}
 
+// Shutdown stops the server: deregisters from Grapevine, stops plugin
+// processes, closes the HTTP listener and the database.
+func (s *Server) Shutdown() {
 	// Deregister from Grapevine hub before closing
 	if s.grapevine != nil {
 		s.grapevine.Stop()
@@ -289,10 +369,11 @@ func (s *Server) handleShutdown() {
 	defer cancel()
 
 	// Shutdown HTTP server
-	if err := s.httpServer.Shutdown(ctx); err != nil {
-		Logger.Error("HTTP server shutdown error", "error", err)
+	if s.httpServer != nil {
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			Logger.Error("HTTP server shutdown error", "error", err)
+		}
 	}
-
 	// Close database
 	if err := s.db.Close(); err != nil {
 		DBLog.Error("Database close error", "error", err)
@@ -464,7 +545,7 @@ func (s *Server) performAutomaticPruning() {
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		ClientLog.Error("WebSocket upgrade failed", "error", err, "remote_addr", r.RemoteAddr)
+		ClientLog.Error("WebSocket upgrade failed", "error", err, "remote_addr", remoteIP(r))
 		return
 	}
 
@@ -504,6 +585,25 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if len(req.Password) < 8 {
 		http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+	if s.limited(w, r) {
+		return
+	}
+
+	// Emails are compared without case; store them that way.
+	email, validEmail := normalizeEmail(req.Email)
+	needsVerification := s.config.Mail.VerificationRequired()
+	if needsVerification && !validEmail {
+		writeAPIError(w, http.StatusBadRequest, "bad_email", "That doesn't look like an email address")
+		return
+	}
+	if req.Email != "" {
+		req.Email = email
+	}
+	if taken, _ := s.db.EmailInUse(req.Email, uuid.Nil); taken && req.Email != "" {
+		AuthLog.Warn("Registration for an email that's already in use (client will retry login)", "username", req.Username, "from", remoteIP(r))
+		http.Error(w, "Failed to create user (email or username may already exist)", http.StatusConflict)
 		return
 	}
 
@@ -579,17 +679,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Auto-grant admin to user matching configured admin email
-	if s.config.AdminEmail != "" && strings.EqualFold(user.Email, s.config.AdminEmail) {
-		if err := s.db.EnsureAdminRole(user.Email); err != nil {
-			AuthLog.Error("Failed to grant admin role to configured admin email", "email", user.Email, "error", err)
-		} else {
-			AuthLog.Info("Admin role granted to user matching configured admin email", "email", user.Email)
+	// A server that verifies emails holds the account until its code is
+	// entered: no session yet, and admin-by-email waits for proof.
+	if needsVerification {
+		if err := s.db.SetEmailVerified(user.ID, false); err != nil {
+			AuthLog.Error("Failed to mark new account unverified", "user_id", user.ID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
 		}
+		resp := map[string]interface{}{"verification_required": true, "user": user, "email": user.Email, "sent": true}
+		if err := s.sendCode(user, purposeVerify, user.Email, true); err != nil {
+			resp["sent"], resp["mail_error"] = false, capitalize(err.Error())+"."
+		}
+		AuthLog.Info("Account waiting for email verification", "user_id", user.ID, "from", remoteIP(r))
+		writeJSON(w, http.StatusAccepted, resp)
+		return
 	}
+	s.accountActivated(user)
 
 	// Generate auth token
-	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
+	token, err := s.handlers.CreateAuthToken(user.ID, remoteIP(r), r.UserAgent())
 	if err != nil {
 		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -623,11 +732,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.limited(w, r) {
+		return
+	}
+
 	// Look up user
-	AuthLog.Info("Login attempt", "email", req.Email)
-	user, passwordHash, err := s.db.GetUserByEmail(req.Email)
+	from := remoteIP(r)
+	AuthLog.Info("Login attempt", "email", req.Email, "from", from)
+	user, passwordHash, err := s.db.FindUserByEmail(req.Email)
 	if err != nil {
-		AuthLog.Warn("Login failed - user not found", "email", req.Email, "error", err)
+		AuthLog.Warn("Login failed - user not found", "email", req.Email, "from", from, "error", err)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
@@ -635,9 +749,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Check password
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		AuthLog.Warn("Login failed - wrong password", "user_id", user.ID, "from", from)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
+
+	// An account that hasn't confirmed its email can't sign in while the
+	// server requires it (turning verification off lets everyone in).
+	if s.config.Mail.VerificationRequired() {
+		if verified, _ := s.db.IsEmailVerified(user.ID); !verified {
+			AuthLog.Info("Login held for email verification", "user_id", user.ID, "from", from)
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "Check your email for a verification code from " + s.config.ServerName + ".",
+				"code":  errCodeVerificationRequired, "email": user.Email,
+			})
+			return
+		}
+	}
+	AuthLog.Info("Login succeeded", "user_id", user.ID, "username", user.Username, "from", from)
 
 	// Ensure user is a member of the default server
 	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer(s.config.ServerName)
@@ -672,7 +801,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate auth token
-	token, err := s.handlers.CreateAuthToken(user.ID, r.RemoteAddr, r.UserAgent())
+	token, err := s.handlers.CreateAuthToken(user.ID, remoteIP(r), r.UserAgent())
 	if err != nil {
 		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -696,17 +825,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SetDashboardMode enables or disables dashboard mode
+// SetBuildInfo records the server binary's own build identity, forwarded
+// to the Handlers that actually construct ReadyPayload.
+func (s *Server) SetBuildInfo(version, gitCommit, buildTime string) {
+	s.handlers.SetBuildInfo(version, gitCommit, buildTime)
+}
+
+// SetDashboardMode enables or disables hybrid dashboard mode (panels above
+// live scrolling logs). Kept as a bool-arg method matching its existing
+// call site in cmd/server/main.go -- see SetFullDashboardMode for the
+// full-screen (no log pane) alternative.
 func (s *Server) SetDashboardMode(enabled bool) {
-	s.dashboardMode = enabled
 	if enabled {
+		s.dashboardDisplay = dashboardDisplayHybrid
 		s.dashboard = dashboard.NewModel()
+	} else if s.dashboardDisplay == dashboardDisplayHybrid {
+		s.dashboardDisplay = dashboardDisplayNone
+	}
+}
+
+// SetFullDashboardMode enables or disables the full-screen dashboard mode
+// (no log pane alongside it) -- see dashboardDisplayMode's doc comment for
+// why this is a separate mode from hybrid, not a variant of it.
+func (s *Server) SetFullDashboardMode(enabled bool) {
+	if enabled {
+		s.dashboardDisplay = dashboardDisplayFull
+		s.dashboard = dashboard.NewModel()
+	} else if s.dashboardDisplay == dashboardDisplayFull {
+		s.dashboardDisplay = dashboardDisplayNone
 	}
 }
 
 // LogDashboardEvent logs an event to the dashboard activity feed
 func (s *Server) LogDashboardEvent(level, component, message string) {
-	if s.dashboardMode && s.dashboard != nil {
+	if s.dashboardDisplay != dashboardDisplayNone && s.dashboard != nil {
 		s.dashboard.AddActivityEvent(level, component, message)
 	}
 }
@@ -726,10 +878,7 @@ func (s *Server) runWithDashboard() error {
 
 	// Set up HTTP routes
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.HandleFunc("/api/register", s.handleRegister)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/health", s.handleHealth)
+	s.registerAPIRoutes(mux)
 	if s.config.Grapevine.Enabled {
 		s.startGrapevine(mux)
 	}
@@ -754,6 +903,21 @@ func (s *Server) runWithDashboard() error {
 
 	// Start dashboard update loop
 	go s.updateDashboardLoop()
+
+	// Redirect the logger away from stderr for the TUI's lifetime. Without
+	// this, a real log line (e.g. "User authenticated successfully") writes
+	// straight to stderr, which lands on the same alt-screen buffer
+	// tea.WithAltScreen() owns below -- corrupting the dashboard's rendered
+	// boxes until bubbletea's next full repaint (a resize) papers over it.
+	// --dashboard's own flag description promises "no live logs" (unlike
+	// --hybrid, which deliberately keeps them via a scroll region instead)
+	// so discarding here, rather than routing into AddActivityEvent, is the
+	// intended behavior, not a shortcut -- mirrors cmd/hub/main.go's
+	// runWithDashboard, which redirects into its own stats ring buffer for
+	// the same underlying reason, just a different destination.
+	dashboardLevel := Logger.GetLevel()
+	InitLogger(io.Discard, dashboardLevel)
+	defer InitLogger(os.Stderr, dashboardLevel)
 
 	// Run Bubble Tea program (blocks until quit)
 	p := tea.NewProgram(s.dashboard, tea.WithAltScreen())
@@ -786,9 +950,7 @@ func (s *Server) updateDashboardLoop() {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 
-		s.hub.mu.RLock()
-		connectionCount := len(s.hub.clients)
-		s.hub.mu.RUnlock()
+		connectionCount := s.hub.ConnectionCount()
 
 		s.dashboard.UpdateSystemStats(
 			s.stats.GetUptime(),
@@ -820,12 +982,10 @@ func (s *Server) updateDashboardLoop() {
 
 // getConnectedClientInfo returns information about connected clients
 func (s *Server) getConnectedClientInfo() []*dashboard.ClientInfo {
-	s.hub.mu.RLock()
-	defer s.hub.mu.RUnlock()
+	conns := s.hub.Connections()
+	clients := make([]*dashboard.ClientInfo, 0, len(conns))
 
-	clients := make([]*dashboard.ClientInfo, 0, len(s.hub.clients))
-
-	for _, client := range s.hub.clients {
+	for _, client := range conns {
 		// Skip clients that haven't authenticated yet
 		if client == nil || client.User == nil {
 			continue
@@ -907,10 +1067,7 @@ func (s *Server) runWithHybridDashboard() error {
 
 	// Set up HTTP routes (needed for startup info)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.HandleFunc("/api/register", s.handleRegister)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/health", s.handleHealth)
+	s.registerAPIRoutes(mux)
 	if s.config.Grapevine.Enabled {
 		s.startGrapevine(mux)
 	}
@@ -971,9 +1128,7 @@ func (s *Server) updateHybridDashboardLoop(renderer *dashboard.HybridRenderer) {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 
-		s.hub.mu.RLock()
-		connectionCount := len(s.hub.clients)
-		s.hub.mu.RUnlock()
+		connectionCount := s.hub.ConnectionCount()
 
 		renderer.UpdateSystemStats(
 			s.stats.GetUptime(),
@@ -1009,8 +1164,10 @@ func (s *Server) updateHybridDashboardLoop(renderer *dashboard.HybridRenderer) {
 
 		renderer.UpdateActivitySummary(lastMsgStr, lastConnStr, totalEvents)
 
-		// Update dashboard in place
-		renderer.UpdateInPlace()
+		// Update dashboard in place -- one Print call for the whole
+		// update (see UpdateInPlace's own doc comment for why that
+		// matters: a separate blank-then-redraw pass visibly flashed).
+		fmt.Print(renderer.UpdateInPlace())
 	}
 }
 

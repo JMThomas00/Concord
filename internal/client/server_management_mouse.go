@@ -203,6 +203,17 @@ func (a *App) handleMessagesCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 // pending its own investigation (see the Plan's Area 4.6).
 func (a *App) handlePluginsCategoryMouse(msg tea.MouseMsg) tea.Cmd {
 	s := a.serverManagementState
+	if s.PluginPage != nil {
+		// A click selects a row of the plugin page; Enter opens it.
+		for i := range a.pluginPageRows(s) {
+			if zoneInBounds(fmt.Sprintf("srvmgmt-pluginpage-row:%d", i), msg) {
+				s.PluginPage.Cursor = i
+				s.FocusOnForm = true
+				return nil
+			}
+		}
+		return nil
+	}
 	for i := range s.PluginList {
 		if zoneInBounds(fmt.Sprintf("srvmgmt-plugin-row:%d", i), msg) {
 			s.SelectedPlugin = i
@@ -463,7 +474,7 @@ func (a *App) handleMoveDialogMouse(msg tea.MouseMsg) tea.Cmd {
 func (a *App) handleChannelFormMouse(msg tea.MouseMsg) tea.Cmd {
 	s := a.serverManagementState
 	state := s.ChannelFormState
-	if state == nil {
+	if state == nil || state.Configuring { // the Configure page is keyboard-driven
 		return nil
 	}
 	layout := computeChannelFormLayout(state)
@@ -478,6 +489,11 @@ func (a *App) handleChannelFormMouse(msg tea.MouseMsg) tea.Cmd {
 	}
 	if zoneInBounds("srvmgmt-channelform-name", msg) {
 		a.setChannelFormFocus(state, layout, 0)
+		return nil
+	}
+	if layout.isPlugin && zoneInBounds("srvmgmt-channelform-configure", msg) {
+		a.setChannelFormFocus(state, layout, layout.configureField)
+		a.openChannelConfig(state)
 		return nil
 	}
 	if layout.isVoice && zoneInBounds("srvmgmt-channelform-maxusers", msg) {
@@ -496,11 +512,9 @@ func (a *App) handleChannelFormMouse(msg tea.MouseMsg) tea.Cmd {
 			a.setChannelFormFocus(state, layout, 1)
 			state.TypeIndex = idx
 			if idx >= 3 {
-				setPluginKind(state, pluginKinds[idx-3])
+				a.setPluginKind(state, pluginKinds[idx-3])
 			} else {
-				state.PluginFields = nil
-				state.PluginTextInputs = nil
-				state.PluginValues = nil
+				clearPluginKind(state)
 			}
 			return nil
 		}
@@ -524,12 +538,6 @@ func (a *App) setChannelFormFocus(state *ChannelFormState, layout channelFormFie
 		state.NameTextInput.Focus()
 	case layout.isVoice && field == layout.maxUsersField:
 		state.MaxUsersInput.Focus()
-	case layout.isPlugin && field >= layout.pluginStart && field < layout.pluginStart+len(state.PluginFields):
-		idx := field - layout.pluginStart
-		ft := state.PluginFields[idx].Type
-		if ft == "text" || ft == "number" {
-			state.PluginTextInputs[idx].Focus()
-		}
 	}
 }
 
