@@ -44,6 +44,7 @@ Read the matching guide before starting:
 
 - [`sdk.md`](sdk.md): the SDK packages, `plugin.Run`, `Handler`, `Conn` helpers, and the pane host
 - [`manifest.md`](manifest.md): every `plugin.toml` field, and how settings become UI forms
+- [`arcade.md`](arcade.md): the Concord Arcade standard every game follows: title screen, menus, pixel art, sounds, Pit Pass rewards (`sdk/arcade`)
 - [`games.md`](games.md): turn-based games on the table kit (seating modes, computer opponent, standalone and network play)
 - [`media.md`](media.md): pictures and sounds from a `client/` folder (theme-colored pieces, move sounds)
 - [`client-code.md`](client-code.md): WebAssembly that runs in each viewer's client (instant keys, animation, local storage), signing, consent

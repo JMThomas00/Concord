@@ -65,3 +65,10 @@ with two accounts.
 **Don't float the UI libraries.** `go get -u` on bubbletea/bubbles/lipgloss
 can pull versions the SDK hasn't been tested with. Update the SDK instead,
 and let it choose.
+
+**Pad every frame line to the same width.** Concord before v0.1.1 centred
+each line of a frame on its own, so lines of different lengths shifted
+against each other and columns zig-zagged. v0.1.1 and later centre the
+frame as one block, but members on older clients still see the zig-zag.
+Pad every line to the pane's width: `sdk/arcade`'s canvas does; `pane.Fit`
+only trims.
