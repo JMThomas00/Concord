@@ -180,15 +180,14 @@ func (c *Canvas) Keys(x, y int, keys ...Key) int {
 }
 
 // String renders the canvas as lines of text with SGR colours, writing a
-// style only when it changes and dropping trailing blank cells.
+// style only when it changes. Every line is the full width: Concord centres
+// each line of a frame on its own, so lines of different lengths would
+// shift against each other.
 func (c *Canvas) String() string {
 	var b strings.Builder
 	for y := 0; y < c.H; y++ {
 		row := c.cells[y*c.W : (y+1)*c.W]
 		last := len(row) - 1
-		for last >= 0 && blank(row[last]) {
-			last--
-		}
 		cur, curBg := "", false
 		for x := 0; x <= last; x++ {
 			cl := row[x]
@@ -219,10 +218,6 @@ func (c *Canvas) String() string {
 		}
 	}
 	return b.String()
-}
-
-func blank(cl cell) bool {
-	return !cl.skip && !cl.px && cl.ch == " " && cl.bg == ""
 }
 
 // glyph turns a pixel cell into a half-block character.

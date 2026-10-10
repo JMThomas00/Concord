@@ -26,7 +26,8 @@ func TestCanvasNeverOverflows(t *testing.T) {
 			t.Fatalf("%v: %d lines", size, len(lines))
 		}
 		for _, l := range lines {
-			if w := ansi.StringWidth(l); w > size[0] {
+			// exactly the width: Concord centres each line of a frame on its own
+			if w := ansi.StringWidth(l); w != size[0] {
 				t.Fatalf("%v: line %d wide: %q", size, w, sgr.ReplaceAllString(l, ""))
 			}
 		}
@@ -42,7 +43,7 @@ func TestHalfBlocks(t *testing.T) {
 	c.Px(3, 0, "red")   // both, different
 	c.Px(3, 1, "green") //
 	got := sgr.ReplaceAllString(c.String(), "")
-	if got != "▀▄█▀" {
+	if got != "▀▄█▀" { // full width, nothing trimmed
 		t.Fatalf("got %q", got)
 	}
 }
