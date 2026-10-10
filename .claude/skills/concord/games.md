@@ -1,6 +1,6 @@
 # Turn-Based Games (`sdk/table`)
 
-> Every game follows the Concord Arcade standard: a title screen, a menu, pixel art and sounds. See [`arcade.md`](arcade.md).
+> Every game follows the Concord Arcade standard: a title screen, a menu, pixel art and sounds. For a table game that means setting `Rules.Arcade` and drawing the board on the arcade canvas: see [`arcade.md`](arcade.md#board-games-tablerulesarcade).
 
 Read this before building any game. The table kit supplies everything
 except the rules and the board: seats, spectators, three seating modes,
@@ -103,7 +103,11 @@ into a table when it's created and again on each rematch; a table's game
 never changes size mid-game. So an admin's edit applies from the next game
 (in `seats` mode, the next rematch), and games saved before it keep their options.
 
-## What the kit draws
+## What the kit draws (the plain layout)
+
+With `Rules.Arcade` set and a pane of 64 x 24 or more, the arcade draws
+everything instead (see arcade.md); this is the layout of smaller panes and
+of games without it.
 
 The kit owns the lines above and below the board. Tests match these strings:
 

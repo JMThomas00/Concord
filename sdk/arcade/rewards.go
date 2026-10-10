@@ -34,12 +34,19 @@ type Unlockable struct {
 	ID   string
 	Name string
 	Tier Tier
+	// Kind groups items a player picks one of ("pieces", "board"); a game
+	// with a single kind (Grape Race's cars) can leave it empty.
+	Kind string
+	// Blurb is a line about it, shown when it's offered.
+	Blurb string
 }
 
-// OfferSize is how many locked items a Pit Pass offers.
+// OfferSize is how many locked items a pass offers.
 const OfferSize = 3
 
-// Rewards is one player's Pit Passes and what they've unlocked. Keep it
+// Rewards is one player's passes and what they've unlocked. Each game
+// names its passes to suit it -- Pit Passes in Grape Race, Gold Stars in
+// tic-tac-toe -- and only the name on screen differs. Keep it
 // in the player's saved record: the offer is saved with it, so leaving and
 // coming back shows the same choices (no re-rolling).
 type Rewards struct {

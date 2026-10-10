@@ -2,9 +2,12 @@ package table
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/JMThomas00/Concord/sdk/arcade"
 	"github.com/JMThomas00/Concord/sdk/pane"
 	"github.com/JMThomas00/Concord/sdk/wire"
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,6 +45,15 @@ type viewerModel struct {
 	notice     string
 	pending    tea.Cmd // e.g. a newly opened board's Init, returned with the next Update
 
+	// The arcade (arcade.go).
+	level   int            // 1 PLAYER VS CPU's level
+	frame   int            // animation ticks
+	lastKey time.Time      // attract mode stops 30s after the last key
+	setsRow int            // the collection screen's row
+	setsIdx map[string]int // the collection screen's item per kind
+	picked  string         // the unlockable just picked from a draft
+	reveal  time.Time      // when it was picked (its reveal is showing)
+
 	width, height int
 }
 
@@ -49,7 +61,13 @@ func (k *Kit) newViewer(v *pane.Viewer) tea.Model {
 	m := &viewerModel{k: k, v: v, channel: v.ChannelID, width: v.Width, height: v.Height}
 	k.viewers[v.ID] = m
 	r := k.room(v.ChannelID)
-	if r.mode() == ModeSeats {
+	m.level = r.computerLevel()
+	switch {
+	case k.rules.Arcade != nil: // always the front door
+		m.screen = screenTitle
+		m.lastKey = time.Now()
+		k.startTicker()
+	case r.mode() == ModeSeats:
 		m.openTable(k.seatsTable(r))
 	}
 	return m
@@ -111,15 +129,35 @@ func (m *viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.board, _ = m.board.Update(tea.WindowSizeMsg{Width: m.width, Height: m.boardHeight()})
 		}
 	case roomChangedMsg:
-		t := m.table()
-		if m.screen == screenTable && t == nil {
+		var t *Table
+		if m.screen == screenTable || m.screen == screenResults {
+			t = m.room().table(m.tableID)
+		}
+		if (m.screen == screenTable || m.screen == screenResults) && t == nil {
 			m.screen, m.notice = screenLobby, "That game has ended."
+			if m.k.rules.Arcade != nil {
+				m.screen = screenMenu
+			}
 		}
 		if t != nil {
 			m.seat.table, m.seat.Index = t, t.seatOf(m.v.ID)
 			if move, ok := msg.moved[t.ID]; ok {
 				m.board, _ = m.board.Update(ChangedMsg{Move: move})
 			}
+			if m.screen == screenResults && !t.outcome().Over { // the rematch started
+				m.screen = screenTable
+			}
+			if m.screen == screenTable && t.outcome().Over {
+				m.lastKey = time.Now() // the winning line blinks for a while
+				m.k.startTicker()
+			}
+		}
+	case tickMsg:
+		if m.effects() == "" {
+			m.frame++
+		}
+		if !m.reveal.IsZero() && time.Since(m.reveal) >= revealFor {
+			m.endReveal()
 		}
 	case membersMsg:
 		m.members = msg.members
@@ -131,6 +169,29 @@ func (m *viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *viewerModel) key(msg tea.KeyMsg) tea.Cmd {
+	if done, cmd := m.arcadeKey(msg); done {
+		return cmd
+	}
+	if m.arcadeOn() {
+		m.lastKey = time.Now()
+		switch k := msg.String(); {
+		case k == "esc" && m.screen == screenTable && !m.menuOpen && !m.boardClaims(wire.PaneKeyEsc):
+			m.back()
+			return nil
+		case (k == "esc" || k == "q") && m.screen == screenLobby:
+			m.back()
+			return nil
+		case k == "esc" && m.screen == screenPicker:
+			m.back()
+			return nil
+		case (k == "enter" || k == " ") && m.screen == screenTable && !m.menuOpen && m.arcadeTable():
+			if t := m.table(); t != nil && t.outcome().Over {
+				m.k.uiSound(m, arcade.SoundSelect)
+				m.goTo(screenResults)
+				return nil
+			}
+		}
+	}
 	switch m.screen {
 	case screenTable:
 		// M opens the table menu, unless the board is taking typed text.
@@ -225,6 +286,7 @@ type lobbyItem struct {
 	label   string
 	open    func()
 	decline func() // incoming challenges only
+	extra   bool   // new games: the arcade menu has its own way to start them
 }
 
 func (m *viewerModel) lobby() []lobbyItem {
@@ -267,13 +329,13 @@ func (m *viewerModel) lobby() []lobbyItem {
 	if r.mode() == ModePrivate {
 		verb = "New game with…"
 	}
-	items = append(items, lobbyItem{label: "+ " + verb, open: func() {
+	items = append(items, lobbyItem{label: "+ " + verb, extra: true, open: func() {
 		m.screen, m.cursor, m.members = screenPicker, 0, nil
 		id := m.v.ID
 		k.requestMembers(m.channel, func(members []wire.PluginMember) { k.host.Send(id, membersMsg{members}) })
 	}})
 	if k.computerAllowed(r) {
-		items = append(items, lobbyItem{label: "+ Play the computer", open: func() { m.openTable(k.startGame(r, me, k.computerPlayer(r.computerLevel()))) }})
+		items = append(items, lobbyItem{label: "+ Play the computer", extra: true, open: func() { m.openTable(k.startGame(r, me, k.computerPlayer(r.computerLevel()))) }})
 	}
 	return items
 }
@@ -296,7 +358,7 @@ func (m *viewerModel) tableLine(t *Table, mine bool) string {
 }
 
 func (m *viewerModel) lobbyKey(msg tea.KeyMsg) tea.Cmd {
-	items := m.lobby()
+	items := m.lobbyItems()
 	switch msg.String() {
 	case "up", "k":
 		if m.cursor > 0 {
@@ -368,6 +430,17 @@ func (m *viewerModel) style(color string) lipgloss.Style {
 }
 
 func (m *viewerModel) View() string {
+	if m.k.rules.Arcade != nil {
+		if m.screen >= screenTitle && m.screen != screenResults && !m.big() {
+			return m.smallFront()
+		}
+		if m.arcadeOn() && (m.screen >= screenTitle || m.screen == screenLobby || m.screen == screenPicker || m.arcadeTable()) {
+			return m.arcadeView()
+		}
+		if m.screen == screenResults { // the pane shrank on the results screen
+			m.screen = screenTable
+		}
+	}
 	switch m.screen {
 	case screenTable:
 		return m.tableView()
@@ -442,6 +515,18 @@ func (m *viewerModel) tableView() string {
 // open for it to close (the table menu, the member picker), and otherwise
 // passes on whatever the board claims. Unclaimed, Esc leaves the pane.
 func (m *viewerModel) ClaimedKeys() []string {
+	if m.arcadeOn() {
+		// Esc goes back one screen, except on the title, where it leaves.
+		switch {
+		case m.screen == screenTitle:
+			return nil
+		case m.screen == screenTable && !m.menuOpen && m.board != nil:
+			if kc, ok := m.board.(pane.KeyClaimer); ok {
+				return append(kc.ClaimedKeys(), wire.PaneKeyEsc)
+			}
+		}
+		return []string{wire.PaneKeyEsc}
+	}
 	switch {
 	case m.screen == screenPicker:
 		return []string{wire.PaneKeyEsc}
@@ -463,6 +548,12 @@ type Typer interface {
 	Typing() bool
 }
 
+// boardClaims reports whether the board claims key right now.
+func (m *viewerModel) boardClaims(key string) bool {
+	kc, ok := m.board.(pane.KeyClaimer)
+	return ok && slices.Contains(kc.ClaimedKeys(), key)
+}
+
 func boardTyping(b tea.Model) bool {
 	t, ok := b.(Typer)
 	return ok && t.Typing()
@@ -471,8 +562,8 @@ func boardTyping(b tea.Model) bool {
 // Images passes on a board's images (pane.Imager), moved down past the
 // header above it.
 func (m *viewerModel) Images() []wire.PaneImage {
-	if m.screen != screenTable || m.board == nil || m.table() == nil {
-		return nil
+	if m.screen != screenTable || m.board == nil || m.table() == nil || m.arcadeTable() {
+		return nil // the arcade draws pieces itself
 	}
 	im, ok := m.board.(pane.Imager)
 	if !ok {

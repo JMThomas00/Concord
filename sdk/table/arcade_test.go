@@ -1,0 +1,202 @@
+package table_test
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/JMThomas00/Concord/sdk/arcade"
+	"github.com/JMThomas00/Concord/sdk/examples/tictactoe"
+	"github.com/JMThomas00/Concord/sdk/plugin"
+	"github.com/JMThomas00/Concord/sdk/plugintest"
+	"github.com/JMThomas00/Concord/sdk/table"
+	"github.com/JMThomas00/Concord/sdk/wire"
+	"github.com/google/uuid"
+)
+
+// arcadeRules is the example tic-tac-toe behind the arcade front door,
+// with one starter and one set to unlock. Its board doesn't draw on the
+// arcade canvas, so games use the plain table view.
+func arcadeRules() table.Rules {
+	r := tictactoe.Rules
+	r.Arcade = &table.Arcade{
+		Title: "TIC-TAC-TOE", Tagline: "THREE IN A ROW",
+		HowTo:      []string{"Three in a row wins."},
+		Reward:     "GOLD STAR",
+		Collection: "SETS",
+		Unlockables: []arcade.Unlockable{
+			{ID: "plain", Name: "PLAIN", Tier: arcade.Starter, Kind: "pieces"},
+			{ID: "fancy", Name: "FANCY", Tier: arcade.Common, Kind: "pieces", Blurb: "Very fancy."},
+		},
+		Kinds: []table.Kind{{ID: "pieces", Label: "PIECES"}},
+	}
+	return r
+}
+
+func startArcade(t *testing.T, seating string) (*plugintest.Server, uuid.UUID) {
+	t.Helper()
+	srv := plugintest.NewServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { plugin.Run(ctx, srv.Config(), table.New(arcadeRules()).Handler()); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	srv.WaitReady()
+	channel := uuid.New()
+	srv.Channel(wire.Channel{ID: channel, Name: "games", PluginConfig: map[string]string{table.SettingSeating: seating}})
+	return srv, channel
+}
+
+func claims(srv *plugintest.Server, v *plugintest.Viewer) string {
+	return strings.Join(srv.Claimed(v), ",")
+}
+
+// The front door, a game, a Gold Star, and spending it.
+func TestArcadeFrontDoorAndRewards(t *testing.T) {
+	srv, ch := startArcade(t, table.ModeSeats)
+	alice := srv.Enter(ch, "alice", 80, 24)
+	bob := srv.Enter(ch, "bob", 80, 24)
+	srv.FrameContaining(alice, "PRESS ENTER")
+	if c := claims(srv, alice); c != "" {
+		t.Fatalf("the title claims %q: Esc must leave the pane there", c)
+	}
+	for _, v := range []*plugintest.Viewer{alice, bob} {
+		srv.FrameContaining(v, "PRESS ENTER")
+		srv.Key(v, "enter")
+		srv.FrameContaining(v, "TAKE A SEAT")
+		srv.Key(v, "down")
+		srv.Key(v, "enter") // sits in the first open seat
+	}
+	srv.FrameContaining(alice, "O: bob")
+	if c := claims(srv, alice); c != wire.PaneKeyEsc {
+		t.Fatalf("the table claims %q: Esc goes back to the menu", c)
+	}
+	for i, mv := range []string{"1", "4", "2", "5", "3"} {
+		v := alice
+		if i%2 == 1 {
+			v = bob
+		}
+		srv.Key(v, mv)
+	}
+	srv.FrameContaining(alice, "alice wins")
+
+	// First win: a new achievement, so a Gold Star.
+	srv.Key(alice, "esc")
+	srv.FrameContaining(alice, "★ 1 GOLD STAR · NEW SETS!")
+	srv.Key(alice, "down")
+	srv.Key(alice, "down")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "◂ PLAIN ▸")
+	srv.Key(alice, "right")
+	srv.FrameContaining(alice, "? ? ?")
+	srv.Key(alice, "enter")
+	frame := srv.FrameContaining(alice, "SPENDS 1 GOLD STAR")
+	if !strings.Contains(frame, "FANCY") || !strings.Contains(frame, "Very fancy.") {
+		t.Fatalf("the offer:\n%s", frame)
+	}
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "FANCY IS YOURS.")
+	frame = srv.FrameContaining(alice, "✓ IN USE") // the reveal moves on by itself
+	if !strings.Contains(frame, "◂ FANCY ▸") || !strings.Contains(frame, "2 OF 2") {
+		t.Fatalf("after the draft:\n%s", frame)
+	}
+
+	// The Hall of Fame has alice first.
+	srv.Key(alice, "esc")
+	srv.Key(alice, "down")
+	srv.Key(alice, "down")
+	srv.Key(alice, "down")
+	srv.Key(alice, "enter")
+	frame = srv.FrameContaining(alice, "RANK")
+	if !strings.Contains(frame, "1ST") || !strings.Contains(frame, "ALICE") {
+		t.Fatalf("hall of fame:\n%s", frame)
+	}
+}
+
+// 1 PLAYER VS CPU in a seats channel is a game of your own: the channel's
+// table stays free for others.
+func TestArcadeComputerGameIsSeparate(t *testing.T) {
+	srv, ch := startArcade(t, table.ModeSeats)
+	alice := srv.Enter(ch, "alice", 80, 24)
+	srv.FrameContaining(alice, "PRESS ENTER")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "1 PLAYER VS CPU")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "O: Computer")
+
+	bob := srv.Enter(ch, "bob", 80, 24)
+	srv.FrameContaining(bob, "PRESS ENTER")
+	srv.Key(bob, "enter")
+	srv.FrameContaining(bob, "X OPEN · O OPEN")
+
+	// Back in the menu, alice can pick her game up again.
+	srv.Key(alice, "1")
+	srv.Key(alice, "esc")
+	srv.FrameContaining(alice, "RESUME · MOVE 3")
+}
+
+// In a challenge channel the menu has 2 PLAYERS and WATCH, and an
+// invitation shows on WATCH.
+func TestArcadeChallengeMenu(t *testing.T) {
+	srv, ch := startArcade(t, table.ModeChallenge)
+	alice := srv.Enter(ch, "alice", 80, 24)
+	srv.FrameContaining(alice, "PRESS ENTER")
+	srv.Key(alice, "enter")
+	frame := srv.FrameContaining(alice, "2 PLAYERS")
+	if !strings.Contains(frame, "WATCH") || strings.Contains(frame, "TAKE A SEAT") {
+		t.Fatalf("challenge menu:\n%s", frame)
+	}
+	srv.Key(alice, "down")
+	srv.Key(alice, "enter") // 2 PLAYERS: the picker asks Concord who's here
+	req := srv.NextEvent()
+	for req.Kind != wire.PluginEventMembers {
+		req = srv.NextEvent()
+	}
+	bobID := srv.UserID("bob")
+	srv.AnswerMembers(req, []wire.PluginMember{
+		{UserID: alice.ID, DisplayName: "alice", Online: true},
+		{UserID: bobID, DisplayName: "bob", Online: true},
+	})
+	srv.FrameContaining(alice, "[ CHALLENGE ]")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "Challenge sent to bob.")
+
+	bob := srv.EnterAs(ch, bobID, "bob", 80, 24)
+	srv.FrameContaining(bob, "PRESS ENTER")
+	srv.Key(bob, "enter")
+	srv.FrameContaining(bob, "★ 1 CHALLENGE FOR YOU!")
+}
+
+// A pane too small for the arcade gets a plain front door.
+func TestArcadeSmallPane(t *testing.T) {
+	srv, ch := startArcade(t, table.ModeSeats)
+	v := srv.Enter(ch, "carol", 50, 14)
+	srv.FrameContaining(v, "Enter to play")
+	srv.Key(v, "enter")
+	srv.FrameContaining(v, "M: sit down")
+	srv.Resize(v, 80, 24) // bigger now: the table stays, drawn plainly
+	for deadline := time.Now().Add(plugintest.Timeout); claims(srv, v) != wire.PaneKeyEsc; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("Esc isn't claimed on the table in a big pane")
+		}
+	}
+	srv.Key(v, "esc")
+	srv.FrameContaining(v, "TAKE A SEAT")
+}
+
+// Options are each player's own, and saved.
+func TestArcadeOptions(t *testing.T) {
+	srv, ch := startArcade(t, table.ModeSeats)
+	v := srv.Enter(ch, "alice", 80, 24)
+	srv.FrameContaining(v, "PRESS ENTER")
+	srv.Key(v, "enter")
+	srv.FrameContaining(v, "EFFECTS FULL")
+	for _, k := range []string{"up", "enter"} { // OPTIONS is last
+		srv.Key(v, k)
+	}
+	srv.FrameContaining(v, "◂ FULL ▸")
+	srv.Key(v, "right")
+	srv.FrameContaining(v, "◂ CALM ▸")
+	srv.Key(v, "esc")
+	srv.FrameContaining(v, "EFFECTS CALM")
+}

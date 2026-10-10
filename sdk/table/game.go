@@ -27,6 +27,7 @@ package table
 import (
 	"time"
 
+	"github.com/JMThomas00/Concord/sdk/arcade"
 	"github.com/JMThomas00/Concord/sdk/pane"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -84,6 +85,11 @@ type Rules struct {
 	// (records.go): it sees the final game, the player's seat and how
 	// it ended, e.g. []string{"no_losses"} for a win without losing a piece.
 	Awards func(g Game, seat int, o Outcome) []string
+	// Arcade, if set, puts the game behind the Concord Arcade front door
+	// (arcade.go): a title screen, a menu, unlockables earned with passes,
+	// a Hall of Fame and the arcade table around the board. Panes smaller
+	// than 64 x 24 get the plain layout either way.
+	Arcade *Arcade
 }
 
 // ChangedMsg is sent to every board showing a table after its game changes
@@ -115,6 +121,38 @@ type Seat struct {
 	play    func(seat int, move string) error
 	hotseat bool
 	viewer  *pane.Viewer // nil when standalone
+
+	equipped func(kind string) string // the viewer's chosen unlockables (arcade)
+	frame    func() int               // the viewer's animation clock (arcade)
+}
+
+// Equipped is the id of the unlockable of kind ("pieces", "board") this
+// viewer has chosen, or their first starter of that kind. It's "" when
+// the game has no Arcade unlockables of that kind.
+func (s *Seat) Equipped(kind string) string {
+	if s.equipped != nil {
+		if id := s.equipped(kind); id != "" {
+			return id
+		}
+	}
+	if s.rules.Arcade != nil {
+		for _, u := range s.rules.Arcade.Unlockables {
+			if u.Kind == kind && u.Tier == arcade.Starter {
+				return u.ID
+			}
+		}
+	}
+	return ""
+}
+
+// Frame counts the arcade's animation ticks for this viewer (about five a
+// second while something on screen moves), for blinking a winning line.
+// It's 0 standalone and when the viewer turned effects off.
+func (s *Seat) Frame() int {
+	if s.frame != nil {
+		return s.frame()
+	}
+	return 0
 }
 
 // Color is the viewer's Concord theme color by name ("red", "cyan",
@@ -191,7 +229,10 @@ type Table struct {
 	Seats     []Player          `json:"seats"`
 	Moves     []string          `json:"moves"`
 	Options   map[string]string `json:"options,omitempty"`
-	Resigned  int               `json:"resigned"` // seat that resigned, or -1
+	Resigned  int               `json:"resigned"`        // seat that resigned, or -1
+	Main      bool              `json:"main,omitempty"`  // ModeSeats' one table (others are games against the computer)
+	Score     []int             `json:"score,omitempty"` // wins per seat since these players sat down (arcade)
+	Ready     []bool            `json:"ready,omitempty"` // seats asking for a rematch (arcade)
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 
