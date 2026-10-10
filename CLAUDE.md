@@ -1,7 +1,7 @@
 # Concord — Claude Code Reference
 
 **A terminal-based, self-hosted chat application**
-**Last Updated:** 2026-10-02
+**Last Updated:** 2026-10-09
 
 ---
 
@@ -10,13 +10,13 @@
 Concord is a self-hosted, terminal-first chat platform built in Go. Each server is independently hosted (IRC-style decentralization). The client is a full TUI application built on the Charmbracelet stack. Voice channels use WebRTC P2P audio with Opus encoding, and an out-of-process plugin platform lets external programs (bots, integrations) attach to a server as privileged clients.
 
 **Module path:** `github.com/concord-chat/concord`
-**Current version:** v0.1.0 (pre-release, final QA; plugin platform live)
+**Current version:** v0.1.0 (released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
 
 ---
 
 ## Development Commands
 
-This repo has no `.golangci.yml` — the commands below are the actual gate used session-to-session (see the Makefile's `test`/`fmt`/`lint` targets for the same thing in `make` form). `.github/workflows/release.yml` exists (added 2026-09-08, not yet run) but only builds/publishes tagged releases — it isn't a PR-gating CI check, so this remains the real day-to-day gate.
+This repo has no `.golangci.yml` — the commands below are the actual gate used session-to-session (see the Makefile's `test`/`fmt`/`lint` targets for the same thing in `make` form). `.github/workflows/release.yml` only builds/publishes tagged releases — it isn't a PR-gating CI check, so this remains the real day-to-day gate.
 
 ```bash
 # Full check — run this before considering any change done. The server, models,
@@ -64,9 +64,9 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 
 ## Distribution & Release
 
-**`.github/workflows/release.yml`** (added 2026-09-08, not yet run in CI): triggers on a `v*` tag push or manual `workflow_dispatch`. Builds server+client(voice)+hub natively per-OS (`windows-latest` via MSYS2+clang mirroring `build-windows`, `macos-latest` via `brew install opus opusfile`, `ubuntu-latest` via `apt-get install libopus-dev libopusfile-dev`) — native runners sidestep the voice-enabled-cross-compilation problem entirely rather than trying to solve it. Publishes a **draft** GitHub Release with all three platforms' artifacts attached; review before publishing. The `dist` Makefile target remains the quick local CGO-disabled/`novoice`-only cross-compile path for ad-hoc protocol-level testing on another OS — this workflow is the real path to voice-included cross-platform releases.
+**`.github/workflows/release.yml`** (has built every release since `v0.1.0-rc1`): triggers on a `v*` tag push or manual `workflow_dispatch`. Builds server+client(voice)+hub natively per-OS (`windows-latest` via MSYS2+clang mirroring `build-windows`, `macos-latest` via `brew install opus opusfile`, `ubuntu-latest` via `apt-get install libopus-dev libopusfile-dev`) — native runners sidestep the voice-enabled-cross-compilation problem entirely rather than trying to solve it. Publishes a **draft** GitHub Release with all three platforms' artifacts attached; review before publishing. The `dist` Makefile target remains the quick local CGO-disabled/`novoice`-only cross-compile path for ad-hoc protocol-level testing on another OS — this workflow is the real path to voice-included cross-platform releases.
 
-**`Dockerfile` / `docker-compose.yml` / `.dockerignore`** (added 2026-09-08, **not verified — no Docker available in the environment that wrote them**): multi-stage build (`golang:1.24-alpine` → `alpine:3.20`), contains only `concord-server` and `concord-hub` (both pure Go, no CGO) — the client is a TUI app and isn't a sensible container workload. Neither binary gets new non-interactive bootstrap config support; both already skip their first-run wizard whenever their config file exists, so the documented pattern is run-once-interactively-to-generate-config, then mount that file for all subsequent detached runs. See `docker-compose.yml`'s own top comment for the exact one-time setup steps. **Needs a real `docker build`/`docker run` smoke test before relying on it.**
+**`Dockerfile` / `docker-compose.yml` / `.dockerignore`** (in use: the official VPS and VM 113's test server both run them): multi-stage build (`golang:1.24-alpine` → `alpine:3.20`), contains only `concord-server` and `concord-hub` (both pure Go, no CGO) — the client is a TUI app and isn't a sensible container workload. Neither binary gets new non-interactive bootstrap config support; both already skip their first-run wizard whenever their config file exists, so the documented pattern is run-once-interactively-to-generate-config, then mount that file for all subsequent detached runs. See `docker-compose.yml`'s own top comment for the exact one-time setup steps.
 
 **The guided installer (To Do E/G, 2026-10-03): `cmd/install` (`concord-install`) + `internal/installer`.** The README's one line downloads `scripts/install.sh` (Linux/macOS) or `scripts/install.ps1` (Windows) from the latest release. Each fetches `concord-install-<os>-<arch>`, checks it against `SHA256SUMS`, and runs it with the terminal (`</dev/tty`).
 - **The program** is one Bubble Tea program (`cmd/install/model.go`):
@@ -468,8 +468,8 @@ Selected themes: dracula, alucard-dark, alucard-light, catppuccin-mocha, gruvbox
 ## Known Issues / Remaining Work
 
 1. **Voice multi-user mesh** — P2P WebRTC with N>2 clients has not been fully stress-tested. The ICE/STUN negotiation and mesh complexity (N×(N-1) peer connections) need validation.
-2. **Most permissions still only checked at the role-bitfield level, not the overwrite-aware path** — see Permissions & Channel Overwrites above; only `PermissionSendMessages`/`PermissionAttachFiles` go through `hasChannelPermission`. A permission the Roles editor lets you toggle isn't guaranteed to be enforced for the action it implies.
+2. **Most permissions still only checked at the role-bitfield level, not the overwrite-aware path** — see Permissions & Channel Overwrites above; only Send Messages, Attach Files, View Channels (panes, threads), Connect and Speak go through `hasChannelPermission`. A permission the Roles editor lets you toggle isn't guaranteed to be enforced for the action it implies.
 3. **Invites (`PermissionCreateInvite`) are unbuilt** — the permission bit exists, no invite-generation/redemption code does. Deferred to its own future initiative.
 4. **`-race` needs a real C toolchain** — unavailable on some machines this project is developed from; a concurrency bug can slip through a normal `go test` pass. Worth an explicit `-race` run (see Development Commands) whenever touching shared state (connection lifecycle, plugin supervision, the hub's client map) if a toolchain is available.
 5. ~~One live connection per account~~ — fixed 2026-09-28 (see Multiple connections per account above). It had shown up as an install form stuck on "Working…" and new channels not appearing, because a second computer signed in as the same user was getting them.
-6. **This branch's CI/Docker/install-script additions are unverified** — `.github/workflows/release.yml` has never actually run (needs a real tag push), the `Dockerfile`/`docker-compose.yml` have never been built/run (no Docker in the environment that wrote them), and `scripts/install.sh` was only dry-run tested against a local fake archive, not a real GitHub Release. See Distribution & Release above.
+6. **Not yet verified for real:** macOS at all (install, client, boot mode), group voice with 3+ people and a TURN relay in use, and the installer's Linux library installs. See Distribution & Release above.
