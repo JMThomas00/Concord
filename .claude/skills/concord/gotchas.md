@@ -65,3 +65,8 @@ with two accounts.
 **Don't float the UI libraries.** `go get -u` on bubbletea/bubbles/lipgloss
 can pull versions the SDK hasn't been tested with. Update the SDK instead,
 and let it choose.
+
+**Concord centres each line of a frame on its own.** A frame narrower than
+the pane is centred, but line by line: lines of different lengths shift
+against each other and columns zig-zag. Pad every line to the same width
+(the pane's). `sdk/arcade`'s canvas does; `pane.Fit` only trims.
