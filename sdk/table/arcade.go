@@ -72,6 +72,13 @@ type Arcade struct {
 	ResultArt func(c *arcade.Canvas, g Game, o Outcome, x, y, w, h, frame int) bool
 }
 
+// Hinter is implemented by a board with instructions for the status row
+// ("Enter where it lands"), shown in the plain colour when Status has
+// nothing to report; Status is for what went wrong, in red.
+type Hinter interface {
+	Hint() string
+}
+
 // Animator is implemented by a board that sometimes moves on its own, such
 // as a callout after a move ("DOUBLE!"). While Animating is true the kit
 // redraws it about five times a second, then once more when it stops.
@@ -1164,6 +1171,9 @@ func (m *viewerModel) drawTable(s scr) {
 	if over { // the board's own complaint about a finished game reads oddly here
 		status = ""
 	}
+	if h, ok := board.(Hinter); ok && status == "" && !over {
+		status, role = h.Hint(), "fg"
+	}
 	if status == "" {
 		status, role = m.tableStatus(t, turn)
 	}
@@ -1380,7 +1390,7 @@ func (m *viewerModel) drawSets(s scr) {
 	focus, _ := current(kinds[m.setsRow])
 	owned := rec.Rewards.Owns(focus.ID, a.Unlockables)
 	if a.Preview != nil {
-		a.Preview(s.c, focus.ID, sel, s.ox+4, s.oy+3, 38, 17, !owned)
+		a.Preview(s.c, focus.ID, sel, s.ox+3, s.oy+3, 40, 17, !owned)
 	}
 	x := 45
 	for row, kind := range kinds {
@@ -1420,7 +1430,7 @@ func (m *viewerModel) drawSets(s scr) {
 		s.text(x, y+1, cut("LOCKED: EARN "+a.reward(2), s.w-x-3), "dim", "", false)
 	}
 	have, all := rec.Rewards.Count(a.Unlockables), len(a.Unlockables)
-	s.text(x, 14, a.collection()+" OWNED", "pink", "", true)
+	s.text(x, 14, "COLLECTED", "pink", "", true)
 	for i := 0; i < all && x+i < s.w-3; i++ {
 		ch, role := "▯", "ghost"
 		if i < have {
