@@ -72,6 +72,15 @@ type Arcade struct {
 	ResultArt func(c *arcade.Canvas, g Game, o Outcome, x, y, w, h, frame int) bool
 }
 
+// Animator is implemented by a board that sometimes moves on its own, such
+// as a callout after a move ("DOUBLE!"). While Animating is true the kit
+// redraws it about five times a second, then once more when it stops.
+// Check Seat.Effects first: players who turned effects off never get
+// animation, so keep callouts static or leave them out for them.
+type Animator interface {
+	Animating() bool
+}
+
 // Kind is one row of the collection screen.
 type Kind struct {
 	ID    string // matches arcade.Unlockable.Kind
@@ -244,10 +253,11 @@ func (k *Kit) startTicker() {
 func (k *Kit) tick() bool {
 	live := false
 	for id, m := range k.viewers {
-		if m.animated() {
-			live = true
+		a := m.animated()
+		if a || m.ticked { // one more frame after it stops, to clear it
 			k.host.Send(id, tickMsg{})
 		}
+		m.ticked, live = a, live || a
 	}
 	return live
 }
@@ -352,7 +362,13 @@ func (m *viewerModel) animated() bool {
 	if !m.reveal.IsZero() {
 		return true // the draft's reveal moves on by itself
 	}
-	if m.effects() != "" || !m.arcadeOn() || time.Since(m.lastKey) > attractFor {
+	if m.effects() != "" || !m.arcadeOn() {
+		return false
+	}
+	if a, ok := m.board.(Animator); ok && m.screen == screenTable && a.Animating() {
+		return true // the board asked, keys or not (the other player's move)
+	}
+	if time.Since(m.lastKey) > attractFor {
 		return false
 	}
 	switch m.screen {

@@ -124,6 +124,16 @@ type Seat struct {
 
 	equipped func(kind string) string // the viewer's chosen unlockables (arcade)
 	frame    func() int               // the viewer's animation clock (arcade)
+	effects  func() string            // the viewer's Effects option (arcade)
+}
+
+// Effects is the viewer's arcade Effects option: "" (full), "calm" or
+// "off". Only "" gets animation (see Animator); it's always "" standalone.
+func (s *Seat) Effects() string {
+	if s.effects != nil {
+		return s.effects()
+	}
+	return ""
 }
 
 // Equipped is the id of the unlockable of kind ("pieces", "board") this
