@@ -96,6 +96,7 @@ type Kit struct {
 
 	ticking bool // the arcade animation clock is running (arcade.go)
 	tickGen int
+	ticks   int // ticks so far, for the clocks' slower redraw
 	rnd     *mrand.Rand // offers of unlockables
 }
 
@@ -170,6 +171,7 @@ func (k *Kit) room(channelID uuid.UUID) *Room {
 		t.rebuild(&k.rules)
 	}
 	k.rooms[channelID] = r
+	k.resumeClocks(r)
 	return r
 }
 
@@ -235,6 +237,7 @@ func (k *Kit) newTableWith(r *Room, seats []Player, opts map[string]string) *Tab
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	t.rebuild(&k.rules)
+	k.resetClock(t)
 	r.Tables = append(r.Tables, t)
 	k.changed(r, t, "")
 	return t
@@ -270,10 +273,18 @@ func (k *Kit) play(r *Room, t *Table, seat int, move string) error {
 	if seat < 0 || t.game.Turn() != seat {
 		return fmt.Errorf("it's not your turn")
 	}
+	if t.outOfTime(seat) { // the timer hasn't caught it yet
+		t.flag(seat)
+		k.reportResult(r, t)
+		k.changed(r, t, "")
+		return fmt.Errorf("your time ran out")
+	}
 	if err := t.game.Play(move); err != nil {
 		return err
 	}
+	t.spend(seat)
 	t.Moves = append(t.Moves, move)
+	k.clockMoved(r, t, seat)
 	k.changed(r, t, move)
 	k.moveSound(r, t, move)
 	k.afterMove(r, t, seat)
@@ -358,6 +369,7 @@ func (k *Kit) stand(r *Room, t *Table, userID uuid.UUID) {
 		if t.outcome().Over { // a finished game makes room for the next one
 			t.Moves, t.Resigned = nil, -1
 			t.rebuild(&k.rules)
+			k.resetClock(t)
 		}
 		k.changed(r, t, "")
 	}
@@ -365,6 +377,7 @@ func (k *Kit) stand(r *Room, t *Table, userID uuid.UUID) {
 
 func (k *Kit) resign(r *Room, t *Table, seat int) {
 	if seat >= 0 && t.full() && !t.outcome().Over {
+		t.stopClock()
 		t.Resigned = seat
 		k.reportResult(r, t)
 		k.changed(r, t, "")
@@ -389,6 +402,7 @@ func (k *Kit) rematch(r *Room, t *Table) {
 		t.Options = copyMap(r.settings)
 	}
 	t.rebuild(&k.rules)
+	k.resetClock(t)
 	k.changed(r, t, "")
 	k.afterMove(r, t, -1)
 }

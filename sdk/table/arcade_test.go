@@ -2,6 +2,7 @@ package table_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -406,4 +407,45 @@ func TestChallengeCarriesOptions(t *testing.T) {
 	srv.FrameContaining(bob, "CHALLENGED YOU (4X4)")
 	srv.Key(bob, "enter") // accept
 	srv.FrameContaining(bob, "VS ALICE · 4x4")
+}
+
+// sizeBoard reports the area the kit gives it.
+type sizeBoard struct{ *stubBoard }
+
+func (b sizeBoard) Draw(c *arcade.Canvas, x, y, w, h int) {
+	c.Text(x, y, fmt.Sprintf("AREA=%dx%d", w, h), "fg", "", false)
+}
+
+func TestArcadeGrowGivesTheBoardThePane(t *testing.T) {
+	for _, grow := range []bool{false, true} {
+		rules := arcadeRules()
+		rules.Arcade.Grow = grow
+		plain := rules.NewBoard
+		rules.NewBoard = func(s *table.Seat) tea.Model { return sizeBoard{&stubBoard{Model: plain(s), seat: s}} }
+		srv := plugintest.NewServer(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		cfg := srv.Config()
+		go func() { plugin.Run(ctx, cfg, table.New(rules).Handler()); close(done) }()
+		t.Cleanup(func() { cancel(); <-done })
+		srv.WaitReady()
+		ch := uuid.New()
+		srv.Channel(wire.Channel{ID: ch, Name: "games", PluginConfig: map[string]string{table.SettingSeating: table.ModeSeats}})
+		alice := srv.Enter(ch, "alice", 120, 40)
+		srv.FrameContaining(alice, "PRESS ENTER")
+		srv.Key(alice, "enter")
+		srv.FrameContaining(alice, "TAKE A SEAT")
+		srv.Key(alice, "down")
+		srv.Key(alice, "enter")
+		want := "AREA=42x18" // the 80 x 24 frame
+		if grow {
+			want = "AREA=82x34" // everything between the panels
+		}
+		srv.FrameContaining(alice, want)
+	}
+}
+
+func (b sizeBoard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	_, cmd := b.stubBoard.Update(msg)
+	return b, cmd
 }

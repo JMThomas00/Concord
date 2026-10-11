@@ -6,19 +6,21 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// cell is one character cell. A pixel cell holds two pixels, top and
-// bottom, each a role ("" = see-through).
+// cell is one character cell. A pixel cell holds four fine pixels, top
+// left, top right, bottom left, bottom right, each a role ("" =
+// see-through); a half-block pixel is two of them side by side.
 type cell struct {
-	ch       string
-	fg, bg   string
-	bold     bool
-	px       bool
-	top, bot string
-	skip     bool // the right half of a wide character
+	ch     string
+	fg, bg string
+	bold   bool
+	px     bool
+	q      [4]string
+	skip   bool // the right half of a wide character
 }
 
 // Canvas is a grid of character cells the size of a pane. Coordinates are
-// cells; pixel coordinates (py) count half-rows, two to a cell.
+// cells; pixel coordinates (py) count half-rows, two to a cell. Fine
+// pixels (FinePx) also halve the columns: four to a cell.
 type Canvas struct {
 	W, H   int
 	pal    Palette
@@ -95,10 +97,20 @@ func (c *Canvas) Fill(x, y, n int, ch, fg, bg string) {
 
 // Px sets one pixel: column x, half-row py.
 func (c *Canvas) Px(x, py int, role string) {
-	if py < 0 {
+	c.FinePx(2*x, py, role)
+	c.FinePx(2*x+1, py, role)
+}
+
+// FinePx sets one fine pixel: half-column fx, half-row fy. Fine pixels are
+// drawn with quadrant characters (▘▝▖▗▚▞▙▛▜▟), twice the detail of Px
+// across but half as wide, so art for them is drawn twice as wide. A cell
+// shows at most two colours, so keep fine art to one colour on a
+// background; a third colour in one cell is drawn in the second's place.
+func (c *Canvas) FinePx(fx, fy int, role string) {
+	if fx < 0 || fy < 0 {
 		return
 	}
-	cl := c.at(x, py/2)
+	cl := c.at(fx/2, fy/2)
 	if cl == nil {
 		return
 	}
@@ -106,10 +118,21 @@ func (c *Canvas) Px(x, py int, role string) {
 		bg := cl.bg
 		*cl = cell{px: true, bg: bg}
 	}
-	if py%2 == 0 {
-		cl.top = role
-	} else {
-		cl.bot = role
+	cl.q[(fy%2)*2+fx%2] = role
+}
+
+// FineSprite draws pixel art in fine pixels from half-column fx and
+// half-row fy: one string per row, one rune per fine pixel, looked up in
+// pal (runes not in pal are see-through).
+func (c *Canvas) FineSprite(fx, fy int, rows []string, pal map[rune]string) {
+	for j, row := range rows {
+		i := 0
+		for _, k := range row {
+			if role, ok := pal[k]; ok && role != "" {
+				c.FinePx(fx+i, fy+j, role)
+			}
+			i++
+		}
 	}
 }
 
@@ -233,23 +256,41 @@ func (c *Canvas) String() string {
 	return b.String()
 }
 
-// glyph turns a pixel cell into a half-block character.
+// quadrants are the block characters for each set of lit quadrants: bit 1
+// top left, 2 top right, 4 bottom left, 8 bottom right.
+var quadrants = [16]string{" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"}
+
+// glyph turns a pixel cell into a block character: the first role found
+// (top left first) is drawn in the foreground, everything else is the
+// background -- a second role, or the cell's own background where nothing
+// is drawn. Half-block cells come out as ▀ ▄ █ exactly as they always have.
 func (c *Canvas) glyph(cl cell) (ch, fg, bg string, bold bool) {
 	if !cl.px {
 		return cl.ch, cl.fg, cl.bg, cl.bold
 	}
-	t, u := cl.top, cl.bot
-	switch {
-	case t == "" && u == "":
-		return " ", "fg", cl.bg, false
-	case t == u:
-		return "█", t, cl.bg, false
-	case u == "":
-		return "▀", t, cl.bg, false
-	case t == "":
-		return "▄", u, cl.bg, false
+	a, b := "", ""
+	for _, r := range cl.q {
+		switch {
+		case r == "" || r == a || r == b:
+		case a == "":
+			a = r
+		case b == "":
+			b = r
+		}
 	}
-	return "▀", t, u, false
+	if a == "" {
+		return " ", "fg", cl.bg, false
+	}
+	bits := 0
+	for i, r := range cl.q {
+		if r == a {
+			bits |= 1 << i
+		}
+	}
+	if b == "" {
+		b = cl.bg
+	}
+	return quadrants[bits], a, b, false
 }
 
 // style is the SGR parameters for a cell's look. Built once per look per
