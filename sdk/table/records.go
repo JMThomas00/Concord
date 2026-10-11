@@ -155,7 +155,7 @@ func (k *Kit) recordResult(t *Table, o Outcome) {
 		r.Games++
 		before := len(r.Unlocked)
 		switch {
-		case o.Winner == i:
+		case o.Won(i):
 			r.Wins++
 			r.Streak++
 			r.BestStreak = max(r.BestStreak, r.Streak)

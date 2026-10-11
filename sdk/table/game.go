@@ -25,6 +25,8 @@
 package table
 
 import (
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/JMThomas00/Concord/sdk/arcade"
@@ -53,9 +55,49 @@ type Outcome struct {
 	Over   bool
 	Winner int    // seat that won, or -1 for a draw
 	Reason string // e.g. "checkmate", "no moves left", "road", "resigned", "time"
+	// Team is everyone who won along with Winner, in a game played in
+	// partnerships (dominoes' partners); nil otherwise.
+	Team []int
 	// Clock is each seat's time left, in a game with a clock (the kit
 	// fills it in; a Game leaves it nil).
 	Clock []time.Duration
+}
+
+// Won reports whether seat won: the winner, or one of their team.
+func (o Outcome) Won(seat int) bool {
+	return o.Over && seat >= 0 && (o.Winner == seat || slices.Contains(o.Team, seat))
+}
+
+// Option keys the kit itself sets in a game's options.
+const (
+	// OptionPlayers is how many seats a game has (Rules.MinSeats): "2"
+	// to the number of SeatNames.
+	OptionPlayers = "players"
+	// OptionSeed is a random number for a game that deals or rolls
+	// (Rules.Seeded), so replaying its moves deals the same again.
+	OptionSeed = "seed"
+)
+
+// OptionSeat is the option key for what fills seat i (from 1) on the NEW
+// GAME screen: "cpu1", "cpu2" or "cpu3" (the computer at that level), or
+// "person" (left open for someone to sit down).
+func OptionSeat(i int) string { return "seat" + strconv.Itoa(i+1) }
+
+// Seats is how many seats a game with these options has.
+func (r *Rules) Seats(options map[string]string) int {
+	n := len(r.SeatNames)
+	if r.MinSeats > 0 && r.MinSeats < n {
+		if v, err := strconv.Atoi(options[OptionPlayers]); err == nil && v >= r.MinSeats && v <= n {
+			return v
+		}
+	}
+	return n
+}
+
+// Seed is the game's random seed (Rules.Seeded), or 0.
+func Seed(options map[string]string) uint64 {
+	v, _ := strconv.ParseUint(options[OptionSeed], 10, 64)
+	return v
 }
 
 // Rules describes a game to the kit.
@@ -63,8 +105,18 @@ type Rules struct {
 	// Name is the game's name, e.g. "Chess".
 	Name string
 	// SeatNames name the seats in order, e.g. ["White", "Black"]. Their
-	// count is the number of players.
+	// count is the number of players (the most, with MinSeats).
 	SeatNames []string
+	// MinSeats, if set below len(SeatNames), lets whoever starts a game
+	// choose how many play (OptionPlayers, on the NEW GAME screen). With
+	// more than two seats the NEW GAME screen also asks what fills each
+	// other seat: the computer at a level, or a person (OptionSeat). Rules.New
+	// gets the choices in its options. See many.go.
+	MinSeats int
+	// Seeded asks the kit for a random seed in every game's options
+	// (OptionSeed), new for every game and rematch: a game that deals or
+	// rolls draws from it, so replaying the moves deals the same again.
+	Seeded bool
 	// New starts a game. options are the channel's settings (its
 	// create_field values, e.g. a Tak board size), or the standalone
 	// app's choices; ignore what you don't use.
@@ -244,14 +296,14 @@ func (s *Seat) Play(move string) error {
 
 // Table is one game in progress (or finished) and its seats.
 type Table struct {
-	ID        string            `json:"id"`
-	Seats     []Player          `json:"seats"`
-	Moves     []string          `json:"moves"`
-	Options   map[string]string `json:"options,omitempty"`
-	Resigned  int               `json:"resigned"`        // seat that resigned, or -1
-	Main      bool              `json:"main,omitempty"`  // ModeSeats' one table (others are games against the computer)
-	Score     []int             `json:"score,omitempty"` // wins per seat since these players sat down (arcade)
-	Ready     []bool            `json:"ready,omitempty"` // seats asking for a rematch (arcade)
+	ID       string            `json:"id"`
+	Seats    []Player          `json:"seats"`
+	Moves    []string          `json:"moves"`
+	Options  map[string]string `json:"options,omitempty"`
+	Resigned int               `json:"resigned"`        // seat that resigned, or -1
+	Main     bool              `json:"main,omitempty"`  // ModeSeats' one table (others are games against the computer)
+	Score    []int             `json:"score,omitempty"` // wins per seat since these players sat down (arcade)
+	Ready    []bool            `json:"ready,omitempty"` // seats asking for a rematch (arcade)
 	// The clocks (Rules.Clock): each seat's time left when its clock last
 	// stopped, when the side to move's started (zero: stopped), and the
 	// seat that ran out of time, plus one (0: nobody).
@@ -259,7 +311,7 @@ type Table struct {
 	TurnAt    time.Time       `json:"turn_at,omitempty"`
 	OutOfTime int             `json:"out_of_time,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 
 	game Game // rebuilt from Moves
 }

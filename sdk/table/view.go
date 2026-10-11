@@ -57,6 +57,7 @@ type viewerModel struct {
 	setupOpts  map[string]string       // the NEW GAME screen's choices
 	setupStart string                  // what START does
 	setupThen  func(map[string]string) // what START runs
+	setupList  []Option                // every row it could show (the kit's and the game's)
 
 	width, height int
 }
@@ -436,7 +437,7 @@ func (m *viewerModel) pickerKey(msg tea.KeyMsg) tea.Cmd {
 		if r.mode() == ModePrivate {
 			verb = "PLAY "
 		}
-		m.withSetup(verb+strings.ToUpper(them.Name), start)
+		m.withSetup(verb+strings.ToUpper(them.Name), false, start)
 	}
 	return nil
 }
@@ -493,7 +494,7 @@ func (m *viewerModel) tableView() string {
 	if o := t.outcome(); o.Over {
 		result := "Draw"
 		if o.Winner >= 0 {
-			result = t.Seats[o.Winner].Name + " wins"
+			result = teamWins(t, o)
 		}
 		if o.Reason != "" {
 			result += " — " + o.Reason
