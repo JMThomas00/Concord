@@ -113,7 +113,10 @@ var dracula = map[string]string{
 //	<paint>D a darker shade of each paint, e.g. "cyanD"
 //	<colour>B a background tint of purple and each paint, e.g. "greenB" (a
 //	         chalkboard), falling back to "line" where colours can't mix
-type Palette struct{ roles map[string]Color }
+type Palette struct {
+	roles map[string]Color
+	codes map[string][2]string // each role's SGR parameters as foreground and background, worked out once
+}
 
 // NewPalette builds the roles from a viewer's theme (nil: Dracula).
 func NewPalette(t *wire.PaneTheme) Palette {
@@ -150,7 +153,24 @@ func NewPalette(t *wire.PaneTheme) Palette {
 	for _, col := range append([]string{"purple"}, Paints...) {
 		r[col+"B"] = Mix(r[col], r["bg"], .8, r["line"])
 	}
+	p.codes = make(map[string][2]string, len(r))
+	for role, c := range r {
+		p.codes[role] = [2]string{c.sgr(false), c.sgr(true)}
+	}
 	return p
+}
+
+// code is a role's SGR parameters as a foreground ("38;2;…") or background,
+// the default ("39" / "49") for an unknown role.
+func (p Palette) code(role string, bg bool) string {
+	i := 0
+	if bg {
+		i = 1
+	}
+	if c, ok := p.codes[role]; ok {
+		return c[i]
+	}
+	return p.Get(role).sgr(bg)
 }
 
 // Get returns a role's colour (the default colour for an unknown role).

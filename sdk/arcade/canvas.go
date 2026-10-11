@@ -20,14 +20,20 @@ type cell struct {
 // Canvas is a grid of character cells the size of a pane. Coordinates are
 // cells; pixel coordinates (py) count half-rows, two to a cell.
 type Canvas struct {
-	W, H  int
-	pal   Palette
-	cells []cell
+	W, H   int
+	pal    Palette
+	cells  []cell
+	styles map[styleKey]string // SGR strings already built, for String
+}
+
+type styleKey struct {
+	fg, bg string
+	bold   bool
 }
 
 // New makes a blank canvas.
 func New(w, h int, pal Palette) *Canvas {
-	c := &Canvas{W: max(0, w), H: max(0, h), pal: pal}
+	c := &Canvas{W: max(0, w), H: max(0, h), pal: pal, styles: map[styleKey]string{}}
 	c.cells = make([]cell, c.W*c.H)
 	for i := range c.cells {
 		c.cells[i] = cell{ch: " ", fg: "fg"}
@@ -185,10 +191,13 @@ func (c *Canvas) Keys(x, y int, keys ...Key) int {
 // shift against each other.
 func (c *Canvas) String() string {
 	var b strings.Builder
+	b.Grow(c.W * c.H * 3)
 	for y := 0; y < c.H; y++ {
 		row := c.cells[y*c.W : (y+1)*c.W]
 		last := len(row) - 1
 		cur, curBg := "", false
+		var lastKey styleKey
+		lastSGR, haveLast := "", false
 		for x := 0; x <= last; x++ {
 			cl := row[x]
 			if cl.skip {
@@ -199,14 +208,18 @@ func (c *Canvas) String() string {
 				b.WriteByte(' ') // a plain space shows no colour: keep the current style
 				continue
 			}
-			sgr := c.style(fg, bg, bold)
+			k := styleKey{fg, bg, bold}
+			if !haveLast || k != lastKey { // runs of one look are common: skip the lookup
+				lastKey, lastSGR, haveLast = k, c.style(fg, bg, bold), true
+			}
+			sgr := lastSGR
 			if sgr != cur {
 				b.WriteString("\x1b[0")
 				if sgr != "" {
 					b.WriteString(";" + sgr)
 				}
 				b.WriteString("m")
-				cur, curBg = sgr, bg != "" && c.pal.Get(bg).sgr(true) != "49"
+				cur, curBg = sgr, bg != "" && c.pal.code(bg, true) != "49"
 			}
 			b.WriteString(ch)
 		}
@@ -239,22 +252,34 @@ func (c *Canvas) glyph(cl cell) (ch, fg, bg string, bold bool) {
 	return "▀", t, u, false
 }
 
+// style is the SGR parameters for a cell's look. Built once per look per
+// canvas: String asks for every cell, and in client code (WebAssembly in
+// an interpreter) building them each time made a frame take ~200 ms.
 func (c *Canvas) style(fg, bg string, bold bool) string {
+	k := styleKey{fg, bg, bold}
+	if s, ok := c.styles[k]; ok {
+		return s
+	}
 	var parts []string
 	if bold {
 		parts = append(parts, "1")
 	}
 	if fg != "" && fg != "default" {
-		if s := c.pal.Get(fg).sgr(false); s != "39" {
+		if s := c.pal.code(fg, false); s != "39" {
 			parts = append(parts, s)
 		}
 	}
 	if bg != "" {
-		if s := c.pal.Get(bg).sgr(true); s != "49" {
+		if s := c.pal.code(bg, true); s != "49" {
 			parts = append(parts, s)
 		}
 	}
-	return strings.Join(parts, ";")
+	s := strings.Join(parts, ";")
+	if c.styles == nil {
+		c.styles = map[styleKey]string{}
+	}
+	c.styles[k] = s
+	return s
 }
 
 // Shade sets the background of the cells in a w x h box at (x, y),
