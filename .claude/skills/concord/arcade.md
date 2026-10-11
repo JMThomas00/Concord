@@ -104,6 +104,19 @@ func (b *Board) Status() string                                  // e.g. "not yo
   callouts when `seat.Effects() != ""`: those players get no animation.
 - **The status row:** `Status()` is for errors (red). For instructions
   ("Enter where it lands") implement `table.Hinter` (`Hint() string`).
+- **Game options** (a board size, komi): list them in `Arcade.Options`
+  (`table.Option{Key, Label, Values, Names, Default, Describe}`), not as
+  channel create_fields. The kit shows a NEW GAME screen before every new
+  game (against the computer, the first to sit at a seats table, a
+  challenger, a private game), remembers each player's last choices, passes
+  them to `Rules.New` with the channel's settings, shows them on the table
+  and in invitations, and keeps them for rematches. `Arcade.SetupPreview`
+  draws what they make. Tak is the reference.
+- **The left panel:** a board implementing `table.Panel`
+  (`DrawPanel(c, x, y, w, h)`) replaces the score under the players' boxes
+  (Tak shows the stack under the cursor there).
+- **Callouts must clear the cells under them** (`Canvas.Fill` with spaces),
+  not just shade them: pixels underneath otherwise show through the letters.
 - **Previews** get 40 x 17 cells in the collection, 21 x 6 on offer cards
   and 20 x 6 on the menu; grey out only what's locked.
 - **Under 64 x 24** the kit shows a plain "Enter to play" door and the plain
