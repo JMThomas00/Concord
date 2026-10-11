@@ -89,6 +89,7 @@ type playerRecord struct {
 	Equipped map[string]string `json:"equipped,omitempty"` // kind -> id
 	Muted    bool              `json:"muted,omitempty"`
 	Effects  string            `json:"effects,omitempty"` // "" (full), "calm" or "off"
+	Setup    map[string]string `json:"setup,omitempty"`   // their last NEW GAME choices
 	Earned   int               `json:"-"`                 // passes from the last game, for its results screen
 }
 

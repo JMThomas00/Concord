@@ -290,3 +290,117 @@ func TestArcadeBoardGetsChoicesAndAnimates(t *testing.T) {
 	srv.Key(alice, "enter")
 	srv.FrameContaining(alice, "PIECES=fancy")
 }
+
+// panelBoard is stubBoard with a panel of its own.
+type panelBoard struct{ *stubBoard }
+
+func (b panelBoard) DrawPanel(c *arcade.Canvas, x, y, w, h int) {
+	c.Text(x, y, "MY PANEL", "fg", "", false)
+}
+
+func (b panelBoard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	_, cmd := b.stubBoard.Update(msg)
+	return b, cmd // stay wrapped
+}
+
+// optionsRules is the stub arcade game with an option chosen per game.
+func optionsRules() table.Rules {
+	rules := arcadeRules()
+	plain := rules.NewBoard
+	rules.NewBoard = func(s *table.Seat) tea.Model { return panelBoard{&stubBoard{Model: plain(s), seat: s}} }
+	rules.Arcade.Options = []table.Option{{Key: "size", Label: "BOARD", Values: []string{"3", "4"}, Names: []string{"3x3", "4x4"}, Default: "3",
+		Describe: func(v string) string { return v + " IN A ROW" }}}
+	return rules
+}
+
+func startOptions(t *testing.T, seating string) (*plugintest.Server, uuid.UUID) {
+	t.Helper()
+	srv := plugintest.NewServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { plugin.Run(ctx, srv.Config(), table.New(optionsRules()).Handler()); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	srv.WaitReady()
+	ch := uuid.New()
+	srv.Channel(wire.Channel{ID: ch, Name: "games", PluginConfig: map[string]string{table.SettingSeating: seating}})
+	return srv, ch
+}
+
+// Each new game's options are chosen on NEW GAME, remembered for next time,
+// and shown with the game; a board's panel replaces the score.
+func TestNewGameOptions(t *testing.T) {
+	srv, ch := startOptions(t, table.ModeSeats)
+	alice := srv.Enter(ch, "alice", 80, 24)
+	srv.FrameContaining(alice, "PRESS ENTER")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "1 PLAYER VS CPU")
+	srv.Key(alice, "enter")
+	frame := srv.FrameContaining(alice, "◂ 3x3 ▸")
+	if !strings.Contains(frame, "3 IN A ROW") || !strings.Contains(frame, "VS CPU · NORMAL") {
+		t.Fatalf("NEW GAME:\n%s", frame)
+	}
+	srv.Key(alice, "up") // START -> BOARD
+	srv.Key(alice, "right")
+	srv.FrameContaining(alice, "◂ 4x4 ▸")
+	srv.Key(alice, "enter")
+	frame = srv.FrameContaining(alice, "VS CPU · NORMAL · 4x4")
+	if !strings.Contains(frame, "MY PANEL") || strings.Contains(frame, "SCORE") {
+		t.Fatalf("the board's panel should replace the score:\n%s", frame)
+	}
+
+	// A seats table: the first to sit chooses (remembered: 4x4)...
+	srv.Key(alice, "esc")
+	srv.FrameContaining(alice, "TAKE A SEAT")
+	srv.Key(alice, "down")
+	srv.Key(alice, "enter")
+	if f := srv.FrameContaining(alice, "TAKE THE X SEAT"); !strings.Contains(f, "◂ 4x4 ▸") {
+		t.Fatalf("the last choice wasn't remembered:\n%s", f)
+	}
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "MY PANEL")
+	// ...and the second just sits.
+	bob := srv.Enter(ch, "bob", 80, 24)
+	srv.FrameContaining(bob, "PRESS ENTER")
+	srv.Key(bob, "enter")
+	srv.FrameContaining(bob, "TAKE A SEAT")
+	srv.Key(bob, "down")
+	srv.Key(bob, "enter")
+	frame = srv.FrameContaining(bob, "MY PANEL")
+	if !strings.Contains(frame, "VS ALICE · 4x4") {
+		t.Fatalf("bob's table:\n%s", frame)
+	}
+}
+
+// A challenge carries the challenger's choices, and the invitation says so.
+func TestChallengeCarriesOptions(t *testing.T) {
+	srv, ch := startOptions(t, table.ModeChallenge)
+	alice := srv.Enter(ch, "alice", 80, 24)
+	srv.FrameContaining(alice, "PRESS ENTER")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "2 PLAYERS")
+	srv.Key(alice, "down")
+	srv.Key(alice, "enter")
+	req := srv.NextEvent()
+	for req.Kind != wire.PluginEventMembers {
+		req = srv.NextEvent()
+	}
+	bobID := srv.UserID("bob")
+	srv.AnswerMembers(req, []wire.PluginMember{{UserID: bobID, DisplayName: "bob", Online: true}})
+	srv.FrameContaining(alice, "[ CHALLENGE ]")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "CHALLENGE BOB")
+	srv.Key(alice, "up")
+	srv.Key(alice, "right")
+	srv.Key(alice, "enter")
+	srv.FrameContaining(alice, "(4X4)") // the lobby is in capitals
+
+	bob := srv.EnterAs(ch, bobID, "bob", 80, 24)
+	srv.FrameContaining(bob, "PRESS ENTER")
+	srv.Key(bob, "enter")
+	srv.Key(bob, "down")
+	srv.Key(bob, "down")
+	srv.Key(bob, "enter") // WATCH: the invitation
+	srv.FrameContaining(bob, "CHALLENGED YOU (4X4)")
+	srv.Key(bob, "enter") // accept
+	srv.FrameContaining(bob, "VS ALICE · 4x4")
+}

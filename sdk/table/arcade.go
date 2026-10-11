@@ -70,6 +70,42 @@ type Arcade struct {
 	// ResultArt may draw something in w x h cells at (x, y) on the results
 	// screen and report true; otherwise the final board is shown there.
 	ResultArt func(c *arcade.Canvas, g Game, o Outcome, x, y, w, h, frame int) bool
+
+	// Options are the game's own rules for one game (Tak: board size and
+	// komi), chosen on a NEW GAME screen before every new game rather than
+	// set for the whole channel: against the computer, by the first player to
+	// sit at a seats table, by a challenger (the invitation says what was
+	// chosen) and in private games. They reach Rules.New with the channel's
+	// settings, and a rematch keeps them.
+	Options []Option
+	// SetupPreview, if set, draws the game those options make (an empty
+	// board of that size) on the NEW GAME screen, in w x h cells at (x, y).
+	SetupPreview func(c *arcade.Canvas, options map[string]string, x, y, w, h int)
+}
+
+// Option is one of a game's options, picked with ←/→ on the NEW GAME screen.
+type Option struct {
+	Key     string   // the Rules.New option key ("board_size")
+	Label   string   // "BOARD"
+	Values  []string // in order ("3" ... "8")
+	Names   []string // how each value is shown ("3x3" ...); defaults to Values
+	Default string
+	// Describe, if set, is a line under the value ("21 STONES EACH").
+	Describe func(value string) string
+}
+
+func (o Option) name(v string) string {
+	if i := slices.Index(o.Values, v); i >= 0 && i < len(o.Names) {
+		return o.Names[i]
+	}
+	return v
+}
+
+// Panel is implemented by a board with something of its own for the panel
+// under the players' boxes on the left (Tak shows the stack under the
+// cursor); it replaces the score there, in w x h cells at (x, y).
+type Panel interface {
+	DrawPanel(c *arcade.Canvas, x, y, w, h int)
 }
 
 // Hinter is implemented by a board with instructions for the status row
@@ -126,6 +162,7 @@ const (
 	screenHOF
 	screenHowTo
 	screenOptions
+	screenSetup
 )
 
 // tickMsg is the arcade's animation clock.
@@ -150,6 +187,31 @@ func (a *Arcade) collection() string {
 		return "COLLECTION"
 	}
 	return a.Collection
+}
+
+// gameOptions reports whether the game has options to choose per game.
+func (k *Kit) gameOptions() bool { return k.rules.Arcade != nil && len(k.rules.Arcade.Options) > 0 }
+
+// summary is opts as players read them: "5x5 · KOMI 0".
+func (k *Kit) summary(opts map[string]string) string {
+	if !k.gameOptions() {
+		return ""
+	}
+	var parts []string
+	for _, o := range k.rules.Arcade.Options {
+		if v, ok := opts[o.Key]; ok && v != "" {
+			parts = append(parts, o.name(v))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// optionsNote is the summary in brackets for a notification, or "".
+func (k *Kit) optionsNote(opts map[string]string) string {
+	if s := k.summary(opts); s != "" {
+		return " (" + s + ")"
+	}
+	return ""
 }
 
 func (a *Arcade) kinds() []Kind {
@@ -269,19 +331,22 @@ func (k *Kit) tick() bool {
 	return live
 }
 
-// soloTable is the viewer's game against the computer: their unfinished
-// one at this level, or a new one. Their other games against the computer
-// are cleared away.
-func (k *Kit) soloTable(r *Room, me Player, level int) *Table {
+// resumable is the player's unfinished game against the computer at level.
+func (k *Kit) resumable(r *Room, me Player, level int) *Table {
+	for _, t := range r.Tables {
+		if !t.Main && t.seatOf(me.UserID) >= 0 && t.hasComputer() && !t.outcome().Over && t.computerLevel() == level {
+			return t
+		}
+	}
+	return nil
+}
+
+// soloTable starts a new game against the computer with opts, clearing
+// away the player's other games against it.
+func (k *Kit) soloTable(r *Room, me Player, level int, opts map[string]string) *Table {
 	var keep []*Table
-	var resume *Table
 	for _, t := range r.Tables {
 		if t.Main || t.seatOf(me.UserID) < 0 || !t.hasComputer() {
-			keep = append(keep, t)
-			continue
-		}
-		if resume == nil && !t.outcome().Over && t.computerLevel() == level {
-			resume = t
 			keep = append(keep, t)
 		}
 	}
@@ -289,10 +354,17 @@ func (k *Kit) soloTable(r *Room, me Player, level int) *Table {
 		r.Tables = keep
 		k.changed(r, nil, "")
 	}
-	if resume != nil {
-		return resume
+	return k.startGameWith(r, me, k.computerPlayer(level), opts)
+}
+
+// empty reports whether nobody is sitting at t.
+func (t *Table) empty() bool {
+	for _, p := range t.Seats {
+		if !p.Empty() {
+			return false
+		}
 	}
-	return k.startGame(r, me, k.computerPlayer(level))
+	return true
 }
 
 func (t *Table) hasComputer() bool {
@@ -457,6 +529,8 @@ func (m *viewerModel) arcadeKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 	case screenOptions:
 		m.optionsKey(key)
+	case screenSetup:
+		m.setupKey(key)
 	}
 	return true, nil
 }
@@ -485,8 +559,15 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 				}
 				return d, "fg"
 			},
-			enter: func() { m.openTable(k.soloTable(r, me, m.level)) },
-			turn:  func(d int) { m.level = min(3, max(1, m.level+d)) },
+			enter: func() {
+				if t := k.resumable(r, me, m.level); t != nil {
+					m.openTable(t)
+					return
+				}
+				level := m.level
+				m.withSetup("VS CPU · "+levelName(level), func(o map[string]string) { m.openTable(k.soloTable(r, me, level, o)) })
+			},
+			turn: func(d int) { m.level = min(3, max(1, m.level+d)) },
 		})
 	}
 	switch r.mode() {
@@ -507,15 +588,30 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 			},
 			enter: func() {
 				t := k.seatsTable(r)
-				if t.seatOf(me.UserID) < 0 && (!t.full() || t.outcome().Over) {
-					for i, p := range t.Seats {
-						if p.Empty() {
-							k.sit(r, t, i, me)
-							break
+				sit := func() {
+					if t.seatOf(me.UserID) < 0 && (!t.full() || t.outcome().Over) {
+						for i, p := range t.Seats {
+							if p.Empty() {
+								k.sit(r, t, i, me)
+								break
+							}
 						}
 					}
+					m.openTable(t)
 				}
-				m.openTable(t)
+				if !k.gameOptions() || !t.empty() {
+					sit() // the first to sit chose the game
+					return
+				}
+				m.withSetup("TAKE THE "+strings.ToUpper(k.rules.SeatNames[0])+" SEAT", func(o map[string]string) {
+					if t.empty() { // still nobody there: this is the game
+						t.Options = withOptions(r.settings, o)
+						t.Moves, t.Resigned, t.Score, t.Ready = nil, -1, nil, nil
+						t.rebuild(&k.rules)
+						k.changed(r, t, "")
+					}
+					sit()
+				})
 			},
 		})
 	default:
@@ -895,6 +991,8 @@ func (m *viewerModel) arcadeView() string {
 		m.drawHowTo(s)
 	case screenOptions:
 		m.drawOptions(s)
+	case screenSetup:
+		m.drawSetup(s)
 	}
 	return s.c.String()
 }
@@ -1118,6 +1216,9 @@ func (m *viewerModel) drawTable(s scr) {
 	} else if seat := t.seatOf(m.v.ID); seat >= 0 && len(t.Seats) == 2 && !t.Seats[1-seat].Empty() {
 		where = "VS " + strings.ToUpper(t.Seats[1-seat].Name)
 	}
+	if sum := k.summary(t.Options); sum != "" {
+		where += " · " + sum
+	}
 	m.topBar(s, where)
 	over := t.outcome().Over
 	turn := -1
@@ -1140,10 +1241,14 @@ func (m *viewerModel) drawTable(s scr) {
 		if len(score) != 2 {
 			score = []int{0, 0}
 		}
-		s.text(5, 13, "SCORE", "pink", "", true)
-		s.c.Digit(min(9, score[0]), s.ox+3, 2*(s.oy+14)+1, "pink", 1)
-		s.text(8, 16, "-", "dim", "", false)
-		s.c.Digit(min(9, score[1]), s.ox+10, 2*(s.oy+14)+1, "cyan", 1)
+		if p, ok := board.(Panel); ok {
+			p.DrawPanel(s.c, s.ox+1, s.oy+13, 16, 8)
+		} else {
+			s.text(5, 13, "SCORE", "pink", "", true)
+			s.c.Digit(min(9, score[0]), s.ox+3, 2*(s.oy+14)+1, "pink", 1)
+			s.text(8, 16, "-", "dim", "", false)
+			s.c.Digit(min(9, score[1]), s.ox+10, 2*(s.oy+14)+1, "cyan", 1)
+		}
 		s.text(s.w-14, 13, "MOVE", "pink", "", true)
 		s.c.Number(len(t.Moves), 2, s.ox+s.w-16, 2*(s.oy+14)+1, "green", 1)
 		if n := m.watchers(t); n > 0 {
@@ -1643,4 +1748,106 @@ func (m *viewerModel) drawOptions(s scr) {
 // newRand is the kit's random source for offers.
 func newRand() *rand.Rand {
 	return rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0x9e3779b97f4a7c15))
+}
+
+// ── NEW GAME ────────────────────────────────────────────────────────────────
+
+// withSetup opens the NEW GAME screen and runs then with the player's
+// choices; a game without options goes straight to then. start names what
+// START does ("VS CPU · NORMAL").
+func (m *viewerModel) withSetup(start string, then func(map[string]string)) {
+	if !m.k.gameOptions() {
+		then(nil)
+		return
+	}
+	rec := m.k.record(m.v.ID)
+	m.setupOpts = map[string]string{}
+	for _, o := range m.k.rules.Arcade.Options {
+		v := rec.Setup[o.Key] // what they chose last time
+		if !slices.Contains(o.Values, v) {
+			v = o.Default
+		}
+		m.setupOpts[o.Key] = v
+	}
+	m.setupStart, m.setupThen = start, then
+	m.goTo(screenSetup)
+	m.cursor = len(m.k.rules.Arcade.Options) // START
+}
+
+func (m *viewerModel) setupKey(key string) {
+	opts := m.k.rules.Arcade.Options
+	rows := len(opts) + 1
+	switch key {
+	case "up", "k":
+		m.cursor = (m.cursor + rows - 1) % rows
+		m.k.uiSound(m, arcade.SoundBlip)
+	case "down", "j":
+		m.cursor = (m.cursor + 1) % rows
+		m.k.uiSound(m, arcade.SoundBlip)
+	case "left", "h", "right", "l":
+		if m.cursor >= len(opts) {
+			return
+		}
+		o := opts[m.cursor]
+		i := max(0, slices.Index(o.Values, m.setupOpts[o.Key]))
+		if key == "left" || key == "h" {
+			i = max(0, i-1)
+		} else {
+			i = min(len(o.Values)-1, i+1)
+		}
+		m.setupOpts[o.Key] = o.Values[i]
+		m.k.uiSound(m, arcade.SoundBlip)
+	case "enter", " ":
+		rec := m.k.record(m.v.ID)
+		rec.Setup = copyMap(m.setupOpts)
+		m.k.saveRecords()
+		m.k.uiSound(m, arcade.SoundSelect)
+		then := m.setupThen
+		m.setupThen = nil
+		if then != nil {
+			then(copyMap(m.setupOpts))
+		}
+	case "esc", "q":
+		m.setupThen = nil
+		m.back()
+	}
+}
+
+func (m *viewerModel) drawSetup(s scr) {
+	a := m.k.rules.Arcade
+	m.topBar(s, "NEW GAME")
+	s.logo("NEW GAME", 1, nil)
+	y := 7
+	for i, o := range a.Options {
+		sel := i == m.cursor
+		if sel {
+			s.text(3, y, "▶", "purple", "", true)
+		}
+		label := "pink"
+		bg := ""
+		if sel {
+			label, bg = "yellow", "line"
+		}
+		s.text(5, y, " "+padRight(o.Label, 7), label, bg, true)
+		s.text(15, y, "◂ "+o.name(m.setupOpts[o.Key])+" ▸", "fg", "", true)
+		if o.Describe != nil {
+			s.text(15, y+1, cut(o.Describe(m.setupOpts[o.Key]), 28), "dim", "", false)
+		}
+		y += 3
+	}
+	sel := m.cursor >= len(a.Options)
+	if sel {
+		s.text(3, y, "▶", "purple", "", true)
+	}
+	fg, bg := "pink", ""
+	if sel {
+		fg, bg = "yellow", "line"
+	}
+	s.text(5, y, " START  ", fg, bg, true)
+	s.text(15, y, cut(m.setupStart, 28), "fg", "", sel)
+	if s.w >= 80 && a.SetupPreview != nil {
+		s.box(46, 6, 32, 15, "comment", m.k.summary(m.setupOpts), "purple")
+		a.SetupPreview(s.c, m.setupOpts, s.ox+47, s.oy+7, 30, 13)
+	}
+	s.keys(arcade.Key{Key: "↑↓", Does: "choose"}, arcade.Key{Key: "←→", Does: "change"}, arcade.Key{Key: "Enter", Does: "start"}, arcade.Key{Key: "Esc", Does: "back"})
 }

@@ -57,6 +57,8 @@ type Challenge struct {
 	From Player    `json:"from"`
 	To   Player    `json:"to"`
 	At   time.Time `json:"at"`
+	// Options are the game's options the challenger chose (Arcade.Options).
+	Options map[string]string `json:"options,omitempty"`
 }
 
 func (r *Room) mode() string {
@@ -223,15 +225,28 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-func (k *Kit) newTable(r *Room, seats []Player) *Table {
+func (k *Kit) newTable(r *Room, seats []Player) *Table { return k.newTableWith(r, seats, nil) }
+
+// newTableWith starts a table whose options are the channel's settings with
+// opts (a player's choices on the NEW GAME screen) over them.
+func (k *Kit) newTableWith(r *Room, seats []Player, opts map[string]string) *Table {
 	t := &Table{
-		ID: newID(), Seats: seats, Resigned: -1, Options: copyMap(r.settings),
+		ID: newID(), Seats: seats, Resigned: -1, Options: withOptions(r.settings, opts),
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	t.rebuild(&k.rules)
 	r.Tables = append(r.Tables, t)
 	k.changed(r, t, "")
 	return t
+}
+
+// withOptions is settings with opts laid over them.
+func withOptions(settings, opts map[string]string) map[string]string {
+	out := copyMap(settings)
+	for k, v := range opts {
+		out[k] = v
+	}
+	return out
 }
 
 func copyMap(m map[string]string) map[string]string {
@@ -370,7 +385,9 @@ func (k *Kit) rematch(r *Room, t *Table) {
 		}
 	}
 	t.Seats, t.Moves, t.Resigned, t.Ready = seats, nil, -1, nil
-	t.Options = copyMap(r.settings)
+	if !k.gameOptions() { // a game with its own options keeps the ones chosen for this table
+		t.Options = copyMap(r.settings)
+	}
 	t.rebuild(&k.rules)
 	k.changed(r, t, "")
 	k.afterMove(r, t, -1)
@@ -399,16 +416,18 @@ func (k *Kit) computerAllowed(r *Room) bool {
 	return k.rules.AI != nil && r.settings[SettingComputer] != "false"
 }
 
-func (k *Kit) challenge(r *Room, from, to Player) {
+func (k *Kit) challenge(r *Room, from, to Player) { k.challengeWith(r, from, to, nil) }
+
+func (k *Kit) challengeWith(r *Room, from, to Player, opts map[string]string) {
 	for _, c := range r.Challenges {
 		if c.From.UserID == from.UserID && c.To.UserID == to.UserID {
 			return
 		}
 	}
-	r.Challenges = append(r.Challenges, Challenge{ID: newID(), From: from, To: to, At: time.Now()})
+	r.Challenges = append(r.Challenges, Challenge{ID: newID(), From: from, To: to, At: time.Now(), Options: opts})
 	k.changed(r, nil, "")
 	if k.conn != nil {
-		_ = k.conn.NotifyUser(to.UserID, r.ChannelID, fmt.Sprintf("%s challenged you to %s", from.Name, k.rules.Name))
+		_ = k.conn.NotifyUser(to.UserID, r.ChannelID, fmt.Sprintf("%s challenged you to %s%s", from.Name, k.rules.Name, k.optionsNote(opts)))
 	}
 }
 
@@ -423,7 +442,7 @@ func (k *Kit) answer(r *Room, id string, accept bool) *Table {
 		if !accept {
 			return nil
 		}
-		t := k.newTable(r, []Player{c.From, c.To})
+		t := k.newTableWith(r, []Player{c.From, c.To}, c.Options)
 		if k.conn != nil {
 			_ = k.conn.NotifyUser(c.From.UserID, r.ChannelID, fmt.Sprintf("%s accepted your %s challenge", c.To.Name, k.rules.Name))
 		}
@@ -436,7 +455,11 @@ func (k *Kit) answer(r *Room, id string, accept bool) *Table {
 // startGame opens a new two-player table directly (private games, and
 // playing the computer), notifying a human opponent.
 func (k *Kit) startGame(r *Room, me, opponent Player) *Table {
-	t := k.newTable(r, []Player{me, opponent})
+	return k.startGameWith(r, me, opponent, nil)
+}
+
+func (k *Kit) startGameWith(r *Room, me, opponent Player, opts map[string]string) *Table {
+	t := k.newTableWith(r, []Player{me, opponent}, opts)
 	if !opponent.Computer && k.conn != nil {
 		_ = k.conn.NotifyUser(opponent.UserID, r.ChannelID, fmt.Sprintf("%s started a game of %s with you", me.Name, k.rules.Name))
 	}

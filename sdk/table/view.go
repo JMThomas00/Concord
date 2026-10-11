@@ -46,14 +46,17 @@ type viewerModel struct {
 	pending    tea.Cmd // e.g. a newly opened board's Init, returned with the next Update
 
 	// The arcade (arcade.go).
-	level   int            // 1 PLAYER VS CPU's level
-	frame   int            // animation ticks
-	lastKey time.Time      // attract mode stops 30s after the last key
-	setsRow int            // the collection screen's row
-	setsIdx map[string]int // the collection screen's item per kind
-	picked  string         // the unlockable just picked from a draft
-	reveal  time.Time      // when it was picked (its reveal is showing)
-	ticked  bool           // animated at the last tick
+	level      int                     // 1 PLAYER VS CPU's level
+	frame      int                     // animation ticks
+	lastKey    time.Time               // attract mode stops 30s after the last key
+	setsRow    int                     // the collection screen's row
+	setsIdx    map[string]int          // the collection screen's item per kind
+	picked     string                  // the unlockable just picked from a draft
+	reveal     time.Time               // when it was picked (its reveal is showing)
+	ticked     bool                    // animated at the last tick
+	setupOpts  map[string]string       // the NEW GAME screen's choices
+	setupStart string                  // what START does
+	setupThen  func(map[string]string) // what START runs
 
 	width, height int
 }
@@ -301,7 +304,7 @@ func (m *viewerModel) lobby() []lobbyItem {
 		switch {
 		case c.To.UserID == me.UserID:
 			items = append(items, lobbyItem{
-				label: "★ " + c.From.Name + " challenged you — Enter to accept, d to decline",
+				label: "★ " + c.From.Name + " challenged you" + k.optionsNote(c.Options) + " — Enter to accept, d to decline",
 				open: func() {
 					if t := k.answer(r, c.ID, true); t != nil {
 						m.openTable(t)
@@ -310,7 +313,7 @@ func (m *viewerModel) lobby() []lobbyItem {
 				decline: func() { k.answer(r, c.ID, false) },
 			})
 		case c.From.UserID == me.UserID:
-			items = append(items, lobbyItem{label: "… waiting for " + c.To.Name + " — Enter to cancel", open: func() { k.answer(r, c.ID, false) }})
+			items = append(items, lobbyItem{label: "… waiting for " + c.To.Name + k.optionsNote(c.Options) + " — Enter to cancel", open: func() { k.answer(r, c.ID, false) }})
 		}
 	}
 	tables := append([]*Table(nil), r.Tables...)
@@ -417,12 +420,23 @@ func (m *viewerModel) pickerKey(msg tea.KeyMsg) tea.Cmd {
 		p := people[m.cursor]
 		them := Player{UserID: p.UserID, Name: p.DisplayName}
 		r := m.room()
-		if r.mode() == ModePrivate {
-			m.openTable(m.k.startGame(r, m.me(), them))
+		start := func(opts map[string]string) {
+			if r.mode() == ModePrivate {
+				m.openTable(m.k.startGameWith(r, m.me(), them, opts))
+				return
+			}
+			m.k.challengeWith(r, m.me(), them, opts)
+			m.screen, m.cursor, m.notice = screenLobby, 0, "Challenge sent to "+them.Name+"."
+		}
+		if !m.arcadeOn() {
+			start(nil) // the plain layout: the channel's settings
 			return nil
 		}
-		m.k.challenge(r, m.me(), them)
-		m.screen, m.cursor, m.notice = screenLobby, 0, "Challenge sent to "+them.Name+"."
+		verb := "CHALLENGE "
+		if r.mode() == ModePrivate {
+			verb = "PLAY "
+		}
+		m.withSetup(verb+strings.ToUpper(them.Name), start)
 	}
 	return nil
 }
