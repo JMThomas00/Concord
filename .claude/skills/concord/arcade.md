@@ -35,6 +35,11 @@ return c.String()                          // your model's View
 
 - **Pixels are half-blocks:** `py` counts half-rows, two pixels to a cell.
   A 12 x 4 sprite is 12 columns by 2 rows.
+- **Fine pixels** (sdk/v0.15.0): `c.FinePx(fx, fy, role)` and
+  `c.FineSprite(fx, fy, rows, pal)` draw in quadrant characters (▘▝▖▗▚▞▙▛▜▟):
+  four to a cell, so twice the detail across (draw the art twice as wide).
+  A cell shows at most two colours, so keep fine art to one colour on its
+  background: no outlines or shading. Chess's "fine pixels" pieces use it.
 - **Colours are roles**, filled from each viewer's Concord theme: `bg fg
   comment line purple pink green yellow orange red cyan`, plus `hi shadow
   ghost dim tire hub` and a darker `<paint>D` for each paint. Never
@@ -112,6 +117,27 @@ func (b *Board) Status() string                                  // e.g. "not yo
   them to `Rules.New` with the channel's settings, shows them on the table
   and in invitations, and keeps them for rematches. `Arcade.SetupPreview`
   draws what they make. Tak is the reference.
+- **A chess clock** (sdk/v0.15.0): set `Rules.Clock` to return each seat's
+  starting time and per-move increment from the options (a zero base means
+  no clock), and offer the choice as an `Arcade.Option`. The kit does the
+  rest: nobody's clock runs until the first move, each move pays for its
+  time and earns the increment, a timer of the kit's own ends the game on
+  time even when nobody is watching (`Outcome.Reason` "time"), a plugin
+  restart costs no one time, and each player's box shows the time left
+  (redrawn a few times a second, effects or not). `Seat.Clock(i)`,
+  `Outcome.Clock` (time left at the end, for awards) and `table.ClockText`
+  are there for a board's own use. Standalone games have no clock. Chess is
+  the reference.
+- **Growing with the pane** (sdk/v0.15.0): `Arcade.Grow = true` gives the
+  table screen the whole pane, so `Draw` gets everything between the
+  players' panels (82 x 34 in a 120 x 40 pane instead of 42 x 18). Pick
+  your square size from `w` and `h`, with a fallback that fits 42 x 18.
+  Every other screen keeps the 80 x 24 frame. Chess draws 9 x 4, 7 x 3,
+  5 x 2 or 3 x 1 squares, whichever fits.
+- **A style the player picks:** an unlockable kind whose items are all
+  starters works as a per-player setting with no extra code (chess's
+  DRAWN AS: pixels, fine pixels, symbols, letters), read with
+  `seat.Equipped("style")`.
 - **The left panel:** a board implementing `table.Panel`
   (`DrawPanel(c, x, y, w, h)`) replaces the score under the players' boxes
   (Tak shows the stack under the cursor there).
