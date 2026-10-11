@@ -52,7 +52,10 @@ type Game interface {
 type Outcome struct {
 	Over   bool
 	Winner int    // seat that won, or -1 for a draw
-	Reason string // e.g. "checkmate", "no moves left", "road", "resigned"
+	Reason string // e.g. "checkmate", "no moves left", "road", "resigned", "time"
+	// Clock is each seat's time left, in a game with a clock (the kit
+	// fills it in; a Game leaves it nil).
+	Clock []time.Duration
 }
 
 // Rules describes a game to the kit.
@@ -85,6 +88,12 @@ type Rules struct {
 	// (records.go): it sees the final game, the player's seat and how
 	// it ended, e.g. []string{"no_losses"} for a win without losing a piece.
 	Awards func(g Game, seat int, o Outcome) []string
+	// Clock, if set, is the time control for a game with these options
+	// (Rules.New's): each seat's starting time and what each move adds
+	// back. A zero base means no clock. Running out loses the game
+	// (Outcome.Reason "time"). See clock.go; offer the choice as an
+	// Arcade.Option ("clock": none, 10 min, 5 min, 3 + 2).
+	Clock func(options map[string]string) (base, increment time.Duration)
 	// Arcade, if set, puts the game behind the Concord Arcade front door
 	// (arcade.go): a title screen, a menu, unlockables earned with passes,
 	// a Hall of Fame and the arcade table around the board. Panes smaller
@@ -243,7 +252,13 @@ type Table struct {
 	Main      bool              `json:"main,omitempty"`  // ModeSeats' one table (others are games against the computer)
 	Score     []int             `json:"score,omitempty"` // wins per seat since these players sat down (arcade)
 	Ready     []bool            `json:"ready,omitempty"` // seats asking for a rematch (arcade)
-	CreatedAt time.Time         `json:"created_at"`
+	// The clocks (Rules.Clock): each seat's time left when its clock last
+	// stopped, when the side to move's started (zero: stopped), and the
+	// seat that ran out of time, plus one (0: nobody).
+	Left      []time.Duration `json:"left,omitempty"`
+	TurnAt    time.Time       `json:"turn_at,omitempty"`
+	OutOfTime int             `json:"out_of_time,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 
 	game Game // rebuilt from Moves
@@ -259,6 +274,21 @@ func (t *Table) full() bool {
 }
 
 func (t *Table) outcome() Outcome {
+	o := t.result()
+	if o.Over && len(t.Left) > 0 {
+		o.Clock = append([]time.Duration(nil), t.Left...)
+	}
+	return o
+}
+
+func (t *Table) result() Outcome {
+	if t.OutOfTime > 0 && t.OutOfTime <= len(t.Seats) {
+		winner := -1
+		if len(t.Seats) == 2 {
+			winner = 1 - (t.OutOfTime - 1)
+		}
+		return Outcome{Over: true, Winner: winner, Reason: "time"}
+	}
 	if t.Resigned >= 0 {
 		winner := -1
 		if len(t.Seats) == 2 {

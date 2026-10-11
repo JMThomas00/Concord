@@ -48,6 +48,36 @@ func TestHalfBlocks(t *testing.T) {
 	}
 }
 
+func TestFinePixels(t *testing.T) {
+	c := New(6, 1, NewPalette(nil))
+	c.FinePx(0, 0, "red") // top left
+	c.FinePx(3, 1, "red") // bottom right
+	c.FineSprite(4, 0, []string{"#.", ".#"}, map[rune]string{'#': "red"}) // a diagonal
+	c.FinePx(6, 0, "red")                                                 // two colours: red where lit,
+	c.FinePx(7, 0, "green")                                               // green the rest of the cell
+	c.FinePx(6, 1, "green")
+	c.FinePx(7, 1, "green")
+	c.Px(4, 0, "red") // a half-block pixel on a cell that has fine ones
+	c.FinePx(9, 1, "red")
+	c.FinePx(10, 0, "red") // and a third colour, drawn in the second's place
+	c.FinePx(11, 0, "green")
+	c.FinePx(10, 1, "cyan")
+	got := sgr.ReplaceAllString(c.String(), "")
+	if got != "▘▗▚▘▜▘" {
+		t.Fatalf("got %q", got)
+	}
+	// The two-colour cell: red lit on a green background.
+	cl := c.at(3, 0)
+	if ch, fg, bg, _ := c.glyph(*cl); ch != "▘" || fg != "red" || bg != "green" {
+		t.Fatalf("two colours: %q %s on %s", ch, fg, bg)
+	}
+	// The third colour (cyan) is drawn as the second (green).
+	cl = c.at(5, 0)
+	if ch, fg, bg, _ := c.glyph(*cl); ch != "▘" || fg != "red" || bg != "green" {
+		t.Fatalf("three colours: %q %s on %s", ch, fg, bg)
+	}
+}
+
 func TestLogoAndDigitSizes(t *testing.T) {
 	if LogoWidth("GRAPE RACE", 1) != 59 || LogoWidth("GO!", 2) != 34 || LogoHeight(1) != 4 {
 		t.Fatal("logo sizes changed")

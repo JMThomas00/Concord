@@ -484,6 +484,9 @@ func (m *viewerModel) tableView() string {
 		if !t.outcome().Over && t.full() && t.game.Turn() == i {
 			seat = "▸ " + seat
 		}
+		if len(t.Left) > 0 {
+			name += " " + ClockText(t.left(i))
+		}
 		who = append(who, fmt.Sprintf("%s: %s", seat, name))
 	}
 	header := strings.Join(who, "   ")

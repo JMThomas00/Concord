@@ -78,6 +78,12 @@ type Arcade struct {
 	// chosen) and in private games. They reach Rules.New with the channel's
 	// settings, and a rematch keeps them.
 	Options []Option
+	// Grow lets the table screen use the whole pane instead of the 80 x 24
+	// frame, so a board that can use the room (chess's 64 squares) gets
+	// it: ArcadeBoard.Draw is handed everything between the players'
+	// panels, from row 2 to three rows above the bottom. Every other
+	// screen keeps the frame.
+	Grow bool
 	// SetupPreview, if set, draws the game those options make (an empty
 	// board of that size) on the NEW GAME screen, in w x h cells at (x, y).
 	SetupPreview func(c *arcade.Canvas, options map[string]string, x, y, w, h int)
@@ -290,7 +296,7 @@ func (k *Kit) uiSound(m *viewerModel, sound string) {
 // Conn.Post, since a pane model's commands run synchronously (a tea.Tick
 // would block every viewer).
 func (k *Kit) startTicker() {
-	if k.ticking || k.conn == nil || k.rules.Arcade == nil {
+	if k.ticking || k.conn == nil || (k.rules.Arcade == nil && k.rules.Clock == nil) {
 		return
 	}
 	k.ticking = true
@@ -319,16 +325,30 @@ func (k *Kit) startTicker() {
 }
 
 // tick advances every animated viewer; it reports whether any still are.
+// A viewer watching a running clock is redrawn a few times a second too, effects
+// or not: the time left is information, not decoration.
 func (k *Kit) tick() bool {
 	live := false
+	k.ticks++
 	for id, m := range k.viewers {
 		a := m.animated()
-		if a || m.ticked { // one more frame after it stops, to clear it
+		clock := m.clockShowing()
+		if a || m.ticked || (clock && k.ticks%(int(time.Second/tickEvery)/2) == 0) { // one more frame after it stops, to clear it
 			k.host.Send(id, tickMsg{})
 		}
-		m.ticked, live = a, live || a
+		m.ticked, live = a, live || a || clock
 	}
 	return live
+}
+
+// clockShowing reports whether the viewer is looking at a table whose
+// clock is running.
+func (m *viewerModel) clockShowing() bool {
+	if m.screen != screenTable {
+		return false
+	}
+	t := m.table()
+	return t != nil && t.running()
 }
 
 // resumable is the player's unfinished game against the computer at level.
@@ -608,6 +628,7 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 						t.Options = withOptions(r.settings, o)
 						t.Moves, t.Resigned, t.Score, t.Ready = nil, -1, nil, nil
 						t.rebuild(&k.rules)
+						k.resetClock(t) // the options chosen may have a different clock
 						k.changed(r, t, "")
 					}
 					sit()
@@ -912,12 +933,13 @@ type scr struct {
 	c      *arcade.Canvas
 	ox, oy int
 	w      int // the frame's width: 80, or the pane's if narrower
+	h      int // the frame's height: 24, or the pane's for a growing table (Arcade.Grow)
 }
 
 func (m *viewerModel) canvas() scr {
 	c := arcade.New(m.width, m.height, arcade.NewPalette(m.v.Theme))
 	w := min(m.width, arcadeW)
-	return scr{c: c, ox: (m.width - w) / 2, oy: (m.height - arcadeH) / 2, w: w}
+	return scr{c: c, ox: (m.width - w) / 2, oy: (m.height - arcadeH) / 2, w: w, h: arcadeH}
 }
 
 func (s scr) text(x, y int, str, fg, bg string, bold bool) int {
@@ -935,7 +957,7 @@ func (s scr) box(x, y, w, h int, role, title, titleRole string) {
 func (s scr) logo(text string, row int, shade []string) {
 	s.c.Logo(text, s.ox+(s.w-arcade.LogoWidth(text, 1))/2, 2*(s.oy+row), 1, shade)
 }
-func (s scr) keys(keys ...arcade.Key) { s.c.Keys(s.ox+1, s.oy+arcadeH-1, keys...) }
+func (s scr) keys(keys ...arcade.Key) { s.c.Keys(s.ox+1, s.oy+s.h-1, keys...) }
 
 // topBar is the arcade's first row: you, the best in the channel, and
 // where you are.
@@ -978,6 +1000,9 @@ func (m *viewerModel) arcadeView() string {
 	case screenPicker:
 		m.drawPicker(s)
 	case screenTable:
+		if m.k.rules.Arcade.Grow {
+			s = scr{c: s.c, w: m.width, h: m.height} // the whole pane
+		}
 		m.drawTable(s)
 	case screenResults:
 		m.drawResults(s)
@@ -1269,7 +1294,7 @@ func (m *viewerModel) drawTable(s scr) {
 		}
 		s.center(1, strings.Join(who, "   "), "fg", false)
 	}
-	board.Draw(s.c, s.ox+bx, s.oy+2, bw, 18)
+	board.Draw(s.c, s.ox+bx, s.oy+2, bw, s.h-6)
 
 	// The status row.
 	status, role := board.Status(), "red"
@@ -1285,7 +1310,7 @@ func (m *viewerModel) drawTable(s scr) {
 	if m.notice != "" {
 		status, role = m.notice, "green"
 	}
-	s.center(21, strings.ToUpper(status), role, true)
+	s.center(s.h-3, strings.ToUpper(status), role, true)
 
 	if m.menuOpen {
 		x := s.ox + 1
@@ -1294,7 +1319,7 @@ func (m *viewerModel) drawTable(s scr) {
 			if i == m.menuIdx {
 				fg, bg = "yellow", "line"
 			}
-			x = s.c.Text(x, s.oy+arcadeH-1, " "+strings.ToUpper(it.label)+" ", fg, bg, i == m.menuIdx) + 1
+			x = s.c.Text(x, s.oy+s.h-1, " "+strings.ToUpper(it.label)+" ", fg, bg, i == m.menuIdx) + 1
 		}
 		return
 	}
@@ -1336,6 +1361,16 @@ func (m *viewerModel) drawSeat(s scr, board ArcadeBoard, t *Table, i, x, turn in
 	}
 	s.centerIn(x, 16, 7, cut(name, 14), nameRole, true)
 	s.centerIn(x, 16, 8, sub, "dim", false)
+	if len(t.Left) > 0 { // the clock
+		left, role := t.left(i), "dim"
+		if t.running() && i == turn {
+			role = "fg"
+			if left < 10*time.Second {
+				role = "red"
+			}
+		}
+		s.centerIn(x, 16, 9, ClockText(left), role, true)
+	}
 	switch {
 	case active && p.Computer:
 		s.centerIn(x, 16, 10, "THINKING…", "orange", true)
