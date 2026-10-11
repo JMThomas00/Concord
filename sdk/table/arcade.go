@@ -1920,7 +1920,7 @@ func (m *viewerModel) drawSetup(s scr) {
 	s.text(5, y, " START  ", fg, bg, true)
 	s.text(15, y, cut(m.setupStart, 28), "fg", "", sel)
 	if s.w >= 80 && a.SetupPreview != nil {
-		s.box(46, 6, 32, 15, "comment", m.k.summary(m.setupOpts), "purple")
+		s.box(46, 6, 32, 15, "comment", cut(m.k.summary(m.setupOpts), 26), "purple")
 		a.SetupPreview(s.c, m.setupOpts, s.ox+47, s.oy+7, 30, 13)
 	}
 	s.keys(arcade.Key{Key: "↑↓", Does: "choose"}, arcade.Key{Key: "←→", Does: "change"}, arcade.Key{Key: "Enter", Does: "start"}, arcade.Key{Key: "Esc", Does: "back"})
