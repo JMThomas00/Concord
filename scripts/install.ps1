@@ -52,4 +52,15 @@ try {
 $passArgs = @()
 if ($env:CONCORD_INSTALL_ARGS) { $passArgs += $env:CONCORD_INSTALL_ARGS -split '\s+' }
 $passArgs += $args
+$env:CONCORD_PATH_REFRESH = '1' # we refresh this window's PATH below, so the summary can say "type concord"
 & $exe @passArgs
+Remove-Item Env:CONCORD_PATH_REFRESH -ErrorAction SilentlyContinue
+
+# The installer adds the client's folder to the PATH in the registry, which
+# only new windows see. This script runs in your own window (irm | iex), so
+# reload it here and `concord` works straight away.
+$have = $env:Path -split ';' | Where-Object { $_ }
+$saved = @([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User')) -join ';'
+foreach ($p in $saved -split ';') {
+    if ($p -and ($have -notcontains $p)) { $env:Path += ";$p"; $have += $p }
+}

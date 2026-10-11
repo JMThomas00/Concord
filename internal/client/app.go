@@ -1622,7 +1622,9 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// "ghost content after alt-tab" TUI bug, regardless of the exact
 		// underlying terminal quirk -- requires tea.WithReportFocus() in
 		// cmd/client/main.go to actually receive this message at all.
-		cmds = append(cmds, tea.ClearScreen)
+		// A full rewrite in place (repaintAll), not tea.ClearScreen, so
+		// coming back to the window doesn't flash black.
+		cmds = append(cmds, repaintAll)
 
 	case tea.MouseMsg:
 		// Click/focus/selection dispatch lives in mouse.go, mirroring
@@ -6683,7 +6685,11 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				// Forcing a full repaint specifically here is a targeted,
 				// low-risk mitigation for that exact path; unverified against
 				// a live repro, same as that other fix.
-				return tea.ClearScreen
+				// It was tea.ClearScreen until 2026-10-11, which blanked the
+				// whole window for a frame on every message (a black flash
+				// each time anyone posted); repaintAll rewrites every line
+				// in place instead.
+				return repaintAll
 			} else if a.currentChannel != nil {
 				log.Printf("Message not for current channel: msg=%s, current=%s",
 					payload.Message.ChannelID, a.currentChannel.ID)
