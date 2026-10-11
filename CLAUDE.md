@@ -10,7 +10,7 @@
 Concord is a self-hosted, terminal-first chat platform built in Go. Each server is independently hosted (IRC-style decentralization). The client is a full TUI application built on the Charmbracelet stack. Voice channels use WebRTC P2P audio with Opus encoding, and an out-of-process plugin platform lets external programs (bots, integrations) attach to a server as privileged clients.
 
 **Module path:** `github.com/concord-chat/concord`
-**Current version:** v0.1.1 (2026-10-10: plugin frames centred as one block, the Achievements page's search/server/plugin rows; v0.1.0 released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
+**Current version:** v0.1.2 (2026-10-10: no black flash on each message, since `tea.ClearScreen` is now used only to erase pictures and `repaintAll` rewrites in place; `install.ps1` reloads its window's PATH so `concord` works at once). v0.1.1 (2026-10-10): plugin frames centred as one block, the Achievements page's search/server/plugin rows. v0.1.0 released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
 
 ---
 
@@ -481,4 +481,4 @@ Selected themes: dracula, alucard-dark, alucard-light, catppuccin-mocha, gruvbox
 3. **Invites (`PermissionCreateInvite`) are unbuilt** — the permission bit exists, no invite-generation/redemption code does. Deferred to its own future initiative.
 4. **`-race` needs a real C toolchain** — unavailable on some machines this project is developed from; a concurrency bug can slip through a normal `go test` pass. Worth an explicit `-race` run (see Development Commands) whenever touching shared state (connection lifecycle, plugin supervision, the hub's client map) if a toolchain is available.
 5. ~~One live connection per account~~ — fixed 2026-09-28 (see Multiple connections per account above). It had shown up as an install form stuck on "Working…" and new channels not appearing, because a second computer signed in as the same user was getting them.
-6. **Not yet verified for real:** macOS at all (install, client, boot mode), group voice with 3+ people and a TURN relay in use, and the installer's Linux library installs. See Distribution & Release above.
+6. **Not yet verified for real:** macOS at all (install, client, boot mode), group voice with 3+ people and a TURN relay in use, and the installer's Linux library installs. See Distribution & Release above. (A two-person call across the internet, US ↔ Finland, was verified 2026-10-10: as clear as on one network.)

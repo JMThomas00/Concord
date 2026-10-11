@@ -570,7 +570,9 @@ func (m *model) summary() string {
 	if contains(res.Installed, installer.Client) {
 		line("")
 		line(sSection.Render("Client") + sDim.Render("  "+pl.ClientDir))
-		if res.NewPath {
+		// install.ps1 reloads its own window's PATH once this exits
+		// (CONCORD_PATH_REFRESH), so there the command works at once.
+		if res.NewPath && !(pl.Platform.OS == installer.Windows && os.Getenv("CONCORD_PATH_REFRESH") == "1") {
 			line("   Open a " + sText.Bold(true).Render("new terminal") + ", then type " + cmd("concord") + " to start it.")
 		} else {
 			line("   Type " + cmd("concord") + " to start it.")
