@@ -96,7 +96,7 @@ type Kit struct {
 
 	ticking bool // the arcade animation clock is running (arcade.go)
 	tickGen int
-	ticks   int // ticks so far, for the clocks' slower redraw
+	ticks   int         // ticks so far, for the clocks' slower redraw
 	rnd     *mrand.Rand // offers of unlockables
 }
 
@@ -233,7 +233,7 @@ func (k *Kit) newTable(r *Room, seats []Player) *Table { return k.newTableWith(r
 // opts (a player's choices on the NEW GAME screen) over them.
 func (k *Kit) newTableWith(r *Room, seats []Player, opts map[string]string) *Table {
 	t := &Table{
-		ID: newID(), Seats: seats, Resigned: -1, Options: withOptions(r.settings, opts),
+		ID: newID(), Seats: seats, Resigned: -1, Options: k.seed(withOptions(r.settings, opts)),
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	t.rebuild(&k.rules)
@@ -368,6 +368,7 @@ func (k *Kit) stand(r *Room, t *Table, userID uuid.UUID) {
 		t.Score, t.Ready = nil, nil
 		if t.outcome().Over { // a finished game makes room for the next one
 			t.Moves, t.Resigned = nil, -1
+			t.Options = k.seed(t.Options)
 			t.rebuild(&k.rules)
 			k.resetClock(t)
 		}
@@ -391,16 +392,17 @@ func (k *Kit) rematch(r *Room, t *Table) {
 		return
 	}
 	seats := append([]Player(nil), t.Seats...)
-	if len(seats) == 2 {
-		seats[0], seats[1] = seats[1], seats[0]
-		if len(t.Score) == 2 { // the score follows the players
-			t.Score[0], t.Score[1] = t.Score[1], t.Score[0]
+	if len(seats) >= 2 { // the next player round goes first; the score follows the players
+		seats = append(seats[1:], seats[0])
+		if len(t.Score) == len(seats) {
+			t.Score = append(t.Score[1:], t.Score[0])
 		}
 	}
 	t.Seats, t.Moves, t.Resigned, t.Ready = seats, nil, -1, nil
 	if !k.gameOptions() { // a game with its own options keeps the ones chosen for this table
 		t.Options = copyMap(r.settings)
 	}
+	t.Options = k.seed(t.Options)
 	t.rebuild(&k.rules)
 	k.resetClock(t)
 	k.changed(r, t, "")
@@ -456,7 +458,7 @@ func (k *Kit) answer(r *Room, id string, accept bool) *Table {
 		if !accept {
 			return nil
 		}
-		t := k.newTableWith(r, []Player{c.From, c.To}, c.Options)
+		t := k.newTableWith(r, k.seatsFor(c.Options, []Player{c.From, c.To}, false, 2), c.Options)
 		if k.conn != nil {
 			_ = k.conn.NotifyUser(c.From.UserID, r.ChannelID, fmt.Sprintf("%s accepted your %s challenge", c.To.Name, k.rules.Name))
 		}
@@ -473,7 +475,11 @@ func (k *Kit) startGame(r *Room, me, opponent Player) *Table {
 }
 
 func (k *Kit) startGameWith(r *Room, me, opponent Player, opts map[string]string) *Table {
-	t := k.newTableWith(r, []Player{me, opponent}, opts)
+	level := opponent.Level
+	if level == 0 {
+		level = 2
+	}
+	t := k.newTableWith(r, k.seatsFor(opts, []Player{me, opponent}, false, level), opts)
 	if !opponent.Computer && k.conn != nil {
 		_ = k.conn.NotifyUser(opponent.UserID, r.ChannelID, fmt.Sprintf("%s started a game of %s with you", me.Name, k.rules.Name))
 	}
@@ -545,7 +551,11 @@ func (k *Kit) reportResult(r *Room, t *Table) {
 		if len(t.Score) != len(t.Seats) {
 			t.Score = make([]int, len(t.Seats))
 		}
-		t.Score[o.Winner]++
+		for i := range t.Seats {
+			if o.Won(i) {
+				t.Score[i]++
+			}
+		}
 	}
 	k.recordResult(t, o) // records and achievements (records.go)
 	if t.full() {
@@ -561,7 +571,7 @@ func (k *Kit) reportResult(r *Room, t *Table) {
 		}
 		result := "draw"
 		switch {
-		case o.Winner == i:
+		case o.Won(i):
 			result = "win"
 		case o.Winner >= 0:
 			result = "loss"

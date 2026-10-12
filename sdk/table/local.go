@@ -2,7 +2,9 @@ package table
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"os"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -78,20 +80,28 @@ type computerMoveMsg struct {
 func newLocal(rules Rules, options map[string]string) *localModel {
 	m := &localModel{rules: rules, options: options, choosing: true, me: playerName()}
 	m.choices = append(m.choices, localChoice{"Two players on this computer", func() tea.Cmd {
-		ps := make([]Player, len(rules.SeatNames))
+		ps := make([]Player, rules.Seats(options))
 		for i := range ps {
 			ps[i] = Player{Name: rules.SeatNames[i]}
 		}
 		return m.start(ps, -1)
 	}})
-	if rules.AI != nil && len(rules.SeatNames) == 2 {
+	if rules.AI != nil {
 		for _, lv := range []struct {
 			level int
 			name  string
 		}{{1, "easy"}, {2, "normal"}, {3, "hard"}} {
 			lv := lv
 			m.choices = append(m.choices, localChoice{"Play the computer (" + lv.name + ")", func() tea.Cmd {
-				return m.start([]Player{{Name: m.me}, {Name: "Computer (" + lv.name + ")", Computer: true, Level: lv.level}}, 0)
+				ps := []Player{{Name: m.me}}
+				for i := 1; i < rules.Seats(options); i++ { // the computer in every other seat
+					name := "Computer (" + lv.name + ")"
+					if i > 1 {
+						name = fmt.Sprintf("Computer %d (%s)", i, lv.name)
+					}
+					ps = append(ps, Player{Name: name, Computer: true, Level: lv.level})
+				}
+				return m.start(ps, 0)
 			}})
 		}
 	}
@@ -125,6 +135,9 @@ func (m *localModel) Init() tea.Cmd { return nil }
 // start begins a game. mySeat is this player's seat, or -1 for hotseat
 // (whoever's turn it is).
 func (m *localModel) start(seats []Player, mySeat int) tea.Cmd {
+	if m.rules.Seeded { // a new deal every game
+		m.options = withOptions(m.options, map[string]string{OptionSeed: strconv.FormatUint(rand.Uint64()>>1, 10)})
+	}
 	m.t = &Table{ID: "local", Seats: seats, Options: m.options, Resigned: -1}
 	m.t.rebuild(&m.rules)
 	m.seat = &Seat{Index: mySeat, table: m.t, rules: &m.rules, hotseat: mySeat < 0, play: m.playHuman}

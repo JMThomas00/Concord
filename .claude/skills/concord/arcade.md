@@ -134,6 +134,21 @@ func (b *Board) Status() string                                  // e.g. "not yo
   your square size from `w` and `h`, with a fallback that fits 42 x 18.
   Every other screen keeps the 80 x 24 frame. Chess draws 9 x 4, 7 x 3,
   5 x 2 or 3 x 1 squares, whichever fits.
+- **More than two players, and dealing** (sdk/v0.16.0): give `SeatNames`
+  up to four names and set `Rules.MinSeats` below that, and the NEW GAME
+  screen asks how many play (`table.OptionPlayers`, "2".."4") and what
+  fills each other seat (`table.OptionSeat(i)`: "cpu1".."cpu3" for the
+  computer at a level, "person" where people can sit down, a seats
+  channel's own table). Read the count with `Rules.Seats(options)`. A game
+  that deals or rolls sets `Rules.Seeded` and builds its shuffle from
+  `table.Seed(options)`, a fresh seed every game and rematch, so a saved
+  game still replays the same. Partners: report the winning side in
+  `Outcome.Team` (and use `Outcome.Won(seat)` in awards); records, results
+  and rematch lights count the whole team. `Option.Show` hides an option
+  that doesn't apply (partners with fewer than four). With more than two
+  seats the board gets the whole width and draws the players itself
+  (`Seat.Players`, `SeatName`); rematches rotate the seats. Dominoes is the
+  reference.
 - **A style the player picks:** an unlockable kind whose items are all
   starters works as a per-player setting with no extra code (chess's
   DRAWN AS: pixels, fine pixels, symbols, letters), read with

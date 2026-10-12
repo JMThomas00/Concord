@@ -98,6 +98,9 @@ type Option struct {
 	Default string
 	// Describe, if set, is a line under the value ("21 STONES EACH").
 	Describe func(value string) string
+	// Show, if set, hides the option unless the other choices call for it
+	// (partners only with four players).
+	Show func(options map[string]string) bool
 }
 
 func (o Option) name(v string) string {
@@ -196,15 +199,21 @@ func (a *Arcade) collection() string {
 }
 
 // gameOptions reports whether the game has options to choose per game.
-func (k *Kit) gameOptions() bool { return k.rules.Arcade != nil && len(k.rules.Arcade.Options) > 0 }
+func (k *Kit) gameOptions() bool {
+	return k.rules.Arcade != nil && (len(k.rules.Arcade.Options) > 0 || k.many())
+}
 
-// summary is opts as players read them: "5x5 · KOMI 0".
+// summary is opts as players read them: "5x5 · KOMI 0", "4 PLAYERS · LONG".
+// What fills each seat is left out: the table shows who's there.
 func (k *Kit) summary(opts map[string]string) string {
 	if !k.gameOptions() {
 		return ""
 	}
 	var parts []string
-	for _, o := range k.rules.Arcade.Options {
+	for _, o := range shown(k.setupOptions(true), opts) {
+		if strings.HasPrefix(o.Key, "seat") {
+			continue
+		}
 		if v, ok := opts[o.Key]; ok && v != "" {
 			parts = append(parts, o.name(v))
 		}
@@ -374,7 +383,9 @@ func (k *Kit) soloTable(r *Room, me Player, level int, opts map[string]string) *
 		r.Tables = keep
 		k.changed(r, nil, "")
 	}
-	return k.startGameWith(r, me, k.computerPlayer(level), opts)
+	t := k.newTableWith(r, k.seatsFor(opts, []Player{me}, false, level), opts)
+	k.afterMove(r, t, -1)
+	return t
 }
 
 // empty reports whether nobody is sitting at t.
@@ -429,6 +440,9 @@ func (k *Kit) lastResult(t *Table, o Outcome) string {
 	moves := fmt.Sprintf(" IN %d MOVES", len(t.Moves))
 	if o.Winner >= 0 && o.Winner < len(t.Seats) && len(t.Seats) == 2 {
 		return strings.ToUpper(t.Seats[o.Winner].Name + " BEAT " + t.Seats[1-o.Winner].Name + moves)
+	}
+	if o.Winner >= 0 && o.Winner < len(t.Seats) {
+		return strings.ToUpper(teamOf(t, o) + " WON" + moves)
 	}
 	var names []string
 	for _, p := range t.Seats {
@@ -585,7 +599,7 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 					return
 				}
 				level := m.level
-				m.withSetup("VS CPU · "+levelName(level), func(o map[string]string) { m.openTable(k.soloTable(r, me, level, o)) })
+				m.withSetup("VS CPU · "+levelName(level), false, func(o map[string]string) { m.openTable(k.soloTable(r, me, level, o)) })
 			},
 			turn: func(d int) { m.level = min(3, max(1, m.level+d)) },
 		})
@@ -623,9 +637,10 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 					sit() // the first to sit chose the game
 					return
 				}
-				m.withSetup("TAKE THE "+strings.ToUpper(k.rules.SeatNames[0])+" SEAT", func(o map[string]string) {
+				m.withSetup("TAKE THE "+strings.ToUpper(k.rules.SeatNames[0])+" SEAT", true, func(o map[string]string) {
 					if t.empty() { // still nobody there: this is the game
-						t.Options = withOptions(r.settings, o)
+						t.Options = k.seed(withOptions(r.settings, o))
+						t.Seats = k.seatsFor(t.Options, nil, true, 2) // the computer in its seats, the rest open
 						t.Moves, t.Resigned, t.Score, t.Ready = nil, -1, nil, nil
 						t.rebuild(&k.rules)
 						k.resetClock(t) // the options chosen may have a different clock
@@ -1236,13 +1251,19 @@ func (m *viewerModel) drawTable(s scr) {
 	board := m.board.(ArcadeBoard)
 	k, a := m.k, m.k.rules.Arcade
 	where := "WATCHING"
-	if t.hasComputer() {
+	if len(t.Seats) > 2 {
+		where = "" // the summary says how many play
+	} else if t.hasComputer() {
 		where = "VS CPU · " + levelName(t.computerLevel())
 	} else if seat := t.seatOf(m.v.ID); seat >= 0 && len(t.Seats) == 2 && !t.Seats[1-seat].Empty() {
 		where = "VS " + strings.ToUpper(t.Seats[1-seat].Name)
 	}
-	if sum := k.summary(t.Options); sum != "" {
+	if sum := k.summary(t.Options); sum != "" && where != "" {
 		where += " · " + sum
+	} else if sum != "" {
+		where = sum
+	} else if where == "" {
+		where = seatsSummary(t)
 	}
 	m.topBar(s, where)
 	over := t.outcome().Over
@@ -1400,12 +1421,12 @@ func (m *viewerModel) watchers(t *Table) int {
 func (m *viewerModel) tableStatus(t *Table, turn int) (string, string) {
 	mySeat := t.seatOf(m.v.ID)
 	switch o := t.outcome(); {
-	case o.Over && o.Winner == mySeat && mySeat >= 0:
+	case o.Over && o.Won(mySeat):
 		return "You win! Enter: results", "green"
 	case o.Over && o.Winner >= 0 && mySeat >= 0:
 		return "You lose this one. Enter: results", "dim"
 	case o.Over && o.Winner >= 0:
-		return t.Seats[o.Winner].Name + " wins. Enter: results", "yellow"
+		return teamWins(t, o) + ". Enter: results", "yellow"
 	case o.Over:
 		return "A draw. Enter: results", "yellow"
 	case !t.full():
@@ -1451,7 +1472,7 @@ func (m *viewerModel) drawResults(s scr) {
 	s.text(2, 9, "THIS GAME", "pink", "", true)
 	line := fmt.Sprintf("A DRAW · %d MOVES", len(t.Moves))
 	switch {
-	case o.Winner >= 0 && o.Winner == mySeat:
+	case o.Won(mySeat):
 		line = fmt.Sprintf("WON IN %d MOVES", len(t.Moves))
 	case o.Winner >= 0 && mySeat >= 0:
 		line = fmt.Sprintf("LOST IN %d MOVES", len(t.Moves))
@@ -1790,14 +1811,15 @@ func newRand() *rand.Rand {
 // withSetup opens the NEW GAME screen and runs then with the player's
 // choices; a game without options goes straight to then. start names what
 // START does ("VS CPU · NORMAL").
-func (m *viewerModel) withSetup(start string, then func(map[string]string)) {
+func (m *viewerModel) withSetup(start string, people bool, then func(map[string]string)) {
 	if !m.k.gameOptions() {
 		then(nil)
 		return
 	}
 	rec := m.k.record(m.v.ID)
 	m.setupOpts = map[string]string{}
-	for _, o := range m.k.rules.Arcade.Options {
+	m.setupList = m.k.setupOptions(people)
+	for _, o := range m.setupList {
 		v := rec.Setup[o.Key] // what they chose last time
 		if !slices.Contains(o.Values, v) {
 			v = o.Default
@@ -1806,12 +1828,13 @@ func (m *viewerModel) withSetup(start string, then func(map[string]string)) {
 	}
 	m.setupStart, m.setupThen = start, then
 	m.goTo(screenSetup)
-	m.cursor = len(m.k.rules.Arcade.Options) // START
+	m.cursor = len(shown(m.setupList, m.setupOpts)) // START
 }
 
 func (m *viewerModel) setupKey(key string) {
-	opts := m.k.rules.Arcade.Options
+	opts := shown(m.setupList, m.setupOpts)
 	rows := len(opts) + 1
+	m.cursor = min(m.cursor, rows-1)
 	switch key {
 	case "up", "k":
 		m.cursor = (m.cursor + rows - 1) % rows
@@ -1831,6 +1854,7 @@ func (m *viewerModel) setupKey(key string) {
 			i = min(len(o.Values)-1, i+1)
 		}
 		m.setupOpts[o.Key] = o.Values[i]
+		m.cursor = min(m.cursor, len(shown(m.setupList, m.setupOpts))) // fewer rows now (fewer players)
 		m.k.uiSound(m, arcade.SoundBlip)
 	case "enter", " ":
 		rec := m.k.record(m.v.ID)
@@ -1852,8 +1876,12 @@ func (m *viewerModel) drawSetup(s scr) {
 	a := m.k.rules.Arcade
 	m.topBar(s, "NEW GAME")
 	s.logo("NEW GAME", 1, nil)
+	opts := shown(m.setupList, m.setupOpts)
+	// Up to four rows get a line of description each; more are listed one
+	// to a line, with the chosen row's description under the list.
+	compact := len(opts) > 4
 	y := 7
-	for i, o := range a.Options {
+	for i, o := range opts {
 		sel := i == m.cursor
 		if sel {
 			s.text(3, y, "▶", "purple", "", true)
@@ -1865,12 +1893,23 @@ func (m *viewerModel) drawSetup(s scr) {
 		}
 		s.text(5, y, " "+padRight(o.Label, 7), label, bg, true)
 		s.text(15, y, "◂ "+o.name(m.setupOpts[o.Key])+" ▸", "fg", "", true)
-		if o.Describe != nil {
+		if o.Describe != nil && !compact {
 			s.text(15, y+1, cut(o.Describe(m.setupOpts[o.Key]), 28), "dim", "", false)
 		}
-		y += 3
+		if compact {
+			y++
+		} else {
+			y += 3
+		}
 	}
-	sel := m.cursor >= len(a.Options)
+	if compact {
+		if m.cursor < len(opts) && opts[m.cursor].Describe != nil {
+			o := opts[m.cursor]
+			s.text(5, 20, cut(o.Describe(m.setupOpts[o.Key]), 38), "dim", "", false)
+		}
+		y++
+	}
+	sel := m.cursor >= len(opts)
 	if sel {
 		s.text(3, y, "▶", "purple", "", true)
 	}
@@ -1881,7 +1920,7 @@ func (m *viewerModel) drawSetup(s scr) {
 	s.text(5, y, " START  ", fg, bg, true)
 	s.text(15, y, cut(m.setupStart, 28), "fg", "", sel)
 	if s.w >= 80 && a.SetupPreview != nil {
-		s.box(46, 6, 32, 15, "comment", m.k.summary(m.setupOpts), "purple")
+		s.box(46, 6, 32, 15, "comment", cut(m.k.summary(m.setupOpts), 26), "purple")
 		a.SetupPreview(s.c, m.setupOpts, s.ox+47, s.oy+7, 30, 13)
 	}
 	s.keys(arcade.Key{Key: "↑↓", Does: "choose"}, arcade.Key{Key: "←→", Does: "change"}, arcade.Key{Key: "Enter", Does: "start"}, arcade.Key{Key: "Esc", Does: "back"})
