@@ -641,7 +641,7 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 					if t.empty() { // still nobody there: this is the game
 						t.Options = k.seed(withOptions(r.settings, o))
 						t.Seats = k.seatsFor(t.Options, nil, true, 2) // the computer in its seats, the rest open
-						t.Moves, t.Resigned, t.Score, t.Ready = nil, -1, nil, nil
+						t.Moves, t.Resigned, t.Away, t.Score, t.Ready = nil, -1, false, nil, nil
 						t.rebuild(&k.rules)
 						k.resetClock(t) // the options chosen may have a different clock
 						k.changed(r, t, "")

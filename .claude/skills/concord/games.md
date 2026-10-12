@@ -93,6 +93,14 @@ Declare these `create_field`s (the scaffolded `plugin.toml` has them all):
 | `computer_opponent` | boolean | the menu offers "play the computer" |
 | `computer_level` | `easy` / `normal` / `hard` | the computer's strength (`Rules.AI` level 1-3) |
 
+**Walking away** (`table/away.go`, the kit does it, nothing to write): in
+a `seats` channel, someone seated at the shared table who isn't viewing the
+channel for `table.AwayFor` (10 minutes) loses the seat. With no game going
+they stand up; mid-game at a two-seat table they forfeit ("left the
+table") and the seat opens shortly after; with more seats the computer
+takes over so the others can finish. Games against the computer,
+challenges and private games keep their seats.
+
 Add your game's own options as more `create_field`s (e.g. Tak's
 `board_size` select). They reach `Rules.New(options)`. Standalone, pass the
 same keys to `table.RunLocal(rules, options)` from command-line flags. Parse
