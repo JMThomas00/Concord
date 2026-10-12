@@ -301,6 +301,7 @@ type Table struct {
 	Moves    []string          `json:"moves"`
 	Options  map[string]string `json:"options,omitempty"`
 	Resigned int               `json:"resigned"`        // seat that resigned, or -1
+	Away     bool              `json:"away,omitempty"`  // ...by walking away from the table (away.go)
 	Main     bool              `json:"main,omitempty"`  // ModeSeats' one table (others are games against the computer)
 	Score    []int             `json:"score,omitempty"` // wins per seat since these players sat down (arcade)
 	Ready    []bool            `json:"ready,omitempty"` // seats asking for a rematch (arcade)
@@ -345,6 +346,9 @@ func (t *Table) result() Outcome {
 		winner := -1
 		if len(t.Seats) == 2 {
 			winner = 1 - t.Resigned
+		}
+		if t.Away {
+			return Outcome{Over: true, Winner: winner, Reason: t.Seats[t.Resigned].Name + " left the table"}
 		}
 		return Outcome{Over: true, Winner: winner, Reason: t.Seats[t.Resigned].Name + " resigned"}
 	}

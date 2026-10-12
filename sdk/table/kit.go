@@ -49,6 +49,9 @@ type Room struct {
 	Challenges []Challenge       `json:"challenges"`
 	Last       string            `json:"last,omitempty"` // the last finished game, for the arcade menu
 	settings   map[string]string // the channel's create_field values
+
+	away     map[uuid.UUID]time.Time // since when each seated player has been gone (away.go)
+	sweeping bool                    // a check of who's away is scheduled
 }
 
 // Challenge is an invitation waiting for an answer.
@@ -128,7 +131,13 @@ func (k *Kit) Handler() plugin.Handler {
 		OnInput:  func(c *plugin.Conn, e wire.PluginPaneInputPayload) { wrap(c, func() { h.OnInput(c, e) }) },
 		OnResize: func(c *plugin.Conn, e wire.PluginPaneResizePayload) { wrap(c, func() { h.OnResize(c, e) }) },
 		OnLeave: func(c *plugin.Conn, e wire.PluginPaneLeavePayload) {
-			wrap(c, func() { h.OnLeave(c, e); delete(k.viewers, e.ViewerID) })
+			wrap(c, func() {
+				h.OnLeave(c, e)
+				delete(k.viewers, e.ViewerID)
+				if r := k.rooms[e.ChannelID]; r != nil {
+					k.noteAway(r) // someone seated may have just walked off
+				}
+			})
 		},
 		OnChannel: func(c *plugin.Conn, ch wire.Channel) {
 			wrap(c, func() {
@@ -172,6 +181,7 @@ func (k *Kit) room(channelID uuid.UUID) *Room {
 	}
 	k.rooms[channelID] = r
 	k.resumeClocks(r)
+	k.noteAway(r) // after a restart, whoever doesn't come back loses their seat
 	return r
 }
 
@@ -367,7 +377,7 @@ func (k *Kit) stand(r *Room, t *Table, userID uuid.UUID) {
 		t.Seats[s] = Player{}
 		t.Score, t.Ready = nil, nil
 		if t.outcome().Over { // a finished game makes room for the next one
-			t.Moves, t.Resigned = nil, -1
+			t.Moves, t.Resigned, t.Away = nil, -1, false
 			t.Options = k.seed(t.Options)
 			t.rebuild(&k.rules)
 			k.resetClock(t)
@@ -398,7 +408,7 @@ func (k *Kit) rematch(r *Room, t *Table) {
 			t.Score = append(t.Score[1:], t.Score[0])
 		}
 	}
-	t.Seats, t.Moves, t.Resigned, t.Ready = seats, nil, -1, nil
+	t.Seats, t.Moves, t.Resigned, t.Away, t.Ready = seats, nil, -1, false, nil
 	if !k.gameOptions() { // a game with its own options keeps the ones chosen for this table
 		t.Options = copyMap(r.settings)
 	}
