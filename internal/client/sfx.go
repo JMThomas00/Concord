@@ -19,6 +19,7 @@ import (
 // seconds, so Concord doesn't hold the speakers open for nothing.
 type sfxPlayer struct {
 	mu      sync.Mutex
+	openMu  sync.Mutex // serializes open(); lock order is openMu -> mu, never the reverse
 	ctx     *malgo.AllocatedContext
 	dev     *malgo.Device
 	playing []*sfxVoice
@@ -45,12 +46,6 @@ func (p *sfxPlayer) Play(pcm []int16, gain float64) error {
 		return nil
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.dev == nil {
-		if err := p.open(); err != nil {
-			return err
-		}
-	}
 	if len(p.playing) >= 16 { // drop the oldest rather than pile up
 		p.playing = p.playing[1:]
 	}
@@ -59,10 +54,39 @@ func (p *sfxPlayer) Play(pcm []int16, gain float64) error {
 		p.idle.Stop()
 		p.idle = nil
 	}
+	needOpen := p.dev == nil
+	p.mu.Unlock()
+	if !needOpen {
+		return nil
+	}
+
+	// The device's first Start() synchronously pulls an initial chunk of
+	// audio through fill(), which needs p.mu itself -- so p.mu must not be
+	// held here, the same reason closeIfIdle below drops it before Stop().
+	// openMu only serializes concurrent opens; the voice above is already
+	// queued, so there's nothing left for this goroutine to do if another
+	// one wins the race and opens the device first.
+	p.openMu.Lock()
+	defer p.openMu.Unlock()
+	p.mu.Lock()
+	alreadyOpen := p.dev != nil
+	p.mu.Unlock()
+	if alreadyOpen {
+		return nil
+	}
+	if err := p.open(); err != nil {
+		// Nothing has played while the device was down, so drop the whole
+		// queue -- otherwise every sound that failed here would burst out
+		// together on the next successful open.
+		p.mu.Lock()
+		p.playing = nil
+		p.mu.Unlock()
+		return err
+	}
 	return nil
 }
 
-// open starts the output device. Called with p.mu held.
+// open starts the output device. Called with openMu held and mu not held.
 func (p *sfxPlayer) open() error {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
@@ -95,7 +119,9 @@ func (p *sfxPlayer) open() error {
 		ctx.Free()
 		return err
 	}
+	p.mu.Lock()
 	p.ctx, p.dev = ctx, dev
+	p.mu.Unlock()
 	return nil
 }
 
