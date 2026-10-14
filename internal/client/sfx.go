@@ -19,7 +19,7 @@ import (
 // seconds, so Concord doesn't hold the speakers open for nothing.
 type sfxPlayer struct {
 	mu      sync.Mutex
-	openMu  sync.Mutex // serializes open(); never held at the same time as mu
+	openMu  sync.Mutex // serializes open(); lock order is openMu -> mu, never the reverse
 	ctx     *malgo.AllocatedContext
 	dev     *malgo.Device
 	playing []*sfxVoice
@@ -74,7 +74,16 @@ func (p *sfxPlayer) Play(pcm []int16, gain float64) error {
 	if alreadyOpen {
 		return nil
 	}
-	return p.open()
+	if err := p.open(); err != nil {
+		// Nothing has played while the device was down, so drop the whole
+		// queue -- otherwise every sound that failed here would burst out
+		// together on the next successful open.
+		p.mu.Lock()
+		p.playing = nil
+		p.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // open starts the output device. Called with openMu held and mu not held.
