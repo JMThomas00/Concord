@@ -220,6 +220,69 @@ func (h *Handlers) checkPermission(userID, serverID uuid.UUID, perm models.Permi
 	return errors.New("insufficient permissions")
 }
 
+// checkOutranks verifies that actorID may moderate targetID on a server, on
+// top of the permission for the action itself. It mirrors the client's
+// canModerate so a modified client can't do what the menus won't offer:
+// nobody moderates themselves or the owner; the owner moderates anyone; an
+// administrator moderates anyone who isn't one; otherwise the actor's
+// highest role must rank (Position) above the target's highest.
+func (h *Handlers) checkOutranks(actorID, serverID, targetID uuid.UUID) error {
+	if actorID == targetID {
+		return errors.New("you can't do that to yourself")
+	}
+	server, err := h.db.GetServerByID(serverID)
+	if err != nil {
+		return errors.New("server not found")
+	}
+	if targetID == server.OwnerID {
+		return errors.New("the server owner can't be moderated")
+	}
+	if actorID == server.OwnerID {
+		return nil
+	}
+	actorAdmin, actorTop := h.memberRank(serverID, actorID)
+	targetAdmin, targetTop := h.memberRank(serverID, targetID)
+	if actorAdmin && !targetAdmin {
+		return nil
+	}
+	if actorTop > targetTop {
+		return nil
+	}
+	return errors.New("they rank the same as or above you")
+}
+
+// memberRank returns whether a member holds Administrator through a role,
+// and the highest Position among their roles.
+func (h *Handlers) memberRank(serverID, userID uuid.UUID) (admin bool, top int) {
+	roles, err := h.db.GetMemberRoles(serverID, userID)
+	if err != nil {
+		return false, 0
+	}
+	for _, r := range roles {
+		if r.Permissions&models.PermissionAdministrator != 0 {
+			admin = true
+		}
+		if r.Position > top {
+			top = r.Position
+		}
+	}
+	return admin, top
+}
+
+// checkPinPermission verifies a user may pin or unpin in a channel: Pin
+// Messages, or Manage Messages, after the channel's overwrites.
+func (h *Handlers) checkPinPermission(userID, channelID uuid.UUID) error {
+	channel, err := h.db.GetChannelByID(channelID)
+	if err != nil {
+		return errors.New("channel not found")
+	}
+	if h.hasChannelPermission(userID, channel, models.PermissionPinMessages) == nil ||
+		h.hasChannelPermission(userID, channel, models.PermissionManageMessages) == nil {
+		return nil
+	}
+	return errors.New("you need Pin Messages to pin or unpin here")
+}
+
 // hasChannelPermission computes whether userID currently has perm in a
 // specific channel — server-owner bypass, then base role permissions, then
 // the channel's own permission overwrites applied in member > role >
@@ -1218,7 +1281,7 @@ func (h *Handlers) HandleRoleRemove(c *Client, msg *protocol.Message) {
 		}
 		adminCount := 0
 		for _, member := range members {
-			memberRoles, err := h.db.GetMemberRoles(member.UserID, req.ServerID)
+			memberRoles, err := h.db.GetMemberRoles(req.ServerID, member.UserID)
 			if err != nil {
 				continue
 			}
@@ -1251,6 +1314,10 @@ func (h *Handlers) HandleKickMember(c *Client, msg *protocol.Message) {
 		return
 	}
 	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionKickMembers); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+	if err := h.checkOutranks(c.UserID, req.ServerID, req.UserID); err != nil {
 		c.sendError(protocol.ErrorCodeForbidden, err.Error())
 		return
 	}
@@ -1316,6 +1383,10 @@ func (h *Handlers) HandleBanMember(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeForbidden, err.Error())
 		return
 	}
+	if err := h.checkOutranks(c.UserID, req.ServerID, req.UserID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
 	target, err := h.db.GetUserByID(req.UserID)
 	if err != nil {
 		c.sendError(protocol.ErrorCodeNotFound, "User not found")
@@ -1375,6 +1446,10 @@ func (h *Handlers) HandleMuteMember(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeForbidden, err.Error())
 		return
 	}
+	if err := h.checkOutranks(c.UserID, req.ServerID, req.UserID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
 	if err := h.db.SetMemberMuted(req.ServerID, req.UserID, req.Mute); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to update mute state")
 		return
@@ -1418,6 +1493,10 @@ func (h *Handlers) HandleTimeoutMember(c *Client, msg *protocol.Message) {
 		return
 	}
 	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionKickMembers); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
+	if err := h.checkOutranks(c.UserID, req.ServerID, req.UserID); err != nil {
 		c.sendError(protocol.ErrorCodeForbidden, err.Error())
 		return
 	}
@@ -1801,8 +1880,10 @@ func (h *Handlers) HandlePinMessage(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	// TODO: Add permission check for MANAGE_MESSAGES
-	// For now, allow anyone to pin
+	if err := h.checkPinPermission(c.UserID, req.ChannelID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
 
 	// Update database to set message as pinned
 	if err := h.db.SetMessagePinned(req.MessageID, true); err != nil {
@@ -1846,8 +1927,10 @@ func (h *Handlers) HandleUnpinMessage(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	// TODO: Add permission check for MANAGE_MESSAGES
-	// For now, allow anyone to unpin
+	if err := h.checkPinPermission(c.UserID, req.ChannelID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
 
 	// Update database to set message as unpinned
 	if err := h.db.SetMessagePinned(req.MessageID, false); err != nil {
@@ -2608,6 +2691,10 @@ func (h *Handlers) HandleVoiceServerMute(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to mute members")
 		return
 	}
+	if err := h.checkOutranks(c.UserID, req.ServerID, req.UserID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
+		return
+	}
 
 	if err := h.db.SetServerVoiceMute(req.UserID, req.ServerID, req.Muted, req.Deafened); err != nil {
 		DBLog.Error("Failed to set server voice mute", "user_id", req.UserID, "error", err)
@@ -2638,6 +2725,10 @@ func (h *Handlers) HandleMoveVoice(c *Client, msg *protocol.Message) {
 
 	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionMuteMembers); err != nil {
 		c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to move members")
+		return
+	}
+	if err := h.checkOutranks(c.UserID, req.ServerID, req.UserID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, err.Error())
 		return
 	}
 
