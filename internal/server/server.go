@@ -140,6 +140,17 @@ func New(config *Config) (*Server, error) {
 		db.Close()
 		return nil, fmt.Errorf("failed to ensure default server: %w", err)
 	}
+	// server_name is where the name is set, so a change to it renames the
+	// server (it's only used to create it otherwise, while the Grapevine
+	// listing and emails read the setting itself).
+	if name := strings.TrimSpace(config.ServerName); name != "" && name != defaultServer.Name {
+		if err := db.RenameServer(defaultServer.ID, name); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to rename server: %w", err)
+		}
+		DBLog.Info("Server renamed from server_name", "from", defaultServer.Name, "to", name)
+		defaultServer.Name = name
+	}
 	DBLog.Info("Default server initialized", "server_id", defaultServer.ID, "name", defaultServer.Name)
 
 	// Create hub

@@ -2739,6 +2739,13 @@ func (db *DB) UpdateServerOwner(serverID, ownerID uuid.UUID) error {
 	return err
 }
 
+// RenameServer sets a server's name.
+func (db *DB) RenameServer(serverID uuid.UUID, name string) error {
+	_, err := db.Exec(`UPDATE servers SET name = ?, updated_at = ? WHERE id = ?`,
+		name, time.Now(), serverID.String())
+	return err
+}
+
 // GetOrCreateAdminRole returns the existing "Admin" role for serverID, creating it if absent.
 func (db *DB) GetOrCreateAdminRole(serverID uuid.UUID) (*models.Role, error) {
 	roles, err := db.GetServerRoles(serverID)
