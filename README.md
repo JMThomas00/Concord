@@ -2,7 +2,7 @@
 
 A chat app for your terminal: servers, channels, voice, games and plugins, all keyboard-driven, all self-hostable. Built in Go on the [Charm](https://charm.sh) stack.
 
-**Website:** [concordchat.cc](https://concordchat.cc) (by [Anthoneyq](https://github.com/Anthoneyq)) · **Official server:** `server.concordchat.cc` · **Install:** [one line](#install)
+**Website:** [concordchat.cc](https://concordchat.cc) (by [Anthoneyq](https://github.com/Anthoneyq)) · **Official server:** `server.concordchat.cc` · **Install:** [one line](#install) · **Docs:** [the wiki](https://github.com/JMThomas00/Concord/wiki)
 
 ![Concord: signing in, a community's channels, a code snippet, switching themes live, and a first message](demo/hero.gif)
 
@@ -11,10 +11,10 @@ A chat app for your terminal: servers, channels, voice, games and plugins, all k
 - **Your own servers.** Run one on a home PC, a Raspberry Pi or a VPS. Every server is independent, IRC-style, with no central account.
 - **Many servers at once.** One client and one profile; switch servers without dropping out of a voice call.
 - **Channels and groups** in collapsible categories, with roles, per-channel permission overwrites, nicknames and custom titles.
-- **Chat that feels modern:** markdown, clickable links, replies, edits, pins, `@mentions` with autocomplete, typing indicators, whispers, and toasts for new messages.
+- **Chat that feels modern:** markdown, clickable links, replies, threads, edits, pins, `@mentions` with autocomplete, typing indicators, whispers, and toasts for new messages.
 - **Voice channels:** peer-to-peer WebRTC with Opus at 48 kHz, RNNoise noise suppression, echo cancellation, automatic levelling and per-person volume.
 - **File sharing** peer-to-peer (`/attach`, `/download`): nothing is stored on the server.
-- **Plugins:** chess, checkers, Tak and tic-tac-toe channels, a kanban board (Tukan), an AI persona (Mynah), with achievements and leaderboards. Install them from inside Concord, or build your own with the SDK.
+- **Plugins:** chess, checkers, Tak, tic-tac-toe, Four in a Row and dominoes channels, a typing race and a quick-draw game, a kanban board (Tukan) and AI personas (Mynah), with achievements and leaderboards. Install them from inside Concord, or build your own with the SDK.
 - **The Grapevine:** an optional, federated directory of public servers, browsable and joinable from the client.
 - **40+ themes**, switchable live, plus your own.
 - **Accounts done properly:** several profiles per computer, optional email verification and password reset, sign-in on every server at once.
@@ -59,11 +59,11 @@ The installer:
 2. **Make your profile:** a name, your email and a password. One profile signs you in to every server you join.
 3. **Join a server:**
    - **The official server**, `server.concordchat.cc`, is already in your list if you said yes in the installer. Say hi!
-   - **Any other server:** press **+** in the server column or **Ctrl+B**, then enter its address and port (and turn on TLS for servers behind HTTPS, like the official one on port 443).
+   - **Any other server:** press **Ctrl+N** (or open **Settings → Manage Servers** and press **Ctrl+N** there), then enter its address and port (and turn on TLS for servers behind HTTPS, like the official one on port 443).
    - **Browse the Grapevine:** **Ctrl+G** on the login screen, or **Settings → Manage Servers → B**. Pick a server and press **A** to join.
 4. **Chat:** type and press **Enter**. **Tab** moves between panels, `/help` finds every command, and **Settings → Help** has the full guide.
 
-**Running your own server?** The first person to sign up on a new server becomes its owner. Give friends its address (on your network, the installer's summary shows it; across the internet, forward the port or put it behind a tunnel). Then manage channels, roles, members and plugins from **Ctrl+B → your server**.
+**Running your own server?** The first person to sign up on a new server becomes its owner. Give friends its address (on your network, the installer's summary shows it; across the internet, forward the port or put it behind a tunnel). Then manage channels, roles, members and plugins in **Server Settings**: **Ctrl+B** while you're on your server.
 
 ## Plugins
 
@@ -71,8 +71,9 @@ Plugins are separate programs a server runs alongside itself. They add channels 
 
 - **Install one** (server admins): **Server Settings (Ctrl+B) → Plugins → I**, then type its GitHub repo, like `JMThomas00/concord-chess`. Concord downloads the right build, checks it, and starts it with no restart. **U** updates it later.
 - **Plugins we've made:**
-  - games: [tic-tac-toe](https://github.com/JMThomas00/concord-tictactoe), [checkers](https://github.com/JMThomas00/concord-checkers), [Tak](https://github.com/JMThomas00/concord-tak) and [chess](https://github.com/JMThomas00/concord-chess). Each has seats, challenges, spectators, a computer opponent, achievements and a leaderboard, and each also plays standalone in a terminal, even over the network.
+  - games: [tic-tac-toe](https://github.com/JMThomas00/concord-tictactoe), [checkers](https://github.com/JMThomas00/concord-checkers), [Tak](https://github.com/JMThomas00/concord-tak), [chess](https://github.com/JMThomas00/concord-chess), [Four in a Row](https://github.com/JMThomas00/concord-four-in-a-row) and [dominoes](https://github.com/JMThomas00/concord-dominoes) (All Fives, for up to four). Each has seats, challenges, spectators, a computer opponent, achievements and a leaderboard, and each also plays standalone in a terminal, even over the network.
   - **[Grape Race](https://github.com/JMThomas00/concord-grape-race):** an arcade typing race on a drag strip, with a garage of unlockable cars. 🍇
+  - **[Reflex](https://github.com/JMThomas00/concord-reflex):** a high-noon quick draw, played right in your client.
   - **Tukan:** a kanban board.
   - **Mynah:** AI personas that chat.
 - **Build your own:** the plugin SDK (`github.com/JMThomas00/Concord/sdk`) handles the connection, panes, game tables, the arcade look (pixel art, sounds, rewards) and testing. `concord-plugin new <name> --template game|pane|bot|pty` gives you a working repo with a release workflow. [`sdk/PROTOCOL.md`](sdk/PROTOCOL.md) covers other languages, and the `/concord` skill in `.claude/skills/concord/` teaches an AI agent to build one.
@@ -86,13 +87,15 @@ Plugins are separate programs a server runs alongside itself. They add channels 
 | `Tab` / `Shift+Tab` | Move between panels |
 | `Esc` | Close, cancel, go back |
 | `Ctrl+S` | Settings |
-| `Ctrl+B` | Server management |
+| `Ctrl+B` | Server Settings for the current server (admins) |
+| `Ctrl+N` | Add a server |
 | `Ctrl+T` | Theme browser |
 | `Ctrl+G` | Grapevine browser (login and Add Server screens) |
 | `Ctrl+P` / `Ctrl+F` / `Ctrl+U` | Profiles / forgot password / updates (login screen) |
 | `[` / `]` | Hide or show the server list / member list |
 | `Ctrl+M` / `Ctrl+D` | Mute / deafen yourself in voice |
-| `Alt+M` | Message navigation: reply, edit, delete, links, pin, copy |
+| `Alt+M` | Message navigation: reply, reply in a thread, edit, delete, links, pin, copy |
+| `Alt+T` | This channel's threads |
 | `Ctrl+J` | New line in a message |
 | `Ctrl+Q` | Quit |
 
@@ -108,6 +111,7 @@ Type `/` in the chat box. `/help` opens a searchable finder.
 | --- | --- |
 | `/whisper @user <msg>` (`/w`) | A private, ephemeral message |
 | `/links [N]` | Links from the last N messages |
+| `/threads` | This channel's threads |
 | `/theme [name]` | The theme browser, or a theme by name |
 | `/status <message>` | Set your status (`/status clear` removes it) |
 | `/nick <nickname>` | Your nickname on this server (`clear` removes it) |
