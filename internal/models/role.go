@@ -68,6 +68,7 @@ const (
 		PermissionManageMessages |
 		PermissionKickMembers |
 		PermissionMuteMembers |
+		PermissionDeafenMembers |
 		PermissionMoveMembers |
 		PermissionManageNicknames |
 		PermissionPinMessages

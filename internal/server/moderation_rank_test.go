@@ -202,3 +202,51 @@ func TestRemoveAdminRoleWhenAnotherAdminRemains(t *testing.T) {
 		t.Fatalf("removing one of two admins was refused: %s", got.Data)
 	}
 }
+
+// Deafening needs Deafen Members and moving needs Move Members (both used to
+// check Mute Members); muting still needs only Mute Members.
+func TestDeafenAndMoveNeedTheirOwnPermissions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wire-level integration test")
+	}
+	srv, wsURL := startPlainTestServer(t)
+	owner, _ := createTestUserAndToken(t, srv, "dm-owner")
+	mod, token := createTestUserAndToken(t, srv, "dm-mod")
+	target, _ := createTestUserAndToken(t, srv, "dm-target")
+	s := models.NewServer("Deafen Move", owner.ID)
+	if err := srv.db.CreateServer(s); err != nil {
+		t.Fatal(err)
+	}
+	muter := models.NewRole(s.ID, "Muter")
+	muter.Permissions, muter.Position = models.PermissionMuteMembers, 5
+	if err := srv.db.CreateRole(muter); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []*models.User{owner, mod, target} {
+		srv.db.AddServerMember(models.NewServerMember(u.ID, s.ID))
+	}
+	srv.db.AddMemberRole(mod.ID, s.ID, muter.ID)
+	lounge := models.NewVoiceChannel(s.ID, "Lounge")
+	if err := srv.db.CreateChannel(lounge); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newTestWSClient(t, wsURL)
+	c.identify(token)
+	reply := func(op protocol.OpCode, payload interface{}) *protocol.Message {
+		t.Helper()
+		c.send(op, payload)
+		return c.readUntil(5*time.Second, func(m *protocol.Message) bool {
+			return m.Op == protocol.OpDispatch && (m.Type == "" || m.Type == protocol.EventVoiceStateUpdate)
+		})
+	}
+	if got := reply(protocol.OpVoiceServerMute, protocol.VoiceServerMutePayload{ServerID: s.ID, UserID: target.ID, Muted: false, Deafened: true}); got.Type != "" {
+		t.Fatalf("deafened without Deafen Members: %s", got.Type)
+	}
+	if got := reply(protocol.OpMoveVoice, protocol.MoveVoicePayload{ServerID: s.ID, UserID: target.ID, ChannelID: lounge.ID}); got.Type != "" {
+		t.Fatalf("moved without Move Members: %s", got.Type)
+	}
+	if got := reply(protocol.OpVoiceServerMute, protocol.VoiceServerMutePayload{ServerID: s.ID, UserID: target.ID, Muted: true}); got.Type != protocol.EventVoiceStateUpdate {
+		t.Fatalf("a voice mute with Mute Members was refused: %s", got.Data)
+	}
+}

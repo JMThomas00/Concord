@@ -289,19 +289,25 @@ type permissionItem struct {
 	Name     string
 	Bit      models.Permission
 	Category string
+	NotYet   bool // in the bitfield, but nothing checks it yet
 }
 
 // getOverwriteablePermissionList returns the permissions a channel
 // overwrite editor should expose. Deliberately a small subset of
 // getPermissionList(), not all of it: PermissionCalculator.ComputeOverwrites
 // is correct for every bit, but server-side enforcement (hasChannelPermission
-// in internal/server/handlers.go) only actually checks PermissionSendMessages
-// today — showing togglable overwrites for permissions nothing enforces
+// in internal/server/handlers.go) only checks a few permissions — showing togglable overwrites for permissions nothing enforces
 // would be a UI promise Concord can't keep. Add an entry here the same
-// session real enforcement lands for that permission, not before.
+// session real enforcement lands for that permission, not before. (View
+// Channels goes through hasChannelPermission too, but only for plugin panes
+// and threads: an overwrite wouldn't hide the channel, so it isn't offered.)
 func getOverwriteablePermissionList() []permissionItem {
 	return []permissionItem{
 		{Name: "Send Messages", Bit: models.PermissionSendMessages, Category: "Text Channels"},
+		{Name: "Attach Files", Bit: models.PermissionAttachFiles, Category: "Text Channels"},
+		{Name: "Pin Messages", Bit: models.PermissionPinMessages, Category: "Text Channels"},
+		{Name: "Connect", Bit: models.PermissionConnect, Category: "Voice Channels"},
+		{Name: "Speak", Bit: models.PermissionSpeak, Category: "Voice Channels"},
 	}
 }
 
@@ -312,8 +318,8 @@ func getPermissionList() []permissionItem {
 		{Name: "View Channels", Bit: models.PermissionViewChannels, Category: "General"},
 		{Name: "Manage Channels", Bit: models.PermissionManageChannels, Category: "General"},
 		{Name: "Manage Roles", Bit: models.PermissionManageRoles, Category: "General"},
-		{Name: "Manage Server", Bit: models.PermissionManageServer, Category: "General"},
-		{Name: "Create Invite", Bit: models.PermissionCreateInvite, Category: "General"},
+		{Name: "Manage Server", Bit: models.PermissionManageServer, Category: "General", NotYet: true},
+		{Name: "Create Invite", Bit: models.PermissionCreateInvite, Category: "General", NotYet: true},
 		{Name: "Kick Members", Bit: models.PermissionKickMembers, Category: "General"},
 		{Name: "Ban Members", Bit: models.PermissionBanMembers, Category: "General"},
 		{Name: "Change Nickname", Bit: models.PermissionChangeNickname, Category: "General"},
@@ -322,15 +328,15 @@ func getPermissionList() []permissionItem {
 
 		// Text Channel Permissions
 		{Name: "Send Messages", Bit: models.PermissionSendMessages, Category: "Text Channels"},
-		{Name: "Send Messages in Threads", Bit: models.PermissionSendMessagesThreads, Category: "Text Channels"},
-		{Name: "Create Threads", Bit: models.PermissionCreateThreads, Category: "Text Channels"},
-		{Name: "Embed Links", Bit: models.PermissionEmbedLinks, Category: "Text Channels"},
+		{Name: "Send Messages in Threads", Bit: models.PermissionSendMessagesThreads, Category: "Text Channels", NotYet: true},
+		{Name: "Create Threads", Bit: models.PermissionCreateThreads, Category: "Text Channels", NotYet: true},
+		{Name: "Embed Links", Bit: models.PermissionEmbedLinks, Category: "Text Channels", NotYet: true},
 		{Name: "Attach Files", Bit: models.PermissionAttachFiles, Category: "Text Channels"},
-		{Name: "Add Reactions", Bit: models.PermissionAddReactions, Category: "Text Channels"},
-		{Name: "Use External Emoji", Bit: models.PermissionUseExternalEmoji, Category: "Text Channels"},
+		{Name: "Add Reactions", Bit: models.PermissionAddReactions, Category: "Text Channels", NotYet: true},
+		{Name: "Use External Emoji", Bit: models.PermissionUseExternalEmoji, Category: "Text Channels", NotYet: true},
 		{Name: "Mention Everyone", Bit: models.PermissionMentionEveryone, Category: "Text Channels"},
 		{Name: "Manage Messages", Bit: models.PermissionManageMessages, Category: "Text Channels"},
-		{Name: "Read Message History", Bit: models.PermissionReadMessageHistory, Category: "Text Channels"},
+		{Name: "Read Message History", Bit: models.PermissionReadMessageHistory, Category: "Text Channels", NotYet: true},
 		{Name: "Pin Messages", Bit: models.PermissionPinMessages, Category: "Text Channels"},
 
 		// Voice Channel Permissions
@@ -339,7 +345,7 @@ func getPermissionList() []permissionItem {
 		{Name: "Mute Members", Bit: models.PermissionMuteMembers, Category: "Voice Channels"},
 		{Name: "Deafen Members", Bit: models.PermissionDeafenMembers, Category: "Voice Channels"},
 		{Name: "Move Members", Bit: models.PermissionMoveMembers, Category: "Voice Channels"},
-		{Name: "Use Voice Activity", Bit: models.PermissionUseVAD, Category: "Voice Channels"},
+		{Name: "Use Voice Activity", Bit: models.PermissionUseVAD, Category: "Voice Channels", NotYet: true},
 
 		// Administrator (Special)
 		{Name: "Administrator (All Permissions)", Bit: models.PermissionAdministrator, Category: "Special"},
@@ -354,118 +360,122 @@ func getPermissionDescription(permName string) (description string, commands str
 	}{
 		// General Permissions
 		"View Channels": {
-			desc: "See channels and categories in the server",
-			cmds: "Implicit - all members have this by default",
+			desc: "Open plugin channels and threads (channels aren't hidden without it yet)",
+			cmds: "Overrides: not offered, since a Deny wouldn't hide the channel",
 		},
 		"Manage Channels": {
-			desc: "Create, edit, delete, and reorder channels and categories",
-			cmds: "/create-channel <name> [category], /delete-channel <name>, /rename-channel <old> <new>, /move-channel <channel> <category>",
+			desc: "Create, edit, delete, reorder and lock channels and groups",
+			cmds: "/create-channel, /delete-channel, /rename-channel, /move-channel, /lock, /unlock",
 		},
 		"Manage Roles": {
-			desc: "Create, edit, delete roles and assign or remove roles from members",
+			desc: "Create, edit and delete roles, and give or take them from members",
 			cmds: "/roles, /create-role <name> [preset], /role assign|remove @user <role>",
 		},
 		"Manage Server": {
-			desc: "Change server name, settings, retention policies (Not Implemented)",
-			cmds: "Server settings UI - future feature",
+			desc: "Not checked yet: nothing needs it today (server settings live in concord-server.toml)",
+			cmds: "",
 		},
 		"Create Invite": {
-			desc: "Generate invite links for others to join the server (Not Implemented)",
-			cmds: "/invite create - future feature",
+			desc: "Not checked yet: invites aren't built",
+			cmds: "",
 		},
 		"Kick Members": {
-			desc: "Remove members from the server (they can rejoin)",
-			cmds: "/kick @user [reason]",
+			desc: "A warning shot: a 5-second warning, then disconnected (they can sign back in). Also time-outs.",
+			cmds: "/kick @user [reason], /timeout @user <minutes> [reason]",
 		},
 		"Ban Members": {
-			desc: "Permanently ban members from the server",
-			cmds: "/ban @user [reason], /unban @user",
+			desc: "Remove members and keep them out until unbanned",
+			cmds: "/ban @user [reason], /unban <username>",
 		},
 		"Change Nickname": {
-			desc: "Change your own title in this server (Not Implemented)",
-			cmds: "/title <new title> - future feature",
+			desc: "Set your own nickname on this server",
+			cmds: "/nick <nickname>, /nick clear",
 		},
 		"Manage Titles": {
-			desc: "Change other members' titles",
-			cmds: "/title @user <new title>",
+			desc: "Set other members' titles",
+			cmds: "/title @user <title>",
+		},
+		"Manage Plugins": {
+			desc: "Install, update, configure and remove plugins (they run with the server's privileges)",
+			cmds: "Server Settings > Plugins",
 		},
 
 		// Text Channel Permissions
 		"Send Messages": {
-			desc: "Send text messages in channels",
-			cmds: "Implicit - all members can send messages",
+			desc: "Post messages in text channels (overridable per channel)",
+			cmds: "",
 		},
 		"Send Messages in Threads": {
-			desc: "Reply to threads (Not Implemented)",
-			cmds: "Thread system - future feature",
+			desc: "Not checked yet: replying in a thread uses Send Messages",
+			cmds: "",
 		},
 		"Create Threads": {
-			desc: "Create discussion threads from messages (Not Implemented)",
-			cmds: "Thread system - future feature",
+			desc: "Not checked yet: starting a thread uses Send Messages",
+			cmds: "",
 		},
 		"Embed Links": {
-			desc: "Post URLs that auto-embed (images, videos, etc.)",
-			cmds: "Implicit - URL rendering is automatic (OSC 8 hyperlinks)",
+			desc: "Not checked yet: links are always clickable, and nothing is embedded",
+			cmds: "",
 		},
 		"Attach Files": {
-			desc: "Upload files/images to messages (Not Implemented)",
-			cmds: "File upload system - future feature",
+			desc: "Share files peer to peer (overridable per channel)",
+			cmds: "/attach <path> [caption]",
 		},
 		"Add Reactions": {
-			desc: "React to messages with emoji (Not Implemented)",
-			cmds: "Reaction system - future feature",
+			desc: "Not checked yet: reactions aren't built",
+			cmds: "",
 		},
 		"Use External Emoji": {
-			desc: "Use emoji from other servers (Not Implemented)",
-			cmds: "Custom emoji system - future feature",
+			desc: "Not checked yet: custom emoji aren't built",
+			cmds: "",
 		},
 		"Mention Everyone": {
-			desc: "Use @everyone and @here to ping all members",
-			cmds: "@everyone, @here in messages",
+			desc: "Ping every member with @everyone",
+			cmds: "@everyone in a message",
 		},
 		"Manage Messages": {
-			desc: "Delete any message, pin/unpin messages",
-			cmds: "/delete-message <id>, /pin <message-id>, /unpin <message-id>",
+			desc: "Delete anyone's messages, pin and unpin, and set message retention",
+			cmds: "Alt+M then D, /pin [n], /unpin [n], Server Settings > Messages",
 		},
 		"Read Message History": {
-			desc: "View past messages in channels (scrollback)",
-			cmds: "Implicit - message history is always accessible",
+			desc: "Not checked yet: everyone who can open a channel sees its history",
+			cmds: "",
 		},
 		"Pin Messages": {
-			desc: "Pin important messages to channel header",
-			cmds: "/pin <message-id>, /unpin <message-id>",
+			desc: "Pin and unpin messages (overridable per channel)",
+			cmds: "/pin [n], /unpin [n]",
 		},
 
 		// Voice Channel Permissions
 		"Connect": {
-			desc: "Join voice channels (Not Implemented)",
-			cmds: "Voice system - future feature",
+			desc: "Join voice channels (overridable per channel)",
+			cmds: "/join-voice [#channel]",
 		},
 		"Speak": {
-			desc: "Transmit audio in voice channels (Not Implemented)",
-			cmds: "Voice system - future feature",
+			desc: "Talk in voice; without it you join server-muted (overridable per channel)",
+			cmds: "",
 		},
 		"Mute Members": {
-			desc: "Server-mute members (text mute only; voice mute not implemented)",
-			cmds: "/mute @user [duration] [reason]",
+			desc: "Mute members in text, and server-mute them in voice",
+			cmds: "/mute @user [minutes], /unmute @user, /mute-voice @user, /unmute-voice @user",
 		},
 		"Deafen Members": {
-			desc: "Server-deafen members (they can't hear) (Not Implemented)",
-			cmds: "Voice system - future feature",
+			desc: "Server-deafen members in voice, so they can't hear",
+			cmds: "/deafen-voice @user, /unmute-voice @user",
 		},
 		"Move Members": {
-			desc: "Move members between voice channels (Not Implemented)",
-			cmds: "Voice system - future feature",
+			desc: "Move members to another voice channel",
+			cmds: "/move-voice @user <channel>",
 		},
 		"Use Voice Activity": {
-			desc: "Use voice activity detection instead of push-to-talk (Not Implemented)",
-			cmds: "Voice system - future feature",
+			desc: "Not checked yet: voice activity is the only way to talk",
+			cmds: "",
 		},
 
 		// Special
 		"Administrator (All Permissions)": {
-			desc: "Grants all permissions automatically (including future ones)",
-			cmds: "Server owner always has this; role assignment via /role assign @user Admin",
+			desc: "Every permission, and skips every check. The owner always has it.",
+			cmds: "/role assign @user Admin",
 		},
 	}
 
@@ -6745,6 +6755,9 @@ func (a *App) renderPermissionsEditorPage(width, height int, s *ServerManagement
 
 		// Build line
 		line := fmt.Sprintf("%s%s %s", prefix, checkbox, perm.Name)
+		if perm.NotYet {
+			line += " (not yet)"
+		}
 
 		// Style based on selection
 		if i == s.PermSelectedIndex {

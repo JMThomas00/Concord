@@ -32,7 +32,7 @@ func TestEveryoneLosesManageChannelsOnce(t *testing.T) {
 		}
 		return r
 	}
-	oldModerator := models.PermissionsModerator &^ models.PermissionManageChannels
+	oldModerator := models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers)
 	everyone := role("everyone", true, models.NewEveryoneRole(s.ID).Permissions|models.PermissionManageChannels) // as before
 	mod := role("Moderator", false, oldModerator)
 	helper := role("Helper", false, models.PermissionsText)

@@ -2687,9 +2687,18 @@ func (h *Handlers) HandleVoiceServerMute(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionMuteMembers); err != nil {
-		c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to mute members")
-		return
+	// Muting needs Mute Members and deafening Deafen Members; lifting both
+	// (muted and deafened false) needs either.
+	need, needMsg := models.PermissionMuteMembers, "You don't have permission to mute members"
+	if req.Deafened {
+		need, needMsg = models.PermissionDeafenMembers, "You don't have permission to deafen members"
+	}
+	if err := h.checkPermission(c.UserID, req.ServerID, need); err != nil {
+		lift := !req.Muted && !req.Deafened
+		if !lift || h.checkPermission(c.UserID, req.ServerID, models.PermissionDeafenMembers) != nil {
+			c.sendError(protocol.ErrorCodeForbidden, needMsg)
+			return
+		}
 	}
 	if err := h.checkOutranks(c.UserID, req.ServerID, req.UserID); err != nil {
 		c.sendError(protocol.ErrorCodeForbidden, err.Error())
@@ -2723,7 +2732,7 @@ func (h *Handlers) HandleMoveVoice(c *Client, msg *protocol.Message) {
 		return
 	}
 
-	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionMuteMembers); err != nil {
+	if err := h.checkPermission(c.UserID, req.ServerID, models.PermissionMoveMembers); err != nil {
 		c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to move members")
 		return
 	}

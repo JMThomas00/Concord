@@ -3731,18 +3731,26 @@ func (a *App) openMemberContextMenu() tea.Cmd {
 		actions = append(actions,
 			MemberAction{Label: "Adjust Volume", Key: "V", Handler: handleVolumeAdjustAction, RequiresPerm: 0},
 		)
-		if canModerate && a.hasPermission(currentUser, models.PermissionMuteMembers) {
+		canMute := canModerate && a.hasPermission(currentUser, models.PermissionMuteMembers)
+		canDeafen := canModerate && a.hasPermission(currentUser, models.PermissionDeafenMembers)
+		if canModerate && a.hasPermission(currentUser, models.PermissionMoveMembers) {
 			actions = append(actions,
-				MemberAction{Label: "Move Voice", Key: "O", Handler: handleMoveVoiceAction, RequiresPerm: models.PermissionMuteMembers},
+				MemberAction{Label: "Move Voice", Key: "O", Handler: handleMoveVoiceAction, RequiresPerm: models.PermissionMoveMembers},
 			)
-			if isServerMuted {
-				actions = append(actions,
-					MemberAction{Label: "Voice Unmute", Key: "U", Handler: handleVoiceUnmuteAction, RequiresPerm: models.PermissionMuteMembers},
-				)
-			} else {
+		}
+		if isServerMuted && (canMute || canDeafen) {
+			actions = append(actions,
+				MemberAction{Label: "Voice Unmute", Key: "U", Handler: handleVoiceUnmuteAction, RequiresPerm: models.PermissionMuteMembers},
+			)
+		} else if !isServerMuted {
+			if canMute {
 				actions = append(actions,
 					MemberAction{Label: "Voice Mute", Key: "X", Handler: handleVoiceMuteAction, RequiresPerm: models.PermissionMuteMembers},
-					MemberAction{Label: "Voice Deafen", Key: "D", Handler: handleVoiceDeafenAction, RequiresPerm: models.PermissionMuteMembers},
+				)
+			}
+			if canDeafen {
+				actions = append(actions,
+					MemberAction{Label: "Voice Deafen", Key: "D", Handler: handleVoiceDeafenAction, RequiresPerm: models.PermissionDeafenMembers},
 				)
 			}
 		}

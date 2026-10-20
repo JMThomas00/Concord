@@ -3655,10 +3655,11 @@ func (db *DB) MigratePluginPlatform() error {
 
 	// Channel management (2026-10-20): @everyone used to have Manage
 	// Channels, so any member could create, delete and lock channels. Take
-	// it away from every @everyone once, and give it to roles made from the
-	// Moderator preset as it was then, which now includes it.
+	// it away from every @everyone once, and bring roles made from the
+	// Moderator preset as it was then up to the new one, which adds Manage
+	// Channels and Deafen Members (enforced from the same day).
 	if err := runOnce(db, "2026-10-20-everyone-manage-channels", func() error {
-		oldModerator := int64(models.PermissionsModerator &^ models.PermissionManageChannels)
+		oldModerator := int64(models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers))
 		if _, err := db.Exec(`UPDATE roles SET permissions = ? WHERE is_default = 0 AND permissions = ?`,
 			int64(models.PermissionsModerator), oldModerator); err != nil {
 			return err
