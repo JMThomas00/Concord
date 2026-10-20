@@ -283,6 +283,17 @@ func (h *Handlers) checkPinPermission(userID, channelID uuid.UUID) error {
 	return errors.New("you need Pin Messages to pin or unpin here")
 }
 
+// checkAdminChange verifies a user may make or unmake an administrator:
+// give or take a role carrying Administrator, create one, or change or
+// delete one. Only the owner and administrators may, so Manage Roles alone
+// can't be turned into Administrator.
+func (h *Handlers) checkAdminChange(userID, serverID uuid.UUID) error {
+	if h.checkPermission(userID, serverID, models.PermissionAdministrator) != nil {
+		return errors.New("only administrators can give, take or change the Administrator permission")
+	}
+	return nil
+}
+
 // hasChannelPermission computes whether userID currently has perm in a
 // specific channel — server-owner bypass, then base role permissions, then
 // the channel's own permission overwrites applied in member > role >
@@ -1247,6 +1258,12 @@ func (h *Handlers) HandleRoleAssign(c *Client, msg *protocol.Message) {
 		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
 		return
 	}
+	if role.Permissions&models.PermissionAdministrator != 0 {
+		if err := h.checkAdminChange(c.UserID, req.ServerID); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, err.Error())
+			return
+		}
+	}
 	if err := h.db.AddMemberRole(req.UserID, req.ServerID, role.ID); err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to assign role")
 		return
@@ -1269,6 +1286,13 @@ func (h *Handlers) HandleRoleRemove(c *Client, msg *protocol.Message) {
 	if err != nil {
 		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
 		return
+	}
+
+	if role.Permissions&models.PermissionAdministrator != 0 {
+		if err := h.checkAdminChange(c.UserID, req.ServerID); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, err.Error())
+			return
+		}
 	}
 
 	// Check if removing admin role from last admin (unless --force is used)
@@ -1603,6 +1627,13 @@ func (h *Handlers) HandleCreateRole(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	if models.Permission(req.Permissions)&models.PermissionAdministrator != 0 {
+		if err := h.checkAdminChange(c.UserID, req.ServerID); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, err.Error())
+			return
+		}
+	}
+
 	// Validate role name
 	if len(req.Name) < 1 || len(req.Name) > 32 {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Role name must be 1-32 characters")
@@ -1687,6 +1718,15 @@ func (h *Handlers) HandleUpdateRole(c *Client, msg *protocol.Message) {
 	if role.ServerID != req.ServerID {
 		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
 		return
+	}
+
+	// An administrator role, or a change that adds Administrator, is for
+	// administrators only.
+	if (role.Permissions|models.Permission(req.Permissions))&models.PermissionAdministrator != 0 {
+		if err := h.checkAdminChange(c.UserID, req.ServerID); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, err.Error())
+			return
+		}
 	}
 
 	// @everyone can't be renamed (its name is a protocol-level identity, not
@@ -1775,6 +1815,13 @@ func (h *Handlers) HandleDeleteRole(c *Client, msg *protocol.Message) {
 	if role.ServerID != req.ServerID {
 		c.sendError(protocol.ErrorCodeNotFound, "Role not found")
 		return
+	}
+
+	if role.Permissions&models.PermissionAdministrator != 0 {
+		if err := h.checkAdminChange(c.UserID, req.ServerID); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, err.Error())
+			return
+		}
 	}
 
 	// Check if deletion would leave zero admins

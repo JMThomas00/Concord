@@ -250,3 +250,98 @@ func TestDeafenAndMoveNeedTheirOwnPermissions(t *testing.T) {
 		t.Fatalf("a voice mute with Mute Members was refused: %s", got.Data)
 	}
 }
+
+// Only administrators (and the owner) make or unmake administrators: Manage
+// Roles alone can't give, take, create, change or delete a role carrying
+// Administrator, though it still manages every other role.
+func TestOnlyAdminsMakeAdmins(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wire-level integration test")
+	}
+	srv, wsURL := startPlainTestServer(t)
+	owner, _ := createTestUserAndToken(t, srv, "aa-owner")
+	manager, managerToken := createTestUserAndToken(t, srv, "aa-manager")
+	admin, adminToken := createTestUserAndToken(t, srv, "aa-admin")
+	plain, _ := createTestUserAndToken(t, srv, "aa-plain")
+	s := models.NewServer("Admins Only", owner.ID)
+	if err := srv.db.CreateServer(s); err != nil {
+		t.Fatal(err)
+	}
+	newRole := func(name string, p models.Permission, pos int) *models.Role {
+		r := models.NewRole(s.ID, name)
+		r.Permissions, r.Position = p, pos
+		if err := srv.db.CreateRole(r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	adminRole := newRole("Admin", models.PermissionAdministrator, 30)
+	managerRole := newRole("Role Manager", models.PermissionManageRoles, 20)
+	helper := newRole("Helper", models.PermissionsText, 10)
+	for _, u := range []*models.User{owner, manager, admin, plain} {
+		srv.db.AddServerMember(models.NewServerMember(u.ID, s.ID))
+	}
+	srv.db.AddMemberRole(manager.ID, s.ID, managerRole.ID)
+	srv.db.AddMemberRole(admin.ID, s.ID, adminRole.ID)
+	// A second administrator role, so the last-admin guards don't decide
+	// the strip and delete cases below on their own.
+	coAdmin := newRole("Co-Admin", models.PermissionAdministrator, 25)
+	srv.db.AddMemberRole(owner.ID, s.ID, coAdmin.ID)
+
+	hasRole := func(userID uuid.UUID, r *models.Role) bool {
+		roles, _ := srv.db.GetMemberRoles(s.ID, userID)
+		for _, x := range roles {
+			if x.ID == r.ID {
+				return true
+			}
+		}
+		return false
+	}
+	isAdminRole := func(id uuid.UUID) bool {
+		r, err := srv.db.GetRoleByID(id)
+		return err == nil && r.Permissions&models.PermissionAdministrator != 0
+	}
+	connect := func(token string) func(protocol.OpCode, interface{}, protocol.EventType) bool {
+		c := newTestWSClient(t, wsURL)
+		c.identify(token)
+		// ask sends a request and reports whether it succeeded (want arrived
+		// before an error).
+		return func(op protocol.OpCode, payload interface{}, want protocol.EventType) bool {
+			t.Helper()
+			c.send(op, payload)
+			got := c.readUntil(5*time.Second, func(m *protocol.Message) bool {
+				return m.Op == protocol.OpDispatch && (m.Type == "" || m.Type == want)
+			})
+			return got.Type == want
+		}
+	}
+
+	ask := connect(managerToken)
+	if ask(protocol.OpRoleAssign, protocol.RoleAssignRequest{ServerID: s.ID, UserID: manager.ID, RoleName: "Admin"}, protocol.EventServerMemberUpdate) || hasRole(manager.ID, adminRole) {
+		t.Error("a role manager made themselves an admin")
+	}
+	if ask(protocol.OpRoleRemove, protocol.RoleRemoveRequest{ServerID: s.ID, UserID: admin.ID, RoleName: "Admin", Force: true}, protocol.EventServerMemberUpdate) || !hasRole(admin.ID, adminRole) {
+		t.Error("a role manager took an admin's role away")
+	}
+	if ask(protocol.OpCreateRole, protocol.CreateRoleRequest{ServerID: s.ID, Name: "Sneaky", Permissions: uint64(models.PermissionAdministrator)}, protocol.EventRoleCreate) {
+		t.Error("a role manager created an administrator role")
+	}
+	if ask(protocol.OpUpdateRole, protocol.UpdateRoleRequest{ServerID: s.ID, RoleID: helper.ID, Name: "Helper", Permissions: uint64(models.PermissionAdministrator)}, protocol.EventRoleUpdate) || isAdminRole(helper.ID) {
+		t.Error("a role manager turned a role into an administrator role")
+	}
+	if ask(protocol.OpUpdateRole, protocol.UpdateRoleRequest{ServerID: s.ID, RoleID: adminRole.ID, Name: "Admin", Permissions: uint64(models.PermissionsText)}, protocol.EventRoleUpdate) || !isAdminRole(adminRole.ID) {
+		t.Error("a role manager stripped the administrator role")
+	}
+	if ask(protocol.OpDeleteRole, protocol.DeleteRoleRequest{ServerID: s.ID, RoleID: adminRole.ID}, protocol.EventRoleDelete) || !isAdminRole(adminRole.ID) {
+		t.Error("a role manager deleted the administrator role")
+	}
+	// Everything else is still theirs to manage.
+	if !ask(protocol.OpRoleAssign, protocol.RoleAssignRequest{ServerID: s.ID, UserID: plain.ID, RoleName: "Helper"}, protocol.EventServerMemberUpdate) {
+		t.Error("a role manager couldn't give an ordinary role")
+	}
+
+	// An administrator can make another.
+	if !connect(adminToken)(protocol.OpRoleAssign, protocol.RoleAssignRequest{ServerID: s.ID, UserID: plain.ID, RoleName: "Admin"}, protocol.EventServerMemberUpdate) || !hasRole(plain.ID, adminRole) {
+		t.Error("an admin couldn't make another admin")
+	}
+}
