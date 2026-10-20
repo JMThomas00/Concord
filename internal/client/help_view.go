@@ -11,490 +11,127 @@ import (
 	ansitruncate "github.com/muesli/reflow/truncate"
 )
 
-// helpMarkdown is the full Concord user guide rendered via glamour.
-// Sections marked "Coming Soon" describe planned features not yet shipped.
-const helpMarkdown = `# Concord — User Guide
+// helpMarkdown is the in-app guide: how to drive the client and the keys
+// worth knowing. The wiki has everything else, so this links there rather
+// than repeating it (and goes stale less). Bullet lists only: glamour
+// doesn't wrap tables to the panel's width.
+const helpMarkdown = `# Concord — Quick Guide
 
-Concord is a terminal-first, self-hosted chat application. Every server is independently operated — there is no central service or account system. Servers have channels, roles and voice, and each one is run by whoever hosts it.
-
----
-
-## Getting Started
-
-### Setting Up Your Identity
-
-The first time you launch Concord, an identity setup screen appears. Fill in:
-
-- **Alias** — your display name across all servers
-- **Email** — used for server registration (not shared publicly)
-- **Password** — stored locally in ` + "`~/.concord/config.json`" + `; used when auto-registering on new servers
-
-Your identity (a **profile**) is used on every server. Concord registers you automatically the first time you join a server, and signs you in after that.
-
-### Profiles, Forgotten Passwords and Email Codes
-
-- **Several people on one computer?** On the login screen, **Ctrl+P** (*Not you?*) lists the profiles saved here. **Enter** switches, **A** adds one, **E** edits the alias or email (servers you're signed in to are updated too), **P** changes the password everywhere, **F** forgets one.
-- **Forgot your password?** On the login screen, press **Ctrl+F**, pick a server, and enter the code it emails you with a new password. Concord then sets that password on your other servers too. If the server can't send email, ask its admin for a temporary password and enter that instead of the code.
-- **Verifying your email:** servers that send email ask new accounts for a 6-character code first. Enter it on the screen that appears. **Ctrl+R** resends it, and **Ctrl+E** fixes a typo in your email or alias. **Esc** puts it off; select the server and press **Enter** to come back to it.
-- If a server signs you in under a different name than your profile's alias, the status bar says so: that server's account for your email belongs to someone else. Use another email (another profile) to be yourself there.
-
-### Adding Your First Server
-
-Press **+** in the server icon column (far left), or open **Server Management** with **Ctrl+B**. Enter:
-
-- **Address** — hostname or IP of the server (e.g. ` + "`192.168.1.100`" + `)
-- **Port** — default is ` + "`8080`" + `
-- **Name** — a friendly label shown in the server column
-
-Concord will connect immediately and auto-register if no account exists.
-
-### Auto-Registration & Auto-Admin
-
-The **first user** to register on a new server is automatically granted the **Admin** role — no configuration needed. If you are hosting your own server, just connect and you will be Admin.
-
-### Connecting to Multiple Servers
-
-Concord supports any number of servers simultaneously. Each server icon in the left column is a live connection. Click between them to switch context — channels, members, and voice state are all per-server.
+How to get around Concord, and the keys worth knowing. The full guide is the **wiki**: github.com/JMThomas00/Concord/wiki (pages named below are there).
 
 ---
 
-## Navigation
+## The window
 
-### Focus System
+From left to right: your **servers**, the current server's **channels**, the **chat**, and the **members**.
 
-Concord uses a four-panel layout. **Tab** cycles focus between panels:
+- **Tab** / **Shift+Tab** — move between them
+- **[** / **]** — hide or show the server list / member list
+- **Esc** — close, cancel, go back
+- The mouse works too: click, scroll and drag.
 
-- **Server List** — Server icons column (left)
-- **Channel List** — Channels and categories
-- **Chat** — Message viewport and input
-- **Members** — Member list (right)
+Start typing anywhere in the chat and it goes to the message box.
 
-The focused panel is highlighted with a purple border. Start typing in the **Chat** panel — focus moves to the input box automatically when you press a printable key.
+## Servers
 
-### Keyboard Shortcuts — Global
+- **Ctrl+N** — add a server: its address, port and a name for it
+- **Ctrl+G** (login screen) — browse public servers on the Grapevine
+- **Settings → Manage Servers** — edit or remove servers; **B** browses the Grapevine
+- **Ctrl+B** — Server Settings, for admins: channels, roles, members, messages and plugins
 
-- ` + "`Ctrl+Q`" + ` — Quit
-- ` + "`Ctrl+S`" + ` — Open Settings
-- ` + "`Ctrl+B`" + ` — Open Server Management (admin)
-- ` + "`Ctrl+G`" + ` — Open Grapevine Hub Browser (login / add-server screens)
-- ` + "`Ctrl+P`" + ` — Switch, add or edit profiles (login screen)
-- ` + "`Ctrl+F`" + ` — Forgot password (login screen)
-- ` + "`Ctrl+T`" + ` — Open Theme Browser (main window; on the login screen, Settings > Theme)
-- ` + "`Ctrl+U`" + ` — Check for a newer Concord (login screen)
-- ` + "`Ctrl+X`" + ` — Dismiss the bottom in-app notification
-- ` + "`[`" + ` — Toggle server list panel (collapse / expand)
-- ` + "`]`" + ` — Toggle members list panel (collapse / expand)
-- ` + "`Tab`" + ` — Switch focus between panels
-- ` + "`Esc`" + ` — Close overlay / cancel / go back
+One profile signs you in to every server. Switching servers keeps your voice call.
 
-### Keyboard Shortcuts — Channel List
+## Channels
 
-- ` + "`↑ / ↓`" + ` — Navigate channels
-- ` + "`Enter`" + ` — Join selected channel (or join / leave voice)
-- ` + "`← / → or H / L`" + ` — Collapse / expand a category
-- ` + "`Shift+↑ / Shift+↓`" + ` — Reorder channel within its category
+- **↑** / **↓** — move (the channel opens as you go)
+- **←** / **→** — collapse or expand a group
+- **Enter** — join or leave a voice channel (` + "`♪`" + `)
+- **Shift+↑** / **Shift+↓** — reorder (moderators)
 
-### Keyboard Shortcuts — Chat
+## Chatting
 
-- ` + "`PgUp / PgDn`" + ` — Scroll message history
-- ` + "`Alt+M`" + ` — Enter message navigation mode
-- ` + "`Alt+T`" + ` — Threads in this channel (Enter opens one)
-- ` + "`Ctrl+J`" + ` — Insert a newline in the input box (works on every platform; Ctrl+Enter/Shift+Enter may also work depending on your terminal, but many — including Windows Terminal/PowerShell — can't tell them apart from a plain Enter)
-- ` + "`@`" + ` — Open @mention autocomplete popup
-- ` + "`↑ / ↓`" + ` in popup — Navigate mention suggestions
-- ` + "`Enter or Tab`" + ` in popup — Accept selected mention
-- ` + "`Esc`" + ` in popup — Dismiss autocomplete
+- **Enter** — send; **Ctrl+J** — a new line
+- **@** — mention someone (**↑**/**↓** pick, **Enter** or **Tab** accepts)
+- **/** — a command; ` + "`/help`" + ` searches them all
+- **PgUp** / **PgDn** — scroll back
+- Markdown works: **bold**, *italic*, ` + "`code`" + `, lists and code blocks. Links are clickable in most terminals.
 
-### Message Navigation Mode (Alt+M)
+### Message navigation (Alt+M)
 
-Press **Alt+M** from the chat panel to enter message navigation:
+Pick a message with **↑**/**↓**, then:
 
-- **Level 1** — ↑/↓ move between messages; **Ctrl+C** copies the full message; **L** opens link browser for URLs in the selected message; **A** copies a message's attachment ID (for pasting into /download) to the clipboard; **T** replies in the message's thread (starting one); **Enter** on a thread's first message expands or minimises it
-- **Level 2** — press **Enter** on a message to enter edit mode; ←/→ move within the message; **Shift+←/→** select text; **Ctrl+C** copies selection
-- Press **Esc** to exit either level
-
-### Keyboard Shortcuts — Members Panel
-
-- ` + "`↑ / ↓`" + ` — Navigate member list
-- ` + "`Enter`" + ` — Open context menu for selected member
-- ` + "`W`" + ` — Whisper (ephemeral DM)
-- ` + "`M`" + ` — Mute / unmute (requires permission)
-- ` + "`K`" + ` — Kick (requires permission)
-- ` + "`B`" + ` — Ban (requires permission)
-- ` + "`R / E`" + ` — Assign / remove role (requires permission)
-- ` + "`V`" + ` — Adjust per-user volume (voice only)
-- ` + "`X / D`" + ` — Voice mute / deafen (requires permission)
-
----
-
-## Messaging
-
-### Sending Messages
-
-Type in the input box at the bottom of the chat panel and press **Enter** to send. Use **Ctrl+J** for a newline inside the message — it's the one shortcut guaranteed to work the same way on every platform.
-
-### Slash Commands
-
-Type ` + "`/`" + ` followed by a command name. Available to all users:
-
-- ` + "`/help [query]`" + ` — Open the command finder (type to narrow by name or description, ↑/↓ to select, Enter to insert into the message box)
-- ` + "`/whisper @user <msg>`" + ` — Send an ephemeral DM (alias: /w)
-- ` + "`/links [N]`" + ` — List URLs from the last N messages (default: 20)
-- ` + "`/theme [name]`" + ` — Open theme browser or apply a theme directly
-- ` + "`/status <message>`" + ` — Set your status (` + "`/status clear`" + ` to remove)
-- ` + "`/mute`" + ` — Mute the current channel (hide unread badges)
-- ` + "`/unmute`" + ` — Unmute the current channel
-- ` + "`/join-voice [#channel]`" + ` — Join a voice channel (or the currently selected one)
-- ` + "`/leave-voice`" + ` — Leave the current voice channel
-
-Moderator commands:
-
-- ` + "`/create-channel <name>`" + ` — Create a text channel
-- ` + "`/create-group <name>`" + ` — Create a channel category
-- ` + "`/delete-channel`" + ` — Delete the current channel
-- ` + "`/rename-channel <name>`" + ` — Rename the current channel
-- ` + "`/move-channel <group>`" + ` — Move current channel to a category
-- ` + "`/lock / /unlock`" + ` — Restrict posting to moderators only
-- ` + "`/mute @user [minutes]`" + ` — Server-mute a member
-- ` + "`/kick @user [reason]`" + ` — Kick a member
-- ` + "`/timeout @user <minutes>`" + ` — Temporarily ban a member
-- ` + "`/pin [N]`" + ` — Pin the Nth most recent message
-- ` + "`/mute-voice @user`" + ` — Server-mute a user in voice
-- ` + "`/deafen-voice @user`" + ` — Server-deafen a user in voice
-- ` + "`/unmute-voice @user`" + ` — Lift voice mute/deafen from a user
-
-Admin commands:
-
-- ` + "`/role assign|remove @user <role>`" + ` — Manage member roles
-- ` + "`/create-role <name> [preset]`" + ` — Create a role (presets: text, moderator, admin)
-- ` + "`/roles`" + ` — List all roles on this server
-- ` + "`/title @user <title>`" + ` — Set a display title (` + "`/title @user clear`" + ` to remove)
-- ` + "`/ban @user [reason]`" + ` — Permanently ban a member
-- ` + "`/unban @user`" + ` — Lift a ban
-- ` + "`/move-voice @user <channel>`" + ` — Force-move a user to a voice channel
-
-### @Mentions
-
-Type ` + "`@`" + ` to open the autocomplete popup. Select a name with ↑/↓ and confirm with **Enter** or **Tab**. Mentioned messages are highlighted in your name colour. If **Bell on Mention** is enabled in Notification settings, a terminal bell fires on every @mention directed at you.
+- **R** reply, **T** reply in its thread, **E** edit, **D** delete
+- **C** copy, **L** its links, **A** copy a shared file's ID
+- **Enter** — expand or minimise a thread; on other messages, select text inside it
+- **Esc** — leave
 
 ### Threads
 
-Keep a side conversation in one place: **Alt+M**, arrow to a message, **T**, and type. The message box says **Replying in thread** until you press **Esc**. A thread sits where it started, in a box: minimised it shows the first message and the latest reply, with **+** and the reply count in its top edge (marked **new**, in cyan, when there's something you haven't read); **Enter** on it (or a click on its edge) expands it.
+A thread keeps a side conversation in one box where it started. **Alt+M**, pick a message, **T**, and type; **Esc** stops replying in it. **Alt+T** (or ` + "`/threads`" + `) lists the channel's threads.
 
-New messages push threads up out of view, so the way back stays put: the chat box's bottom edge counts active and unread threads, and **Alt+T** (or ` + "`/threads`" + `) lists every thread in the channel; **Enter** opens one, expanded, ready to reply. You follow a thread you start, reply in or are  in: only those count as unread and send notifications. **Settings → Notifications → Thread Replies in the Channel** can also put a line in the channel when someone replies (off by default).
+### Whispers and files
 
-### Whispers (Ephemeral DMs)
+- ` + "`/w @user <message>`" + ` — a private message that isn't stored
+- ` + "`/attach <path> [caption]`" + ` — share a file, straight from your computer (stay online so people can download it)
+- ` + "`/download <id>`" + ` — download one (**Alt+M**, **A** copies the ID)
 
-` + "`/whisper @user <message>`" + ` or ` + "`/w @user <message>`" + ` sends a message only visible to you and the recipient, prefixed with ` + "`[DM]`" + `. Whispers are **not stored** — if the recipient is offline the message is lost.
+## Voice
 
-### URL Hyperlinks
+- **Enter** on a voice channel — join; **Enter** again — leave
+- **Ctrl+M** — mute yourself; **Ctrl+D** — deafen yourself
+- In the member list, **←** / **→** on someone in your call sets their volume
 
-URLs in messages are rendered as OSC 8 terminal hyperlinks. In a supported terminal (Windows Terminal, iTerm2, Kitty) you can Ctrl+Click to open them. Use **Alt+M → L** (one message) or **/links** (whole channel) to browse links without leaving Concord.
+**Settings → Audio** has your microphone and speakers, noise suppression, echo cancellation and voice activity sensitivity. Voice is Opus at 48 kHz; the Codec Quality preset sets the bitrate (24, 48, 64 or 96 kbps). Trouble connecting across networks? See *Voice* and *Voice Across Networks* on the wiki.
 
-**In the link browser:** ↑/↓ to move the highlight, **1-9** to jump straight to and open the link shown at that row, Enter to open the highlighted one, **C** to copy it, **/** to search (filters live as you type), **A**/**D** to sort ascending/descending, and it scrolls automatically past 10 links.
+## Members
 
----
+**↑**/**↓** to pick someone, **Enter** for their menu:
 
-## Voice Channels
+- **W** whisper, **V** volume (in voice)
+- With permission: **M** mute, **K** kick, **B** ban, **R**/**E** give or remove a role, **X**/**D** voice mute or deafen, **O** move to another voice channel
 
-### Joining a Voice Channel
+## Plugins and games
 
-In the channel list, select a voice channel (prefixed with ` + "`♪`" + `) and press **Enter**. The channel badge shows the live member count ` + "`[N]`" + `. Press **Enter** again to leave.
+Some channels belong to a plugin: a game, a board, a bot. Select one and its screen opens in the chat area, and your keys go to it.
 
-Voice members appear at the top of the Members panel grouped by channel, separated from role sections below.
+- **Esc** or **Shift+Tab** — back to the channel list (unless the plugin is using Esc; the border says)
+- **Ctrl+]** — always hands your keys back
 
-### Voice Controls
+Admins install plugins in **Ctrl+B → Plugins** (**I**, then the plugin's GitHub name). See *Plugins and Games* and *Managing Plugins* on the wiki.
 
-- ` + "`Ctrl+M`" + ` — Toggle self-mute
-- ` + "`Ctrl+D`" + ` — Toggle self-deafen
+## Settings (Ctrl+S)
 
-### Voice Activity Detection
+**↑**/**↓** picks a page, **Tab** goes into it, **Esc** comes back.
 
-**VAD** (Voice Activity Detection) transmits automatically when your microphone level exceeds a configured threshold, so you don't have to hold anything down to talk. Toggle it and tune its sensitivity in **Settings → Audio → Voice Activity Detection**.
+- **Theme** — 40+ themes, previewed live (also **Ctrl+T**, or ` + "`/theme <name>`" + `)
+- **Display** — timestamps, density, panels, voice level style, plugin pictures, animations
+- **Notifications** — desktop popups, sounds and per-server mutes
+- **Audio** — devices, voice processing, plugin sounds
+- **About** — versions; **A** opens your achievements
 
-### Audio Quality (Codec Presets)
+## The login screen
 
-Concord encodes voice using **Opus** (libopus). Four presets are available in **Settings → Audio → Codec Preset**:
+- **Ctrl+P** — profiles: switch, add, edit, change password, forget
+- **Ctrl+F** — forgot your password (a code by email, or a temporary password from the admin)
+- **Ctrl+U** — update, reconfigure or uninstall Concord
+- **Ctrl+R** — a new banner
 
-- **Low** — 8 kHz, 8 kbps — very low bandwidth
-- **Medium** — 16 kHz, 32 kbps — standard voice (default)
-- **High** — 24 kHz, 64 kbps — high clarity
-- **Ultra** — 48 kHz, 128 kbps — near-transparent quality
+## Everywhere
 
-Changing the preset hot-reloads the bitrate without reconnecting. A sample rate change takes effect on the next voice session.
-
-### VU Meters & Quality Indicators
-
-Connected voice members show:
-
-- **` + "`↑[████░░]`" + `** — your microphone input level
-- **` + "`↓[████░░]`" + `** — received audio level from a remote peer
-- **` + "`◆◆◆◇ 42ms`" + `** — connection quality bar updated every 5 s (ICE round-trip time)
-
-These can be hidden individually in **Settings → Display → Members Panel**.
-
----
-
-## Channel Management
-
-### Channel Types
-
-- **Text** (` + "`#`" + `) — Standard chat channel
-- **Voice** (` + "`♪`" + `) — Real-time audio channel
-- **Category** (` + "`▼`" + `) — Folder grouping channels
-
-### Creating Channels & Categories
-
-Use ` + "`/create-channel <name>`" + ` or ` + "`/create-group <name>`" + ` from any channel. Alternatively, open the **Server Admin Panel** (` + "`Ctrl+B`" + ` → select server → admin key) for a full channel management UI.
-
-### Reordering Channels
-
-With focus on the channel list, use **Shift+↑ / Shift+↓** to reorder within the same category. Use ` + "`/move-channel <group>`" + ` to move a channel to a different category.
-
-### Locking Channels
-
-` + "`/lock`" + ` restricts posting to moderators and admins. ` + "`/unlock`" + ` restores normal access. A locked channel shows a ` + "`🔒`" + ` indicator.
+- **Ctrl+S** — Settings
+- **Ctrl+X** — dismiss the bottom notification card
+- **Ctrl+Q** — quit
 
 ---
 
-## Roles & Permissions
+## More on the wiki
 
-Roles define what members can do. Each role has a **colour**, **display order**, and a **permission bitfield**. Roles are assigned with ` + "`/role assign @user <role>`" + ` or from the member context menu.
+- *Shortcuts and Commands* — every key and slash command
+- *Troubleshooting* — sign-in, voice, pictures and colours
+- *Running a Server* — host your own, with the installer or Docker
+- *Plugin Quick Start* — build a bot or a game
 
-### Built-in Permission Levels
-
-- **Member** — Read and send messages, use voice
-- **Moderator** — + mute, kick, timeout, pin, manage channels
-- **Admin** — + ban, manage roles, server configuration
-- **Owner** — Full control, cannot be moderated
-
-### The Admin Bypass Rule
-
-A member with the **Administrator** permission bypasses all role-position hierarchy checks. This means an admin can always moderate any other non-admin member regardless of role display order.
-
----
-
-## Server Administration
-
-### Server Admin Panel
-
-Open with **Ctrl+B**, select a server, then press the admin key. The panel has four tabs:
-
-- **Channels** — manage channels and categories, set MaxUsers on voice channels
-- **Roles** — create, edit, reorder, delete roles with a full permissions editor
-- **Members** — view all members, assign roles, manage bans
-- **Messages** — retention policies (age- and count-based), manual prune, prune history
-
-### Hosting Your Own Server
-
-Build the server binary (pure Go — no C compiler needed):
-
-` + "```" + `bash
-make build-server
-# or directly:
-go build -o build/concord-server ./cmd/server
-` + "```" + `
-
-Run it:
-
-` + "```" + `bash
-./concord-server
-` + "```" + `
-
-The first run walks you through a **setup wizard**: Terms of Service, server name, bind host, port (default ` + "`8080`" + `), database path, optional admin email — and an optional final step to **list your server on Grapevine** (see the Grapevine section below). A SQLite database is created automatically; no separate database setup is needed.
-
-Useful flags: ` + "`--reconfigure`" + ` re-runs the wizard, ` + "`--hybrid`" + ` shows a live dashboard beside the logs, ` + "`--debug`" + ` enables verbose logging.
-
-The first client to connect and register on a fresh server is automatically granted **Admin**. Share your address and port with others and they can connect immediately.
-
-### Server Configuration
-
-Settings are stored in ` + "`concord-server.toml`" + ` in the working directory (written by the wizard, editable by hand):
-
-` + "```" + `toml
-host = "0.0.0.0"
-port = 8080
-server_name = "My Concord Server"
-database_path = "concord.db"
-
-[message_pruning]
-enabled = true
-interval_hours = 24
-
-[grapevine]
-enabled = false   # opt-in public listing — see the Grapevine section
-
-[mail]            # optional: verification and password reset codes
-smtp_host = "smtp.gmail.com"
-smtp_username = "you@gmail.com"
-smtp_password = "an app password"
-from = "Concord <you@gmail.com>"
-` + "```" + `
-
-**Email (optional).** With a ` + "`[mail]`" + ` section (the wizard's email step sets it up), new accounts confirm their email with a 6-character code before they can sign in, and members can reset a forgotten password themselves. Set ` + "`require_verification = false`" + ` to keep resets but never hold up sign-in. Check it with ` + "`concord-server --test-mail you@example.com`" + `. Without mail, accounts work as before, and ` + "`concord-server --reset-password someone@example.com`" + ` gives a member a temporary password.
-
-### Voice Across the Internet (NAT)
-
-Voice is peer-to-peer WebRTC. Concord uses Google's public STUN server for NAT traversal, which works across most home networks with no configuration. A TURN relay fallback is not yet supported, so a small share of connections (symmetric NAT, some mobile/CGNAT networks) may fail to establish audio — configurable STUN/TURN is planned.
-
-### Building the Client (Voice-Enabled)
-
-Voice is part of the standard client build and requires a C compiler (GCC) and libopus:
-
-` + "```" + `bash
-# Windows (MSYS2 MinGW)
-pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-opus mingw-w64-x86_64-opusfile
-
-export PATH="/c/msys64/mingw64/bin:$PATH"
-CGO_ENABLED=1 go build -o build/concord-client.exe ./cmd/client
-
-# Headless/CI build without voice (pure Go, no CGO)
-CGO_ENABLED=0 go build -tags novoice -o build/concord-client-novoice.exe ./cmd/client
-` + "```" + `
-
----
-
-## Grapevine — Server Discovery
-
-**Grapevine** is Concord's decentralized server directory. Server owners opt in to list their server on a **hub**; anyone can browse a hub from inside the client and join a listed server in a couple of keystrokes. There is no central authority — anyone can host a hub, and hubs can federate to share listings.
-
-### Browsing Servers (Hub Browser)
-
-Open **Settings → Manage Servers** and press **B** to browse servers via a hub. Before you have any servers (login screen or the Add Server dialog), **Ctrl+G** opens it directly.
-
-- ` + "`↑/↓ or j/k`" + ` — Navigate the server list
-- ` + "`Enter`" + ` — Open server details
-- ` + "`A`" + ` (in details) — Join — adds the server and opens login
-- ` + "`/`" + ` — Search by name, description, or tags
-- ` + "`Tab / Shift+Tab`" + ` — Cycle category filter
-- ` + "`H / L`" + ` — Switch between your hubs
-- ` + "`R`" + ` — Refresh the listing
-- ` + "`+`" + ` — Add a hub by URL (pick discovered peer hubs with ` + "`↑/↓`" + `)
-- ` + "`X`" + ` — Remove the selected hub (removing the last one restores the default)
-- ` + "`Esc`" + ` — Back / close
-
-Servers listed by federated peer hubs appear under a ` + "`── via <hub> ──`" + ` header. Added hubs are saved to your client config.
-
-### How Joining Works (Address Privacy)
-
-Server addresses are **never shown in the public listing** — only name, description, category, tags, and member counts. When you join, the hub first confirms the server is reachable and hands it a **single-use join token**; only then does the hub give you the address, and your client redeems the token with the server before adding it. You then land on the normal login screen with the connection details pre-filled. The address is visible to you once you join (it is your direct connection), just never published in the directory.
-
-### Listing Your Server
-
-Opt in during the server's **first-run wizard** (or later with ` + "`--reconfigure`" + `), or edit ` + "`concord-server.toml`" + ` by hand:
-
-` + "```" + `toml
-[grapevine]
-enabled = true
-hub_url = "https://grapevine.concordchat.cc"   # or your own hub
-description = "A place to chat."
-category = "Gaming"
-tags = ["friendly", "english"]
-public_host = "myserver.example.com"        # your externally reachable address
-` + "```" + `
-
-Registration is automatic on startup; the server heartbeats the hub every 30 seconds so the listing stays live, and recovers on its own if the hub forgets it. Listing is **opt-out by default** — nothing is published unless you enable it.
-
-### Hosting Your Own Hub
-
-The hub is its own lightweight binary:
-
-` + "```" + `bash
-make build-hub
-./concord-hub               # first run launches a setup wizard
-./concord-hub --setup       # re-run the setup wizard
-./concord-hub --dashboard   # live TUI: stats, server list, activity log
-` + "```" + `
-
-Hubs can **federate**: add peer hubs in ` + "`grapevine-hub.toml`" + ` and their listings appear in yours (marked with the origin hub). Point clients at your hub with the **+** key in the Hub Browser.
-
----
-
-## Settings Reference
-
-Open settings with **Ctrl+S**. Navigate categories with **↑/↓**, press **Tab** to enter the form, **Tab** or **Esc** to go back.
-
-### Theme
-
-Live-preview available themes. **Enter** or **Tab** to apply. **Esc** reverts to the theme you had when settings were opened.
-
-Over 40 themes are embedded, including **Dracula**, **Alucard Dark/Light**, **Nord**, **Gruvbox**, **Catppuccin Mocha**, **Tokyo Night**, **Kanagawa Wave**, **Everforest**, **Solarized Dark**, and **Terminal Default**. Apply one instantly with ` + "`/theme <name>`" + ` or browse with **Ctrl+T**.
-
-### Notifications
-
-**Desktop Notifications** — OS-native popups (Windows toast, macOS Notification Center, or Linux notification daemon, depending on your OS) for new messages:
-
-- **Desktop Notifications** — Off / @Mentions Only / All Messages
-- **Notify From** — All Connected Servers, or only the one you currently have open
-
-A popup never appears for a channel you're already viewing — only for messages you'd otherwise miss.
-
-**In-app notifications** — cards in the bottom-left corner, newest at the bottom, for messages, mentions (a yellow border) and achievements. They stay until you deal with them: click one to dismiss it (a message's opens its channel), or press ` + "`Ctrl+X`" + ` to dismiss the bottom one, and the next drops into its place. When more arrive than fit, the top card counts the rest.
-
-**Audio Notifications** — sound and terminal-bell alerts:
-
-- **Sounds Muted** — Suppress all notification sounds
-- **Mentions Only** — Only play sounds for @mentions directed at you
-- **Bell on Mention** — Fire a terminal bell (` + "`\\a`" + `) on each @mention
-- **Mention Sound** — Sound for @mention alerts
-- **Message Sound** — Sound for all other messages
-- **Mute Manager** — Per-server and per-channel mute overrides (silences both sounds and desktop popups)
-
-### Display
-
-- **Timestamp Format** — 12-hour or 24-hour clock
-- **Timestamp Style** — Absolute (date+time) or Relative (e.g. "Today at 15:04")
-- **Message Density** — Compact / Normal / Spacious
-- **Show Avatars** — Coloured circle before each username
-- **Date Separators** — ` + "`──── Today ────`" + ` dividers between days
-- **Message Grouping Gap** — Minutes before a new header is shown for the same sender
-- **Show Members Panel** — Toggle the right-hand members column
-- **Server List Panel** — Expand or collapse the left server icon column
-- **Members Panel** — Expand or collapse the right members column
-- **Voice Level Bar** — Show/hide the ` + "`↑[████]`" + ` VU meter in Members
-- **Connection Quality** — Show/hide the ` + "`◆◆◆◇`" + ` quality bar in Members
-- **Panel Animations** — Enable/disable slide animations for Settings and Server Management panels
-- **Typing Animation** — Style of the typing indicator spinner (8 options)
-
-### Audio
-
-- **Input Device** — Microphone source (blank = system default)
-- **Output Device** — Speaker/headphone output (blank = system default)
-- **Input Gain** — Microphone amplification (0.0–2.0, default 1.0)
-- **Output Volume** — Playback volume (0.0–1.0, default 1.0)
-- **Voice Activity Detection** — Auto-transmit when mic exceeds the threshold
-- **VAD Sensitivity** — How easily VAD triggers on quieter speech
-- **Noise Suppression** — Reduce background noise, with an adjustable strength
-- **Echo Cancellation** — Reduce your own playback echoing back to peers, with an adjustable strength
-- **Codec Preset** — Opus quality preset (Low / Medium / High / Ultra); changing this while in a voice channel needs a leave+rejoin to fully apply
-
----
-
-## Coming Soon
-
-The following features are planned and will be available in future releases.
-
-### 🔌 Plugin System
-
-*Coming in a future release*
-
-A plugin API that lets third-party extensions add new commands, event hooks, and UI panels **without modifying the core application**. Plugins run in a sandboxed process and communicate over a defined interface. The architecture is being finalized to ensure forward compatibility.
-
-### 🤖 AI Integration & Bots
-
-*Coming in a future release*
-
-A server-side bot framework with event hooks (message received, user joined, reaction added, etc.), and optional LLM-powered assistant bots. Planned integrations:
-
-- **Anthropic Claude** (via the Anthropic API)
-- **OpenAI-compatible endpoints** (any provider with a compatible API)
-- **Ollama** (for local self-hosted models)
-- An in-client ` + "`/ai`" + ` command for inline compose assistance
-
----
-
-*Concord — Built with Go, bubbletea, and lipgloss. See Settings > About for the exact build version.*
-*Source: github.com/JMThomas00/Concord*
+*Concord is open source: github.com/JMThomas00/Concord*
 `
 
 // renderHelpContent renders the full user guide using glamour markdown rendering.

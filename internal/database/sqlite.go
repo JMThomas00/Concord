@@ -2724,11 +2724,13 @@ func (db *DB) EnsureDefaultServer(serverName string) (*models.Server, *models.Ro
 	return server, everyoneRole, nil
 }
 
-// CountRealUsers returns the number of non-system users registered on this server.
+// CountRealUsers returns the number of people registered on this server: not
+// the system user, and not plugins' service accounts (a plugin present before
+// the first person registers must not stop them becoming the owner).
 func (db *DB) CountRealUsers() (int, error) {
 	systemUserID := "00000000-0000-0000-0000-000000000001"
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE id != ?`, systemUserID).Scan(&count)
+	err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE id != ? AND COALESCE(is_service_account, 0) = 0`, systemUserID).Scan(&count)
 	return count, err
 }
 
@@ -2736,6 +2738,13 @@ func (db *DB) CountRealUsers() (int, error) {
 func (db *DB) UpdateServerOwner(serverID, ownerID uuid.UUID) error {
 	_, err := db.Exec(`UPDATE servers SET owner_id = ?, updated_at = ? WHERE id = ?`,
 		ownerID.String(), time.Now(), serverID.String())
+	return err
+}
+
+// RenameServer sets a server's name.
+func (db *DB) RenameServer(serverID uuid.UUID, name string) error {
+	_, err := db.Exec(`UPDATE servers SET name = ?, updated_at = ? WHERE id = ?`,
+		name, time.Now(), serverID.String())
 	return err
 }
 
@@ -3639,6 +3648,23 @@ func (db *DB) MigratePluginPlatform() error {
 	// them away and it sticks.
 	if err := runOnce(db, "2026-10-09-everyone-voice", func() error {
 		_, err := db.Exec(`UPDATE roles SET permissions = permissions | ? WHERE is_default = 1`, int64(models.PermissionsVoice))
+		return err
+	}); err != nil {
+		return err
+	}
+
+	// Channel management (2026-10-20): @everyone used to have Manage
+	// Channels, so any member could create, delete and lock channels. Take
+	// it away from every @everyone once, and bring roles made from the
+	// Moderator preset as it was then up to the new one, which adds Manage
+	// Channels and Deafen Members (enforced from the same day).
+	if err := runOnce(db, "2026-10-20-everyone-manage-channels", func() error {
+		oldModerator := int64(models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers))
+		if _, err := db.Exec(`UPDATE roles SET permissions = ? WHERE is_default = 0 AND permissions = ?`,
+			int64(models.PermissionsModerator), oldModerator); err != nil {
+			return err
+		}
+		_, err := db.Exec(`UPDATE roles SET permissions = permissions & ~? WHERE is_default = 1`, int64(models.PermissionManageChannels))
 		return err
 	}); err != nil {
 		return err
