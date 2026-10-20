@@ -64,6 +64,7 @@ const (
 		PermissionUseVAD
 
 	PermissionsModerator = PermissionsText |
+		PermissionManageChannels |
 		PermissionManageMessages |
 		PermissionKickMembers |
 		PermissionMuteMembers |
@@ -116,12 +117,12 @@ func NewEveryoneRole(serverID uuid.UUID) *Role {
 		ServerID:    serverID,
 		Name:        "everyone",
 		Color:       0,
-		// Give everyone basic permissions including channel management for a friendly default experience
+		// Basic permissions only: creating, deleting and locking channels is
+		// for elevated roles (Moderator and up) since 2026-10-20.
 		Permissions: PermissionViewChannels |
 			PermissionSendMessages |
 			PermissionReadMessageHistory |
 			PermissionAddReactions |
-			PermissionManageChannels |
 			PermissionChangeNickname |
 			PermissionsVoice, // Connect, Speak, Use Voice Activity (enforced since 2026-10-09)
 		Position:    0,
