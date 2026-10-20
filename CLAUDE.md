@@ -10,7 +10,7 @@
 Concord is a self-hosted, terminal-first chat platform built in Go. Each server is independently hosted (IRC-style decentralization). The client is a full TUI application built on the Charmbracelet stack. Voice channels use WebRTC P2P audio with Opus encoding, and an out-of-process plugin platform lets external programs (bots, integrations) attach to a server as privileged clients.
 
 **Module path:** `github.com/concord-chat/concord`
-**Current version:** v0.1.2 (2026-10-10: no black flash on each message, since `tea.ClearScreen` is now used only to erase pictures and `repaintAll` rewrites in place; `install.ps1` reloads its window's PATH so `concord` works at once). v0.1.1 (2026-10-10): plugin frames centred as one block, the Achievements page's search/server/plugin rows. v0.1.0 released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
+**Current version:** v0.1.3 (2026-10-20: server-side permission fixes: moderation rank checked by the server, only administrators make administrators, pinning needs Pin Messages, Move/Deafen Members checked, @everyone loses Manage Channels, `server_name` renames the server; the Roles editor marks unchecked permissions "(not yet)"; the in-app guide is a short quick guide linking to the wiki; plugin sounds no longer deadlock on PulseAudio/PipeWire). v0.1.2 (2026-10-10: no black flash on each message, since `tea.ClearScreen` is now used only to erase pictures and `repaintAll` rewrites in place; `install.ps1` reloads its window's PATH so `concord` works at once). v0.1.1 (2026-10-10): plugin frames centred as one block, the Achievements page's search/server/plugin rows. v0.1.0 released 2026-10-09 from `main`; fixes after it ship as `v0.1.x` hotfixes)
 
 ---
 
