@@ -9,7 +9,10 @@ notifications, every player's record (wins, losses, draws, streaks) with standar
 achievements and a leaderboard (paste `table.StandardAchievementsTOML` into
 plugin.toml; add your own with `Rules.Awards`), saving and resuming, a
 computer opponent off the event loop,
-and standalone play in a terminal (hotseat, computer, and network play).
+and standalone play in a terminal (hotseat, computer, and network play). A
+game with an `Arcade` gets the same front door standalone: the arcade table
+against the computer, records and unlockables kept in the user's config
+folder, and 2 PLAYERS / NETWORK GAME on the menu.
 
 Start from `concord-plugin new <name> --template game`, then replace its
 stone-pile game. The template is one `main.go`; split it into the layout below

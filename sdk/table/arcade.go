@@ -294,23 +294,29 @@ func (k *Kit) equippedFor(id uuid.UUID) map[string]string {
 // uiSound plays one of the arcade kit's sounds to one viewer, unless the
 // game has no sounds or they muted them.
 func (k *Kit) uiSound(m *viewerModel, sound string) {
-	if a := k.rules.Arcade; a == nil || !a.Sounds || k.conn == nil || k.record(m.v.ID).Muted {
+	if !k.sounds() || k.record(m.v.ID).Muted {
 		return
 	}
 	_ = k.conn.PlaySound(m.channel, m.v.ID, sound, 0)
 }
 
+// sounds reports whether the arcade's sounds can play: the game ships them
+// and Concord is there to play them (a standalone game has no player).
+func (k *Kit) sounds() bool {
+	return k.rules.Arcade != nil && k.rules.Arcade.Sounds && k.conn != nil
+}
+
 // startTicker runs the animation clock until no viewer needs it. The
-// clock runs on its own goroutine and hands each tick back through
-// Conn.Post, since a pane model's commands run synchronously (a tea.Tick
-// would block every viewer).
+// clock runs on its own goroutine and hands each tick back to the event
+// loop (enqueue), since a pane model's commands run synchronously (a
+// tea.Tick would block every viewer).
 func (k *Kit) startTicker() {
-	if k.ticking || k.conn == nil || (k.rules.Arcade == nil && k.rules.Clock == nil) {
+	if k.ticking || !k.live() || (k.rules.Arcade == nil && k.rules.Clock == nil) {
 		return
 	}
 	k.ticking = true
 	k.tickGen++
-	gen, conn, stop := k.tickGen, k.conn, make(chan struct{})
+	gen, stop := k.tickGen, make(chan struct{})
 	go func() {
 		t := time.NewTicker(tickEvery)
 		defer t.Stop()
@@ -319,7 +325,7 @@ func (k *Kit) startTicker() {
 			case <-stop:
 				return
 			case <-t.C:
-				conn.Post(func() {
+				k.enqueue(func() {
 					if k.tickGen != gen || !k.ticking {
 						return
 					}
@@ -604,8 +610,10 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 			turn: func(d int) { m.level = min(3, max(1, m.level+d)) },
 		})
 	}
-	switch r.mode() {
-	case ModeSeats:
+	switch {
+	case k.standalone():
+		items = append(items, m.standaloneItems()...)
+	case r.mode() == ModeSeats:
 		items = append(items, arcadeItem{
 			label: "TAKE A SEAT",
 			desc: func() (string, string) {
@@ -694,14 +702,18 @@ func (m *viewerModel) arcadeMenu() []arcadeItem {
 			enter: func() { m.goTo(screenSets); m.setsRow = 0 },
 		})
 	}
-	items = append(items, arcadeItem{label: "HALL OF FAME", desc: func() (string, string) { return "MOST WINS IN THIS CHANNEL'S GAME", "dim" }, enter: func() { m.goTo(screenHOF) }})
+	hof := "MOST WINS IN THIS CHANNEL'S GAME"
+	if k.standalone() {
+		hof = "YOUR RECORD ON THIS COMPUTER"
+	}
+	items = append(items, arcadeItem{label: "HALL OF FAME", desc: func() (string, string) { return hof, "dim" }, enter: func() { m.goTo(screenHOF) }})
 	if len(a.HowTo) > 0 {
 		items = append(items, arcadeItem{label: "HOW TO PLAY", desc: func() (string, string) { return "RULES AND KEYS", "dim" }, enter: func() { m.goTo(screenHowTo) }})
 	}
 	items = append(items, arcadeItem{label: "OPTIONS", desc: func() (string, string) {
 		rec := k.record(me.UserID)
 		s := "EFFECTS " + effectsName(rec.Effects)
-		if a.Sounds {
+		if k.sounds() {
 			s = "SOUND " + onOff(!rec.Muted) + " · " + s
 		}
 		return s, "dim"
@@ -912,9 +924,9 @@ func (m *viewerModel) endReveal() {
 }
 
 func (m *viewerModel) optionsKey(key string) {
-	a, rec := m.k.rules.Arcade, m.k.record(m.v.ID)
+	rec := m.k.record(m.v.ID)
 	rows := 1
-	if a.Sounds {
+	if m.k.sounds() {
 		rows = 2
 	}
 	m.cursor = min(m.cursor, rows-1)
@@ -1046,6 +1058,9 @@ func (m *viewerModel) smallFront() string {
 		"",
 		m.style("yellow").Bold(true).Render("Enter to play"),
 		m.style("comment").Render("(a pane of 64×24 or more shows the arcade)"),
+	}
+	if m.k.standalone() {
+		lines[4] = m.style("comment").Render("(a terminal of 64×24 or more shows the arcade)")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1775,12 +1790,12 @@ func (m *viewerModel) drawHowTo(s scr) {
 }
 
 func (m *viewerModel) drawOptions(s scr) {
-	a, rec := m.k.rules.Arcade, m.k.record(m.v.ID)
+	rec := m.k.record(m.v.ID)
 	m.topBar(s, "OPTIONS")
 	s.logo("OPTIONS", 3, nil)
 	type opt struct{ label, value, help string }
 	var opts []opt
-	if a.Sounds {
+	if m.k.sounds() {
 		opts = append(opts, opt{"SOUND", onOff(!rec.Muted), "MENU BLIPS AND THE GAME'S SOUNDS, FOR YOU"})
 	}
 	opts = append(opts, opt{"EFFECTS", effectsName(rec.Effects), "FULL: BLINKING AND ATTRACT MODE · CALM: STILL · OFF"})
@@ -1797,7 +1812,9 @@ func (m *viewerModel) drawOptions(s scr) {
 		s.text(34, y, "◂ "+o.value+" ▸", "fg", "", true)
 		s.text(22, y+1, o.help, "dim", "", false)
 	}
-	s.center(18, "THESE ARE YOURS: EVERYONE ELSE KEEPS THEIR OWN.", "dim", false)
+	if !m.k.standalone() {
+		s.center(18, "THESE ARE YOURS: EVERYONE ELSE KEEPS THEIR OWN.", "dim", false)
+	}
 	s.keys(arcade.Key{Key: "↑↓", Does: "choose"}, arcade.Key{Key: "←→", Does: "change"}, arcade.Key{Key: "Esc", Does: "back"})
 }
 

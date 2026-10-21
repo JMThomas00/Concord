@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/JMThomas00/Concord/sdk/pane"
@@ -91,6 +92,10 @@ type Kit struct {
 	rules   Rules
 	host    *pane.Host
 	conn    *plugin.Conn
+	// loop is conn for background goroutines (timers, the computer, the
+	// ticker), which hand their results to the event loop through it:
+	// conn itself is only touched on the event loop.
+	loop atomic.Pointer[plugin.Conn]
 	rooms   map[uuid.UUID]*Room
 	viewers map[uuid.UUID]*viewerModel
 	dirty   map[uuid.UUID]*Room         // rooms changed during the current event
@@ -101,6 +106,15 @@ type Kit struct {
 	tickGen int
 	ticks   int         // ticks so far, for the clocks' slower redraw
 	rnd     *mrand.Rand // offers of unlockables
+
+	// Played in a terminal without Concord (standalone.go): local runs a
+	// function on the program's event loop, as Conn.Post does in Concord,
+	// and dir is where games and records are kept. handOff opens the plain
+	// local table for games the arcade can't hold there (two people at one
+	// keyboard, a network game).
+	local   func(func())
+	dir     string
+	handOff func(set func(p *localModel))
 }
 
 // New makes a Kit for a game.
@@ -122,9 +136,9 @@ func New(rules Rules) *Kit {
 // event is done.
 func (k *Kit) Handler() plugin.Handler {
 	h := k.host.Handler()
-	wrap := func(c *plugin.Conn, fn func()) { k.conn = c; fn(); k.flush() }
+	wrap := func(c *plugin.Conn, fn func()) { k.setConn(c); fn(); k.flush() }
 	return plugin.Handler{
-		OnReady: func(c *plugin.Conn, _ *wire.User) { k.conn = c },
+		OnReady: func(c *plugin.Conn, _ *wire.User) { k.setConn(c) },
 		OnEnter: func(c *plugin.Conn, e wire.PluginPaneEnterPayload) {
 			wrap(c, func() { k.room(e.ChannelID); h.OnEnter(c, e) })
 		},
@@ -147,7 +161,7 @@ func (k *Kit) Handler() plugin.Handler {
 			})
 		},
 		OnChannelDelete: func(c *plugin.Conn, e wire.ChannelDeletePayload) {
-			k.conn = c
+			k.setConn(c)
 			delete(k.rooms, e.ChannelID)
 			_ = os.Remove(k.roomFile(e.ChannelID))
 		},
@@ -156,11 +170,42 @@ func (k *Kit) Handler() plugin.Handler {
 
 // Post runs fn on the event loop and then shows its changes -- for work
 // that finished in the background.
-func (k *Kit) post(fn func()) {
-	if k.conn == nil {
-		return
+func (k *Kit) post(fn func()) { k.enqueue(func() { fn(); k.flush() }) }
+
+// setConn keeps the connection an event came in on.
+func (k *Kit) setConn(c *plugin.Conn) {
+	k.conn = c
+	k.loop.Store(c)
+}
+
+// enqueue runs fn on the event loop: Concord's, or the terminal program's
+// when played standalone. Without either it's dropped. Safe from any
+// goroutine.
+func (k *Kit) enqueue(fn func()) {
+	if c := k.loop.Load(); c != nil {
+		c.Post(fn)
+	} else if k.local != nil {
+		k.local(fn)
 	}
-	k.conn.Post(func() { fn(); k.flush() })
+}
+
+// live reports whether there's an event loop for background work (the
+// computer's moves, the animation clock): Concord, or a terminal.
+func (k *Kit) live() bool { return k.conn != nil || k.local != nil }
+
+// standalone reports whether the game is being played in a terminal,
+// without Concord.
+func (k *Kit) standalone() bool { return k.conn == nil && k.local != nil }
+
+// dataDir is where games and records are saved.
+func (k *Kit) dataDir() string {
+	switch {
+	case k.conn != nil && k.conn.DataDir() != "":
+		return k.conn.DataDir()
+	case k.dir != "":
+		return k.dir
+	}
+	return "."
 }
 
 // room returns (loading if needed) the room for a channel.
@@ -186,11 +231,7 @@ func (k *Kit) room(channelID uuid.UUID) *Room {
 }
 
 func (k *Kit) roomFile(channelID uuid.UUID) string {
-	dir := "."
-	if k.conn != nil && k.conn.DataDir() != "" {
-		dir = k.conn.DataDir()
-	}
-	return filepath.Join(dir, "tables", channelID.String()+".json")
+	return filepath.Join(k.dataDir(), "tables", channelID.String()+".json")
 }
 
 func (k *Kit) save(r *Room) {
@@ -331,7 +372,7 @@ func (k *Kit) watching(userID uuid.UUID, tableID string) bool {
 // replayed copy of the game, and plays it when it's ready (if the game
 // hasn't moved on meanwhile).
 func (k *Kit) startComputer(r *Room, t *Table) {
-	if k.rules.AI == nil || k.conn == nil {
+	if k.rules.AI == nil || !k.live() {
 		return
 	}
 	seat := t.game.Turn()
@@ -554,7 +595,7 @@ func (k *Kit) moveSound(r *Room, t *Table, move string) {
 // so their client can count the win (or loss) towards its achievements.
 func (k *Kit) reportResult(r *Room, t *Table) {
 	o := t.outcome()
-	if k.conn == nil || !o.Over {
+	if !k.live() || !o.Over {
 		return
 	}
 	if o.Winner >= 0 && o.Winner < len(t.Seats) {
@@ -570,6 +611,9 @@ func (k *Kit) reportResult(r *Room, t *Table) {
 	k.recordResult(t, o) // records and achievements (records.go)
 	if t.full() {
 		r.Last = k.lastResult(t, o)
+	}
+	if k.conn == nil {
+		return // played standalone: the records above are all there is
 	}
 	computer := false
 	for _, p := range t.Seats {
