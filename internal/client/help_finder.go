@@ -387,7 +387,9 @@ func (a *App) renderHelpFinderOverlay(baseView string) string {
 		Padding(1).
 		Background(lipgloss.Color(a.theme.Colors.Background))
 
-	modal := boxStyle.Render(body.String())
+	// Each coloured span's reset also dropped the box's background, leaving
+	// gaps along every line; put it back after each.
+	modal := reassertBackgroundAfterResets(boxStyle.Render(body.String()), a.theme.Colors.Background)
 	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, modal,
 		lipgloss.WithWhitespaceChars(""),
 		lipgloss.WithWhitespaceForeground(lipgloss.Color(a.theme.Colors.Background)))

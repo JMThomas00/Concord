@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
 	"github.com/concord-chat/concord/internal/emoji"
@@ -178,6 +179,11 @@ func (a *App) rememberEmoji(e *emoji.Emoji) {
 }
 
 func (a *App) renderEmojiPickerOverlay(base string) string {
+	return overlayPinned(base, a.emojiPickerBox(), a.width, a.height)
+}
+
+// emojiPickerBox draws the picker itself.
+func (a *App) emojiPickerBox() string {
 	s := a.emojiPicker
 	width := min(66, a.width-4)
 	inner := width - 4 // border and padding
@@ -262,6 +268,10 @@ func (a *App) renderEmojiPickerOverlay(base string) string {
 		if len(e.Shortcodes) > 0 {
 			info += "  " + dim.Render(":"+e.Shortcodes[0]+":")
 		}
+		// One line, however long the name ("woman and man holding hands:
+		// light skin tone, medium-dark skin tone"): wrapping moved the
+		// whole picker up a row.
+		info = ansi.Truncate(info, inner, "…")
 	}
 	hints := dim.Italic(true).Render("type to search · arrows move · Tab group · Ctrl+T skin tone · Enter insert · Esc close")
 
@@ -270,7 +280,9 @@ func (a *App) renderEmojiPickerOverlay(base string) string {
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Background(lipgloss.Color(a.theme.Colors.Background)).
 		Width(width).Padding(0, 1).Render(body)
-	return overlayPinned(base, box, a.width, a.height)
+	// Every coloured span ends in a reset that also drops the box's
+	// background, leaving gaps of the terminal's own; put it back.
+	return reassertBackgroundAfterResets(box, a.theme.Colors.Background)
 }
 
 // overlayPinned is overlayCenter for a box with emoji in it. Terminals
@@ -333,11 +345,15 @@ func pinWide(s string, start int) string {
 			continue
 		}
 		cluster, rest, w, _ := uniseg.FirstGraphemeClusterInString(s, -1)
-		b.WriteString(cluster)
-		col += w
 		if w > 1 || utf8.RuneCountInString(cluster) > 1 {
-			b.WriteString(cha(col))
+			// Paint the emoji's cells first (in the current colours), so a
+			// terminal that draws it narrower leaves no unpainted gap, then
+			// draw it over them and carry on from where we measured.
+			b.WriteString(strings.Repeat(" ", w) + cha(col) + cluster + cha(col+w))
+		} else {
+			b.WriteString(cluster)
 		}
+		col += w
 		s = rest
 	}
 	return b.String()

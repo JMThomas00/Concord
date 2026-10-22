@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 	"github.com/rivo/uniseg"
@@ -144,11 +145,8 @@ func TestThePickerDraws(t *testing.T) {
 	if len(lines) > a.height {
 		t.Fatalf("%d lines in a %d-line window", len(lines), a.height)
 	}
-	for i, l := range lines {
-		if w := ansi.StringWidth(l); w > a.width {
-			t.Fatalf("line %d is %d wide in a %d-wide window", i, w, a.width)
-		}
-	}
+	// (Line widths, which need the cursor moves followed, are
+	// TestThePickerLinesUpWhateverWidthTheTerminalGivesEmoji's.)
 	pickerKeys(a, "backspace", "backspace", "backspace", "backspace", "backspace", "z", "z", "q", "x")
 	if !strings.Contains(ansi.Strip(a.View()), "No emoji match") {
 		t.Fatal("a search with no results should say so")
@@ -283,5 +281,150 @@ func TestTheMessageBoxEditsWholeEmoji(t *testing.T) {
 		if got := a.input.Value(); got != "a" {
 			t.Errorf("%s: plain text should still go a character at a time: %q", e, got)
 		}
+	}
+}
+
+// screenOf draws view on a model terminal pre-filled with "X" (what was on
+// screen before), drawing each wide or joined emoji cellsFor(cluster)
+// wide, following cursor-to-column moves. Returns the screen's rows.
+func screenOf(view string, width int, cellsFor func(string) int) [][]string {
+	var rows [][]string
+	for _, line := range strings.Split(view, "\n") {
+		row := make([]string, width+8)
+		for i := range row {
+			row[i] = "X"
+		}
+		col := 0
+		for line != "" {
+			if line[0] == 0x1b {
+				n := 2
+				for n < len(line) && (line[n] < 0x40 || line[n] > 0x7e) {
+					n++
+				}
+				if seq := line[:n+1]; strings.HasSuffix(seq, "G") {
+					fmt.Sscanf(seq[2:], "%d", &col)
+					col--
+				}
+				line = line[n+1:]
+				continue
+			}
+			cluster, rest, w, _ := uniseg.FirstGraphemeClusterInString(line, -1)
+			if w > 1 || utf8.RuneCountInString(cluster) > 1 {
+				w = cellsFor(cluster)
+			}
+			for i := 0; i < w && col+i < len(row); i++ {
+				row[col+i] = ""
+			}
+			if col < len(row) {
+				row[col] = cluster
+			}
+			col += w
+			line = rest
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// A terminal that draws emoji narrower than measured used to be left
+// with unpainted cells (gaps of whatever was there before, or of the
+// terminal's own background) after them.
+func TestThePickerLeavesNoUnpaintedCells(t *testing.T) {
+	a := newEmojiTestApp(t)
+	pickerKeys(a, "ctrl+e", "tab", "ctrl+t", "ctrl+t", "m", "a", "n")
+	a.View()
+	boxW := min(66, a.width-4) + 2
+	left := (a.width - boxW) / 2
+	narrow := func(string) int { return 1 }
+	for y, row := range screenOf(a.View(), a.width, narrow) {
+		if !strings.Contains(strings.Join(row[left:left+boxW], ""), "Emoji") && y == 0 {
+			continue
+		}
+		for x := left; x < left+boxW; x++ {
+			if row[x] == "X" {
+				t.Fatalf("row %d, column %d inside the picker was never painted", y, x)
+			}
+		}
+	}
+}
+
+// Every coloured span's reset used to drop the picker's background too,
+// leaving gaps; it's put back after each.
+func TestThePickerKeepsItsBackground(t *testing.T) {
+	a := newEmojiTestApp(t)
+	pickerKeys(a, "ctrl+e", "g", "r", "a", "p", "e")
+	bg := ansiOpenCode(lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Background)))
+	if bg == "" {
+		t.Skip("no colour in this test environment")
+	}
+	box := a.emojiPickerBox()
+	resets := 0
+	for _, reset := range []string{ansiResetSeq, ansiResetSeqShort} {
+		for i := strings.Index(box, reset); i >= 0; {
+			resets++
+			if !strings.HasPrefix(box[i+len(reset):], bg) {
+				t.Fatalf("a reset isn't followed by the background: %q", box[i:min(len(box), i+40)])
+			}
+			next := strings.Index(box[i+len(reset):], reset)
+			if next < 0 {
+				break
+			}
+			i += len(reset) + next
+		}
+	}
+	if resets == 0 {
+		t.Fatal("no resets found: the check didn't check anything")
+	}
+}
+
+// A long name stays on one line, so the picker doesn't shift up a row.
+func TestALongEmojiNameKeepsThePickerStill(t *testing.T) {
+	a := newEmojiTestApp(t)
+	pickerKeys(a, "ctrl+e", "g", "r", "a", "p", "e", "s")
+	short := len(strings.Split(ansi.Strip(a.renderEmojiPickerOverlay("")), "\n"))
+	a.emojiPicker = nil
+	pickerKeys(a, "ctrl+e")
+	for _, r := range "woman and man holding hands light medium-dark" {
+		pickerKeys(a, string(r))
+	}
+	view := ansi.Strip(a.renderEmojiPickerOverlay(""))
+	if long := len(strings.Split(view, "\n")); long != short {
+		t.Fatalf("the picker is %d lines with a long name, %d with a short one:\n%s", long, short, view)
+	}
+	if !strings.Contains(view, "…") {
+		t.Fatalf("the long name wasn't cut short:\n%s", view)
+	}
+}
+
+// The Help finder (/help) had the same gaps along every line.
+func TestTheHelpFinderKeepsItsBackground(t *testing.T) {
+	a := newEmojiTestApp(t)
+	a.openHelpFinder("the")
+	bg := ansiOpenCode(lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Background)))
+	if bg == "" {
+		t.Skip("no colour in this test environment")
+	}
+	n := 0
+	for _, line := range strings.Split(a.renderHelpFinderOverlay(""), "\n") {
+		i := strings.IndexAny(line, "│╭╰") // the box, not the screen's padding around it
+		if i < 0 {
+			continue
+		}
+		line = line[i:]
+		for _, reset := range []string{ansiResetSeq, ansiResetSeqShort} {
+			parts := strings.Split(line, reset)
+			if len(parts) < 3 {
+				continue
+			}
+			for _, p := range parts[1 : len(parts)-1] { // the last is after the box's right edge
+				n++
+				if !strings.HasPrefix(p, bg) {
+					t.Fatalf("a reset isn't followed by the background: %q", p[:min(len(p), 40)])
+				}
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no resets found: the check didn't check anything")
 	}
 }
