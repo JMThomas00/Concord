@@ -76,7 +76,6 @@ require (
 	github.com/pion/turn/v2 v2.1.6 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sergeymakinen/go-bmp v1.0.0 // indirect
 	github.com/sergeymakinen/go-ico v1.0.0-beta.0 // indirect
 	github.com/soniakeys/quant v1.0.0 // indirect
@@ -102,6 +101,7 @@ require (
 	github.com/charmbracelet/huh v0.6.0
 	github.com/charmbracelet/x/ansi v0.8.0
 	github.com/mattn/go-sixel v0.0.5
+	github.com/rivo/uniseg v0.4.7
 	github.com/tetratelabs/wazero v1.11.0
 	golang.org/x/term v0.39.0
 )

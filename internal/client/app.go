@@ -2016,7 +2016,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode.
 			// Exception: skip forwarding alt+left/alt+b on a completely empty
 			// textarea -- see isEmptyTextareaWordNavKey for why.
-			if !isEmptyTextareaWordNavKey(msg, a.input) {
+			if !isEmptyTextareaWordNavKey(msg, a.input) && !a.editWholeEmoji(msg) {
 				var cmd tea.Cmd
 				a.input, cmd = a.input.Update(msg)
 				cmds = append(cmds, cmd)

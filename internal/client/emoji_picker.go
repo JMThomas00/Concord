@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/rivo/uniseg"
 
 	"github.com/concord-chat/concord/internal/emoji"
 )
@@ -268,7 +270,77 @@ func (a *App) renderEmojiPickerOverlay(base string) string {
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Background(lipgloss.Color(a.theme.Colors.Background)).
 		Width(width).Padding(0, 1).Render(body)
-	return overlayCenter(base, box, a.width, a.height)
+	return overlayPinned(base, box, a.width, a.height)
+}
+
+// overlayPinned is overlayCenter for a box with emoji in it. Terminals
+// don't agree with each other (or with us) on how wide some emoji are:
+// skin-toned ones, ones joined from several (🐻‍❄️), ones with a
+// presentation selector (☺️). A line the terminal draws wider than we
+// measured runs past the edge, wraps, and pushes everything below it down
+// a row (broken borders, the message box drawn twice). So the terminal is
+// told where to carry on after each emoji (CHA, "cursor to column n"),
+// and where the box starts and ends, so whatever width it gives an emoji
+// the rest of the line lands where we laid it out.
+func overlayPinned(bg, fg string, termW, termH int) string {
+	fgLines := strings.Split(fg, "\n")
+	fgW := 0
+	for _, l := range fgLines {
+		fgW = max(fgW, lipgloss.Width(l))
+	}
+	startX, startY := max(0, (termW-fgW)/2), max(0, (termH-len(fgLines))/2)
+	bgLines := strings.Split(bg, "\n")
+	for len(bgLines) < termH {
+		bgLines = append(bgLines, strings.Repeat(" ", termW))
+	}
+	for y, l := range fgLines {
+		by := startY + y
+		if by >= len(bgLines) {
+			break
+		}
+		line := bgLines[by]
+		if w := lipgloss.Width(line); w < startX+fgW {
+			line += strings.Repeat(" ", startX+fgW-w)
+		}
+		bgLines[by] = visualTake(line, startX) + cha(startX) + pinWide(l, startX) + cha(startX+fgW) + visualSkip(line, startX+fgW)
+	}
+	if len(bgLines) > termH {
+		bgLines = bgLines[:termH]
+	}
+	return strings.Join(bgLines, "\n")
+}
+
+// cha moves the cursor to column col (0-based).
+func cha(col int) string { return fmt.Sprintf("\x1b[%dG", col+1) }
+
+// pinWide adds a cha after every wide or joined character in s, a line
+// starting at column start: escape sequences pass through as they are.
+func pinWide(s string, start int) string {
+	var b strings.Builder
+	col := start
+	for s != "" {
+		if s[0] == 0x1b { // an escape sequence: copy it whole
+			n := 1
+			if len(s) > 1 && s[1] == '[' {
+				n = 2
+				for n < len(s) && (s[n] < 0x40 || s[n] > 0x7e) {
+					n++
+				}
+				n = min(n+1, len(s))
+			}
+			b.WriteString(s[:n])
+			s = s[n:]
+			continue
+		}
+		cluster, rest, w, _ := uniseg.FirstGraphemeClusterInString(s, -1)
+		b.WriteString(cluster)
+		col += w
+		if w > 1 || utf8.RuneCountInString(cluster) > 1 {
+			b.WriteString(cha(col))
+		}
+		s = rest
+	}
+	return b.String()
 }
 
 // shortcodeBeforeCursor matches a :shortcode: just typed, at the start of
@@ -291,7 +363,7 @@ func (a *App) expandEmojiShortcode(msg tea.Msg) {
 	}
 	line := []rune(lines[row])
 	li := a.input.LineInfo()
-	col := min(li.StartColumn+li.CharOffset, len(line))
+	col := min(li.StartColumn+li.ColumnOffset, len(line))
 	m := shortcodeBeforeCursor.FindStringSubmatch(string(line[:col]))
 	if m == nil {
 		return
@@ -307,4 +379,47 @@ func (a *App) expandEmojiShortcode(msg tea.Msg) {
 	a.input, _ = a.input.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 	a.input.InsertString(e.WithTone(a.emojiTone()))
 	a.rememberEmoji(e)
+}
+
+// editWholeEmoji makes Backspace, Delete and the arrow keys treat an emoji
+// made of several characters as one, as people see it. The message box
+// works a character at a time, so 🐻‍❄️ (bear, joiner, snowflake, selector)
+// took four Backspaces, turning into other emoji on the way. Reports
+// whether it handled the key.
+func (a *App) editWholeEmoji(msg tea.Msg) bool {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return false
+	}
+	back := k.Type == tea.KeyBackspace || k.Type == tea.KeyLeft
+	if !back && k.Type != tea.KeyDelete && k.Type != tea.KeyRight {
+		return false
+	}
+	lines := strings.Split(a.input.Value(), "\n")
+	row := a.input.Line()
+	if row >= len(lines) {
+		return false
+	}
+	li := a.input.LineInfo()
+	col := li.StartColumn + li.ColumnOffset
+	// The characters of the cluster just before (or just after) the cursor.
+	n, at := 0, 0
+	for g := uniseg.NewGraphemes(lines[row]); g.Next(); {
+		size := utf8.RuneCountInString(g.Str())
+		if back && at+size == col || !back && at == col {
+			n = size
+			break
+		}
+		at += size
+		if at > col {
+			break
+		}
+	}
+	if n < 2 {
+		return false
+	}
+	for range n {
+		a.input, _ = a.input.Update(k)
+	}
+	return true
 }

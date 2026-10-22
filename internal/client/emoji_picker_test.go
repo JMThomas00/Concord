@@ -1,14 +1,17 @@
 package client
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
+	"github.com/rivo/uniseg"
 
 	"github.com/concord-chat/concord/internal/models"
 )
@@ -163,6 +166,7 @@ func TestShortcodesBecomeEmojiAsTheyAreTyped(t *testing.T) {
 		"http://x:80:":        "http://x:80:",
 		"a :notanemoji: b":    "a :notanemoji: b",
 		"no:space:":           "no:space:",
+		"🐻‍❄️ and 🍇 :wave:":   "🐻‍❄️ and 🍇 👋", // emoji before it on the line
 	} {
 		a := newEmojiTestApp(t)
 		for _, r := range typed {
@@ -195,4 +199,89 @@ func typeSlowly(a *App, key string) {
 	a.lastKeystrokeAt = time.Now().Add(-time.Second)
 	a.inPasteBurst = false
 	pickerKeys(a, key)
+}
+
+// A terminal that disagrees with us about emoji widths (Windows Terminal
+// drew some wider than measured) used to get a picker whose lines ran past
+// the edge: borders broke and rows doubled. With the cursor told where to
+// go after each emoji, every row's right border lands in one column, and
+// nothing runs past the window, however wide the terminal draws them.
+func TestThePickerLinesUpWhateverWidthTheTerminalGivesEmoji(t *testing.T) {
+	a := newEmojiTestApp(t)
+	pickerKeys(a, "ctrl+e", "tab", "ctrl+t", "ctrl+t") // People & Body, skin-toned
+	pickerKeys(a, "b", "e", "a", "r")                  // 🐻‍❄️ and friends
+	// Draw the frame the way a disagreeing terminal would: a joined or
+	// toned emoji takes two columns per character in it.
+	wide := func(cluster string) int {
+		if n := utf8.RuneCountInString(cluster); n > 1 {
+			return 2 * n
+		}
+		return ansi.StringWidth(cluster)
+	}
+	rightBorder := -1
+	for i, line := range strings.Split(a.View(), "\n") {
+		col, maxCol, border := 0, 0, -1
+		for line != "" {
+			if line[0] == 0x1b {
+				n := 2
+				for n < len(line) && (line[n] < 0x40 || line[n] > 0x7e) {
+					n++
+				}
+				seq := line[:n+1]
+				if strings.HasSuffix(seq, "G") { // cursor to column
+					fmt.Sscanf(seq[2:], "%d", &col)
+					col--
+				}
+				line = line[n+1:]
+				continue
+			}
+			cluster, rest, _, _ := uniseg.FirstGraphemeClusterInString(line, -1)
+			if cluster == "│" || cluster == "╮" || cluster == "╯" {
+				border = col
+			}
+			col += wide(cluster)
+			maxCol = max(maxCol, col)
+			line = rest
+		}
+		if maxCol > a.width {
+			t.Fatalf("line %d runs to column %d in a %d-wide window", i, maxCol, a.width)
+		}
+		if border > 60 { // the picker's right border (the chat's are further left or right)
+			if rightBorder >= 0 && border != rightBorder && border < 100 {
+				t.Fatalf("line %d: right border at %d, others at %d", i, border, rightBorder)
+			}
+			if border < 100 {
+				rightBorder = border
+			}
+		}
+	}
+}
+
+// 🐻‍❄️ took four Backspaces, turning into other emoji on the way: it's
+// four characters. Backspace, Delete and the arrows now take an emoji
+// whole, and plain text still goes a character at a time.
+func TestTheMessageBoxEditsWholeEmoji(t *testing.T) {
+	for _, e := range []string{"🐻‍❄️", "👨‍👩‍👧", "👍🏽", "🇺🇸", "❤️", "😮‍💨"} {
+		a := newEmojiTestApp(t)
+		a.input.InsertString("a" + e + "b")
+		a.Update(tea.KeyMsg{Type: tea.KeyBackspace}) // the b
+		a.Update(tea.KeyMsg{Type: tea.KeyBackspace}) // the emoji, in one
+		if got := a.input.Value(); got != "a" {
+			t.Errorf("%s: after two Backspaces the box has %q", e, got)
+		}
+
+		a = newEmojiTestApp(t)
+		a.input.InsertString("a" + e + "b")
+		a.Update(tea.KeyMsg{Type: tea.KeyLeft}) // before the b
+		a.Update(tea.KeyMsg{Type: tea.KeyLeft}) // before the emoji, in one
+		a.Update(tea.KeyMsg{Type: tea.KeyDelete})
+		if got := a.input.Value(); got != "ab" {
+			t.Errorf("%s: Left, Left, Delete left %q", e, got)
+		}
+		a.Update(tea.KeyMsg{Type: tea.KeyRight})
+		a.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		if got := a.input.Value(); got != "a" {
+			t.Errorf("%s: plain text should still go a character at a time: %q", e, got)
+		}
+	}
 }
