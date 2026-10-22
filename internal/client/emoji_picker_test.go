@@ -461,3 +461,59 @@ func TestBoxBackgroundsStopAtTheirEdge(t *testing.T) {
 		t.Fatal("the test expects /attach in the list")
 	}
 }
+
+// where finds cluster on the drawn screen (the first from the top), as
+// the model terminal draws it.
+func where(t *testing.T, a *App, cluster string) (x, y int) {
+	t.Helper()
+	for y, row := range screenOf(a.View(), a.width, ansi.StringWidth) {
+		for x, c := range row {
+			if c == cluster {
+				return x, y
+			}
+		}
+	}
+	t.Fatalf("%s isn't on the screen", cluster)
+	return 0, 0
+}
+
+func click(a *App, x, y int) {
+	a.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+}
+
+// The mouse: click an emoji to put it in the message, a tab to change
+// group, the wheel to scroll; a click outside closes the picker.
+func TestThePickerWorksWithTheMouse(t *testing.T) {
+	a := newEmojiTestApp(t)
+	pickerKeys(a, "ctrl+e")
+	x, y := where(t, a, "🍔") // the Food & Drink tab
+	click(a, x+1, y)         // (its right half)
+	if a.emojiPicker == nil || a.emojiPicker.Tab != 4 {
+		t.Fatalf("clicking the 🍔 tab: %+v", a.emojiPicker)
+	}
+
+	pickerKeys(a, "g", "r", "a", "p", "e", "s")
+	a.View()
+	before := a.emojiPicker.Cursor
+	a.Update(tea.MouseMsg{X: x, Y: y + 3, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if a.emojiPicker.Cursor == before && len(a.emojiPicker.items) > a.emojiPicker.Cols {
+		t.Fatal("the wheel didn't move through the grid")
+	}
+
+	pickerKeys(a, "ctrl+u", "g", "r", "a", "p", "e", "s")
+	x, y = where(t, a, "🍇")
+	click(a, x, y)
+	if a.emojiPicker != nil || a.input.Value() != "🍇" {
+		t.Fatalf("clicking 🍇: picker open %v, message %q", a.emojiPicker != nil, a.input.Value())
+	}
+
+	pickerKeys(a, "ctrl+e")
+	a.View()
+	click(a, 0, 0)
+	if a.emojiPicker != nil {
+		t.Fatal("a click outside didn't close the picker")
+	}
+	if a.input.Value() != "🍇" {
+		t.Fatalf("a click outside changed the message: %q", a.input.Value())
+	}
+}

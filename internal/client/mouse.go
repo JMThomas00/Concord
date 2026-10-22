@@ -37,6 +37,10 @@ func (a *App) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 		return a.handleMemberContextMenuMouse(msg)
 	}
 
+	if a.emojiPicker != nil {
+		return a.handleEmojiPickerMouse(msg)
+	}
+
 	if a.view == ViewMain {
 		return a.handleMainViewMouse(msg)
 	}

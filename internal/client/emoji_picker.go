@@ -34,7 +34,9 @@ type emojiPickerState struct {
 	Cursor int
 	Scroll int // first grid row shown
 	Cols   int // grid columns at the last render, for the arrow keys
-	items  []*emoji.Emoji
+	// Where the box was last drawn (its top-left corner), for the mouse.
+	Left, Top, Width, Height int
+	items                    []*emoji.Emoji
 }
 
 // openEmojiPicker opens the picker on Recent, or on the first group if
@@ -179,7 +181,56 @@ func (a *App) rememberEmoji(e *emoji.Emoji) {
 }
 
 func (a *App) renderEmojiPickerOverlay(base string) string {
-	return overlayPinned(base, a.emojiPickerBox(), a.width, a.height)
+	box := a.emojiPickerBox()
+	s := a.emojiPicker
+	lines := strings.Split(box, "\n")
+	s.Width, s.Height = 0, len(lines)
+	for _, l := range lines {
+		s.Width = max(s.Width, lipgloss.Width(l))
+	}
+	s.Left, s.Top = max(0, (a.width-s.Width)/2), max(0, (a.height-s.Height)/2) // as overlayPinned places it
+	return overlayPinned(base, box, a.width, a.height)
+}
+
+// The picker's rows inside its border (emojiPickerBox's body): the tabs,
+// then the group's label, then the grid.
+const (
+	emojiPickerTabsRow = 4
+	emojiPickerGridRow = 6
+)
+
+// handleEmojiPickerMouse: click an emoji to put it in the message, a tab
+// to change group; the wheel scrolls the grid; a click outside closes the
+// picker. Worked out from the picker's own layout (zone marks would count
+// each emoji's pre-painted cells, overlayPinned, and land in the wrong place).
+func (a *App) handleEmojiPickerMouse(msg tea.MouseMsg) tea.Cmd {
+	s := a.emojiPicker
+	inside := msg.X >= s.Left && msg.X < s.Left+s.Width && msg.Y >= s.Top && msg.Y < s.Top+s.Height
+	row, col := msg.Y-s.Top-1, msg.X-s.Left-2 // inside the border and padding
+	switch {
+	case msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown:
+		if inside && len(s.items) > 0 {
+			d := s.Cols
+			if msg.Button == tea.MouseButtonWheelUp {
+				d = -d
+			}
+			s.Cursor = min(max(0, s.Cursor+d), len(s.items)-1)
+		}
+	case msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft:
+	case !inside:
+		a.emojiPicker = nil
+	case col < 0:
+	case row == emojiPickerTabsRow:
+		if t := col / emojiCellWidth; t < len(emojiTabIcons) {
+			s.Tab, s.Query, s.Cursor, s.Scroll = t, "", 0, 0
+			a.refreshEmojiPicker()
+		}
+	case row >= emojiPickerGridRow && row < emojiPickerGridRow+emojiPickerRows && col < s.Cols*emojiCellWidth:
+		if i := (s.Scroll+row-emojiPickerGridRow)*s.Cols + col/emojiCellWidth; i < len(s.items) {
+			a.insertEmoji(s.items[i])
+		}
+	}
+	return nil
 }
 
 // emojiPickerBox draws the picker itself.

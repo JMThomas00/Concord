@@ -1639,7 +1639,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Uses the "chat-panel" zone (scanned from the previous render, see
 		// renderMainView) instead of the old hand-derived isCursorOverChatViewport
 		// -- same behavior, no more duplicated layout math.
-		if a.view == ViewMain && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
+		if a.view == ViewMain && a.emojiPicker == nil && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) { // (the picker scrolls itself)
 			up := msg.Type == tea.MouseWheelUp
 			if z := zone.Get("chat-panel"); z != nil && z.InBounds(msg) {
 				var cmd tea.Cmd
