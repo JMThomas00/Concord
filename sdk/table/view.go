@@ -47,6 +47,7 @@ type viewerModel struct {
 
 	// The arcade (arcade.go).
 	level      int                     // 1 PLAYER VS CPU's level
+	join       bool                    // NETWORK GAME joins rather than hosts (standalone.go)
 	frame      int                     // animation ticks
 	lastKey    time.Time               // attract mode stops 30s after the last key
 	setsRow    int                     // the collection screen's row

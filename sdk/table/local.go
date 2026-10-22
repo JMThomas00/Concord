@@ -3,6 +3,7 @@ package table
 import (
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -16,11 +17,15 @@ import (
 // Rules.AI is set), or two people on different computers (one hosts, the
 // other joins with the host's address and a join code). options are passed
 // to Rules.New (e.g. a board size). It uses the same board as the Concord
-// plugin.
+// plugin, and a game with an Arcade gets the same front door
+// (standalone.go).
 func RunLocal(rules Rules, options map[string]string) error {
 	// The pane driver renders plugins at full color for later conversion;
 	// a real terminal detects what it supports.
 	lipgloss.SetDefaultRenderer(lipgloss.NewRenderer(os.Stdout))
+	if rules.Arcade != nil {
+		return runStandalone(rules, options)
+	}
 	m := newLocal(rules, options)
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if m.net != nil && m.net.peer != nil {
@@ -40,6 +45,13 @@ type localModel struct {
 	cursor   int
 
 	net *netState // network game, or nil
+
+	// back, if set, returns to the arcade's menu (a standalone arcade game
+	// hands two players at one keyboard and network games to this table):
+	// it replaces New game, and Esc while setting up a network game.
+	back    func()
+	pending tea.Cmd // to run when the table opens (hosting: opening the port)
+	sound   func(move string) // plays a move's sound (the arcade's speaker), if set
 
 	t        *Table
 	seat     *Seat
@@ -65,6 +77,7 @@ type netState struct {
 	addrs   []string
 	port    int
 	code    string
+	ln      net.Listener // while hosting, until the other player joins
 	peer    *netPeer
 	mySeat  int
 	err     string
@@ -171,12 +184,19 @@ func (m *localModel) play(seat int, move string) error {
 		return err
 	}
 	t.Moves = append(t.Moves, move)
+	m.moveSound(move)
 	if m.net != nil && m.net.peer != nil {
 		if err := m.net.peer.send(netMsg{Type: "move", Move: move, Index: len(t.Moves) - 1}); err != nil {
 			m.notice = "Couldn't send the move: " + err.Error()
 		}
 	}
 	return nil
+}
+
+func (m *localModel) moveSound(move string) {
+	if m.sound != nil {
+		m.sound(move)
+	}
 }
 
 // computerTurn starts the computer thinking if it's its move.
@@ -231,12 +251,20 @@ func (m *localModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.computerTurn())
 
 	case netListeningMsg:
-		m.net.addrs, m.net.code = msg.addrs, msg.code
+		if m.net == nil || !m.net.hosting { // left before the port opened
+			msg.ln.Close()
+			return m, nil
+		}
+		m.net.addrs, m.net.code, m.net.ln = msg.addrs, msg.code, msg.ln
 		m.net.port = portOf(msg.ln.Addr().String())
 		return m, acceptCmd(msg.ln, msg.code, m.rules.Name, m.me, m.options)
 
 	case netConnectedMsg:
-		m.net.peer, m.net.mySeat, m.net.hosting, m.net.joining = msg.peer, msg.mySeat, false, false
+		if m.net == nil { // left while it was connecting
+			msg.peer.conn.Close()
+			return m, nil
+		}
+		m.net.peer, m.net.mySeat, m.net.hosting, m.net.joining, m.net.ln = msg.peer, msg.mySeat, false, false, nil
 		if msg.options != nil {
 			m.options = msg.options // the host's game options
 		}
@@ -247,6 +275,9 @@ func (m *localModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.start(seats, msg.mySeat), msg.peer.next())
 
 	case netRemoteMsg:
+		if m.net == nil || m.net.peer == nil {
+			return m, nil
+		}
 		return m, tea.Batch(m.remote(netMsg(msg)), m.net.peer.next())
 
 	case netErrMsg:
@@ -349,6 +380,7 @@ func (m *localModel) remote(msg netMsg) tea.Cmd {
 			return nil
 		}
 		t.Moves = append(t.Moves, msg.Move)
+		m.moveSound(msg.Move)
 		var cmd tea.Cmd
 		m.board, cmd = m.board.Update(ChangedMsg{Move: msg.Move})
 		return cmd
@@ -394,22 +426,34 @@ func (m *localModel) chooseKey(msg tea.KeyMsg) tea.Cmd {
 			m.cursor++
 		}
 	case "q", "esc":
-		return tea.Quit
+		return m.leave()
 	case "enter", " ":
 		c := m.choices[m.cursor]
 		if c.start == nil {
-			return tea.Quit
+			return m.leave()
 		}
 		return c.start()
 	}
 	return nil
 }
 
+// leave quits from the start menu: back to the arcade when there is one.
+func (m *localModel) leave() tea.Cmd {
+	if m.back != nil {
+		m.back()
+		return nil
+	}
+	return tea.Quit
+}
+
 // netSetupKey handles keys while hosting or joining is being set up.
 func (m *localModel) netSetupKey(msg tea.KeyMsg) tea.Cmd {
 	n := m.net
 	if msg.String() == "esc" {
-		m.net = nil // (a listening host socket closes when the process ends)
+		m.leaveNet()
+		if m.back != nil {
+			m.back()
+		}
 		return nil
 	}
 	if !n.joining {
@@ -432,6 +476,23 @@ func (m *localModel) netSetupKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// leaveNet ends a network game, or stops hosting one: the other player is
+// told, and the port closes.
+func (m *localModel) leaveNet() {
+	n := m.net
+	if n == nil {
+		return
+	}
+	if n.ln != nil {
+		n.ln.Close()
+	}
+	if n.peer != nil {
+		_ = n.peer.send(netMsg{Type: "bye"})
+		n.peer.conn.Close()
+	}
+	m.net = nil
+}
+
 func (m *localModel) localMenu() []menuItem {
 	items := []menuItem{}
 	over := m.t.outcome().Over
@@ -450,7 +511,10 @@ func (m *localModel) localMenu() []menuItem {
 	if over && (m.net == nil || !m.net.gone) {
 		items = append(items, menuItem{"Rematch", func() { m.rematch(true) }})
 	}
-	if m.net == nil {
+	switch {
+	case m.back != nil:
+		items = append(items, menuItem{"Back to the menu", func() { m.leaveNet(); m.back() }})
+	case m.net == nil:
 		items = append(items, menuItem{"New game", func() { m.choosing, m.t, m.board = true, nil, nil }})
 	}
 	items = append(items, menuItem{"Quit", nil}, menuItem{"Close menu", func() {}})

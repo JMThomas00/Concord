@@ -76,6 +76,12 @@ type Host struct {
 	viewers  map[uuid.UUID]*Viewer
 	conn     *plugin.Conn
 
+	// OnQuit, if set, is called when a viewer's model returns tea.Quit,
+	// after Concord is told to hand the keyboard back. A host driven
+	// without Concord (a game played in a terminal) uses it to end the
+	// program.
+	OnQuit func(v *Viewer)
+
 	// While a model is updating, Send/Broadcast calls (e.g. from inside
 	// that model's own Update) are queued and delivered right after, so
 	// no model is ever re-entered mid-update.
@@ -240,6 +246,9 @@ func (h *Host) run(v *Viewer, cmd tea.Cmd) tea.Model {
 		case tea.QuitMsg:
 			if h.conn != nil {
 				_ = h.conn.LeavePane(v.ChannelID, v.ID)
+			}
+			if h.OnQuit != nil {
+				h.OnQuit(v)
 			}
 			return m
 		case tea.BatchMsg:

@@ -103,11 +103,7 @@ func (r *playerRecord) unlock(id string, now time.Time) {
 }
 
 func (k *Kit) recordsFile() string {
-	dir := "."
-	if k.conn != nil && k.conn.DataDir() != "" {
-		dir = k.conn.DataDir()
-	}
-	return filepath.Join(dir, "tables", "records.json")
+	return filepath.Join(k.dataDir(), "tables", "records.json")
 }
 
 func (k *Kit) loadRecords() {
