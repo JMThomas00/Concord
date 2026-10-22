@@ -443,6 +443,7 @@ type App struct {
 	// Member panel navigation state
 	selectedMemberIndex int                // Index in flattened member list
 	memberContextMenu   *MemberContextMenu // Context menu state (nil when closed)
+	emojiPicker         *emojiPickerState  // Ctrl+E (emoji_picker.go); nil when closed
 
 	// Hub Browser overlay
 	showHubBrowser bool
@@ -1561,11 +1562,14 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// consuming check after the later `switch a.view` block.
 		wasComposing = a.view == ViewMain && a.focus == FocusInput && len(a.input.Value()) > 0
 		listWasOpen := a.threadList != nil // the Alt+T list keeps its keys (threads_find.go)
+		pickerWasOpen := a.emojiPicker != nil
 		cmd := a.handleKeyPress(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		if listWasOpen {
+		// The emoji picker keeps its keys too, including the Ctrl+E that
+		// opened it and the Enter that inserts (which mustn't also send).
+		if listWasOpen || pickerWasOpen || a.emojiPicker != nil {
 			return a, tea.Batch(cmds...)
 		}
 		// See inPasteBurst's doc comment: handleKeyPress may have just
@@ -1635,7 +1639,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Uses the "chat-panel" zone (scanned from the previous render, see
 		// renderMainView) instead of the old hand-derived isCursorOverChatViewport
 		// -- same behavior, no more duplicated layout math.
-		if a.view == ViewMain && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) {
+		if a.view == ViewMain && a.emojiPicker == nil && (msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown) { // (the picker scrolls itself)
 			up := msg.Type == tea.MouseWheelUp
 			if z := zone.Get("chat-panel"); z != nil && z.InBounds(msg) {
 				var cmd tea.Cmd
@@ -2012,10 +2016,11 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Only pass keys to textarea if BOTH focus is on input AND not in message nav mode.
 			// Exception: skip forwarding alt+left/alt+b on a completely empty
 			// textarea -- see isEmptyTextareaWordNavKey for why.
-			if !isEmptyTextareaWordNavKey(msg, a.input) {
+			if !isEmptyTextareaWordNavKey(msg, a.input) && !a.editWholeEmoji(msg) {
 				var cmd tea.Cmd
 				a.input, cmd = a.input.Update(msg)
 				cmds = append(cmds, cmd)
+				a.expandEmojiShortcode(msg)
 				a.updateMentionPopup()
 			}
 		} else if keyMsg, ok := msg.(tea.KeyMsg); ok && a.focus == FocusChat && !a.messageNavMode && keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
@@ -2130,7 +2135,7 @@ func (a *App) View() string {
 	if a.photoGrapes() {
 		out = a.placePhoto(out) // after the effects, which would drop its escape codes
 	}
-	overlay := a.showHubBrowser || a.linkBrowserState != nil || a.helpFinderState != nil || a.memberContextMenu != nil
+	overlay := a.showHubBrowser || a.linkBrowserState != nil || a.helpFinderState != nil || a.memberContextMenu != nil || a.emojiPicker != nil
 	return a.paintRasterImages(out, a.paneRasters, overlay)
 }
 
@@ -2148,7 +2153,7 @@ func (a *App) view0() string {
 	// active mid-paste in practice, but they're excluded explicitly anyway
 	// since none of them are what cachedMainView captured.
 	if a.view == ViewMain && a.inPasteBurst && a.cachedMainView != "" &&
-		a.linkBrowserState == nil && a.helpFinderState == nil && a.memberContextMenu == nil {
+		a.linkBrowserState == nil && a.helpFinderState == nil && a.memberContextMenu == nil && a.emojiPicker == nil {
 		return a.cachedMainView
 	}
 
@@ -2215,6 +2220,10 @@ func (a *App) view0() string {
 	// Render member context menu overlay if active
 	if a.memberContextMenu != nil {
 		return zone.Scan(a.renderMemberContextMenuOverlay(baseView))
+	}
+
+	if a.emojiPicker != nil && a.view == ViewMain {
+		return zone.Scan(a.renderEmojiPickerOverlay(baseView))
 	}
 
 	rendered := zone.Scan(baseView)
@@ -2298,6 +2307,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// here needs to reach the finder's own query, not the chat input.
 	if a.helpFinderState != nil {
 		return a.handleHelpFinderKey(msg)
+	}
+
+	if a.emojiPicker != nil {
+		return a.handleEmojiPickerKey(msg)
 	}
 
 	// Route to view-specific handlers first
@@ -2392,6 +2405,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			if a.currentUserRoleLevel() >= roleLevelAdmin {
 				return a.openServerManagement(ViewMain, 0)
 			}
+		}
+
+	case "ctrl+e":
+		// The emoji picker (emoji_picker.go), from the message box or the
+		// messages; the emoji goes in the message box.
+		if a.view == ViewMain && a.currentChannel != nil && (a.focus == FocusInput || a.focus == FocusChat) {
+			a.openEmojiPicker()
+			return nil
 		}
 
 	case "ctrl+t":

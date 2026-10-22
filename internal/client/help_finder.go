@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // HelpFinderState holds the /help fuzzy finder's live search state --
@@ -361,13 +362,15 @@ func (a *App) renderHelpFinderOverlay(baseView string) string {
 			if c.Usage != "" {
 				usage = " " + c.Usage
 			}
+			// One line each, however long the description (/attach's
+			// wrapped onto a second, shifting the list).
 			if i == s.Selected {
 				line := fmt.Sprintf("▶ /%s%s  —  %s", c.Name, usage, c.Description)
-				rows = append(rows, selectedStyle.Render(line))
+				rows = append(rows, selectedStyle.Render(ansi.Truncate(line, innerWidth, "…")))
 			} else {
 				line := "  " + nameStyle.Render("/"+c.Name) + usageStyle.Render(usage) +
 					"  " + dimStyle.Render("—") + " " + descStyle.Render(c.Description)
-				rows = append(rows, line)
+				rows = append(rows, ansi.Truncate(line, innerWidth, "…"))
 			}
 		}
 	}
@@ -387,7 +390,9 @@ func (a *App) renderHelpFinderOverlay(baseView string) string {
 		Padding(1).
 		Background(lipgloss.Color(a.theme.Colors.Background))
 
-	modal := boxStyle.Render(body.String())
+	// Each coloured span's reset also dropped the box's background, leaving
+	// gaps along every line; put it back after each.
+	modal := fillBoxBackground(boxStyle.Render(body.String()), a.theme.Colors.Background)
 	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, modal,
 		lipgloss.WithWhitespaceChars(""),
 		lipgloss.WithWhitespaceForeground(lipgloss.Color(a.theme.Colors.Background)))
