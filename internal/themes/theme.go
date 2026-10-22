@@ -126,6 +126,7 @@ func LoadTheme(path string) (*Theme, error) {
 		return nil, fmt.Errorf("failed to parse theme file: %w", err)
 	}
 
+	theme.MakeReadable()
 	return &theme, nil
 }
 
@@ -267,6 +268,12 @@ func (t *Theme) BuildStyles() *Styles {
 
 // GetDefaultTheme returns the default Dracula theme
 func GetDefaultTheme() *Theme {
+	t := draculaTheme()
+	t.MakeReadable()
+	return t
+}
+
+func draculaTheme() *Theme {
 	return &Theme{
 		Meta: ThemeMeta{
 			Name:    "Dracula",
