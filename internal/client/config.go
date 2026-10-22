@@ -215,6 +215,11 @@ type DisplayConfig struct {
 	VoiceLevelStyle    string `json:"voice_level_style,omitempty"`
 	MembersHideQuality bool   `json:"members_hide_quality"` // hide the connection quality bar
 
+	// The emoji picker (emoji_picker.go): recently used emoji, newest
+	// first, and the skin tone (0 none, 1 light ... 5 dark).
+	EmojiRecent []string `json:"emoji_recent,omitempty"`
+	EmojiTone   int      `json:"emoji_tone,omitempty"`
+
 	// Animation options
 	DisablePanelAnimations bool   `json:"disable_panel_animations"` // skip slide-in/out for settings and server panels
 	TypingAnimation        string `json:"typing_animation"`         // "" = "braille"; see typingAnimNames for valid values

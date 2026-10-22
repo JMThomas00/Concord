@@ -52,6 +52,7 @@ One profile signs you in to every server. Switching servers keeps your voice cal
 
 - **Enter** — send; **Ctrl+J** — a new line
 - **@** — mention someone (**↑**/**↓** pick, **Enter** or **Tab** accepts)
+- **Ctrl+E** — pick an emoji: type to search, arrows and **Tab** to browse, **Ctrl+T** for a skin tone, **Enter** to add it. Recently used come first. Or type a shortcode like ` + "`:grapes:`" + `, which becomes 🍇 as you type the last colon.
 - **/** — a command; ` + "`/help`" + ` searches them all
 - **PgUp** / **PgDn** — scroll back
 - Markdown works: **bold**, *italic*, ` + "`code`" + `, lists and code blocks. Links are clickable in most terminals.
