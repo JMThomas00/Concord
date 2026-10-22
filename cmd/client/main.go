@@ -127,7 +127,9 @@ func main() {
 		// full Update+render pass per pixel, which starved real input
 		// processing badly enough to make the whole TUI unresponsive on a
 		// live report. See MouseHoverFilter's own comment (grape_logo.go).
-		tea.WithFilter(client.MouseHoverFilter),
+		// InputFilter runs it after putting emoji typed on Windows back
+		// together (key_surrogates.go).
+		tea.WithFilter(client.InputFilter()),
 		// Lets the terminal tell us when the window regains focus, so Concord
 		// can force a full repaint on refocus -- see the tea.FocusMsg case in
 		// App.Update for why (a real rendering-glitch report on Linux/Wayland
