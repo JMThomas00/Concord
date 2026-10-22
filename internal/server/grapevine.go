@@ -124,20 +124,29 @@ func (g *GrapevineClient) Stop() {
 	close(g.stopCh)
 }
 
-func (g *GrapevineClient) register() error {
+// listing is what the hub shows about this server.
+func (g *GrapevineClient) listing() map[string]interface{} {
 	maxMembers := g.cfg.MaxMembers
 	if maxMembers <= 0 {
 		maxMembers = 1000
 	}
-	payload := map[string]interface{}{
+	tags := g.cfg.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	return map[string]interface{}{
 		"name":        g.serverName,
 		"description": g.cfg.Description,
 		"category":    g.cfg.Category,
-		"tags":        g.cfg.Tags,
-		"host":        g.publicHost,
-		"port":        g.publicPort,
+		"tags":        tags,
 		"max_members": maxMembers,
 	}
+}
+
+func (g *GrapevineClient) register() error {
+	payload := g.listing()
+	payload["host"] = g.publicHost
+	payload["port"] = g.publicPort
 	body, _ := json.Marshal(payload)
 
 	resp, err := g.httpClient.Post(g.cfg.HubURL+"/v1/servers", "application/json", bytes.NewReader(body))
@@ -195,9 +204,13 @@ func (g *GrapevineClient) heartbeatLoop() {
 }
 
 func (g *GrapevineClient) sendHeartbeat() {
-	payload := map[string]int{
+	// The listing goes along each time, so a description, tag or category
+	// changed in the config reaches the hub after a restart (registering
+	// happens only once).
+	payload := map[string]interface{}{
 		"member_count": g.getMemberCount(),
 		"online_count": g.getOnlineCount(),
+		"listing":      g.listing(),
 	}
 	body, _ := json.Marshal(payload)
 

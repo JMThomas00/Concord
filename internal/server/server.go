@@ -7,22 +7,22 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"runtime"
-	"syscall"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-	"github.com/pelletier/go-toml/v2"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/plugins"
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/concord-chat/concord/internal/server/dashboard"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -99,12 +99,13 @@ func resolveDashboardMode(hybrid, dashboardOnly bool) dashboardDisplayMode {
 
 // Server represents the Concord server
 type Server struct {
-	config        *Config
-	hub           *Hub
-	handlers      *Handlers
-	db            *database.DB
-	upgrader      websocket.Upgrader
-	httpServer    *http.Server
+	config     *Config
+	version    string // this build's version, for the banner (SetBuildInfo)
+	hub        *Hub
+	handlers   *Handlers
+	db         *database.DB
+	upgrader   websocket.Upgrader
+	httpServer *http.Server
 
 	// Dashboard support
 	dashboardDisplay dashboardDisplayMode
@@ -660,10 +661,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Create server member
 	member := &models.ServerMember{
-		UserID:    user.ID,
-		ServerID:  defaultServer.ID,
-		JoinedAt:  time.Now(),
-		IsMuted:   false,
+		UserID:     user.ID,
+		ServerID:   defaultServer.ID,
+		JoinedAt:   time.Now(),
+		IsMuted:    false,
 		IsDeafened: false,
 	}
 	if err := s.db.AddServerMember(member); err != nil {
@@ -839,6 +840,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // SetBuildInfo records the server binary's own build identity, forwarded
 // to the Handlers that actually construct ReadyPayload.
 func (s *Server) SetBuildInfo(version, gitCommit, buildTime string) {
+	s.version = version
 	s.handlers.SetBuildInfo(version, gitCommit, buildTime)
 }
 
@@ -876,6 +878,8 @@ func (s *Server) LogDashboardEvent(level, component, message string) {
 
 // runWithDashboard starts the server with an interactive TUI dashboard
 func (s *Server) runWithDashboard() error {
+	s.dashboard.Version = s.version
+
 	// Start the hub
 	go s.hub.Run()
 
@@ -1058,7 +1062,7 @@ func (s *Server) runWithHybridDashboard() error {
 	fmt.Print("\033[2J\033[H")
 
 	// Print banner
-	PrintBanner()
+	PrintBanner(s.version)
 
 	// Calculate dashboard start line (banner is 15 lines + 1 blank line before dashboard)
 	dashboardStartLine := 17

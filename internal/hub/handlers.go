@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -213,10 +214,29 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update heartbeat")
 		return
 	}
+	if l := req.Listing; l != nil && l.Name != "" {
+		if l.MaxMembers <= 0 {
+			l.MaxMembers = 1000
+		}
+		if listingChanged(srv, *l) {
+			if err := h.db.UpdateListing(id, *l); err != nil {
+				ApiLog.Error("listing update failed", "id", id, "error", err)
+			} else {
+				ApiLog.Info("listing updated", "id", id, "name", l.Name)
+			}
+		}
+	}
 
 	h.stats.Heartbeats.Add(1)
 	ApiLog.Debug("heartbeat", "name", srv.Name, "members", req.MemberCount, "online", req.OnlineCount)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// listingChanged reports whether a heartbeat's listing differs from what
+// the hub has, so an unchanged one (nearly every beat) isn't written.
+func listingChanged(srv *RegisteredServer, l ListingUpdate) bool {
+	return srv.Name != l.Name || srv.Description != l.Description || srv.Category != l.Category ||
+		srv.MaxMembers != l.MaxMembers || !slices.Equal(srv.Tags, l.Tags)
 }
 
 // GET /v1/servers — list all online servers (local + federated)

@@ -40,7 +40,11 @@
 
 services:
   server:
-    build: .
+    build:
+      context: .
+      args: # shown in the banner and to clients: CONCORD_VERSION=$(git describe --tags) docker compose build
+        VERSION: ${CONCORD_VERSION:-dev}
+        GIT_COMMIT: ${CONCORD_COMMIT:-unknown}
     image: concord
     command: ["concord-server"]
     ports:
@@ -50,7 +54,11 @@ services:
     restart: unless-stopped
 
   hub:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${CONCORD_VERSION:-dev}
+        GIT_COMMIT: ${CONCORD_COMMIT:-unknown}
     image: concord
     command: ["concord-hub"]
     ports:

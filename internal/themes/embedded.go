@@ -30,6 +30,7 @@ func GetTheme(name string) (*Theme, error) {
 		if data, err := os.ReadFile(userPath); err == nil {
 			var t Theme
 			if err := toml.Unmarshal(data, &t); err == nil {
+				t.MakeReadable()
 				return &t, nil
 			}
 		}
@@ -42,6 +43,7 @@ func GetTheme(name string) (*Theme, error) {
 		if err := toml.Unmarshal(data, &t); err != nil {
 			return nil, fmt.Errorf("failed to parse embedded theme %q: %w", name, err)
 		}
+		t.MakeReadable()
 		return &t, nil
 	}
 

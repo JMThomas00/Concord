@@ -18,6 +18,10 @@ import (
 
 const configPath = "grapevine-hub.toml"
 
+// Version is set at build time ("-X main.Version=0.1.4", as the release
+// workflow and the Dockerfile do); it's shown in the startup banner.
+var Version = "dev"
+
 func main() {
 	setup := flag.Bool("setup", false, "re-run the first-run setup wizard")
 	debug := flag.Bool("debug", false, "enable debug logging")
@@ -64,7 +68,7 @@ func main() {
 
 	// Clear screen for clean hub startup (plain mode only, like the server)
 	fmt.Print("\033[2J\033[H")
-	hub.PrintBanner()
+	hub.PrintBanner(Version)
 	h.PrintStartupInfo()
 
 	if err := h.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
