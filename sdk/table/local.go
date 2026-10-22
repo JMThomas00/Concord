@@ -51,6 +51,7 @@ type localModel struct {
 	// it replaces New game, and Esc while setting up a network game.
 	back    func()
 	pending tea.Cmd // to run when the table opens (hosting: opening the port)
+	sound   func(move string) // plays a move's sound (the arcade's speaker), if set
 
 	t        *Table
 	seat     *Seat
@@ -183,12 +184,19 @@ func (m *localModel) play(seat int, move string) error {
 		return err
 	}
 	t.Moves = append(t.Moves, move)
+	m.moveSound(move)
 	if m.net != nil && m.net.peer != nil {
 		if err := m.net.peer.send(netMsg{Type: "move", Move: move, Index: len(t.Moves) - 1}); err != nil {
 			m.notice = "Couldn't send the move: " + err.Error()
 		}
 	}
 	return nil
+}
+
+func (m *localModel) moveSound(move string) {
+	if m.sound != nil {
+		m.sound(move)
+	}
 }
 
 // computerTurn starts the computer thinking if it's its move.
@@ -372,6 +380,7 @@ func (m *localModel) remote(msg netMsg) tea.Cmd {
 			return nil
 		}
 		t.Moves = append(t.Moves, msg.Move)
+		m.moveSound(msg.Move)
 		var cmd tea.Cmd
 		m.board, cmd = m.board.Update(ChangedMsg{Move: msg.Move})
 		return cmd

@@ -1,12 +1,14 @@
 package table
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/JMThomas00/Concord/sdk/arcade"
 	"github.com/JMThomas00/Concord/sdk/pane"
 	"github.com/JMThomas00/Concord/sdk/wire"
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,6 +36,7 @@ func countArcade() Rules {
 	r.NewBoard = func(s *Seat) tea.Model { return &keyBoard{seat: s} }
 	r.AI = func(Game, int) string { return "1" }
 	r.Arcade = &Arcade{Title: "COUNT", Tagline: "TO TEN", HowTo: []string{"Add to ten."}, Sounds: true}
+	r.Sound = func(Game, string) string { return "sounds/move.wav" }
 	return r
 }
 
@@ -100,7 +103,7 @@ func TestStandaloneOpensOnTheFrontDoor(t *testing.T) {
 		t.Fatalf("the menu offers a channel's seats:\n%s", term.screen())
 	}
 	if strings.Contains(term.screen(), "SOUND") {
-		t.Fatalf("the menu offers sound, which a terminal can't play:\n%s", term.screen())
+		t.Fatalf("the menu offers sound with nothing to play it:\n%s", term.screen())
 	}
 }
 
@@ -210,4 +213,105 @@ func TestStandaloneSmallTerminal(t *testing.T) {
 		t.Fatal("q didn't leave the local menu")
 	}
 	term.showing("Enter to play")
+}
+
+// listen gives a standalone game a speaker that records what it plays
+// instead of playing it, with the game's client/ folder holding a move
+// sound and none of the arcade kit (so the kit's sounds are made).
+func (term *terminal) listen(move []byte) *[][]byte {
+	term.t.Helper()
+	client := filepath.Join(term.t.TempDir(), "client")
+	if err := os.MkdirAll(filepath.Join(client, "sounds"), 0o755); err != nil {
+		term.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(client, "sounds", "move.wav"), move, 0o644); err != nil {
+		term.t.Fatal(err)
+	}
+	var played [][]byte
+	sp := newSpeaker(term.dir)
+	sp.dirs = []string{client}
+	sp.out = func(file string, data []byte) error {
+		if soundNeedsFile {
+			if _, err := os.Stat(file); err != nil {
+				term.t.Errorf("a player that needs a file was given %q: %v", file, err)
+			}
+		}
+		played = append(played, data)
+		return nil
+	}
+	term.s.k.speaker = sp
+	return &played
+}
+
+func heard(played [][]byte, sound []byte) int {
+	n := 0
+	for _, p := range played {
+		if bytes.Equal(p, sound) {
+			n++
+		}
+	}
+	return n
+}
+
+// Standalone, the arcade's sounds and the game's play on this computer:
+// the kit's made here, the game's from its client/ folder, and none once
+// they're turned off in OPTIONS.
+func TestStandalonePlaysSounds(t *testing.T) {
+	term := newTerminal(t, 80, 24)
+	move := []byte("RIFF-the-move-sound")
+	played := term.listen(move)
+	kit := arcade.SoundKit()
+
+	term.key("enter")
+	if heard(*played, kit[arcade.SoundCoin]) != 1 {
+		t.Fatalf("PRESS ENTER didn't play the coin sound (%d sounds)", len(*played))
+	}
+	term.showing("SOUND ON")
+	term.key("enter") // 1 PLAYER VS CPU
+	vm := term.s.k.viewers[localID]
+	tbl := vm.table()
+	term.key("3")
+	term.until("the computer's move", func() bool { return len(tbl.Moves) == 2 })
+	if n := heard(*played, move); n != 2 {
+		t.Fatalf("heard the move sound %d times for two moves", n)
+	}
+
+	vm.goTo(screenOptions)
+	term.showing("SOUND")
+	term.key("enter") // SOUND OFF
+	if !term.s.k.record(localID).Muted {
+		t.Fatalf("Enter on SOUND didn't turn it off:\n%s", term.screen())
+	}
+	before := len(*played)
+	term.key("down")
+	vm.goTo(screenTable)
+	term.key("3")
+	if len(*played) != before {
+		t.Fatal("sounds played after they were turned off")
+	}
+}
+
+// Two players at one keyboard (the plain table) hear their moves too.
+func TestStandaloneTwoPlayersHearTheirMoves(t *testing.T) {
+	term := newTerminal(t, 80, 24)
+	move := []byte("RIFF-the-move-sound")
+	played := term.listen(move)
+	term.key("enter")
+	term.key("down")
+	term.key("enter") // 2 PLAYERS
+	term.key("1")
+	term.key("2")
+	if n := heard(*played, move); n != 2 {
+		t.Fatalf("heard the move sound %d times for two moves", n)
+	}
+}
+
+// A sound outside the client/ folder, or not a WAV, isn't played.
+func TestSpeakerStaysInTheClientFolder(t *testing.T) {
+	sp := newSpeaker(t.TempDir())
+	sp.dirs = []string{t.TempDir()}
+	sp.out = func(string, []byte) error { t.Fatal("played"); return nil }
+	for _, a := range []string{"../secret.wav", "/etc/x.wav", "sounds/blip.ogg", "sounds/nothing.wav"} {
+		sp.play(a)
+	}
 }

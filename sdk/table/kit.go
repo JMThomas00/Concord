@@ -111,10 +111,12 @@ type Kit struct {
 	// function on the program's event loop, as Conn.Post does in Concord,
 	// and dir is where games and records are kept. handOff opens the plain
 	// local table for games the arcade can't hold there (two people at one
-	// keyboard, a network game).
+	// keyboard, a network game). speaker plays the sounds, if this
+	// computer can.
 	local   func(func())
 	dir     string
 	handOff func(set func(p *localModel))
+	speaker *speaker
 }
 
 // New makes a Kit for a game.
@@ -577,7 +579,7 @@ func (k *Kit) requestMembers(channelID uuid.UUID, then func([]wire.PluginMember)
 
 // moveSound plays Rules.Sound's choice for everyone watching table t.
 func (k *Kit) moveSound(r *Room, t *Table, move string) {
-	if k.rules.Sound == nil || k.conn == nil {
+	if k.rules.Sound == nil || (k.conn == nil && k.speaker == nil) {
 		return
 	}
 	sound := k.rules.Sound(t.game, move)
@@ -586,7 +588,7 @@ func (k *Kit) moveSound(r *Room, t *Table, move string) {
 	}
 	for id := range k.viewers {
 		if k.watching(id, t.ID) && !(k.rules.Arcade != nil && k.record(id).Muted) {
-			_ = k.conn.PlaySound(r.ChannelID, id, sound, 1)
+			k.playSound(r.ChannelID, id, sound, 1)
 		}
 	}
 }

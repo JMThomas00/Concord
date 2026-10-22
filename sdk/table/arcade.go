@@ -297,13 +297,25 @@ func (k *Kit) uiSound(m *viewerModel, sound string) {
 	if !k.sounds() || k.record(m.v.ID).Muted {
 		return
 	}
-	_ = k.conn.PlaySound(m.channel, m.v.ID, sound, 0)
+	k.playSound(m.channel, m.v.ID, sound, 0)
+}
+
+// playSound plays sound to one viewer: through Concord, or standalone on
+// this computer's speaker.
+func (k *Kit) playSound(channel, viewer uuid.UUID, sound string, volume float64) {
+	switch {
+	case k.conn != nil:
+		_ = k.conn.PlaySound(channel, viewer, sound, volume)
+	case k.speaker != nil:
+		k.speaker.play(sound)
+	}
 }
 
 // sounds reports whether the arcade's sounds can play: the game ships them
-// and Concord is there to play them (a standalone game has no player).
+// and there's something to play them (Concord, or standalone a computer
+// that can).
 func (k *Kit) sounds() bool {
-	return k.rules.Arcade != nil && k.rules.Arcade.Sounds && k.conn != nil
+	return k.rules.Arcade != nil && k.rules.Arcade.Sounds && (k.conn != nil || k.speaker != nil)
 }
 
 // startTicker runs the animation clock until no viewer needs it. The

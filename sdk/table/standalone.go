@@ -73,6 +73,9 @@ func runStandalone(rules Rules, options map[string]string) error {
 		p.Send(postMsg(fn))
 	})
 	s.profile = colorprofile.Detect(os.Stdout, os.Environ())
+	if canPlaySounds() {
+		s.k.speaker = newSpeaker(s.k.dir)
+	}
 	p = tea.NewProgram(s, tea.WithAltScreen())
 	close(ready)
 	_, err := p.Run()
@@ -169,6 +172,15 @@ func (s *standalone) openPlain(set func(p *localModel)) {
 	p := newLocal(s.k.rules, s.options)
 	p.me = s.name
 	p.back = func() { s.plain = nil }
+	p.sound = func(move string) {
+		k := s.k
+		if k.speaker == nil || k.rules.Sound == nil || k.record(s.viewer).Muted {
+			return
+		}
+		if sound := k.rules.Sound(p.t.game, move); sound != "" {
+			k.speaker.play(sound)
+		}
+	}
 	p.width, p.height = s.width, s.height
 	set(p)
 	s.plain, s.next, p.pending = p, p.pending, nil

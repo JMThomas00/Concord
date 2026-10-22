@@ -12,7 +12,8 @@ computer opponent off the event loop,
 and standalone play in a terminal (hotseat, computer, and network play). A
 game with an `Arcade` gets the same front door standalone: the arcade table
 against the computer, records and unlockables kept in the user's config
-folder, and 2 PLAYERS / NETWORK GAME on the menu.
+folder, 2 PLAYERS / NETWORK GAME on the menu, and its sounds (from the
+`client/` folder beside the program, as the release zip unpacks it).
 
 Start from `concord-plugin new <name> --template game`, then replace its
 stone-pile game. The template is one `main.go`; split it into the layout below
