@@ -78,6 +78,19 @@ type RegisterResponse struct {
 type HeartbeatRequest struct {
 	MemberCount int `json:"member_count"`
 	OnlineCount int `json:"online_count"`
+	// Listing is the server's current name, description, category, tags and
+	// member limit, so a change made in its config reaches the hub without
+	// registering again. Servers before v0.1.4 don't send it.
+	Listing *ListingUpdate `json:"listing,omitempty"`
+}
+
+// ListingUpdate is what a heartbeat can change about a server's listing.
+type ListingUpdate struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Category    string   `json:"category"`
+	Tags        []string `json:"tags"`
+	MaxMembers  int      `json:"max_members"`
 }
 
 // JoinResponse is returned to a client that requests a join token for a listed server.

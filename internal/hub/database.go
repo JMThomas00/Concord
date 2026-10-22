@@ -188,6 +188,18 @@ func (db *HubDB) UpdateHeartbeat(id string, memberCount, onlineCount int) error 
 	return err
 }
 
+// UpdateListing changes what a server's listing says about it.
+func (db *HubDB) UpdateListing(id string, l ListingUpdate) error {
+	tags, _ := json.Marshal(l.Tags)
+	_, err := db.Exec(`
+		UPDATE registered_servers
+		SET name=?, description=?, category=?, tags=?, max_members=?, updated_at=?
+		WHERE id=?`,
+		l.Name, l.Description, l.Category, string(tags), l.MaxMembers, time.Now().UTC(), id,
+	)
+	return err
+}
+
 func (db *HubDB) MarkOfflineIfStale(cutoff time.Time) error {
 	// All stored timestamps are UTC; normalize the cutoff or SQLite's string
 	// comparison silently breaks across timezones.
