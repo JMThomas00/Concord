@@ -362,7 +362,9 @@ func TestThePickerKeepsItsBackground(t *testing.T) {
 	for _, reset := range []string{ansiResetSeq, ansiResetSeqShort} {
 		for i := strings.Index(box, reset); i >= 0; {
 			resets++
-			if !strings.HasPrefix(box[i+len(reset):], bg) {
+			after := box[i+len(reset):]
+			// (A line's last reset is the box's right edge: nothing after it.)
+			if after != "" && after[0] != '\n' && !strings.HasPrefix(after, bg) {
 				t.Fatalf("a reset isn't followed by the background: %q", box[i:min(len(box), i+40)])
 			}
 			next := strings.Index(box[i+len(reset):], reset)
@@ -410,13 +412,10 @@ func TestTheHelpFinderKeepsItsBackground(t *testing.T) {
 		if i < 0 {
 			continue
 		}
-		line = line[i:]
+		line = line[i:strings.LastIndexAny(line, "│╮╯")] // inside the box
 		for _, reset := range []string{ansiResetSeq, ansiResetSeqShort} {
 			parts := strings.Split(line, reset)
-			if len(parts) < 3 {
-				continue
-			}
-			for _, p := range parts[1 : len(parts)-1] { // the last is after the box's right edge
+			for _, p := range parts[1:] {
 				n++
 				if !strings.HasPrefix(p, bg) {
 					t.Fatalf("a reset isn't followed by the background: %q", p[:min(len(p), 40)])
@@ -426,5 +425,39 @@ func TestTheHelpFinderKeepsItsBackground(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatal("no resets found: the check didn't check anything")
+	}
+}
+
+// The background put back after each reset ran on past the boxes' right
+// edges, painting a block beside the Help finder. It stops at the edge,
+// and long rows (/attach's) stay on one line.
+func TestBoxBackgroundsStopAtTheirEdge(t *testing.T) {
+	a := newEmojiTestApp(t)
+	bg := ansiOpenCode(lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Background)))
+	if bg == "" {
+		t.Skip("no colour in this test environment")
+	}
+	a.openHelpFinder("")
+	help := a.renderHelpFinderOverlay("")
+	a.helpFinderState = nil
+	pickerKeys(a, "ctrl+e")
+	for name, out := range map[string]string{"help finder": help, "emoji picker": a.emojiPickerBox()} {
+		for i, line := range strings.Split(out, "\n") {
+			edge := strings.LastIndexAny(line, "│╮╯")
+			if edge < 0 {
+				continue
+			}
+			if strings.Contains(line[edge:], bg) {
+				t.Fatalf("%s line %d: the background goes on past the right edge: %q", name, i, line[edge:])
+			}
+		}
+	}
+	for _, line := range strings.Split(ansi.Strip(help), "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " │"), "download it)") {
+			t.Fatalf("/attach's description wrapped:\n%s", ansi.Strip(help))
+		}
+	}
+	if !strings.Contains(ansi.Strip(help), "/attach") {
+		t.Fatal("the test expects /attach in the list")
 	}
 }

@@ -282,7 +282,30 @@ func (a *App) emojiPickerBox() string {
 		Width(width).Padding(0, 1).Render(body)
 	// Every coloured span ends in a reset that also drops the box's
 	// background, leaving gaps of the terminal's own; put it back.
-	return reassertBackgroundAfterResets(box, a.theme.Colors.Background)
+	return fillBoxBackground(box, a.theme.Colors.Background)
+}
+
+// fillBoxBackground is reassertBackgroundAfterResets for a box drawn over
+// the screen: inside it, every reset is followed by the box's background
+// again (each coloured span's reset dropped it, leaving gaps), but not the
+// reset that ends a line, or the background would run on past the box's
+// right edge into whatever's beside it.
+func fillBoxBackground(box, bg string) string {
+	open := ansiOpenCode(lipgloss.NewStyle().Background(lipgloss.Color(bg)))
+	if open == "" {
+		return box
+	}
+	lines := strings.Split(box, "\n")
+	for i, l := range lines {
+		l = reassertBackgroundAfterResets(l, bg)
+		for _, reset := range []string{ansiResetSeq, ansiResetSeqShort} {
+			if strings.HasSuffix(l, reset+open) {
+				l = strings.TrimSuffix(l, open)
+			}
+		}
+		lines[i] = l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // overlayPinned is overlayCenter for a box with emoji in it. Terminals
