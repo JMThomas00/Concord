@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,6 +10,10 @@ import (
 
 // Model represents the dashboard TUI state
 type Model struct {
+	// Version is the server's build version for the header ("0.1.4"); empty
+	// or "dev" shows none.
+	Version string
+
 	// UI components
 	systemStats  *SystemStatsView
 	clientList   *ClientListView
@@ -132,7 +137,11 @@ func (m Model) renderHeader() string {
 		Width(m.width).
 		Align(lipgloss.Center)
 
-	return headerStyle.Render("CONCORD SERVER DASHBOARD v0.1.0")
+	title := "CONCORD SERVER DASHBOARD"
+	if v := strings.TrimPrefix(m.Version, "v"); v != "" && v != "dev" {
+		title += " v" + v
+	}
+	return headerStyle.Render(title)
 }
 
 // renderFooter renders the dashboard footer with keyboard hints

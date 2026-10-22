@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -17,18 +18,28 @@ const banner = `
    ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝           
    🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇         
    
-   Concord Server v0.1.0
+   {{name}}
    Terminal Chat Reimagined
 
 `
 
+// BannerName is the program's name and version for its banner: "Concord
+// Server v0.1.4", or "(development build)" when it wasn't built for a
+// release (go run, or a Docker build without VERSION).
+func BannerName(name, version string) string {
+	if version = strings.TrimPrefix(strings.TrimSpace(version), "v"); version == "" || version == "dev" {
+		return name + " (development build)"
+	}
+	return name + " v" + version
+}
+
 // PrintBanner displays the beautiful ASCII art banner
-func PrintBanner() {
+func PrintBanner(version string) {
 	style := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#BD93F9")). // Purple
 		Bold(true)
 
-	fmt.Println(style.Render(banner))
+	fmt.Println(style.Render(strings.Replace(banner, "{{name}}", BannerName("Concord Server", version), 1)))
 }
 
 // PrintStartupInfo displays colorful startup information

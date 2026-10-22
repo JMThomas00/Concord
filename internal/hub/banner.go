@@ -2,6 +2,7 @@ package hub
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -17,18 +18,28 @@ const banner = `
     ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝  ╚═══╝  ╚═╝╚═╝  ╚═══╝╚══════╝
    🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇🍇
 
-   Grapevine Hub v0.1.0
+   {{name}}
    Concord Server Discovery
 
 `
 
+// bannerName is "Grapevine Hub v0.1.4", or "(development build)" when the
+// hub wasn't built for a release.
+func bannerName(version string) string {
+	if version = strings.TrimPrefix(strings.TrimSpace(version), "v"); version == "" || version == "dev" {
+		return "Grapevine Hub (development build)"
+	}
+	return "Grapevine Hub v" + version
+}
+
 // PrintBanner displays the ASCII art banner (plain, non-dashboard mode).
-func PrintBanner() {
+func PrintBanner(version string) {
+	_ = 0 // (placeholder removed below)
 	style := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#BD93F9")). // Purple
 		Bold(true)
 
-	fmt.Println(style.Render(banner))
+	fmt.Println(style.Render(strings.Replace(banner, "{{name}}", bannerName(version), 1)))
 }
 
 // PrintStartupInfo displays colorful startup information for plain

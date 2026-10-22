@@ -6,9 +6,9 @@ import (
 	"os"
 
 	charmlog "github.com/charmbracelet/log"
-	"github.com/pelletier/go-toml/v2"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/server"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Version/GitCommit/BuildTime are populated at build time via the
@@ -155,7 +155,7 @@ func main() {
 
 	// Print beautiful startup banner and information (only in normal mode)
 	if !*hybridMode && !*dashboardOnlyMode {
-		server.PrintBanner()
+		server.PrintBanner(Version)
 	}
 
 	// Handle --admin-email: open DB, grant role, close, then start normally
