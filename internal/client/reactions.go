@@ -178,33 +178,33 @@ func applyReaction(list []models.Reaction, emoji string, user uuid.UUID, add boo
 	return list
 }
 
-// formatReactionLines draws a message's reactions as chips, wrapped to
-// width, under it on its side (right for your own messages).
+// formatReactionLines draws a message's reactions under its text, on its
+// side (right for your own messages), wrapped to width: each emoji and its
+// count, the count bold in the accent colour where one of them is yours.
+// No trailing newline: the caller starts it on a line of its own.
 func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign bool) string {
 	if len(m.Reactions) == 0 {
 		return ""
 	}
-	mine := lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Semantic.SidebarSelected)).
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).Bold(true)
-	other := lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.CurrentLine)).
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground))
+	mine := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
+	other := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	room := max(10, width-2*messageGutterWidth)
 	var rows []string
 	row := ""
 	for _, r := range m.Reactions {
-		style := other
+		count := other
 		if a.myReaction(m, r.Emoji) {
-			style = mine
+			count = mine
 		}
-		chip := style.Render(" " + r.Emoji + " " + strconv.Itoa(r.Count) + " ")
+		chip := r.Emoji + " " + count.Render(strconv.Itoa(r.Count))
 		switch {
 		case row == "":
 			row = chip
-		case ansi.StringWidth(row)+1+ansi.StringWidth(chip) > room:
+		case ansi.StringWidth(row)+2+ansi.StringWidth(chip) > room:
 			rows = append(rows, row)
 			row = chip
 		default:
-			row += " " + chip
+			row += "  " + chip
 		}
 	}
 	rows = append(rows, row)
@@ -214,7 +214,7 @@ func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign bool)
 	} else {
 		style = style.PaddingLeft(messageGutterWidth)
 	}
-	return style.Render(strings.Join(rows, "\n")) + "\n"
+	return style.Render(strings.Join(rows, "\n"))
 }
 
 // whoReacted says who reacted to m with what: "👍 alice, bob · 🍇 carol".

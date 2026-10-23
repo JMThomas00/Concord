@@ -5396,12 +5396,16 @@ func (a *App) updateChatContent() {
 
 		// Peer-to-peer attachment manifest (if any). The server never has the
 		// file's bytes -- this just tells the reader who to request it from.
+		// Each on a line of its own: the message's text doesn't end in a
+		// newline (the spacing below adds it), so whatever came straight
+		// after it was glued onto its last line, which then wrapped (or was
+		// cut off inside a thread's box).
 		for _, att := range msg.Attachments {
-			attLine := formatAttachmentLine(att, w, msg.IsOwn, a.theme)
-			content.WriteString(attLine)
-			content.WriteString("\n")
+			content.WriteString("\n" + formatAttachmentLine(att, w, msg.IsOwn, a.theme))
 		}
-		content.WriteString(a.formatReactionLines(msg, w, msg.IsOwn)) // reactions.go
+		if chips := a.formatReactionLines(msg, w, msg.IsOwn); chips != "" { // reactions.go
+			content.WriteString("\n" + chips)
+		}
 
 		// Spacing between messages based on density setting
 		density := ""

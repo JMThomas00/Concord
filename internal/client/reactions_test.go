@@ -154,3 +154,75 @@ func TestReactingOnAnOlderServer(t *testing.T) {
 }
 
 func altM() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true} }
+
+// screenRows draws the app's frame on the model terminal and returns each
+// row as text.
+func screenRows(a *App) []string {
+	var out []string
+	for _, row := range screenOf(a.View(), a.width, ansi.StringWidth) {
+		out = append(out, strings.Join(row, ""))
+	}
+	return out
+}
+
+// rowWith finds the row holding text, and where text starts and ends on it.
+func rowWith(t *testing.T, rows []string, text string) (y, start, end int) {
+	t.Helper()
+	for y, r := range rows {
+		if i := strings.Index(r, text); i >= 0 {
+			return y, ansi.StringWidth(r[:i]), ansi.StringWidth(r[:i]) + ansi.StringWidth(text)
+		}
+	}
+	t.Fatalf("%q isn't on screen", text)
+	return
+}
+
+// The chips were written straight after the message's text, which has no
+// newline of its own: glued onto its last line, they wrapped to the far
+// left of the chat (or, in a thread's box, were cut off). They sit on the
+// line under the text, on its side: ending where your own message's text
+// ends, starting where someone else's starts.
+func TestReactionsSitUnderTheirMessage(t *testing.T) {
+	a, _, me := reactionTestApp(t)
+	msgs := a.activeConn.Messages[a.currentChannel.ID]
+	mine, theirs := msgs[2], msgs[1]
+	mine.IsOwn, mine.AuthorID = true, me.ID
+	mine.Reactions = []models.Reaction{{Emoji: "👋", Count: 1, UserIDs: []uuid.UUID{me.ID}}, {Emoji: "😁", Count: 2, UserIDs: []uuid.UUID{uuid.New(), uuid.New()}}}
+	theirs.Content = "a message from someone else"
+	theirs.Reactions = []models.Reaction{{Emoji: "🍇", Count: 3, UserIDs: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}}}
+	a.updateChatContent()
+	rows := screenRows(a)
+
+	ty, _, tEnd := rowWith(t, rows, "plain text for comparison")
+	cy, _, cEnd := rowWith(t, rows, "😁 2")
+	if cy != ty+1 || cEnd != tEnd {
+		t.Fatalf("your message's chips: row %d ending at %d; its text: row %d ending at %d", cy, cEnd, ty, tEnd)
+	}
+	ty, tStart, _ := rowWith(t, rows, "a message from someone else")
+	cy, cStart, _ := rowWith(t, rows, "🍇 3")
+	if cy != ty+1 || cStart != tStart {
+		t.Fatalf("their message's chips: row %d starting at %d; its text: row %d starting at %d", cy, cStart, ty, tStart)
+	}
+}
+
+// A thread reply's reactions show inside the thread's box.
+func TestReactionsOnAThreadReply(t *testing.T) {
+	a, _, _ := reactionTestApp(t)
+	root := a.activeConn.Messages[a.currentChannel.ID][2]
+	reply := &MessageDisplay{
+		Message:    &models.Message{ID: uuid.New(), ChannelID: root.ChannelID, AuthorID: uuid.New(), Content: "a reply in the thread", ThreadID: &root.ID, CreatedAt: root.CreatedAt},
+		AuthorName: "grape", ShowHeader: true,
+	}
+	reply.Reactions = []models.Reaction{{Emoji: "🐻", Count: 1, UserIDs: []uuid.UUID{uuid.New()}}}
+	ts := a.activeConn.thread(root.ID)
+	ts.replies, ts.loaded = []*MessageDisplay{reply}, true
+	ts.summary.ReplyCount = 1
+	a.expandedThreads = map[uuid.UUID]bool{root.ID: true}
+	a.updateChatContent()
+	rows := screenRows(a)
+	ry, _, _ := rowWith(t, rows, "a reply in the thread")
+	cy, _, _ := rowWith(t, rows, "🐻 1")
+	if cy != ry+1 {
+		t.Fatalf("the reply's chips are on row %d, its text on %d", cy, ry)
+	}
+}
