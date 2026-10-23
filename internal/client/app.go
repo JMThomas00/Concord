@@ -444,6 +444,8 @@ type App struct {
 	selectedMemberIndex int                // Index in flattened member list
 	memberContextMenu   *MemberContextMenu // Context menu state (nil when closed)
 	emojiPicker         *emojiPickerState  // Ctrl+E (emoji_picker.go); nil when closed
+	reactionZones       []reactionZone     // the chat's reaction chips, for the mouse (reactions.go)
+	hoverChip           *reactionZone      // the chip under the mouse: who reacted shows above it
 
 	// Hub Browser overlay
 	showHubBrowser bool
@@ -1630,6 +1632,14 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// coming back to the window doesn't flash black.
 		cmds = append(cmds, repaintAll)
 
+	case reactionHoverMsg: // onto or off a reaction chip (reactions.go)
+		a.hoverChip = nil
+		if msg.zone != nil {
+			z := *msg.zone
+			a.hoverChip = &z
+		}
+		return a, nil
+
 	case tea.MouseMsg:
 		// Click/focus/selection dispatch lives in mouse.go, mirroring
 		// handleKeyPress's own overlay-first-then-view layering.
@@ -2133,7 +2143,7 @@ func (a *App) View() string {
 	}
 	// Pinned so emoji can't push lines out of place (emoji_width.go):
 	// after the effects, which work in columns, before images go on top.
-	out := pinScreen(a.applyFx(a.view0()))
+	out := pinScreen(a.applyFx(a.withReactionTooltip(a.view0())))
 	if a.photoGrapes() {
 		out = a.placePhoto(out) // after the effects, which would drop its escape codes
 	}
@@ -5056,6 +5066,7 @@ func (a *App) addMessage(msg *models.Message, author *models.User) {
 // updateChatContent rebuilds the chat viewport content from active connection
 func (a *App) updateChatContent() {
 	var content strings.Builder
+	a.reactionZones = a.reactionZones[:0] // drawn again below
 
 	if a.activeConn == nil || a.currentChannel == nil {
 		a.chatViewport.SetContent("")
@@ -5403,7 +5414,7 @@ func (a *App) updateChatContent() {
 		for _, att := range msg.Attachments {
 			content.WriteString("\n" + formatAttachmentLine(att, w, msg.IsOwn, a.theme))
 		}
-		if chips := a.formatReactionLines(msg, w, msg.IsOwn); chips != "" { // reactions.go
+		if chips := a.formatReactionLines(msg, w, msg.IsOwn, isSelected || isInLevel2); chips != "" { // reactions.go
 			content.WriteString("\n" + chips)
 		}
 

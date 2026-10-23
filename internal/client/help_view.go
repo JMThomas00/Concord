@@ -63,7 +63,7 @@ Pick a message with **↑**/**↓**, then:
 
 - **R** reply, **T** reply in its thread, **E** edit, **D** delete
 - **C** copy, **L** its links, **A** copy a shared file's ID
-- **+** react with an emoji (the picker, showing who reacted with what); pick one that's yours to take it off
+- **+** react with an emoji (the picker, showing who reacted with what); pick one that's yours to take it off. A selected message lists who reacted; with the mouse, hover a reaction to see who, and click it to add the same one (or take yours off)
 - **Enter** — expand or minimise a thread; on other messages, select text inside it
 - **Esc** — leave
 

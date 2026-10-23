@@ -60,6 +60,11 @@ func (a *App) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 // just re-pointed at the "chat-panel" zone instead of the old hand-derived
 // isCursorOverChatViewport).
 func (a *App) handleMainViewMouse(msg tea.MouseMsg) tea.Cmd {
+	// A reaction chip: react with its emoji, or take yours off (reactions.go).
+	if a.clickReaction(msg) {
+		return nil
+	}
+
 	// A voice member's slider: click or drag along it to set their volume
 	// (voice_level.go). Other styles' volume badge is just a label to click
 	// through to the member's menu.

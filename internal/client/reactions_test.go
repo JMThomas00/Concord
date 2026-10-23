@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 
@@ -194,12 +195,12 @@ func TestReactionsSitUnderTheirMessage(t *testing.T) {
 	rows := screenRows(a)
 
 	ty, _, tEnd := rowWith(t, rows, "plain text for comparison")
-	cy, _, cEnd := rowWith(t, rows, "😁 2")
+	cy, _, cEnd := rowWith(t, rows, "😁 2 ╯")
 	if cy != ty+1 || cEnd != tEnd {
 		t.Fatalf("your message's chips: row %d ending at %d; its text: row %d ending at %d", cy, cEnd, ty, tEnd)
 	}
 	ty, tStart, _ := rowWith(t, rows, "a message from someone else")
-	cy, cStart, _ := rowWith(t, rows, "🍇 3")
+	cy, cStart, _ := rowWith(t, rows, "╰ 🍇 3")
 	if cy != ty+1 || cStart != tStart {
 		t.Fatalf("their message's chips: row %d starting at %d; its text: row %d starting at %d", cy, cStart, ty, tStart)
 	}
@@ -221,8 +222,89 @@ func TestReactionsOnAThreadReply(t *testing.T) {
 	a.updateChatContent()
 	rows := screenRows(a)
 	ry, _, _ := rowWith(t, rows, "a reply in the thread")
-	cy, _, _ := rowWith(t, rows, "🐻 1")
+	cy, _, _ := rowWith(t, rows, "╰ 🐻 1")
 	if cy != ry+1 {
 		t.Fatalf("the reply's chips are on row %d, its text on %d", cy, ry)
+	}
+}
+
+// withReactions gives the newest message (someone else's) two reactions,
+// one of them yours, and returns it.
+func withReactions(t *testing.T, a *App, me *models.User) *MessageDisplay {
+	t.Helper()
+	msgs := a.activeConn.Messages[a.currentChannel.ID]
+	m := msgs[len(msgs)-1]
+	alice, bob := uuid.New(), uuid.New()
+	a.activeConn.Members = []*MemberDisplay{
+		{User: &models.User{ID: alice, Username: "alice"}}, {User: &models.User{ID: bob, Username: "bob"}},
+	}
+	m.Reactions = []models.Reaction{
+		{Emoji: "🍇", Count: 2, UserIDs: []uuid.UUID{alice, bob}},
+		{Emoji: "👍", Count: 2, UserIDs: []uuid.UUID{me.ID, alice}},
+	}
+	a.updateChatContent()
+	return m
+}
+
+// A selected message (Alt+M) lists who reacted under its chips, and its
+// highlight covers them.
+func TestASelectedMessageSaysWhoReacted(t *testing.T) {
+	a, _, me := reactionTestApp(t)
+	withReactions(t, a, me)
+	if strings.Contains(ansi.Strip(a.View()), "alice, bob") {
+		t.Fatal("names show without the message selected")
+	}
+	a.Update(altM())
+	a.updateChatContent()
+	view := a.View()
+	if !strings.Contains(ansi.Strip(view), "🍇 alice, bob · 👍 you, alice") {
+		t.Fatalf("the selected message doesn't say who reacted:\n%s", ansi.Strip(view))
+	}
+	sel := ansiOpenCode(lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Selection)))
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(ansi.Strip(l), "╰ 🍇 2") && sel != "" && !strings.Contains(l, sel) {
+			t.Fatal("the chips line isn't highlighted with its selected message")
+		}
+	}
+}
+
+// Clicking a chip reacts with its emoji, or takes yours off.
+func TestClickingAReactionChip(t *testing.T) {
+	a, sent, me := reactionTestApp(t)
+	withReactions(t, a, me)
+	a.View()
+	click := func(text string) {
+		y, x, _ := rowWith(t, screenRows(a), text)
+		a.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	}
+	click("🍇 2")
+	if r := nextReaction(t, sent); r.Emoji != "🍇" || r.Remove {
+		t.Fatalf("clicking 🍇 (not yours): %+v", r)
+	}
+	click("👍 2")
+	if r := nextReaction(t, sent); r.Emoji != "👍" || !r.Remove {
+		t.Fatalf("clicking 👍 (yours): %+v", r)
+	}
+}
+
+// Hovering over a chip shows who reacted with it; moving off hides it.
+func TestHoveringAReactionChip(t *testing.T) {
+	a, _, me := reactionTestApp(t)
+	withReactions(t, a, me)
+	a.View()
+	filter := InputFilter()
+	move := func(x, y int) {
+		if m := filter(a, tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone}); m != nil {
+			a.Update(m)
+		}
+	}
+	y, x, _ := rowWith(t, screenRows(a), "🍇 2")
+	move(x+1, y)
+	if !strings.Contains(ansi.Strip(a.View()), "🍇 alice, bob") {
+		t.Fatalf("hovering 🍇 doesn't say who:\n%s", ansi.Strip(a.View()))
+	}
+	move(1, 1)
+	if strings.Contains(ansi.Strip(a.View()), "alice, bob") {
+		t.Fatal("the names stayed after the mouse moved off")
 	}
 }

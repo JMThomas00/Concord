@@ -2,13 +2,16 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
+	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
@@ -179,16 +182,20 @@ func applyReaction(list []models.Reaction, emoji string, user uuid.UUID, add boo
 }
 
 // formatReactionLines draws a message's reactions under its text, on its
-// side (right for your own messages), wrapped to width: each emoji and its
-// count, the count bold in the accent colour where one of them is yours.
+// side, joined to it by a corner (╰ under someone else's, ╯ under yours),
+// wrapped to width: each emoji and its count, the count bold in the accent
+// colour where one of them is yours. Each chip is a click zone (to react
+// with the same emoji, or take yours off; hovering shows who). A selected
+// message (Alt+M) shares its highlight with them and lists who reacted.
 // No trailing newline: the caller starts it on a line of its own.
-func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign bool) string {
+func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign, selected bool) string {
 	if len(m.Reactions) == 0 {
 		return ""
 	}
 	mine := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
 	other := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	room := max(10, width-2*messageGutterWidth)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	room := max(10, width-2*messageGutterWidth-2) // (the corner)
 	var rows []string
 	row := ""
 	for _, r := range m.Reactions {
@@ -196,7 +203,9 @@ func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign bool)
 		if a.myReaction(m, r.Emoji) {
 			count = mine
 		}
-		chip := r.Emoji + " " + count.Render(strconv.Itoa(r.Count))
+		id := fmt.Sprintf("react:%s:%d", m.ID, len(a.reactionZones))
+		a.reactionZones = append(a.reactionZones, reactionZone{id: id, msg: m, emoji: r.Emoji})
+		chip := zone.Mark(id, r.Emoji+" "+count.Render(strconv.Itoa(r.Count)))
 		switch {
 		case row == "":
 			row = chip
@@ -208,13 +217,136 @@ func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign bool)
 		}
 	}
 	rows = append(rows, row)
+	for i := range rows {
+		switch {
+		case i == 0 && rightAlign:
+			rows[i] += dim.Render(" ╯")
+		case i == 0:
+			rows[i] = dim.Render("╰ ") + rows[i]
+		case rightAlign:
+			rows[i] += "  "
+		default:
+			rows[i] = "  " + rows[i]
+		}
+	}
+	if selected { // who, for the keyboard: hovering does it for the mouse
+		rows = append(rows, dim.Render(ansi.Truncate(a.whoReacted(m), room, "…")))
+	}
 	style := lipgloss.NewStyle().Width(width)
 	if rightAlign {
 		style = style.Align(lipgloss.Right).PaddingRight(messageGutterWidth)
 	} else {
 		style = style.PaddingLeft(messageGutterWidth)
 	}
-	return style.Render(strings.Join(rows, "\n"))
+	out := strings.Join(rows, "\n")
+	if selected {
+		style = style.Background(lipgloss.Color(a.theme.Colors.Selection))
+		out = reassertBackgroundAfterResets(out, a.theme.Colors.Selection)
+	}
+	return style.Render(out)
+}
+
+// reactionZone is one reaction chip on screen, for the mouse.
+type reactionZone struct {
+	id    string
+	msg   *MessageDisplay
+	emoji string
+}
+
+// reactionHoverMsg says the mouse moved onto (or off, at nil) a chip.
+type reactionHoverMsg struct{ zone *reactionZone }
+
+// reactionChipAt is the chip under the mouse, if any.
+func (a *App) reactionChipAt(x, y int) *reactionZone {
+	for i := range a.reactionZones {
+		if z := zone.Get(a.reactionZones[i].id); z != nil && !z.IsZero() &&
+			x >= z.StartX && x <= z.EndX && y >= z.StartY && y <= z.EndY {
+			return &a.reactionZones[i]
+		}
+	}
+	return nil
+}
+
+// reactionHover is MouseHoverFilter's part: a move onto or off a chip
+// becomes a reactionHoverMsg (to show or hide who reacted); any other move
+// is nothing, as before.
+func (a *App) reactionHover(m tea.MouseMsg) tea.Msg {
+	if a.view != ViewMain || a.emojiPicker != nil {
+		return nil
+	}
+	z := a.reactionChipAt(m.X, m.Y)
+	var was string
+	if a.hoverChip != nil {
+		was = a.hoverChip.id
+	}
+	var now string
+	if z != nil {
+		now = z.id
+	}
+	if now == was {
+		return nil
+	}
+	return reactionHoverMsg{zone: z}
+}
+
+// clickReaction reacts with a clicked chip's emoji, or takes yours off.
+func (a *App) clickReaction(msg tea.MouseMsg) bool {
+	if msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress {
+		return false
+	}
+	z := a.reactionChipAt(msg.X, msg.Y)
+	if z == nil {
+		return false
+	}
+	if !takesReactions(a.activeConn) {
+		a.statusMessage = "This server doesn't take reactions yet: it needs Concord v" + reactionsVersion + " or later"
+		return true
+	}
+	a.sendReaction(z.msg, z.emoji)
+	return true
+}
+
+// withReactionTooltip puts who reacted with the hovered chip's emoji on the
+// line above it (below, at the top of the screen).
+func (a *App) withReactionTooltip(frame string) string {
+	h := a.hoverChip
+	if h == nil || a.view != ViewMain {
+		return frame
+	}
+	z := zone.Get(h.id)
+	if z == nil || z.IsZero() {
+		return frame
+	}
+	var names []string
+	for _, r := range h.msg.Reactions {
+		if r.Emoji == h.emoji {
+			for _, id := range r.UserIDs {
+				names = append(names, a.memberName(id))
+			}
+		}
+	}
+	if len(names) == 0 {
+		return frame
+	}
+	tip := lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Selection)).
+		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Render(ansi.Truncate(" "+h.emoji+" "+strings.Join(names, ", ")+" ", max(10, a.width-2), "…"))
+	lines := strings.Split(frame, "\n")
+	y := z.StartY - 1
+	if y < 0 {
+		y = z.EndY + 1
+	}
+	if y >= len(lines) {
+		return frame
+	}
+	w := lipgloss.Width(tip)
+	x := min(max(0, z.StartX), max(0, a.width-w))
+	line := lines[y]
+	if lw := lipgloss.Width(line); lw < x+w {
+		line += strings.Repeat(" ", x+w-lw)
+	}
+	lines[y] = visualTake(line, x) + tip + visualSkip(line, x+w)
+	return strings.Join(lines, "\n")
 }
 
 // whoReacted says who reacted to m with what: "👍 alice, bob · 🍇 carol".
