@@ -396,43 +396,6 @@ func overlayPinned(bg, fg string, termW, termH int) string {
 	return strings.Join(bgLines, "\n")
 }
 
-// cha moves the cursor to column col (0-based).
-func cha(col int) string { return fmt.Sprintf("\x1b[%dG", col+1) }
-
-// pinWide adds a cha after every wide or joined character in s, a line
-// starting at column start: escape sequences pass through as they are.
-func pinWide(s string, start int) string {
-	var b strings.Builder
-	col := start
-	for s != "" {
-		if s[0] == 0x1b { // an escape sequence: copy it whole
-			n := 1
-			if len(s) > 1 && s[1] == '[' {
-				n = 2
-				for n < len(s) && (s[n] < 0x40 || s[n] > 0x7e) {
-					n++
-				}
-				n = min(n+1, len(s))
-			}
-			b.WriteString(s[:n])
-			s = s[n:]
-			continue
-		}
-		cluster, rest, w, _ := uniseg.FirstGraphemeClusterInString(s, -1)
-		if w > 1 || utf8.RuneCountInString(cluster) > 1 {
-			// Paint the emoji's cells first (in the current colours), so a
-			// terminal that draws it narrower leaves no unpainted gap, then
-			// draw it over them and carry on from where we measured.
-			b.WriteString(strings.Repeat(" ", w) + cha(col) + cluster + cha(col+w))
-		} else {
-			b.WriteString(cluster)
-		}
-		col += w
-		s = rest
-	}
-	return b.String()
-}
-
 // shortcodeBeforeCursor matches a :shortcode: just typed, at the start of
 // the line or after a space ("see you :wave:", not "12:30:" or a URL).
 var shortcodeBeforeCursor = regexp.MustCompile(`(?:^|\s):([a-z0-9_+\-]+):$`)

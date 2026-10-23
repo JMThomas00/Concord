@@ -2131,7 +2131,9 @@ func (a *App) View() string {
 	if a.connecting != nil && a.view == ViewMain {
 		return a.renderConnecting(time.Now())
 	}
-	out := a.applyFx(a.view0())
+	// Pinned so emoji can't push lines out of place (emoji_width.go):
+	// after the effects, which work in columns, before images go on top.
+	out := pinScreen(a.applyFx(a.view0()))
 	if a.photoGrapes() {
 		out = a.placePhoto(out) // after the effects, which would drop its escape codes
 	}
