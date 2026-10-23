@@ -332,7 +332,7 @@ func getPermissionList() []permissionItem {
 		{Name: "Create Threads", Bit: models.PermissionCreateThreads, Category: "Text Channels", NotYet: true},
 		{Name: "Embed Links", Bit: models.PermissionEmbedLinks, Category: "Text Channels", NotYet: true},
 		{Name: "Attach Files", Bit: models.PermissionAttachFiles, Category: "Text Channels"},
-		{Name: "Add Reactions", Bit: models.PermissionAddReactions, Category: "Text Channels", NotYet: true},
+		{Name: "Add Reactions", Bit: models.PermissionAddReactions, Category: "Text Channels"},
 		{Name: "Use External Emoji", Bit: models.PermissionUseExternalEmoji, Category: "Text Channels", NotYet: true},
 		{Name: "Mention Everyone", Bit: models.PermissionMentionEveryone, Category: "Text Channels"},
 		{Name: "Manage Messages", Bit: models.PermissionManageMessages, Category: "Text Channels"},

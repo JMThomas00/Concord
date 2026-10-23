@@ -444,6 +444,8 @@ type App struct {
 	selectedMemberIndex int                // Index in flattened member list
 	memberContextMenu   *MemberContextMenu // Context menu state (nil when closed)
 	emojiPicker         *emojiPickerState  // Ctrl+E (emoji_picker.go); nil when closed
+	reactionZones       []reactionZone     // the chat's reaction chips, for the mouse (reactions.go)
+	hoverChip           *reactionZone      // the chip under the mouse: who reacted shows above it
 
 	// Hub Browser overlay
 	showHubBrowser bool
@@ -1630,6 +1632,14 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// coming back to the window doesn't flash black.
 		cmds = append(cmds, repaintAll)
 
+	case reactionHoverMsg: // onto or off a reaction chip (reactions.go)
+		a.hoverChip = nil
+		if msg.zone != nil {
+			z := *msg.zone
+			a.hoverChip = &z
+		}
+		return a, nil
+
 	case tea.MouseMsg:
 		// Click/focus/selection dispatch lives in mouse.go, mirroring
 		// handleKeyPress's own overlay-first-then-view layering.
@@ -2131,7 +2141,9 @@ func (a *App) View() string {
 	if a.connecting != nil && a.view == ViewMain {
 		return a.renderConnecting(time.Now())
 	}
-	out := a.applyFx(a.view0())
+	// Pinned so emoji can't push lines out of place (emoji_width.go):
+	// after the effects, which work in columns, before images go on top.
+	out := pinScreen(a.applyFx(a.withReactionTooltip(a.view0())))
 	if a.photoGrapes() {
 		out = a.placePhoto(out) // after the effects, which would drop its escape codes
 	}
@@ -2842,6 +2854,13 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Ctrl+C copies in message navigation mode
 		if a.messageNavMode {
 			return a.copyMessageToClipboard()
+		}
+
+	case "+":
+		// React to the selected message: the emoji picker, on it (reactions.go).
+		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
+			a.reactToSelected()
+			return nil
 		}
 
 	case "r", "R":
@@ -5047,6 +5066,7 @@ func (a *App) addMessage(msg *models.Message, author *models.User) {
 // updateChatContent rebuilds the chat viewport content from active connection
 func (a *App) updateChatContent() {
 	var content strings.Builder
+	a.reactionZones = a.reactionZones[:0] // drawn again below
 
 	if a.activeConn == nil || a.currentChannel == nil {
 		a.chatViewport.SetContent("")
@@ -5387,10 +5407,15 @@ func (a *App) updateChatContent() {
 
 		// Peer-to-peer attachment manifest (if any). The server never has the
 		// file's bytes -- this just tells the reader who to request it from.
+		// Each on a line of its own: the message's text doesn't end in a
+		// newline (the spacing below adds it), so whatever came straight
+		// after it was glued onto its last line, which then wrapped (or was
+		// cut off inside a thread's box).
 		for _, att := range msg.Attachments {
-			attLine := formatAttachmentLine(att, w, msg.IsOwn, a.theme)
-			content.WriteString(attLine)
-			content.WriteString("\n")
+			content.WriteString("\n" + formatAttachmentLine(att, w, msg.IsOwn, a.theme))
+		}
+		if chips := a.formatReactionLines(msg, w, msg.IsOwn, isSelected || isInLevel2); chips != "" { // reactions.go
+			content.WriteString("\n" + chips)
 		}
 
 		// Spacing between messages based on density setting
@@ -7138,6 +7163,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				a.scrollToBottom()
 			}
 		}
+
+	case protocol.EventMessageReactionAdd, protocol.EventMessageReactionRemove:
+		a.handleReactionEvent(sc, msg.Data, msg.Type == protocol.EventMessageReactionAdd)
 
 	case protocol.EventMessagePin:
 		var payload protocol.MessagePinPayload

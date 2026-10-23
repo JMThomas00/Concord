@@ -1189,25 +1189,6 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 	h.hub.SendToUser(c.UserID, protocol.EventMessagesHistory, payload)
 }
 
-// HandleDeleteMessage handles message deletion
-// HandleReaction handles adding/removing reactions
-func (h *Handlers) HandleReaction(c *Client, messageID, channelID uuid.UUID, emoji string, add bool) error {
-	payload := &protocol.ReactionPayload{
-		UserID:    c.UserID,
-		ChannelID: channelID,
-		MessageID: messageID,
-		Emoji:     emoji,
-	}
-
-	eventType := protocol.EventMessageReactionAdd
-	if !add {
-		eventType = protocol.EventMessageReactionRemove
-	}
-
-	h.hub.BroadcastToChannel(channelID, eventType, payload, nil)
-	return nil
-}
-
 // hashToken creates a SHA-256 hash of a token
 func hashToken(token string) string {
 	hash := sha256.Sum256([]byte(token))

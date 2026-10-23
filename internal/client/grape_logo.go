@@ -278,6 +278,11 @@ func MouseHoverFilter(model tea.Model, msg tea.Msg) tea.Msg {
 	}
 	if a, ok := model.(*App); ok {
 		a.steerGrapeLight(m)
+		// Onto or off a reaction chip: who reacted shows above it
+		// (reactions.go). Only those moves get through.
+		if hover := a.reactionHover(m); hover != nil {
+			return hover
+		}
 	}
 	return nil
 }

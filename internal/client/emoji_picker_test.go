@@ -304,6 +304,12 @@ func screenOf(view string, width int, cellsFor func(string) int) [][]string {
 				if seq := line[:n+1]; strings.HasSuffix(seq, "G") {
 					fmt.Sscanf(seq[2:], "%d", &col)
 					col--
+				} else if strings.HasSuffix(seq, "X") { // erase n cells; the cursor stays
+					var k int
+					fmt.Sscanf(seq[2:], "%d", &k)
+					for i := col; i < col+k && i < len(row); i++ {
+						row[i] = " "
+					}
 				}
 				line = line[n+1:]
 				continue
@@ -515,5 +521,79 @@ func TestThePickerWorksWithTheMouse(t *testing.T) {
 	}
 	if a.input.Value() != "🍇" {
 		t.Fatalf("a click outside changed the message: %q", a.input.Value())
+	}
+}
+
+// withEmojiMessages puts a few messages full of emoji in the test app's
+// channel.
+func withEmojiMessages(t *testing.T, a *App) {
+	t.Helper()
+	now := time.Now()
+	var msgs []*MessageDisplay
+	for i, text := range []string{
+		"polar bears 🐻‍❄️🐻‍❄️🐻‍❄️ and a family 👨‍👩‍👧 👨‍👩‍👧",
+		"thumbs 👍🏽👍🏿 hearts ❤️☺️ flags 🇺🇸🇯🇵 sighs 😮‍💨😮‍💨",
+		"plain text for comparison",
+	} {
+		msgs = append(msgs, &MessageDisplay{
+			Message:    &models.Message{ID: uuid.New(), ChannelID: a.currentChannel.ID, AuthorID: uuid.New(), Content: text, CreatedAt: now.Add(time.Duration(i) * time.Minute)},
+			AuthorName: "grape", ShowHeader: i == 0,
+		})
+	}
+	// Reaction chips hold emoji too.
+	msgs[0].Reactions = []models.Reaction{
+		{Emoji: "🐻‍❄️", Count: 3, UserIDs: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}},
+		{Emoji: "👍🏽", Count: 1, UserIDs: []uuid.UUID{uuid.New()}},
+		{Emoji: "❤️", Count: 2, UserIDs: []uuid.UUID{uuid.New(), uuid.New()}},
+	}
+	if a.styles == nil {
+		a.styles = a.theme.BuildStyles()
+	}
+	if a.activeConn == nil {
+		a.activeConn = &ServerConnection{}
+	}
+	a.activeConn.Messages = map[uuid.UUID][]*MessageDisplay{a.currentChannel.ID: msgs}
+	a.View() // sizes the chat, which the messages wrap to
+	a.updateChatContent()
+	if !strings.Contains(ansi.Strip(a.View()), "plain text for comparison") {
+		t.Fatal("the test messages aren't on screen")
+	}
+}
+
+// Bubbletea cuts any line it measures wider than the window. Filling an
+// emoji's cells with spaces before drawing it made picker rows measure 150
+// in a 120-wide window (their right ends were cut off); no line of a frame
+// may measure wider than the window, emoji in the chat or the picker.
+func TestNoLineMeasuresWiderThanTheWindow(t *testing.T) {
+	a := newEmojiTestApp(t)
+	withEmojiMessages(t, a)
+	check := func(when string) {
+		for i, l := range strings.Split(a.View(), "\n") {
+			if w := ansi.StringWidth(l); w > a.width {
+				t.Fatalf("%s: line %d measures %d in a %d-wide window", when, i, w, a.width)
+			}
+		}
+	}
+	check("chat with emoji")
+	pickerKeys(a, "ctrl+e", "tab", "ctrl+t", "ctrl+t")
+	check("the picker on People, skin-toned")
+}
+
+// The whole screen is pinned: messages full of joined and toned emoji stay
+// inside the window on a terminal that draws them wider than measured.
+func TestEmojiInMessagesCantPushLinesOut(t *testing.T) {
+	a := newEmojiTestApp(t)
+	withEmojiMessages(t, a)
+	wide := func(cluster string) int { return 2 * utf8.RuneCountInString(cluster) }
+	for y, row := range screenOf(a.View(), a.width, wide) {
+		last := -1
+		for x, c := range row {
+			if c != "X" && c != "" {
+				last = x
+			}
+		}
+		if last >= a.width {
+			t.Fatalf("row %d runs to column %d in a %d-wide window", y, last, a.width)
+		}
 	}
 }

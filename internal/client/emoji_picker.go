@@ -34,6 +34,9 @@ type emojiPickerState struct {
 	Cursor int
 	Scroll int // first grid row shown
 	Cols   int // grid columns at the last render, for the arrow keys
+	// ReactTo, if set, is the message the picker reacts to (+ in message
+	// navigation, reactions.go): picking reacts instead of inserting.
+	ReactTo *MessageDisplay
 	// Where the box was last drawn (its top-left corner), for the mouse.
 	Left, Top, Width, Height int
 	items                    []*emoji.Emoji
@@ -158,6 +161,12 @@ func (a *App) handleEmojiPickerKey(msg tea.KeyMsg) tea.Cmd {
 // insertEmoji puts e (in the chosen skin tone) in the message box at the
 // cursor, remembers it as recently used, and closes the picker.
 func (a *App) insertEmoji(e *emoji.Emoji) {
+	if s := a.emojiPicker; s != nil && s.ReactTo != nil {
+		a.emojiPicker = nil
+		a.sendReaction(s.ReactTo, e.WithTone(a.emojiTone()))
+		a.rememberEmoji(e)
+		return
+	}
 	a.emojiPicker = nil
 	a.input.InsertString(e.WithTone(a.emojiTone()))
 	a.focus = FocusInput
@@ -250,7 +259,16 @@ func (a *App) emojiPickerBox() string {
 		hand, _ := emoji.Shortcode("wave")
 		tone = hand.WithTone(t)
 	}
-	header := title.Render("Emoji") + strings.Repeat(" ", max(1, inner-5-lipgloss.Width("Skin tone: "+tone))) +
+	heading, who := "Emoji", ""
+	if s.ReactTo != nil {
+		heading = ansi.Truncate("React to "+s.ReactTo.AuthorName, inner/2, "…")
+		who = "No reactions yet: pick one, or one that's yours to take it off."
+		if len(s.ReactTo.Reactions) > 0 {
+			who = a.whoReacted(s.ReactTo)
+		}
+		who = dim.Render(ansi.Truncate(who, inner, "…"))
+	}
+	header := title.Render(heading) + strings.Repeat(" ", max(1, inner-lipgloss.Width(heading)-lipgloss.Width("Skin tone: "+tone))) +
 		dim.Render("Skin tone: ") + tone
 
 	cursor := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Yellow)).Render("▌")
@@ -326,7 +344,7 @@ func (a *App) emojiPickerBox() string {
 	}
 	hints := dim.Italic(true).Render("type to search · arrows move · Tab group · Ctrl+T skin tone · Enter insert · Esc close")
 
-	body := strings.Join([]string{header, "", search, "", strings.Join(tabs, ""), dim.Render(label), strings.Join(grid, "\n"), "", info, "", hints}, "\n")
+	body := strings.Join([]string{header, who, search, "", strings.Join(tabs, ""), dim.Render(label), strings.Join(grid, "\n"), "", info, "", hints}, "\n")
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(a.theme.Colors.Purple)).
 		Background(lipgloss.Color(a.theme.Colors.Background)).
@@ -394,43 +412,6 @@ func overlayPinned(bg, fg string, termW, termH int) string {
 		bgLines = bgLines[:termH]
 	}
 	return strings.Join(bgLines, "\n")
-}
-
-// cha moves the cursor to column col (0-based).
-func cha(col int) string { return fmt.Sprintf("\x1b[%dG", col+1) }
-
-// pinWide adds a cha after every wide or joined character in s, a line
-// starting at column start: escape sequences pass through as they are.
-func pinWide(s string, start int) string {
-	var b strings.Builder
-	col := start
-	for s != "" {
-		if s[0] == 0x1b { // an escape sequence: copy it whole
-			n := 1
-			if len(s) > 1 && s[1] == '[' {
-				n = 2
-				for n < len(s) && (s[n] < 0x40 || s[n] > 0x7e) {
-					n++
-				}
-				n = min(n+1, len(s))
-			}
-			b.WriteString(s[:n])
-			s = s[n:]
-			continue
-		}
-		cluster, rest, w, _ := uniseg.FirstGraphemeClusterInString(s, -1)
-		if w > 1 || utf8.RuneCountInString(cluster) > 1 {
-			// Paint the emoji's cells first (in the current colours), so a
-			// terminal that draws it narrower leaves no unpainted gap, then
-			// draw it over them and carry on from where we measured.
-			b.WriteString(strings.Repeat(" ", w) + cha(col) + cluster + cha(col+w))
-		} else {
-			b.WriteString(cluster)
-		}
-		col += w
-		s = rest
-	}
-	return b.String()
 }
 
 // shortcodeBeforeCursor matches a :shortcode: just typed, at the start of

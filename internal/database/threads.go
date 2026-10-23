@@ -171,8 +171,13 @@ func (db *DB) GetThreadMessages(threadID uuid.UUID, limit int, userID uuid.UUID)
 		if err != nil {
 			return nil, err
 		}
+		reactions, err := db.getMessageReactions(ids)
+		if err != nil {
+			return nil, err
+		}
 		for _, m := range messages {
 			m.Attachments = atts[m.ID]
+			m.Reactions = reactions[m.ID]
 		}
 	}
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {

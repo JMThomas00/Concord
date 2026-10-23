@@ -104,6 +104,12 @@ const (
 	// so its unread mark clears on every device signed in to the account.
 	OpThreadRead OpCode = 64
 
+	// OpReaction (65): C→S. Add or take off your reaction to a message
+	// (ReactionRequest). The server sends MESSAGE_REACTION_ADD or _REMOVE
+	// (ReactionPayload) to the channel, or for a whisper to its two people.
+	// Servers before v0.1.7 don't know it.
+	OpReaction OpCode = 65
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -729,6 +735,15 @@ type ChannelDeletePayload struct {
 	ChannelID uuid.UUID          `json:"channel_id"`
 	ServerID  uuid.UUID          `json:"server_id,omitempty"`
 	Type      models.ChannelType `json:"type,omitempty"`
+}
+
+// ReactionRequest adds (or with Remove, takes off) your reaction to a
+// message with one emoji.
+type ReactionRequest struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	MessageID uuid.UUID `json:"message_id"`
+	Emoji     string    `json:"emoji"`
+	Remove    bool      `json:"remove,omitempty"`
 }
 
 // ReactionPayload is dispatched for reaction add/remove events

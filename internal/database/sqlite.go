@@ -1587,22 +1587,25 @@ func (db *DB) getMessageAttachments(messageIDs []uuid.UUID) (map[uuid.UUID][]mod
 // GetMessage retrieves a single message by ID
 func (db *DB) GetMessage(messageID uuid.UUID) (*models.Message, error) {
 	query := `
-		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id, thread_id
+		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id, thread_id,
+		       COALESCE(is_whisper, 0), recipient_id, COALESCE(is_deleted, 0)
 		FROM messages
 		WHERE id = ?`
 
 	msg := &models.Message{}
 	var idStr, channelIDStr, authorIDStr string
 	var editedAt sql.NullTime
-	var replyToID, threadID sql.NullString
+	var replyToID, threadID, recipientID sql.NullString
 
 	err := db.QueryRow(query, messageID.String()).Scan(
 		&idStr, &channelIDStr, &authorIDStr, &msg.Content,
-		&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &replyToID, &threadID)
+		&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &replyToID, &threadID,
+		&msg.IsWhisper, &recipientID, &msg.Deleted)
 	if err != nil {
 		return nil, err
 	}
 	msg.ThreadID = parseNullUUID(threadID)
+	msg.RecipientID = parseNullUUID(recipientID)
 
 	msg.ID = uuid.MustParse(idStr)
 	msg.ChannelID = uuid.MustParse(channelIDStr)
@@ -1620,6 +1623,11 @@ func (db *DB) GetMessage(messageID uuid.UUID) (*models.Message, error) {
 		return nil, err
 	}
 	msg.Attachments = attachmentsByMessage[msg.ID]
+	reactions, err := db.getMessageReactions([]uuid.UUID{msg.ID})
+	if err != nil {
+		return nil, err
+	}
+	msg.Reactions = reactions[msg.ID]
 
 	return msg, nil
 }
@@ -1781,8 +1789,13 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 		if err != nil {
 			return nil, err
 		}
+		reactions, err := db.getMessageReactions(messageIDs)
+		if err != nil {
+			return nil, err
+		}
 		for _, msg := range messages {
 			msg.Attachments = attachmentsByMessage[msg.ID]
+			msg.Reactions = reactions[msg.ID]
 		}
 	}
 

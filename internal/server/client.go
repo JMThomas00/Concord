@@ -311,6 +311,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleUnpinMessage(c, msg)
 		})
 
+	case protocol.OpReaction:
+		c.requireAuth(func() {
+			c.handlers.HandleReaction(c, msg)
+		})
+
 	case protocol.OpGetRetentionPolicy:
 		c.requireAuth(func() {
 			c.handlers.HandleGetRetentionPolicy(c, msg)
