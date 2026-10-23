@@ -540,6 +540,12 @@ func withEmojiMessages(t *testing.T, a *App) {
 			AuthorName: "grape", ShowHeader: i == 0,
 		})
 	}
+	// Reaction chips hold emoji too.
+	msgs[0].Reactions = []models.Reaction{
+		{Emoji: "🐻‍❄️", Count: 3, UserIDs: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}},
+		{Emoji: "👍🏽", Count: 1, UserIDs: []uuid.UUID{uuid.New()}},
+		{Emoji: "❤️", Count: 2, UserIDs: []uuid.UUID{uuid.New(), uuid.New()}},
+	}
 	if a.styles == nil {
 		a.styles = a.theme.BuildStyles()
 	}

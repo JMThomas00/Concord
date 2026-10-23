@@ -2846,6 +2846,13 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			return a.copyMessageToClipboard()
 		}
 
+	case "+":
+		// React to the selected message: the emoji picker, on it (reactions.go).
+		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
+			a.reactToSelected()
+			return nil
+		}
+
 	case "r", "R":
 		// Reply to selected message (Teams-style quoted reply)
 		if a.messageNavMode && !a.inMessageEditMode && a.messageNavIndex >= 0 {
@@ -5394,6 +5401,7 @@ func (a *App) updateChatContent() {
 			content.WriteString(attLine)
 			content.WriteString("\n")
 		}
+		content.WriteString(a.formatReactionLines(msg, w, msg.IsOwn)) // reactions.go
 
 		// Spacing between messages based on density setting
 		density := ""
@@ -7140,6 +7148,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				a.scrollToBottom()
 			}
 		}
+
+	case protocol.EventMessageReactionAdd, protocol.EventMessageReactionRemove:
+		a.handleReactionEvent(sc, msg.Data, msg.Type == protocol.EventMessageReactionAdd)
 
 	case protocol.EventMessagePin:
 		var payload protocol.MessagePinPayload
