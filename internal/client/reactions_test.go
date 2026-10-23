@@ -114,8 +114,9 @@ func TestReactingToAMessage(t *testing.T) {
 	}
 	event(protocol.EventMessageReactionAdd, me.ID, "🍇")
 	event(protocol.EventMessageReactionAdd, uuid.New(), "🍇")
-	if !strings.Contains(ansi.Strip(a.View()), "🍇 2") {
-		t.Fatalf("no 🍇 2 chip: reactions %+v, nav %v, edit %v, channel msgs %d", target.Reactions, a.messageNavMode, a.inMessageEditMode, len(a.activeConn.Messages[target.ChannelID]))
+	// (Selected, so the chip names who rather than counting.)
+	if !strings.Contains(ansi.Strip(a.View()), "🍇 you, someone") {
+		t.Fatalf("no 🍇 chip naming who: reactions %+v", target.Reactions)
 	}
 
 	// Picking it again takes it off; the picker lists who reacted.
@@ -246,7 +247,8 @@ func withReactions(t *testing.T, a *App, me *models.User) *MessageDisplay {
 	return m
 }
 
-// A selected message (Alt+M) lists who reacted under its chips, and its
+// A selected message (Alt+M, or clicked) shows who reacted in place of the
+// counts, on the same row (an extra row of names was too much), and its
 // highlight covers them.
 func TestASelectedMessageSaysWhoReacted(t *testing.T) {
 	a, _, me := reactionTestApp(t)
@@ -254,16 +256,22 @@ func TestASelectedMessageSaysWhoReacted(t *testing.T) {
 	if strings.Contains(ansi.Strip(a.View()), "alice, bob") {
 		t.Fatal("names show without the message selected")
 	}
+	before := screenRows(a)
+	ty, _, _ := rowWith(t, before, "plain text for comparison")
 	a.Update(altM())
 	a.updateChatContent()
-	view := a.View()
-	if !strings.Contains(ansi.Strip(view), "🍇 alice, bob · 👍 you, alice") {
-		t.Fatalf("the selected message doesn't say who reacted:\n%s", ansi.Strip(view))
+	rows := screenRows(a)
+	cy, _, _ := rowWith(t, rows, "╰ 🍇 alice, bob  👍 you, alice")
+	if cy != ty+1 {
+		t.Fatalf("the names are on row %d, not the one under the text (%d)", cy, ty+1)
+	}
+	if strings.Contains(rows[cy+1], "you") || strings.Contains(rows[cy+1], "🍇") {
+		t.Fatalf("an extra row: %q", rows[cy+1])
 	}
 	sel := ansiOpenCode(lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Selection)))
-	for _, l := range strings.Split(view, "\n") {
-		if strings.Contains(ansi.Strip(l), "╰ 🍇 2") && sel != "" && !strings.Contains(l, sel) {
-			t.Fatal("the chips line isn't highlighted with its selected message")
+	for _, l := range strings.Split(a.View(), "\n") {
+		if strings.Contains(ansi.Strip(l), "alice, bob") && sel != "" && !strings.Contains(l, sel) {
+			t.Fatal("the reactions line isn't highlighted with its selected message")
 		}
 	}
 }
@@ -300,7 +308,7 @@ func TestHoveringAReactionChip(t *testing.T) {
 	}
 	y, x, _ := rowWith(t, screenRows(a), "🍇 2")
 	move(x+1, y)
-	if !strings.Contains(ansi.Strip(a.View()), "🍇 alice, bob") {
+	if !strings.Contains(ansi.Strip(a.View()), "│ 🍇 alice, bob │") { // in its box
 		t.Fatalf("hovering 🍇 doesn't say who:\n%s", ansi.Strip(a.View()))
 	}
 	move(1, 1)

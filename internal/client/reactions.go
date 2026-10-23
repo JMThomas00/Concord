@@ -186,7 +186,8 @@ func applyReaction(list []models.Reaction, emoji string, user uuid.UUID, add boo
 // wrapped to width: each emoji and its count, the count bold in the accent
 // colour where one of them is yours. Each chip is a click zone (to react
 // with the same emoji, or take yours off; hovering shows who). A selected
-// message (Alt+M) shares its highlight with them and lists who reacted.
+// message (Alt+M, or clicked) shares its highlight with them, and they
+// show who reacted instead of how many.
 // No trailing newline: the caller starts it on a line of its own.
 func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign, selected bool) string {
 	if len(m.Reactions) == 0 {
@@ -195,6 +196,7 @@ func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign, sele
 	mine := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
 	other := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
+	names := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
 	room := max(10, width-2*messageGutterWidth-2) // (the corner)
 	var rows []string
 	row := ""
@@ -203,9 +205,13 @@ func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign, sele
 		if a.myReaction(m, r.Emoji) {
 			count = mine
 		}
+		label := count.Render(strconv.Itoa(r.Count))
+		if selected { // who, not how many (readable on the highlight)
+			label = names.Render(strings.Join(a.reactorNames(r), ", "))
+		}
 		id := fmt.Sprintf("react:%s:%d", m.ID, len(a.reactionZones))
 		a.reactionZones = append(a.reactionZones, reactionZone{id: id, msg: m, emoji: r.Emoji})
-		chip := zone.Mark(id, r.Emoji+" "+count.Render(strconv.Itoa(r.Count)))
+		chip := zone.Mark(id, r.Emoji+" "+label)
 		switch {
 		case row == "":
 			row = chip
@@ -228,9 +234,6 @@ func (a *App) formatReactionLines(m *MessageDisplay, width int, rightAlign, sele
 		default:
 			rows[i] = "  " + rows[i]
 		}
-	}
-	if selected { // who, for the keyboard: hovering does it for the mouse
-		rows = append(rows, dim.Render(ansi.Truncate(a.whoReacted(m), room, "…")))
 	}
 	style := lipgloss.NewStyle().Width(width)
 	if rightAlign {
@@ -306,8 +309,9 @@ func (a *App) clickReaction(msg tea.MouseMsg) bool {
 	return true
 }
 
-// withReactionTooltip puts who reacted with the hovered chip's emoji on the
-// line above it (below, at the top of the screen).
+// withReactionTooltip shows who reacted with the hovered chip's emoji, in a
+// small box like the panels' (rounded, the theme's background and border)
+// just above the chip, or below it near the top of the screen.
 func (a *App) withReactionTooltip(frame string) string {
 	h := a.hoverChip
 	if h == nil || a.view != ViewMain {
@@ -320,32 +324,37 @@ func (a *App) withReactionTooltip(frame string) string {
 	var names []string
 	for _, r := range h.msg.Reactions {
 		if r.Emoji == h.emoji {
-			for _, id := range r.UserIDs {
-				names = append(names, a.memberName(id))
-			}
+			names = a.reactorNames(r)
 		}
 	}
 	if len(names) == 0 {
 		return frame
 	}
-	tip := lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Selection)).
-		Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
-		Render(ansi.Truncate(" "+h.emoji+" "+strings.Join(names, ", ")+" ", max(10, a.width-2), "…"))
+	text := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground)).
+		Render(ansi.Truncate(h.emoji+" "+strings.Join(names, ", "), max(10, a.width-6), "…"))
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
+		Background(lipgloss.Color(a.theme.Colors.Background)).
+		Padding(0, 1).Render(text)
+	box = fillBoxBackground(box, a.theme.Colors.Background)
+	boxLines := strings.Split(box, "\n")
 	lines := strings.Split(frame, "\n")
-	y := z.StartY - 1
-	if y < 0 {
-		y = z.EndY + 1
+	top := z.StartY - len(boxLines)
+	if top < 0 {
+		top = z.EndY + 1
 	}
-	if y >= len(lines) {
+	if top+len(boxLines) > len(lines) {
 		return frame
 	}
-	w := lipgloss.Width(tip)
-	x := min(max(0, z.StartX), max(0, a.width-w))
-	line := lines[y]
-	if lw := lipgloss.Width(line); lw < x+w {
-		line += strings.Repeat(" ", x+w-lw)
+	w := lipgloss.Width(box)
+	x := min(max(0, z.StartX-2), max(0, a.width-w))
+	for i, bl := range boxLines {
+		line := lines[top+i]
+		if lw := lipgloss.Width(line); lw < x+w {
+			line += strings.Repeat(" ", x+w-lw)
+		}
+		lines[top+i] = visualTake(line, x) + bl + visualSkip(line, x+w)
 	}
-	lines[y] = visualTake(line, x) + tip + visualSkip(line, x+w)
 	return strings.Join(lines, "\n")
 }
 
@@ -353,13 +362,18 @@ func (a *App) withReactionTooltip(frame string) string {
 func (a *App) whoReacted(m *MessageDisplay) string {
 	var parts []string
 	for _, r := range m.Reactions {
-		var names []string
-		for _, id := range r.UserIDs {
-			names = append(names, a.memberName(id))
-		}
-		parts = append(parts, r.Emoji+" "+strings.Join(names, ", "))
+		parts = append(parts, r.Emoji+" "+strings.Join(a.reactorNames(r), ", "))
 	}
 	return strings.Join(parts, " · ")
+}
+
+// reactorNames are the names of who reacted with r, in the order they did.
+func (a *App) reactorNames(r models.Reaction) []string {
+	names := make([]string, 0, len(r.UserIDs))
+	for _, id := range r.UserIDs {
+		names = append(names, a.memberName(id))
+	}
+	return names
 }
 
 // memberName is a member's name on this server, or "someone" if they've left.
