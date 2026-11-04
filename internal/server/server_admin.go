@@ -25,6 +25,7 @@ type serverAdmin interface {
 	adminStatus() protocol.ServerStatusPayload
 	backupNow() (string, error)
 	requestRestart() error
+	updateServer(tag string, progress func(string)) (string, error)
 }
 
 const (
@@ -39,6 +40,9 @@ type adminState struct {
 
 	backupMu  sync.Mutex
 	backingUp atomic.Bool
+
+	updateMu sync.Mutex
+	updating atomic.Bool
 
 	restarting atomic.Bool   // a restart was asked for: main starts the server again
 	stopping   atomic.Bool   // Shutdown has started
@@ -73,9 +77,11 @@ func (h *Handlers) HandleServerAdmin(c *Client, msg *protocol.Message) {
 		st.CanAct = canAct
 		_ = h.dispatchTo(c, protocol.EventServerStatus, st)
 	}
-	result := func(ok bool, text string) {
-		_ = h.dispatchTo(c, protocol.EventServerAdminResult, protocol.ServerAdminResult{Action: req.Action, OK: ok, Message: text})
+	send := func(r protocol.ServerAdminResult) {
+		r.Action = req.Action
+		_ = h.dispatchTo(c, protocol.EventServerAdminResult, r)
 	}
+	result := func(ok bool, text string) { send(protocol.ServerAdminResult{OK: ok, Message: text}) }
 
 	switch req.Action {
 	case protocol.ServerAdminStatus, "":
@@ -109,7 +115,27 @@ func (h *Handlers) HandleServerAdmin(c *Client, msg *protocol.Message) {
 			result(false, err.Error())
 			return
 		}
-		result(true, "Restarting: everyone reconnects by themselves in a few seconds")
+		send(protocol.ServerAdminResult{OK: true, Restarting: true, Message: "Restarting: everyone reconnects by themselves in a few seconds"})
+
+	case protocol.ServerAdminUpdate:
+		if !canAct {
+			result(false, "Only administrators can update the server")
+			return
+		}
+		admin := c.UserID
+		Logger.Warn("Update asked for from the client", "admin", admin, "tag", req.Tag)
+		go func() {
+			text, err := h.admin.updateServer(req.Tag, func(step string) {
+				send(protocol.ServerAdminResult{OK: true, Busy: true, Message: step})
+			})
+			if err != nil {
+				Logger.Warn("Update failed", "admin", admin, "error", err)
+				result(false, "Not updated: "+err.Error())
+				sendStatus()
+				return
+			}
+			send(protocol.ServerAdminResult{OK: true, Restarting: true, Message: text})
+		}()
 
 	default:
 		result(false, "Unknown action "+req.Action)
@@ -167,6 +193,8 @@ func (s *Server) adminStatus() protocol.ServerStatusPayload {
 	}
 
 	st.CanRestart, st.RestartNote = s.canRestart()
+	st.UpdateHow, st.UpdateNote = s.updateHow()
+	st.Updating = s.admin.updating.Load()
 	return st
 }
 

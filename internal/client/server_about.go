@@ -36,6 +36,7 @@ type serverAboutState struct {
 	noticeErr bool
 
 	confirmRestart bool
+	confirmUpdate  bool
 	restarting     bool // asked; waiting for the server to come back
 }
 
@@ -89,7 +90,10 @@ func (a *App) openServerAbout() tea.Cmd {
 }
 
 // askServerStatus sends one OpServerAdmin request for the active server.
-func (a *App) askServerStatus(action string) {
+func (a *App) askServerStatus(action string) { a.sendServerAdmin(action, "") }
+
+// sendServerAdmin sends one OpServerAdmin request (tag: the release, for "update").
+func (a *App) sendServerAdmin(action, tag string) {
 	s := a.serverManagementState
 	if s == nil || s.About == nil || a.activeConn == nil {
 		return
@@ -97,7 +101,7 @@ func (a *App) askServerStatus(action string) {
 	if action == protocol.ServerAdminStatus {
 		s.About.asking = true
 	}
-	msg, err := protocol.NewMessage(protocol.OpServerAdmin, protocol.ServerAdminRequest{ServerID: a.getActiveServerID(), Action: action})
+	msg, err := protocol.NewMessage(protocol.OpServerAdmin, protocol.ServerAdminRequest{ServerID: a.getActiveServerID(), Action: action, Tag: tag})
 	if err != nil || a.activeConn.Connection == nil {
 		return
 	}
@@ -139,7 +143,7 @@ func (a *App) handleServerAdminEvent(sc *ServerConnection, msg *protocol.Message
 			return
 		}
 		ab.notice, ab.noticeErr = res.Message, !res.OK
-		if res.Action == protocol.ServerAdminRestart && res.OK {
+		if res.Restarting {
 			ab.restarting = true
 		}
 	}
@@ -170,6 +174,18 @@ func (a *App) handleServerAboutKey(key string) (bool, tea.Cmd) {
 	}
 	ab := s.About
 	canAct := ab.status != nil && ab.status.CanAct
+	if ab.confirmUpdate {
+		ab.confirmUpdate = false
+		if key == "u" || key == "U" {
+			ab.notice, ab.noticeErr = "Updating to "+ab.release.latest+"…", false
+			a.sendServerAdmin(protocol.ServerAdminUpdate, ab.release.latest)
+			return true, nil
+		}
+		ab.notice = ""
+		if key == "esc" {
+			return true, nil
+		}
+	}
 	if ab.confirmRestart {
 		ab.confirmRestart = false
 		switch key {
@@ -206,11 +222,37 @@ func (a *App) handleServerAboutKey(key string) (bool, tea.Cmd) {
 		ab.confirmRestart = true
 		ab.notice, ab.noticeErr = "Press R again to restart the server (everyone reconnects in a few seconds) · any other key cancels", true
 		return true, nil
+	case "u", "U":
+		if !a.canUpdateServer() {
+			return true, nil
+		}
+		if ab.status.Updating {
+			ab.notice, ab.noticeErr = "An update is already running", true
+			return true, nil
+		}
+		ab.confirmUpdate = true
+		ab.notice, ab.noticeErr = "Press U again to update to "+ab.release.latest+" and restart (everyone reconnects in a few seconds) · any other key cancels", true
+		return true, nil
 	case "s", "S":
 		ab.notice = ""
 		return true, a.openServerAbout()
 	}
 	return false, nil
+}
+
+// canUpdateServer: an administrator, a newer release, and a server that
+// can install it itself.
+func (a *App) canUpdateServer() bool {
+	s := a.serverManagementState
+	if s == nil || s.About == nil || s.About.status == nil || a.activeConn == nil {
+		return false
+	}
+	ab := s.About
+	a.activeConn.mu.RLock()
+	version := a.activeConn.ServerVersion
+	a.activeConn.mu.RUnlock()
+	return ab.status.CanAct && ab.status.UpdateHow == protocol.UpdateInPlace &&
+		!ab.checking && newerVersion(version, ab.release.latest)
 }
 
 // ── The page ───────────────────────────────────────────────────────────────
@@ -274,6 +316,18 @@ func (a *App) renderServerAboutContent(width, height int) string {
 				more(warn.Render(r.latest+" is out") + dim.Render(" · "+r.date.Local().Format("Jan 2, 2006")+" · "+r.url))
 				for _, line := range releaseNoteLines(r.notes, 3) {
 					more(dim.Render("  " + line))
+				}
+				if st := ab.status; st != nil {
+					switch {
+					case st.Updating:
+						more(normal.Render("Updating…"))
+					case a.canUpdateServer():
+						more(good.Render("U to update and restart"))
+					case st.UpdateHow == protocol.UpdateDocker:
+						more(dim.Render("To update: " + st.UpdateNote))
+					case st.UpdateNote != "" && st.CanAct:
+						more(dim.Render("Can't update from here: " + st.UpdateNote))
+					}
 				}
 			case func() bool { _, _, ok := parseVersion(version); return !ok }():
 				more(dim.Render("Built from source · the latest release is " + r.latest))
@@ -342,6 +396,9 @@ func (a *App) renderServerAboutContent(width, height int) string {
 	hint := "S check again · Esc close"
 	if ab != nil && ab.status != nil && ab.status.CanAct {
 		hint = "B back up now · R restart · " + hint
+		if a.canUpdateServer() {
+			hint = "U update · " + hint
+		}
 	}
 	bottom.writeLine(dim.Render(hint))
 	bottom.pad()

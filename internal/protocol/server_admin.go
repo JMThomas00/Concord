@@ -13,12 +13,16 @@ const (
 	ServerAdminStatus  = "status"  // send SERVER_STATUS (Manage Server)
 	ServerAdminBackup  = "backup"  // take a backup now (Administrator)
 	ServerAdminRestart = "restart" // stop and start again (Administrator)
+	ServerAdminUpdate  = "update"  // install a release and restart (Administrator)
 )
 
 // ServerAdminRequest asks the server for its status or to act.
 type ServerAdminRequest struct {
 	ServerID uuid.UUID `json:"server_id"`
 	Action   string    `json:"action"`
+	// Tag, for "update": the release to install (the one the admin was
+	// shown); "" is the latest.
+	Tag string `json:"tag,omitempty"`
 }
 
 // ServerAdminResult says how an action went.
@@ -26,7 +30,19 @@ type ServerAdminResult struct {
 	Action  string `json:"action"`
 	OK      bool   `json:"ok"`
 	Message string `json:"message"`
+	// Busy: a progress note; the outcome follows.
+	Busy bool `json:"busy,omitempty"`
+	// Restarting: the server is about to stop and start again.
+	Restarting bool `json:"restarting,omitempty"`
 }
+
+// How a server can be updated (ServerStatusPayload.UpdateHow).
+const (
+	UpdateInPlace = "in_place" // Update fetches the release and restarts into it
+	UpdateDocker  = "docker"   // rebuild the image: UpdateNote is the command
+	UpdateSource  = "source"   // built from source: pull and rebuild
+	UpdateNone    = "none"     // not from here: UpdateNote says why
+)
 
 // How a server was started, as far as it can tell (ServerStatusPayload.RunsAs).
 const (
@@ -68,6 +84,12 @@ type ServerStatusPayload struct {
 	CanRestart bool   `json:"can_restart"`
 	// RestartNote says why Restart isn't offered, when it isn't.
 	RestartNote string `json:"restart_note,omitempty"`
+
+	// UpdateHow is how this server takes a new release (Update* above),
+	// with UpdateNote: the Docker command, or why it can't.
+	UpdateHow  string `json:"update_how,omitempty"`
+	UpdateNote string `json:"update_note,omitempty"`
+	Updating   bool   `json:"updating,omitempty"`
 
 	// CanAct: the asker may back up and restart (an administrator).
 	CanAct bool `json:"can_act"`

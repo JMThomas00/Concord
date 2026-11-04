@@ -132,7 +132,7 @@ func TestServerAboutRestartNeedsTwoPresses(t *testing.T) {
 	}
 
 	// The server's answer, then its return after reconnecting.
-	res, _ := protocol.NewDispatch(protocol.EventServerAdminResult, 2, protocol.ServerAdminResult{Action: protocol.ServerAdminRestart, OK: true, Message: "Restarting"})
+	res, _ := protocol.NewDispatch(protocol.EventServerAdminResult, 2, protocol.ServerAdminResult{Action: protocol.ServerAdminRestart, OK: true, Restarting: true, Message: "Restarting"})
 	a.handleServerAdminEvent(a.activeConn, res)
 	if !ab.restarting {
 		t.Fatal("not waiting for the restart")
@@ -142,5 +142,57 @@ func TestServerAboutRestartNeedsTwoPresses(t *testing.T) {
 	giveStatus(t, a, back)
 	if ab.restarting || ab.notice != "The server is back" {
 		t.Errorf("after coming back: restarting %v, notice %q", ab.restarting, ab.notice)
+	}
+}
+
+func TestServerAboutUpdate(t *testing.T) {
+	a := aboutTestApp(t, "v0.1.8")
+	st := sampleStatus(true)
+	st.UpdateHow = protocol.UpdateInPlace
+	giveStatus(t, a, st)
+	a.handleServerRelease(serverReleaseMsg{latest: "v0.1.9"})
+	ab := a.serverManagementState.About
+	out := ansi.Strip(a.renderServerAboutContent(120, 40))
+	if !strings.Contains(out, "U to update and restart") || !strings.Contains(out, "U update ·") {
+		t.Fatalf("update not offered:\n%s", out)
+	}
+	a.handleServerAboutKey("u")
+	if !ab.confirmUpdate {
+		t.Fatal("U didn't ask first")
+	}
+	a.handleServerAboutKey("U")
+	if ab.notice != "Updating to v0.1.9…" {
+		t.Fatalf("notice %q", ab.notice)
+	}
+	for _, r := range []protocol.ServerAdminResult{
+		{Action: protocol.ServerAdminUpdate, OK: true, Busy: true, Message: "Downloading v0.1.9 (20 MB)…"},
+		{Action: protocol.ServerAdminUpdate, OK: true, Restarting: true, Message: "Updated to v0.1.9: restarting"},
+	} {
+		msg, _ := protocol.NewDispatch(protocol.EventServerAdminResult, 3, r)
+		a.handleServerAdminEvent(a.activeConn, msg)
+		if ab.notice != r.Message || ab.noticeErr {
+			t.Errorf("notice %q (error %v), want %q", ab.notice, ab.noticeErr, r.Message)
+		}
+	}
+	if !ab.restarting {
+		t.Error("not waiting for the restart")
+	}
+
+	// Up to date, not an administrator, or Docker: no U.
+	a.handleServerRelease(serverReleaseMsg{latest: "v0.1.8"})
+	if a.canUpdateServer() {
+		t.Error("offered an update to the same version")
+	}
+	a.handleServerRelease(serverReleaseMsg{latest: "v0.1.9"})
+	st.CanAct = false
+	giveStatus(t, a, st)
+	if a.canUpdateServer() {
+		t.Error("offered to a non-administrator")
+	}
+	st.CanAct, st.UpdateHow, st.UpdateNote = true, protocol.UpdateDocker, "git pull && docker compose build && docker compose up -d"
+	giveStatus(t, a, st)
+	out = ansi.Strip(a.renderServerAboutContent(120, 40))
+	if a.canUpdateServer() || !strings.Contains(out, "To update: git pull && docker compose build") {
+		t.Errorf("docker:\n%s", out)
 	}
 }

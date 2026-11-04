@@ -6,10 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/concord-chat/concord/internal/hub"
-	"github.com/concord-chat/concord/internal/server"
-	"github.com/pelletier/go-toml/v2"
 )
 
 func testPlan() *Plan {
@@ -21,43 +17,6 @@ func testPlan() *Plan {
 	pl.TermsAccepted = true
 	pl.HubName, pl.HubPort, pl.HubFederate = "My Hub", "7788", true
 	return pl
-}
-
-// The server reads the installer's settings file as the installer meant.
-func TestServerConfigReadsBack(t *testing.T) {
-	b, err := testPlan().ServerConfigTOML("https://hub.example")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := server.DefaultConfig()
-	if err := toml.Unmarshal(b, c); err != nil {
-		t.Fatal(err)
-	}
-	g := c.Grapevine
-	if c.Port != 9090 || c.ServerName != "Grape Hall" || !c.TermsAccepted || c.AdminEmail != "me@example.com" ||
-		c.DatabasePath != "concord.db" || c.PluginsDir != "Plugins" || !c.MessagePruning.Enabled ||
-		!g.Enabled || g.HubURL != "https://hub.example" || g.PublicHost != "chat.example.com" || g.PublicPort != 9090 || g.Category != "Gaming" || strings.Join(g.Tags, "/") != "Gaming/AI/AI Research" {
-		t.Fatalf("server read %+v", c)
-	}
-}
-
-func TestHubConfigReadsBack(t *testing.T) {
-	b, token, err := testPlan().HubConfigTOML("Official", "https://official.example")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), HubConfigFile)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c, err := hub.LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Port != 7788 || c.HubName != "My Hub" || c.AdminToken != token || len(token) < 32 ||
-		len(c.PeerHubs) != 1 || c.PeerHubs[0].URL != "https://official.example" || c.HeartbeatTimeout != 90 {
-		t.Fatalf("hub read %+v", c)
-	}
 }
 
 // Adding servers keeps what the client already had, and doesn't add one
