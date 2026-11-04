@@ -24,7 +24,7 @@ var (
 
 // dockerUpdateCommand is how a Docker server is updated: the image is
 // built from the checkout, so a new release means a new build.
-const dockerUpdateCommand = "In the folder with docker-compose.yml: git pull && docker compose build && docker compose up -d"
+const dockerUpdateCommand = "git pull && docker compose build && docker compose up -d (in the folder with docker-compose.yml)"
 
 // updateHow says how this server takes a new release, and why not when it
 // can't: Docker replaces its image, a build from source is rebuilt, and
@@ -56,7 +56,11 @@ func (s *Server) updateHow() (how, note string) {
 // updateServer installs release tag ("" is the latest) and restarts into
 // it. progress reports each step.
 func (s *Server) updateServer(tag string, progress func(string)) (string, error) {
-	if how, note := s.updateHow(); how != protocol.UpdateInPlace {
+	switch how, note := s.updateHow(); how {
+	case protocol.UpdateInPlace:
+	case protocol.UpdateDocker:
+		return "", fmt.Errorf("this server runs in Docker, so it updates by rebuilding its image: %s", note)
+	default:
 		return "", fmt.Errorf("%s", note)
 	}
 	if !s.admin.updateMu.TryLock() {
