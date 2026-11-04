@@ -1290,6 +1290,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateCheckedMsg:
 		a.handleUpdateChecked(m)
 		return a, nil
+	case serverReleaseMsg:
+		a.handleServerRelease(m)
+		return a, nil
 	case installerReadyMsg:
 		return a, a.runInstaller(m)
 	case installerDoneMsg:
@@ -6446,6 +6449,7 @@ func (a *App) handleReady(serverID uuid.UUID, payload *protocol.ReadyPayload) te
 	sc.ServerGitCommit = payload.ServerGitCommit
 	sc.ServerBuildTime = payload.ServerBuildTime
 	sc.mu.Unlock()
+	a.serverAboutReconnected(sc) // a restarted server is back: refresh Server Settings › About
 
 	// Cache plugin-provided channel kinds so the client can render/create
 	// plugin channels generically without any plugin-specific code compiled in.
@@ -7668,6 +7672,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.PluginClients = payload.PluginClients
 		sc.PluginBoards = payload.PluginBoards
 		sc.mu.Unlock()
+
+	case protocol.EventServerStatus, protocol.EventServerAdminResult:
+		a.handleServerAdminEvent(sc, msg)
 
 	case protocol.EventPluginManageResult:
 		var result protocol.PluginManageResult

@@ -431,6 +431,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandlePluginManage(c, msg)
 		})
 
+	case protocol.OpServerAdmin:
+		c.requireAuth(func() {
+			c.handlers.HandleServerAdmin(c, msg)
+		})
+
 	case protocol.OpUpdateChannelOverwrite:
 		c.requireAuth(func() {
 			c.handlers.HandleUpdateChannelOverwrite(c, msg)

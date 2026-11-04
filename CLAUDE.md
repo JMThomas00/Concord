@@ -1,7 +1,7 @@
 # Concord — Claude Code Reference
 
 **A terminal-based, self-hosted chat application**
-**Last Updated:** 2026-10-09
+**Last Updated:** 2026-11-04
 
 ---
 
@@ -21,8 +21,8 @@ This repo has no `.golangci.yml` — the commands below are the actual gate used
 ```bash
 # Full check — run this before considering any change done. The server, models,
 # protocol, database, and plugin packages have no CGO dependency; -tags novoice
-# additionally makes the client build/test without the voice CGO toolchain, which
-# is what this environment normally has available.
+# additionally makes the client build/test without the voice CGO toolchain (fast,
+# and what CI-like environments have).
 go build -tags novoice ./...
 go vet -tags novoice ./...
 go test -tags novoice -count=1 ./...
@@ -33,14 +33,16 @@ go test -tags novoice -count=1 ./...
 go test -tags novoice ./internal/server/...
 go test -tags novoice -run TestChannelOverwriteEndToEndOverWebSocket ./internal/server/... -v
 
-# Race detector — needs a C toolchain. On the Windows dev box, use MSYS2's clang
-# from PowerShell (gcc 16.2 is unreliable here, see Build System):
-#   $env:PATH = "C:\msys64\usr\bin;C:\msys64\mingw64\bin;$env:PATH"; $env:CC = "clang"; $env:CGO_ENABLED = "1"
+# Race detector — needs a C toolchain. On Sequoia (Omarchy/Arch Linux) the system gcc
+# works as is. (On a Windows box, MSYS2's clang from PowerShell:
+#   $env:PATH = "C:\msys64\usr\bin;C:\msys64\mingw64\bin;$env:PATH"; $env:CC = "clang"; $env:CGO_ENABLED = "1")
 go test -race -tags novoice -count=1 ./...
 
-# Lint (golangci-lint, installed on demand by the Makefile target)
+# Lint (golangci-lint, installed on demand by the Makefile target; not installed on Sequoia yet)
 make lint
 ```
+
+**The dev machine (since 2026-10-24):** Sequoia runs **Omarchy (Arch Linux)**, bash, repo at `~/projects/Concord`, Go 1.27, gcc 16.2.1, opus/opusfile/gtk3 from the dotfiles. The vault is `~/Documents/Obsidian Vault` (a git clone: pull before, commit and push after). Sequoia's i9-14900K has a bad core (CPUs 8–9 offlined at boot); random, non-repeating crashes in builds or tools are that hardware, so check `journalctl -k -b | grep -iE 'segfault|rcu.*stall'` before debugging code. A crash at the same address every run is software (Arch's clang 23.1.3, below).
 
 Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, database, models, protocol, and plugins are pure Go and build/test fine with plain `go build`/`go test` too — `-tags novoice` is there so the client package compiles in the same command without requiring MSYS2 GCC on `PATH`.
 
@@ -50,9 +52,11 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 
 **Concord ships exactly three binaries, always:** `concord-server.exe`, `concord-client.exe`, `concord-hub.exe`. Voice is a **foundational feature of the client, not an optional variant** — `concord-client.exe` always includes it. There is no supported voice/novoice split as two parallel products; don't reintroduce one.
 
-**`make build-windows`** is the canonical build on this platform — produces all three binaries, client with voice (requires MSYS2's `clang` on `PATH`: `pacman -S mingw-w64-x86_64-clang`). `make build-windows-novoice` exists only as a fallback for a machine with no C toolchain (CI, a fresh dev box); its client output is always suffixed `-novoice` and is never deployed as `concord-client.exe`.
+**`make build`** is the build on Sequoia (Linux): `build/concord-server`, `build/concord-hub` and `build/concord-client` with voice. Don't hand-roll `go build` for the client. On Linux the client links opus, opusfile, ogg and gtk3 dynamically (release builds link opus statically, see Distribution); `ldd build/concord-client` shows them. `build-client` compiles with the system `cc` (gcc) everywhere except Windows: **Arch's clang 23.1.3 segfaults on every run here** (even `clang --version`, the same address in `libgcc_s.so.1` on any core), so it's broken software, not the bad core. Override with `make build-client CLIENT_CC=...`.
 
-**Why clang, not gcc:** MSYS2's `mingw-w64-x86_64-gcc` 16.2.0 has a real, reproducible internal-compiler-error/segfault bug compiling `miniaudio.c` (the `malgo`/voice dependency) — measured at a ~40-70% failure rate via repeated back-to-back compiles of the identical file (a different crash site every time). Confirmed not to be hardware or load-related: a fully serialized build crashed in 22 seconds compiling a trivial standard Go runtime file, which rules out sustained-load/thermal causes. `clang` (`mingw-w64-x86_64-clang`) builds the same code with a near-zero failure rate and is what `build-client`/`build-windows` now use via `CC=clang`. GCC 15.2.0 is **not** a safe fallback either — it has a different, 100%-reproducible bug on the same file. Full investigation trail: vault note "Concord - Voice Client Build Toolchain Bug" (2026-09-06). Revisit this once a GCC point release actually fixes it — don't silently drop `CC=clang` from the Makefile without re-running that investigation's repeated-compile test first.
+**`make build-windows`** is the build on a Windows machine — produces all three `.exe`s, client with voice (requires MSYS2's `clang` on `PATH`: `pacman -S mingw-w64-x86_64-clang`). `make build-windows-novoice` exists only as a fallback for a machine with no C toolchain (CI, a fresh dev box); its client output is always suffixed `-novoice` and is never deployed as `concord-client.exe`. Windows binaries for testing now come from the release workflow or Jordan's Windows machines; the old `.exe`s and `.dll`s in `build/` are leftovers from the Windows dev box.
+
+**Why clang, not gcc (on Windows):** MSYS2's `mingw-w64-x86_64-gcc` 16.2.0 has a real, reproducible internal-compiler-error/segfault bug compiling `miniaudio.c` (the `malgo`/voice dependency) — measured at a ~40-70% failure rate via repeated back-to-back compiles of the identical file (a different crash site every time). Confirmed not to be hardware or load-related: a fully serialized build crashed in 22 seconds compiling a trivial standard Go runtime file, which rules out sustained-load/thermal causes. `clang` (`mingw-w64-x86_64-clang`) builds the same code with a near-zero failure rate and is what `build-client`/`build-windows` now use via `CC=clang`. GCC 15.2.0 is **not** a safe fallback either — it has a different, 100%-reproducible bug on the same file. Full investigation trail: vault note "Concord - Voice Client Build Toolchain Bug" (2026-09-06). **Re-examined 2026-10-24:** those crashes moved around because the machine was failing (the bad core, found once on Omarchy), so GCC may well be fine on Windows too; still, don't drop `CC=clang` from `build-windows` without re-running the repeated-compile test on healthy hardware.
 
 **Voice build tag (implementation detail, not a release axis):** the client uses a `novoice` build tag internally so it can still compile without CGO when needed (see `-novoice` fallback above). Without it (the default), voice is compiled in:
 - `voice_engine.go` — `//go:build !novoice` (real audio engine, CGO)
@@ -131,7 +135,7 @@ Only the **client**'s voice engine needs CGO (`malgo`/`opus`); server, hub, data
 { "op": 3, "d": { ... }, "s": 42, "t": "EVENT_NAME" }
 ```
 
-OpCodes are defined in `internal/protocol/messages.go` and now run through op `64` (`62` plugin manage, `63` request a thread, `64` mark a thread read). Beyond the original chat/moderation/voice set, later ranges cover: `40-44` retention policy + custom titles, `45-48` voice signaling/moderation, `49-56` the plugin platform (remote-pane enter/input/resize/leave/frame, the generic plugin event envelope, plugin config get/set), `57` channel permission overwrites, `58` self-service nicknames, `59` P2P file-transfer signaling, `60` typing-stop, `61` plugin install (admin-triggered fetch/verify/place, see Plugin Platform below). Always check this file directly for the current, authoritative list rather than trusting a cached mental model of it — it has grown considerably since v0.1.0's initial protocol design.
+OpCodes are defined in `internal/protocol/messages.go` and now run through op `66` (`62` plugin manage, `63` request a thread, `64` mark a thread read, `65` reactions, `66` Server Settings › About's status/backup/restart). Beyond the original chat/moderation/voice set, later ranges cover: `40-44` retention policy + custom titles, `45-48` voice signaling/moderation, `49-56` the plugin platform (remote-pane enter/input/resize/leave/frame, the generic plugin event envelope, plugin config get/set), `57` channel permission overwrites, `58` self-service nicknames, `59` P2P file-transfer signaling, `60` typing-stop, `61` plugin install (admin-triggered fetch/verify/place, see Plugin Platform below). Always check this file directly for the current, authoritative list rather than trusting a cached mental model of it — it has grown considerably since v0.1.0's initial protocol design.
 
 ### Connection Flow
 ```
@@ -400,6 +404,19 @@ Side conversations kept in one box where they started.
 - **Client** (`threads.go`, `threads_find.go`): the channel's message list holds only top-level messages; replies live in `ServerConnection.Threads`. The chat draws, and message navigation moves through, `visibleMessages()` (expanded threads' replies after their first message), so **any code that indexes the selected message must use `visibleMessages()`, not `GetMessages`**. Boxed messages render 4 columns narrower and are wrapped by `boxThreadSegment`. Keys: Alt+M then **T** (reply in the thread; the box posts there until Esc), **Enter** on a first message (expand/minimise), **Alt+T** / `/threads` (the list). The chat box's bottom edge shows `N active threads · M unread · Alt+T` (`embedChatBottom`); Settings > Notifications > Thread Replies in the Channel adds an optional line.
 - Tests: `internal/server/threads_test.go` (wire level), `internal/client/threads_test.go`, `threads_e2e_test.go` (a real client against a real server).
 
+## Server About: health, backups, restart, update (2026-11-04; vault task "Server About Page and Updating From the Client")
+
+Server Settings › About (`internal/client/server_about.go`) asks the server through `OpServerAdmin` (66, `internal/server/server_admin.go`, payloads in `internal/protocol/server_admin.go`), offered on servers v0.1.8+ or `dev` (older ones get a line saying so instead of an "Unknown operation" error).
+- **Who:** Manage Server (or the owner) sees the status; only administrators get `CanAct`: **B** back up now, **R** restart (pressed twice). **S** asks again. Manage Server is no longer "(not yet)" in the Roles editor.
+- **Version line:** the server's version against GitHub's `releases/latest` (the Updates page's `fetchLatestRelease`, which now also reads the notes): up to date, "vX is out" with the first lines of its notes, or "built from source". Local builds say `dev`: the Makefile's `VERSION` now defaults to `dev` (releases pass `VERSION=<tag>`), where it used to stamp `0.1.0`.
+- **Status:** uptime, how it runs (`runsAs`: Docker from `/.dockerenv`, systemd from `INVOCATION_ID`, launchd from the installer's `chat.concord.` label, the Windows startup task from the SYSTEM account, else by hand), OS/arch, members/online, channels/messages (`DB.ContentCounts`), database size (+ WAL), plugins installed/running, Grapevine (the heartbeat client now records its last accepted beat and last error) and backups.
+- **Back up now:** `backups/concord-backup-<UTC>/` beside the database (on the data volume in Docker): `concord.db` from `VACUUM INTO` (`DB.BackupTo`, consistent while running, 0600), the settings file and `plugin-secrets.key`. Written as `.partial` and renamed; the newest ten are kept.
+- **Restart:** `requestRestart` runs the normal `Shutdown` (now once-only, `stopOnce`), `Run` waits for it to finish (`waitStopped`), then `cmd/server` calls `Relaunch`: `syscall.Exec` of the same file and flags on Unix (same PID, terminal and output, so systemd, launchd, Docker and a terminal all just see it come back; the path is read at start, so after Phase B swaps the file the new program starts), a new process with the same output handles on Windows (not yet tried on a real startup task). Not offered under `--dashboard`. Clients reconnect by themselves, and the page asks again on READY.
+- **Update (Phase B, `internal/server/server_update.go`):** `updateHow` reports `in_place` (a release build in a folder it can write to), `docker` (with the command: the image is built from the checkout), `source` (a `dev` build) or `none` (why). **U** pressed twice sends `update` with the tag the admin was shown. `installRelease` uses the installer's `FetchRelease`/`Download`/`Unpack` and refuses a release that isn't newer or has no published checksum; it unpacks into `.concord-update-*` beside the program, runs the new one with `--help` (every release exits 0) so a wrong-platform or broken program never replaces a working one, renames the old one to `<exe>.old`, swaps, updates `install.json` if the installer put the server there, then restarts into it. Progress goes back as `Busy` results; the final one has `Restarting`.
+- **The server imports `internal/installer` now,** so the installer's tests that read settings back with the real server and hub live in package `installer_test` (`configs_readback_test.go`, helpers in `export_test.go`). The version comparison is `installer.NewerVersion`/`ParseVersion`, used by both sides.
+- `Server.httpServer` is behind `httpMu` (`setHTTPServer`/`getHTTPServer`): `Shutdown` can now come from any goroutine, and `-race` flagged the test helpers' read of it.
+- **Verified 2026-11-04** on Sequoia: a real server and client in tmux (status, backup, restart and reconnect); a server stamped 0.1.6 updated itself to the real v0.1.7 (checksum checked, the program identical to the published archive, restarted). Tests: `server_admin_test.go` (wire level, permissions, backup contents, keep-ten, restart), `server_update_test.go` (swap, refusals, how), `server_about_test.go`. **Testing happens on VM 113's Docker server** (The Vineyard, 192.168.1.66:8090) from now on; the in-place update can't run in Docker, so it needs a server run outside a container.
+
 ## Settings Pages (client)
 
 | View | Access | Status |
@@ -417,7 +434,7 @@ Side conversations kept in one box where they started.
 | ↳ Members | Members tab | ✅ Full (list, kick/ban/role assign) |
 | ↳ Messages | Messages tab | ✅ Full (retention policies incl. per-channel custom overrides, prune) |
 | ↳ Plugins | Plugins tab | ✅ Full (enable/disable, config, admin install via `OpPluginInstall`) |
-| ↳ About | About tab | ✅ Full (connected server's build info) |
+| ↳ About | About tab | ✅ Full (version against the latest release, health, Back up now, Restart, Update; see Server About below) |
 
 Chat messages themselves render markdown too (bold/italic/inline code/fenced code/lists, plus clickable OSC 8 links and @mention highlighting) via a separate, minimal-feature-set glamour renderer — see `internal/client/message_markdown.go` and `buildChatGlamourStyle`. Deliberately excludes glamour's Table/Linkify extensions (goldmark's GFM Linkify auto-links bare URLs, and glamour's own link renderer then prints the link text and href as two separate visible runs — confirmed via `TestProbeChatGlamourPipeline`); Concord substitutes/restores URLs itself instead via an opaque placeholder token, both for that reason and to keep its own OSC 8/zone-marked clickable-link behavior.
 

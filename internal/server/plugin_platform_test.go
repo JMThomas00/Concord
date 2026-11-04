@@ -155,8 +155,8 @@ func startTestPluginServer(t *testing.T) (srv *Server, defaultServer *models.Ser
 		}
 	}()
 	t.Cleanup(func() {
-		if srv.httpServer != nil {
-			srv.httpServer.Close()
+		if hs := srv.getHTTPServer(); hs != nil {
+			hs.Close()
 		}
 		srv.plugins.Shutdown()
 		srv.db.Close()

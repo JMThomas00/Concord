@@ -27,7 +27,8 @@ BUILD_DIR=build
 DIST_DIR=dist
 
 # Version info
-VERSION ?= 0.1.0
+# Releases pass VERSION=<tag>; a build from source says "dev".
+VERSION ?= dev
 GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 
@@ -56,10 +57,18 @@ build-server:
 # segfault bug on miniaudio.c (~40-70% failure rate, confirmed via repeated-compile testing
 # 2026-09-06 — not hardware, not fixed by retrying gcc). clang builds this reliably; keep
 # this override until the GCC bug is fixed upstream or a newer package resolves it.
+# Elsewhere the system compiler is used: on Sequoia's Omarchy (2026-11-04) Arch's clang
+# 23.1.3 segfaults on every run, even `clang --version`, while gcc 16.2.1 is fine.
+# Override with `make build-client CLIENT_CC=...`.
+ifeq ($(OS),Windows_NT)
+CLIENT_CC ?= clang
+else
+CLIENT_CC ?= cc
+endif
 build-client:
 	@echo "Building client (with voice)..."
 	@mkdir -p $(BUILD_DIR)
-	CC=clang CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
+	CC=$(CLIENT_CC) CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(CLIENT_BINARY) ./cmd/client
 
 # Build hub (pure Go, no CGO)
 build-hub:

@@ -119,6 +119,8 @@ type ServerManagementState struct {
 	FocusOnForm      bool          // Toggle: false = category list, true = form/content
 	PreviousView     View          // View to return to on Esc
 
+	About *serverAboutState // the About category (server_about.go)
+
 	// Roles category state
 	RoleList         []*models.Role
 	SelectedRole     int

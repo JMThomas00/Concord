@@ -110,6 +110,13 @@ const (
 	// Servers before v0.1.7 don't know it.
 	OpReaction OpCode = 65
 
+	// OpServerAdmin (66): C→S. Server Settings › About: "status" (anyone
+	// with Manage Server), "backup" and "restart" (administrators). The
+	// server answers SERVER_STATUS and, for an action, SERVER_ADMIN_RESULT
+	// (ServerAdminRequest/ServerStatusPayload/ServerAdminResult). Servers
+	// before v0.1.8 don't know it.
+	OpServerAdmin OpCode = 66
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -202,6 +209,8 @@ const (
 	EventPluginRecords        EventType = "PLUGIN_RECORDS"         // S→C: your plugin records (achievements, stats), on sign-in and when one changes
 	EventThreadMessages       EventType = "THREAD_MESSAGES"        // S→C: a thread's replies, answering OpRequestThread
 	EventThreadUpdate         EventType = "THREAD_UPDATE"          // S→C: a thread's summary changed (a reply, a deletion, a read)
+	EventServerStatus         EventType = "SERVER_STATUS"          // S→C: health and how the server runs, answering OpServerAdmin
+	EventServerAdminResult    EventType = "SERVER_ADMIN_RESULT"    // S→C: how a backup or restart went
 )
 
 // Message represents a WebSocket message envelope

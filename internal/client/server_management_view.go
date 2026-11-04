@@ -318,7 +318,7 @@ func getPermissionList() []permissionItem {
 		{Name: "View Channels", Bit: models.PermissionViewChannels, Category: "General"},
 		{Name: "Manage Channels", Bit: models.PermissionManageChannels, Category: "General"},
 		{Name: "Manage Roles", Bit: models.PermissionManageRoles, Category: "General"},
-		{Name: "Manage Server", Bit: models.PermissionManageServer, Category: "General", NotYet: true},
+		{Name: "Manage Server", Bit: models.PermissionManageServer, Category: "General"},
 		{Name: "Create Invite", Bit: models.PermissionCreateInvite, Category: "General", NotYet: true},
 		{Name: "Kick Members", Bit: models.PermissionKickMembers, Category: "General"},
 		{Name: "Ban Members", Bit: models.PermissionBanMembers, Category: "General"},
@@ -557,6 +557,11 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 	if s.FocusOnForm && s.SelectedCategory == 4 && a.handlePluginListKey(msg.String()) {
 		return nil
 	}
+	if s.SelectedCategory == 5 {
+		if ok, cmd := a.handleServerAboutKey(msg.String()); ok {
+			return cmd
+		}
+	}
 
 	switch msg.String() {
 	case "esc":
@@ -589,7 +594,7 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 			// Navigate categories
 			if s.SelectedCategory > 0 {
 				s.SelectedCategory--
-				a.loadCategoryData(s.SelectedCategory)
+				return a.loadCategoryData(s.SelectedCategory)
 			}
 		} else {
 			// Navigate within category content
@@ -601,7 +606,7 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 			// Navigate categories
 			if s.SelectedCategory < len(s.Categories)-1 {
 				s.SelectedCategory++
-				a.loadCategoryData(s.SelectedCategory)
+				return a.loadCategoryData(s.SelectedCategory)
 			}
 		} else {
 			// Navigate within category content
@@ -720,7 +725,7 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // loadCategoryData loads data when switching categories
-func (a *App) loadCategoryData(categoryIndex int) {
+func (a *App) loadCategoryData(categoryIndex int) tea.Cmd {
 	serverID := a.getActiveServerID()
 
 	switch categoryIndex {
@@ -738,7 +743,10 @@ func (a *App) loadCategoryData(categoryIndex int) {
 	case 4: // Plugins
 		a.loadPluginListForManagement(serverID)
 		a.serverManagementState.SelectedPlugin = 0
+	case 5: // About
+		return a.openServerAbout()
 	}
+	return nil
 }
 
 // Navigation helpers
@@ -4135,68 +4143,6 @@ func (a *App) renderRolesCategory(width, height int, s *ServerManagementState) s
 // plugin discovered under the server's Plugins directory, its version,
 // process status, and enabled/disabled state — a Minecraft-mods-style view
 // with zero per-plugin code, sourced entirely from OpPluginConfigGet.
-// renderServerAboutContent renders Server Settings' About category: the
-// connected server's own build identity, reported once at connect time via
-// ReadyPayload and cached on the active ServerConnection (see
-// handleReady/EventReady in app.go). Distinct from Settings > About
-// (Ctrl+S), which shows the client binary's own build info.
-func (a *App) renderServerAboutContent(width, height int) string {
-	layout := calculateSettingsLayout(width, height, 2, 0)
-
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true)
-	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Foreground))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-
-	// ── TOP SECTION ──
-	top := newSectionBuilder(layout.topLines, layout.interiorWidth)
-	top.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).
-		Render("About"))
-	top.writeLine(dimStyle.Render("Connected server's build information"))
-	top.writeBlank()
-	top.writeLine(a.renderSeparator(layout.interiorWidth))
-
-	// ── MIDDLE SECTION ──
-	middle := newSectionBuilder(layout.middleLines, layout.interiorWidth)
-
-	writeRow := func(label, value string) {
-		middle.writeLine(labelStyle.Render(label))
-		middle.writeLine(normalStyle.Render("    " + value))
-		middle.writeBlank()
-	}
-
-	if a.activeConn == nil {
-		middle.writeLine(dimStyle.Render("  No active server connection"))
-	} else {
-		a.activeConn.mu.RLock()
-		serverVersion := a.activeConn.ServerVersion
-		serverGitCommit := a.activeConn.ServerGitCommit
-		serverBuildTime := a.activeConn.ServerBuildTime
-		a.activeConn.mu.RUnlock()
-
-		writeRow("Version", serverVersion)
-		writeRow("Git Commit", serverGitCommit)
-		writeRow("Build Time", serverBuildTime)
-	}
-
-	middle.pad()
-
-	// ── BOTTOM SECTION ──
-	bottom := newSectionBuilder(layout.bottomLines, layout.interiorWidth)
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
-	bottom.writeLine(a.renderSeparator(layout.interiorWidth))
-	bottom.writeLine(helpStyle.Render("Esc close"))
-	bottom.pad()
-
-	content := lipgloss.JoinVertical(lipgloss.Left, top.String(), middle.String(), bottom.String())
-	return lipgloss.NewStyle().
-		Width(width).
-		Height(height - 2).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(a.theme.Colors.Selection)).
-		Padding(0, 1).
-		Render(content)
-}
-
 func (a *App) renderPluginsCategory(width, height int, s *ServerManagementState) string {
 	layout := calculateSettingsLayout(width, height, 3, 2) // 2 = the second actions line
 
