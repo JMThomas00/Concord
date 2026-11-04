@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -105,6 +106,7 @@ type Server struct {
 	handlers   *Handlers
 	db         *database.DB
 	upgrader   websocket.Upgrader
+	httpMu     sync.Mutex // guards httpServer: Run sets it, Shutdown (any goroutine) reads it
 	httpServer *http.Server
 
 	// Dashboard support
@@ -124,6 +126,9 @@ type Server struct {
 	// limit on sign-in and account requests.
 	mailer        Mailer
 	accountLimits *accountLimiter
+
+	// Server Settings › About: start time, backups, restart (server_admin.go).
+	admin adminState
 }
 
 // New creates a new server instance
@@ -202,6 +207,7 @@ func New(config *Config) (*Server, error) {
 		grapevineTokens: newTokenStore(),
 		accountLimits:   newAccountLimiter(20, 20),
 		plugins:         pluginManager,
+		admin:           newAdminState(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -210,6 +216,7 @@ func New(config *Config) (*Server, error) {
 			},
 		},
 	}
+	handlers.admin = s
 	if config.Mail.Enabled() {
 		s.mailer = &smtpMailer{cfg: config.Mail}
 		AuthLog.Info("Outgoing mail configured", "smtp_host", config.Mail.SMTPHost, "verification_required", config.Mail.VerificationRequired())
@@ -330,13 +337,14 @@ func (s *Server) Run() error {
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
-	s.httpServer = &http.Server{
+	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+	s.setHTTPServer(hs)
 
 	// Handle graceful shutdown
 	go s.handleShutdown()
@@ -345,11 +353,37 @@ func (s *Server) Run() error {
 	Logger.Debug("WebSocket endpoint ready", "endpoint", "ws://"+addr+"/ws")
 	Logger.Debug("API endpoint ready", "endpoint", "http://"+addr+"/api")
 
-	if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
+	if err := hs.ListenAndServe(); err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
 	}
-
+	s.waitStopped()
 	return nil
+}
+
+func (s *Server) setHTTPServer(hs *http.Server) {
+	s.httpMu.Lock()
+	s.httpServer = hs
+	s.httpMu.Unlock()
+}
+
+func (s *Server) getHTTPServer() *http.Server {
+	s.httpMu.Lock()
+	defer s.httpMu.Unlock()
+	return s.httpServer
+}
+
+// waitStopped waits for Shutdown to finish (plugins stopped, database
+// closed) once the listener has closed, so the process doesn't exit, or
+// start again, halfway through it.
+func (s *Server) waitStopped() {
+	if s.admin.stopped == nil || !s.admin.stopping.Load() {
+		return // closed some other way (tests close the listener directly)
+	}
+	select {
+	case <-s.admin.stopped:
+	case <-time.After(45 * time.Second):
+		Logger.Warn("Shutdown is taking too long; exiting anyway")
+	}
 }
 
 // handleShutdown handles graceful server shutdown
@@ -365,6 +399,16 @@ func (s *Server) handleShutdown() {
 // Shutdown stops the server: deregisters from Grapevine, stops plugin
 // processes, closes the HTTP listener and the database.
 func (s *Server) Shutdown() {
+	s.admin.stopping.Store(true)
+	s.admin.stopOnce.Do(func() {
+		s.shutdown()
+		if s.admin.stopped != nil {
+			close(s.admin.stopped)
+		}
+	})
+}
+
+func (s *Server) shutdown() {
 	// Deregister from Grapevine hub before closing
 	if s.grapevine != nil {
 		s.grapevine.Stop()
@@ -381,8 +425,8 @@ func (s *Server) Shutdown() {
 	defer cancel()
 
 	// Shutdown HTTP server
-	if s.httpServer != nil {
-		if err := s.httpServer.Shutdown(ctx); err != nil {
+	if hs := s.getHTTPServer(); hs != nil {
+		if err := hs.Shutdown(ctx); err != nil {
 			Logger.Error("HTTP server shutdown error", "error", err)
 		}
 	}
@@ -900,18 +944,19 @@ func (s *Server) runWithDashboard() error {
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
-	s.httpServer = &http.Server{
+	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+	s.setHTTPServer(hs)
 
 	// Start HTTP server in goroutine
 	go func() {
 		s.dashboard.AddActivityEvent("INFO", "SERVER", fmt.Sprintf("Server starting on %s", addr))
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := hs.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			s.dashboard.AddActivityEvent("ERROR", "SERVER", fmt.Sprintf("HTTP server error: %v", err))
 		}
 	}()
@@ -944,7 +989,7 @@ func (s *Server) runWithDashboard() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := s.httpServer.Shutdown(ctx); err != nil {
+	if err := hs.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown error: %w", err)
 	}
 
@@ -1088,13 +1133,14 @@ func (s *Server) runWithHybridDashboard() error {
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
-	s.httpServer = &http.Server{
+	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+	s.setHTTPServer(hs)
 
 	// Print startup info BEFORE setting scroll region (so it stays fixed)
 	PrintStartupInfo(addr, s.config.DatabasePath)
@@ -1126,10 +1172,11 @@ func (s *Server) runWithHybridDashboard() error {
 	Logger.Info("Concord server starting", "address", addr)
 
 	// Start HTTP server (logs will scroll below dashboard)
-	if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
+	if err := hs.ListenAndServe(); err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
 	}
-
+	s.waitStopped()
+	fmt.Print("\033[r") // give the whole screen back (the scroll region)
 	return nil
 }
 

@@ -235,8 +235,8 @@ func startPlainTestServer(t *testing.T) (srv *Server, wsURL string) {
 		_ = srv.Run()
 	}()
 	t.Cleanup(func() {
-		if srv.httpServer != nil {
-			srv.httpServer.Close()
+		if hs := srv.getHTTPServer(); hs != nil {
+			hs.Close()
 		}
 		srv.db.Close()
 	})

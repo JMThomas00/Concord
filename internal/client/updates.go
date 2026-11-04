@@ -61,6 +61,7 @@ type updateCheckedMsg struct {
 	latest, url string
 	date        time.Time
 	err         string
+	notes       string // the release's notes (markdown)
 }
 
 // installerReadyMsg: concord-install is downloaded and ready to run.
@@ -113,11 +114,12 @@ func fetchLatestRelease() tea.Msg {
 			TagName     string    `json:"tag_name"`
 			HTMLURL     string    `json:"html_url"`
 			PublishedAt time.Time `json:"published_at"`
+			Body        string    `json:"body"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 			return updateCheckedMsg{err: "Couldn't read GitHub's answer"}
 		}
-		return updateCheckedMsg{latest: rel.TagName, url: rel.HTMLURL, date: rel.PublishedAt}
+		return updateCheckedMsg{latest: rel.TagName, url: rel.HTMLURL, date: rel.PublishedAt, notes: rel.Body}
 	}
 }
 

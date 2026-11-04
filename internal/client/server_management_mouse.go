@@ -111,8 +111,12 @@ func (a *App) handleServerManagementMouse(msg tea.MouseMsg) tea.Cmd {
 	// Category sidebar -- clicking a row jumps straight into that category.
 	for i := range s.Categories {
 		if zoneInBounds(fmt.Sprintf("srvmgmt-cat-row:%d", i), msg) {
+			changed := s.SelectedCategory != i
 			s.SelectedCategory = i
 			s.FocusOnForm = true
+			if changed {
+				return a.loadCategoryData(i)
+			}
 			return nil
 		}
 	}

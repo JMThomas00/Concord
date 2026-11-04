@@ -240,6 +240,13 @@ func main() {
 	if err := srv.Run(); err != nil {
 		server.Logger.Fatal("Server error", "error", err)
 	}
+	if srv.RestartRequested() {
+		// Server Settings › About › Restart: the same program (or, after
+		// an update, its replacement at the same path) with the same flags.
+		if err := server.Relaunch(); err != nil {
+			server.Logger.Fatal("Couldn't start again", "error", err)
+		}
+	}
 }
 
 func loadConfig(path string, config *server.Config) error {

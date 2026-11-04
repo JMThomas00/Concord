@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/concord-chat/concord/internal/protocol"
 )
 
 // GrapevineConfig holds the server's Grapevine registration settings.
@@ -80,6 +82,36 @@ type GrapevineClient struct {
 	getMemberCount func() int
 	getOnlineCount func() int
 	onSaveConfig   func() error
+
+	// What Server Settings › About shows: the last heartbeat the hub
+	// accepted, and the last thing that went wrong ("" once a beat works).
+	stateMu   sync.Mutex
+	lastBeat  time.Time
+	lastError string
+}
+
+// noteBeat records a heartbeat's outcome (err nil: the hub accepted it).
+func (g *GrapevineClient) noteBeat(err error) {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+	if err != nil {
+		g.lastError = err.Error()
+		return
+	}
+	g.lastBeat, g.lastError = time.Now(), ""
+}
+
+// status is the listing as this server last saw it.
+func (g *GrapevineClient) status() protocol.ServerGrapevineStatus {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+	return protocol.ServerGrapevineStatus{
+		Enabled:       true,
+		HubURL:        g.cfg.HubURL,
+		Listed:        g.cfg.ServerID != "",
+		LastHeartbeat: g.lastBeat,
+		LastError:     g.lastError,
+	}
 }
 
 // newGrapevineClient creates a GrapevineClient ready to be started.
@@ -110,6 +142,7 @@ func (g *GrapevineClient) Start() {
 		if g.cfg.ServerID == "" {
 			if err := g.register(); err != nil {
 				Logger.Error("[Grapevine] registration failed", "error", err)
+				g.noteBeat(fmt.Errorf("registration failed: %w", err))
 				return
 			}
 		}
@@ -225,6 +258,7 @@ func (g *GrapevineClient) sendHeartbeat() {
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
 		Logger.Warn("[Grapevine] heartbeat failed", "error", err)
+		g.noteBeat(err)
 		return
 	}
 	resp.Body.Close()
@@ -237,9 +271,17 @@ func (g *GrapevineClient) sendHeartbeat() {
 			"server_id", g.cfg.ServerID)
 		if err := g.register(); err != nil {
 			Logger.Error("[Grapevine] re-registration failed", "error", err)
+			g.noteBeat(fmt.Errorf("re-registration failed: %w", err))
+		} else {
+			g.noteBeat(fmt.Errorf("the hub had lost this server's listing; registered again"))
 		}
 		return
 	}
+	if resp.StatusCode/100 != 2 {
+		g.noteBeat(fmt.Errorf("the hub answered HTTP %d", resp.StatusCode))
+		return
+	}
+	g.noteBeat(nil)
 
 	Logger.Debug("[Grapevine] heartbeat sent",
 		"members", payload["member_count"], "online", payload["online_count"])

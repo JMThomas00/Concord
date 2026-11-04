@@ -46,6 +46,10 @@ type Handlers struct {
 	version   string
 	gitCommit string
 	buildTime string
+
+	// The Server, for Server Settings › About (server_admin.go); nil in
+	// tests that build Handlers alone.
+	admin serverAdmin
 }
 
 // SetPluginsDir records the resolved plugins directory, called once at
