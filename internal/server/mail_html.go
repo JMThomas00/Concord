@@ -46,6 +46,7 @@ type mailView struct {
 	Facts   [][2]string   // key/value rows under the code
 	OK      string        // a green "[ OK ]" line, or ""
 	Note    string        // the closing grey line
+	Install bool          // a line linking to the install instructions (invites)
 	Banner  template.HTML // the ASCII banner, escaped
 }
 
@@ -83,12 +84,13 @@ var mailTemplate = template.Must(template.New("mail").Parse(`<!doctype html>
 {{if .Facts}}<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:12px 0 0;">
 {{range .Facts}}<tr><td style="color:` + mailCyan + `;font:400 13px/1.7 ` + mailMono + `;padding:0 22px 0 0;white-space:nowrap;vertical-align:top;">{{index . 0}}</td><td style="color:` + mailFG + `;font:400 13px/1.7 ` + mailMono + `;">{{index . 1}}</td></tr>
 {{end}}</table>{{end}}
+{{if .Install}}<div style="margin:16px 0 0;color:` + mailDim + `;">New to Concord? Install it in one line from <a href="https://concordchat.cc/#install" style="color:` + mailCyan + `;text-decoration:underline;">concordchat.cc</a>.</div>{{end}}
 <div style="margin:18px 0 0;color:` + mailBorder + `;">{{.Note}} <span style="background:` + mailFG + `;color:` + mailFG + `;">&nbsp;</span></div>
 </td></tr></table>
 </td></tr>
 <!-- status line -->
 <tr><td bgcolor="` + mailSel + `" style="background:` + mailSel + `;color:` + mailBorder + `;font:400 12px/28px ` + mailMono + `;padding:0 14px;">
-<span style="color:` + mailFG + `;">Concord</span> &middot; chat that lives in your terminal &middot; <a href="https://github.com/JMThomas00/Concord" style="color:` + mailCyan + `;text-decoration:underline;">github.com/JMThomas00/Concord</a>
+<span style="color:` + mailFG + `;">Concord</span> &middot; chat that lives in your terminal &middot; <a href="https://concordchat.cc" style="color:` + mailCyan + `;text-decoration:underline;">concordchat.cc</a>
 </td></tr>
 </table>
 </td></tr></table>
@@ -181,14 +183,14 @@ func inviteEmail(serverName, from, address, code, note string, expires time.Time
 	}
 	lines = append(lines, "In Concord, open Add Server and paste this (it fills in the address and the code), then sign up with this email address:")
 	text += "In Concord, open Add Server and paste:\n\n    " + paste + "\n\nthen sign up with this email address. Your invite code is " + shown + "; it " + when + " and works once.\n\n" +
-		"New to Concord? See https://concordchat.cc to install it.\n"
+		"New to Concord? Install it in one line from https://concordchat.cc/#install\n"
 	facts := [][2]string{{"server", serverName}, {"paste", paste}, {"expires", strings.TrimPrefix(when, "expires ")}, {"uses", "once"}}
 	return Email{
 		Subject: from + " invited you to " + serverName + " on Concord",
 		Text:    text,
 		HTML: renderMailHTML(mailView{
 			Title: serverName, Section: "#invite", Prompt: "you@" + promptHost(serverName), Command: "concord join",
-			Lines: lines, Code: shown, Facts: facts,
+			Lines: lines, Code: shown, Facts: facts, Install: true,
 			Note: "Not expecting this? Ignore it. Nothing happens unless you use the code.",
 		}),
 	}
