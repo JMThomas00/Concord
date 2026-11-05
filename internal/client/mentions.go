@@ -95,6 +95,21 @@ func serverName(sc *ServerConnection) string {
 	return "server"
 }
 
+// wireServerID is the ID the server itself knows its server by (from
+// READY), which requests must carry; sc.ServerID is only this client's
+// handle for the connection. Zero before READY.
+func wireServerID(sc *ServerConnection) uuid.UUID {
+	if sc == nil {
+		return uuid.Nil
+	}
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	if len(sc.Servers) == 0 || sc.Servers[0] == nil {
+		return uuid.Nil
+	}
+	return sc.Servers[0].ID
+}
+
 // requestMentions asks one server for a page of mentions before Seq before
 // (0: the newest).
 func (a *App) requestMentions(serverID uuid.UUID, before int64) {
@@ -102,7 +117,7 @@ func (a *App) requestMentions(serverID uuid.UUID, before int64) {
 	if in == nil || in.servers[serverID] == nil || a.connMgr == nil {
 		return
 	}
-	msg, err := protocol.NewMessage(protocol.OpRequestMentions, protocol.MentionsRequest{ServerID: serverID, Before: before})
+	msg, err := protocol.NewMessage(protocol.OpRequestMentions, protocol.MentionsRequest{ServerID: wireServerID(a.connMgr.GetConnection(serverID)), Before: before})
 	if err != nil {
 		return
 	}

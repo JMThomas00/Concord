@@ -102,11 +102,14 @@ func (a *App) runSearch() {
 
 func (a *App) sendSearch(serverID uuid.UUID, offset int) {
 	s := a.search
+	if a.connMgr == nil {
+		return
+	}
 	_, off := time.Now().In(viewerZone).Zone()
 	msg, err := protocol.NewMessage(protocol.OpSearch, protocol.SearchRequest{
-		ServerID: serverID, Query: s.query, Newest: s.newest, Offset: offset, UTCOffset: off,
+		ServerID: wireServerID(a.connMgr.GetConnection(serverID)), Query: s.query, Newest: s.newest, Offset: offset, UTCOffset: off,
 	})
-	if err != nil || a.connMgr == nil {
+	if err != nil {
 		return
 	}
 	if err := a.connMgr.SendRaw(serverID, msg); err != nil {

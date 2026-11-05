@@ -89,3 +89,30 @@ func TestSearchMerge(t *testing.T) {
 		t.Errorf("newest: %s first", l[0].msg.Content)
 	}
 }
+
+// Found 2026-11-04: typing in the search box also typed into the message
+// box, and searches carried this client's handle for the connection instead
+// of the server's own ID, so the server answered "Not a member".
+func TestSearchKeysAndServerID(t *testing.T) {
+	a := newEmojiTestApp(t)
+	for _, open := range []func(){func() { a.openSearch("") }, func() { a.mentions = &mentionsInbox{servers: map[uuid.UUID]*inboxServer{}} }} {
+		a.search, a.mentions = nil, nil
+		a.input.SetValue("")
+		open()
+		for _, r := range "yazi" {
+			a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+		if v := a.input.Value(); v != "" {
+			t.Errorf("the message box got %q while an overlay was open (search %v, mentions %v)", v, a.search != nil, a.mentions != nil)
+		}
+	}
+
+	wire := uuid.New()
+	sc := &ServerConnection{ServerID: uuid.New(), Servers: []*models.Server{{ID: wire}}}
+	if got := wireServerID(sc); got != wire {
+		t.Errorf("wireServerID = %v, want the server's own %v", got, wire)
+	}
+	if got := wireServerID(&ServerConnection{ServerID: uuid.New()}); got != uuid.Nil {
+		t.Errorf("before READY: %v", got)
+	}
+}

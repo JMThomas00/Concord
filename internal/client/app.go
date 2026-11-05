@@ -1593,7 +1593,10 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Captured BEFORE handleKeyPress/a.input.Update -- see the
 		// consuming check after the later `switch a.view` block.
 		wasComposing = a.view == ViewMain && a.focus == FocusInput && len(a.input.Value()) > 0
-		listWasOpen := a.threadList != nil // the Alt+T list keeps its keys (threads_find.go)
+		// The Alt+T list, the mentions inbox and the search box keep their
+		// keys (threads_find.go, mentions.go, search.go): none may reach the
+		// message box underneath.
+		listWasOpen := a.threadList != nil || a.mentions != nil || a.search != nil
 		pickerWasOpen := a.emojiPicker != nil
 		cmd := a.handleKeyPress(msg)
 		if cmd != nil {
@@ -1601,7 +1604,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The emoji picker keeps its keys too, including the Ctrl+E that
 		// opened it and the Enter that inserts (which mustn't also send).
-		if listWasOpen || pickerWasOpen || a.emojiPicker != nil {
+		if listWasOpen || pickerWasOpen || a.emojiPicker != nil || a.mentions != nil || a.search != nil {
 			return a, tea.Batch(cmds...)
 		}
 		// See inPasteBurst's doc comment: handleKeyPress may have just
