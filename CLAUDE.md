@@ -471,6 +471,7 @@ Server Settings › About (`internal/client/server_about.go`) asks the server th
 | ↳ Members | Members tab | ✅ Full (list, kick/ban/role assign) |
 | ↳ Messages | Messages tab | ✅ Full (retention policies incl. per-channel custom overrides, prune) |
 | ↳ Plugins | Plugins tab | ✅ Full (enable/disable, config, admin install via `OpPluginInstall`) |
+| ↳ Invites | Invites tab | ✅ Full (join mode, email verification switch, test email, every invite and join request; see Invites and join modes) |
 | ↳ About | About tab | ✅ Full (version against the latest release, health, Back up now, Restart, Update; see Server About below) |
 
 Chat messages themselves render markdown too (bold/italic/inline code/fenced code/lists, plus clickable OSC 8 links and @mention highlighting) via a separate, minimal-feature-set glamour renderer — see `internal/client/message_markdown.go` and `buildChatGlamourStyle`. Deliberately excludes glamour's Table/Linkify extensions (goldmark's GFM Linkify auto-links bare URLs, and glamour's own link renderer then prints the link text and href as two separate visible runs — confirmed via `TestProbeChatGlamourPipeline`); Concord substitutes/restores URLs itself instead via an opaque placeholder token, both for that reason and to keep its own OSC 8/zone-marked clickable-link behavior.
