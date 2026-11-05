@@ -88,7 +88,15 @@ type onionService struct {
 }
 
 // torDir is tor's folder for a server whose database is at dbPath.
-func torDir(dbPath string) string { return filepath.Join(filepath.Dir(dbPath), torDirName) }
+// It's absolute: tor reads its settings from a file and warns about
+// relative paths.
+func torDir(dbPath string) string {
+	dir := filepath.Join(filepath.Dir(dbPath), torDirName)
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
 
 // startTor starts the onion service when [tor] is on. It doesn't wait for
 // tor to connect; About shows how far it has got.
