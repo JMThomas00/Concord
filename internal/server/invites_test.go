@@ -17,10 +17,10 @@ import (
 
 func TestInviteCodeFrom(t *testing.T) {
 	for in, want := range map[string]string{
-		"abcd-efgh":                       "ABCDEFGH",
+		"abcd-efgh":                        "ABCDEFGH",
 		" vineyard.example:8090/K7Q2M8PX ": "K7Q2M8PX",
-		"concord://host:1/invite/AB CD":   "ABCD",
-		"":                                "",
+		"concord://host:1/invite/AB CD":    "ABCD",
+		"":                                 "",
 	} {
 		if got := inviteCodeFrom(in); got != want {
 			t.Errorf("inviteCodeFrom(%q) = %q, want %q", in, got, want)
