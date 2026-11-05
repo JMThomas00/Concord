@@ -514,6 +514,7 @@ const (
 	codeModeVerify       = "verify"        // a new account's email
 	codeModeForgot       = "forgot"        // reset a forgotten password
 	codeModeConfirmEmail = "confirm_email" // a changed email
+	codeModeJoin         = "join"          // not a member yet: an invite code, or waiting (invites.go)
 )
 
 // AccountCodeState is the open code screen.
@@ -534,6 +535,7 @@ type AccountCodeState struct {
 	TempPassword bool
 
 	Code    textinput.Model
+	Note    textinput.Model // join: a note for the moderators
 	NewPass textinput.Model
 	Confirm textinput.Model
 	Focus   int
@@ -647,6 +649,10 @@ func (a *App) handleAccountCodeKey(msg tea.KeyMsg) tea.Cmd {
 			})
 		}
 		return nil
+	}
+
+	if st.Mode == codeModeJoin {
+		return a.handleJoinKey(msg) // invites.go
 	}
 
 	inputs := []*textinput.Model{&st.Code}
@@ -1021,6 +1027,9 @@ func (a *App) closeCodeScreen(done bool) tea.Cmd {
 		a.statusMessage = a.codeServerName(st.ServerID) + " is waiting for your email code: select it and press Enter."
 		a.statusError = true
 	}
+	if !done && st.Mode == codeModeJoin {
+		a.joinScreenClosed(st.ServerID)
+	}
 	a.view = back
 	if back == ViewLogin {
 		a.initLoginView()
@@ -1057,6 +1066,8 @@ func (a *App) renderAccountCodeView() string {
 		b.WriteString(a.dim("Your account there keeps the old address until you enter it.") + "\n\n")
 		b.WriteString(a.renderCodeBoxes(st, now) + "\n\n")
 		hints = []keyHint{{"Enter", "Confirm"}, {"Esc", "Later"}}
+	case codeModeJoin:
+		label, headline, accent, hints = a.renderJoinScreen(st, &b) // invites.go
 	case codeModeForgot:
 		label, headline, accent = "Password reset", "Forgot your password?", "password"
 		if st.Step == 0 {

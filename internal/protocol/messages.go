@@ -123,6 +123,21 @@ const (
 	// that account. Servers before v0.1.9 don't know it.
 	OpChannelRead OpCode = 67
 
+	// OpRequestMentions (68): C→S. A page of your mentions in a server
+	// (MentionsRequest), newest first; the server answers MENTIONS
+	// (MentionsPayload). Servers before v0.1.9 don't know it.
+	OpRequestMentions OpCode = 68
+
+	// OpSearch (69): C→S. Search a server's messages (SearchRequest); the
+	// server answers SEARCH_RESULTS (SearchResultsPayload). Servers before
+	// v0.1.9 don't know it.
+	OpSearch OpCode = 69
+
+	// OpInvites (70): C→S. Invites and join requests (InvitesRequest):
+	// list, create, email, revoke, approve, deny, and for administrators
+	// the join settings. Answered with INVITES and INVITES_RESULT.
+	OpInvites OpCode = 70
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -218,6 +233,11 @@ const (
 	EventServerStatus         EventType = "SERVER_STATUS"          // S→C: health and how the server runs, answering OpServerAdmin
 	EventServerAdminResult    EventType = "SERVER_ADMIN_RESULT"    // S→C: how a backup or restart went
 	EventChannelRead          EventType = "CHANNEL_READ"           // S→C: your read position in a channel moved (any of your devices)
+	EventMentions             EventType = "MENTIONS"               // S→C: a page of your mentions (OpRequestMentions)
+	EventSearchResults        EventType = "SEARCH_RESULTS"         // S→C: a page of search results (OpSearch)
+	EventInvites              EventType = "INVITES"                // S→C: invites, join requests and join settings (OpInvites)
+	EventInvitesResult        EventType = "INVITES_RESULT"         // S→C: how an invite action went
+	EventJoinRequest          EventType = "JOIN_REQUEST"           // S→C: someone asked to join (to those who can let them in)
 )
 
 // Message represents a WebSocket message envelope
@@ -371,6 +391,9 @@ type MessageHistoryRequest struct {
 	ChannelID uuid.UUID  `json:"channel_id"`
 	Limit     int        `json:"limit,omitempty"`  // Default: 200
 	Before    *uuid.UUID `json:"before,omitempty"` // Pagination
+	// Around: history from a little before this message to the newest (a
+	// jump to it). Servers before v0.1.9 ignore it.
+	Around *uuid.UUID `json:"around,omitempty"`
 }
 
 // RoleAssignRequest assigns a role to a member
@@ -594,6 +617,70 @@ type ChannelReadPayload struct {
 	ReadSeq   int64     `json:"read_seq"`
 }
 
+// MentionsRequest asks for a page of your mentions in a server
+// (OpRequestMentions): those before Seq Before (0: from the newest).
+type MentionsRequest struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Before   int64     `json:"before,omitempty"`
+	Limit    int       `json:"limit,omitempty"` // default and most: 50
+}
+
+// Mention kinds (MentionItem.Kind).
+const (
+	MentionWhisper  = "whisper"
+	MentionDirect   = "mention"
+	MentionReply    = "reply"
+	MentionEveryone = "everyone"
+)
+
+// MentionItem is one message that called for you.
+type MentionItem struct {
+	Message *MessageDisplay `json:"message"` // ThreadID set for a reply in a thread
+	Kind    string          `json:"kind"`
+	Unread  bool            `json:"unread,omitempty"`
+}
+
+// SearchRequest searches a server's messages (OpSearch). Query is what was
+// typed: words, "phrases", prefix*, and the filters from:name, in:#channel,
+// has:link, has:file, before:YYYY-MM-DD and after:YYYY-MM-DD (dates in the
+// searcher's zone, UTCOffset seconds east of UTC).
+type SearchRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	Query     string    `json:"query"`
+	Newest    bool      `json:"newest,omitempty"` // newest first instead of best match
+	Offset    int       `json:"offset,omitempty"`
+	Limit     int       `json:"limit,omitempty"` // default and most: 25
+	UTCOffset int       `json:"utc_offset,omitempty"`
+}
+
+// SearchHit is one message found. Snippet is the text around the matches,
+// each match between \x02 and \x03.
+type SearchHit struct {
+	Message *MessageDisplay `json:"message"`
+	Snippet string          `json:"snippet,omitempty"`
+	Score   float64         `json:"score,omitempty"` // lower is better; comparable across servers
+}
+
+// SearchResultsPayload is SEARCH_RESULTS: a page of hits, or Error (a
+// filter that names no one or no channel).
+type SearchResultsPayload struct {
+	ServerID uuid.UUID   `json:"server_id"`
+	Query    string      `json:"query"`
+	Newest   bool        `json:"newest,omitempty"`
+	Offset   int         `json:"offset,omitempty"`
+	Items    []SearchHit `json:"items"`
+	HasMore  bool        `json:"has_more,omitempty"`
+	Error    string      `json:"error,omitempty"`
+}
+
+// MentionsPayload is MENTIONS: a page of your mentions, newest first.
+type MentionsPayload struct {
+	ServerID uuid.UUID     `json:"server_id"`
+	Before   int64         `json:"before,omitempty"` // the request's, so a client knows which page this is
+	Items    []MentionItem `json:"items"`
+	HasMore  bool          `json:"has_more,omitempty"`
+}
+
 // --- Event Payloads ---
 
 // MessageCreatePayload is dispatched when a message is created
@@ -611,6 +698,10 @@ type MessageHistoryPayload struct {
 	Messages       []*MessageDisplay `json:"messages"`
 	HasMore        bool              `json:"has_more"`
 	PinnedMessages []*models.Message `json:"pinned_messages,omitempty"`
+	// Around echoes the request's; NewerMissing says the newest messages
+	// didn't fit after it.
+	Around       *uuid.UUID `json:"around,omitempty"`
+	NewerMissing bool       `json:"newer_missing,omitempty"`
 }
 
 // MessageDisplay is the client-side message representation

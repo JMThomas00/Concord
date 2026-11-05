@@ -105,3 +105,92 @@ func TestUnreadsOverTheWire(t *testing.T) {
 		t.Errorf("an outsider got %+v, want an error", e)
 	}
 }
+
+// postReply sends a reply to another message and returns it as broadcast.
+func postReply(t *testing.T, c *testWSClient, ch uuid.UUID, content string, to uuid.UUID) *models.Message {
+	t.Helper()
+	nonce := uuid.NewString()
+	c.send(protocol.OpSendMessage, protocol.SendMessagePayload{ChannelID: ch, Content: content, ReplyToID: &to, Nonce: nonce})
+	got := c.readUntil(5*time.Second, func(m *protocol.Message) bool {
+		var p protocol.MessageCreatePayload
+		return m.Type == protocol.EventMessageCreate && json.Unmarshal(m.Data, &p) == nil && p.Nonce == nonce
+	})
+	if got == nil {
+		t.Fatalf("no MESSAGE_CREATE for %q", content)
+	}
+	var p protocol.MessageCreatePayload
+	mustUnmarshal(t, got.Data, &p)
+	return p.Message
+}
+
+func requestMentions(t *testing.T, c *testWSClient, serverID uuid.UUID, before int64) protocol.MentionsPayload {
+	t.Helper()
+	c.send(protocol.OpRequestMentions, protocol.MentionsRequest{ServerID: serverID, Before: before})
+	m := c.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventMentions || (m.Op == protocol.OpDispatch && m.Type == "") })
+	if m == nil || m.Type != protocol.EventMentions {
+		t.Fatalf("no MENTIONS: %+v", m)
+	}
+	var p protocol.MentionsPayload
+	mustUnmarshal(t, m.Data, &p)
+	return p
+}
+
+// The inbox over the wire: a reply reaches the person replied to as a
+// mention, MENTIONS lists @name and the reply with their kinds, and a jump
+// loads history around a message.
+func TestMentionsOverTheWire(t *testing.T) {
+	srv, wsURL, users, tokens, ch, _ := reactionServer(t, models.NewEveryoneRole(uuid.Nil).Permissions)
+	sid := ch.ServerID
+	bob := newTestWSClient(t, wsURL)
+	bob.identify(tokens[2])
+	alice := newTestWSClient(t, wsURL)
+	alice.identify(tokens[1])
+
+	mine := post(t, bob, ch.ID, "bob's question", nil)
+	reply := postReply(t, alice, ch.ID, "an answer", mine.ID)
+	if len(reply.Mentions) != 1 || reply.Mentions[0] != users[2].ID {
+		t.Errorf("the reply's mentions: %v", reply.Mentions)
+	}
+	self := postReply(t, bob, ch.ID, "answering myself", mine.ID)
+	if len(self.Mentions) != 0 {
+		t.Errorf("replying to yourself mentioned you: %v", self.Mentions)
+	}
+	named := post(t, alice, ch.ID, "and @"+users[2].Username, nil)
+
+	p := requestMentions(t, bob, sid, 0)
+	if len(p.Items) != 2 || p.Items[0].Message.ID != named.ID || p.Items[0].Kind != protocol.MentionDirect ||
+		p.Items[1].Message.ID != reply.ID || p.Items[1].Kind != protocol.MentionReply || !p.Items[1].Unread {
+		t.Fatalf("mentions: %+v", p.Items)
+	}
+	if p.Items[0].Message.Author == nil || p.Items[0].Message.Author.ID != users[1].ID {
+		t.Error("no author on a mention")
+	}
+	if got, _ := unreadsOnSignIn(t, wsURL, tokens[2], sid); got[ch.ID].Mentions != 2 {
+		t.Errorf("badge %+v, want 2 mentions", got[ch.ID])
+	}
+
+	// History around the reply starts before it and runs to the newest.
+	bob.send(protocol.OpRequestMessages, protocol.MessageHistoryRequest{ChannelID: ch.ID, Around: &reply.ID})
+	h := bob.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventMessagesHistory })
+	if h == nil {
+		t.Fatal("no history")
+	}
+	var hist protocol.MessageHistoryPayload
+	mustUnmarshal(t, h.Data, &hist)
+	if hist.Around == nil || *hist.Around != reply.ID || len(hist.Messages) == 0 || hist.Messages[len(hist.Messages)-1].ID != named.ID {
+		t.Errorf("around: %d messages, around %v", len(hist.Messages), hist.Around)
+	}
+
+	// Someone outside the server gets neither mentions nor history.
+	_, tok := createTestUserAndToken(t, srv, "outsider-"+uuid.NewString()[:6])
+	o := newTestWSClient(t, wsURL)
+	o.identify(tok)
+	o.send(protocol.OpRequestMentions, protocol.MentionsRequest{ServerID: sid})
+	if e := o.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Op == protocol.OpDispatch && (m.Type == "" || m.Type == protocol.EventMentions) }); e == nil || e.Type != "" {
+		t.Errorf("an outsider's mentions: %+v", e)
+	}
+	o.send(protocol.OpRequestMessages, protocol.MessageHistoryRequest{ChannelID: ch.ID})
+	if e := o.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Op == protocol.OpDispatch && (m.Type == "" || m.Type == protocol.EventMessagesHistory) }); e == nil || e.Type != "" {
+		t.Errorf("an outsider read the history: %+v", e)
+	}
+}

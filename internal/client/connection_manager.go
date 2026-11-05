@@ -53,6 +53,7 @@ func (s ConnectionState) String() string {
 type ServerConnection struct {
 	ServerID   uuid.UUID         // Client-side server tracking ID
 	ServerInfo *ClientServerInfo // Client-side server metadata
+	join       JoinDetails       // sent with sign-ins until it works (invites.go)
 	Connection *Connection       // WebSocket connection
 	State      ConnectionState   // Current connection state
 	LastError  error             // Last error encountered
@@ -482,15 +483,14 @@ func (cm *ConnectionManager) Login(serverID uuid.UUID, email, password string) (
 	}
 
 	sc.mu.RLock()
-	conn := sc.Connection
 	httpURL := sc.ServerInfo.GetHTTPURL()
 	sc.mu.RUnlock()
 
-	if conn == nil {
-		// Create temporary connection for login
-		conn = NewConnection(sc.ServerInfo.GetWebSocketURL())
-		conn.serverAddr = httpURL
-	}
+	// A connection value just for the HTTP call, carrying the join details
+	// (invite code and note).
+	conn := NewConnection(sc.ServerInfo.GetWebSocketURL())
+	conn.serverAddr = httpURL
+	conn.Join = sc.joinDetails()
 
 	user, token, err := conn.Login(email, password)
 	if err != nil {
@@ -520,6 +520,7 @@ func (cm *ConnectionManager) Register(serverID uuid.UUID, username, email, passw
 	// Create temporary connection for registration
 	conn := NewConnection(sc.ServerInfo.GetWebSocketURL())
 	conn.serverAddr = httpURL
+	conn.Join = sc.joinDetails()
 
 	user, token, err := conn.Register(username, email, password)
 	if err != nil {
@@ -565,6 +566,12 @@ type AutoConnectResult struct {
 	// NeedsVerification: the account exists but must enter the code the
 	// server emailed to Email before it can sign in.
 	NeedsVerification bool
+	// Join: the server didn't make this profile a member (invites.go):
+	// invite_required, invite_invalid, approval_pending, join_denied or
+	// banned. Err says why.
+	Join string
+	// UsedInvite: signed in with the waiting invite code, now used.
+	UsedInvite bool
 }
 
 // AutoConnect performs the full token→login→register flow for a server.
@@ -627,6 +634,16 @@ func (cm *ConnectionManager) AutoConnect(serverID uuid.UUID, savedToken, email, 
 	return result
 }
 
+// SetJoin sets the invite code and note sent with the next sign-ins to a
+// server (invites.go); empty clears them.
+func (cm *ConnectionManager) SetJoin(serverID uuid.UUID, j JoinDetails) {
+	if sc := cm.GetConnection(serverID); sc != nil {
+		sc.mu.Lock()
+		sc.join = j
+		sc.mu.Unlock()
+	}
+}
+
 // AutoConnectHTTP performs only the HTTP login→register flow (no WebSocket).
 // Use this when the WebSocket connection will be handled separately by connectServerAsync,
 // which correctly sets activeConn before calling Identify to prevent the READY race condition.
@@ -663,11 +680,23 @@ func (cm *ConnectionManager) AutoConnectHTTP(serverID uuid.UUID, profile *LocalI
 		return false
 	}
 
+	sc := cm.GetConnection(serverID)
+	if sc != nil {
+		result.UsedInvite = sc.joinDetails().Invite != ""
+	}
+	joinBlocked := func(err error) bool {
+		if e, ok := err.(*APIError); ok && isJoinCode(e.Code) {
+			result.Join, result.Err, result.UsedInvite = e.Code, e, false
+			return true
+		}
+		return false
+	}
+
 	user, token, err := cm.Login(serverID, email, profile.Password)
 	if err == nil {
 		return done(user, token)
 	}
-	if needsCode(err) {
+	if needsCode(err) || joinBlocked(err) {
 		return result
 	}
 	apiErr, isAPI := err.(*APIError)
@@ -685,7 +714,7 @@ func (cm *ConnectionManager) AutoConnectHTTP(serverID uuid.UUID, profile *LocalI
 	if err == nil {
 		return done(user, token)
 	}
-	if needsCode(err) {
+	if needsCode(err) || joinBlocked(err) {
 		return result
 	}
 	if apiErr, ok := err.(*APIError); ok && apiErr.Status == http.StatusConflict {

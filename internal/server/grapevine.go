@@ -82,6 +82,9 @@ type GrapevineClient struct {
 	getMemberCount func() int
 	getOnlineCount func() int
 	onSaveConfig   func() error
+	// joinMode is the server's join mode (invites.go); invite only and
+	// approval servers are listed with a tag saying so.
+	joinMode func() string
 
 	// What Server Settings › About shows: the last heartbeat the hub
 	// accepted, and the last thing that went wrong ("" once a beat works).
@@ -163,9 +166,11 @@ func (g *GrapevineClient) listing() map[string]interface{} {
 	if maxMembers <= 0 {
 		maxMembers = 1000
 	}
-	tags := g.cfg.Tags
-	if tags == nil {
-		tags = []string{}
+	tags := append([]string{}, g.cfg.Tags...)
+	if g.joinMode != nil {
+		if tag := joinModeTag(g.joinMode()); tag != "" {
+			tags = append(tags, tag)
+		}
 	}
 	return map[string]interface{}{
 		"name":        g.serverName,
@@ -174,6 +179,23 @@ func (g *GrapevineClient) listing() map[string]interface{} {
 		"tags":        tags,
 		"max_members": maxMembers,
 	}
+}
+
+// Tags a listing carries for its join mode, which the client's server
+// browser shows as badges (old hubs and clients just show a tag).
+const (
+	TagInviteOnly = "invite-only"
+	TagApproval   = "approval"
+)
+
+func joinModeTag(mode string) string {
+	switch mode {
+	case protocol.JoinInvite:
+		return TagInviteOnly
+	case protocol.JoinApproval:
+		return TagApproval
+	}
+	return ""
 }
 
 func (g *GrapevineClient) register() error {

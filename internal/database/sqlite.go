@@ -1707,9 +1707,53 @@ func (db *DB) SoftDeleteMessage(messageID, deletedBy uuid.UUID) error {
 }
 
 func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UUID, userID uuid.UUID) ([]*models.Message, error) {
-	var query string
-	var args []interface{}
+	cond, args := "", []any{}
+	if before != nil {
+		cond, args = "m.seq < (SELECT seq FROM messages WHERE id = ?)", []any{before.String()}
+	}
+	msgs, err := db.channelHistory(channelID, userID, cond, args, "m.seq DESC", limit)
+	if err != nil {
+		return nil, err
+	}
+	reverseMessages(msgs) // newest N, oldest first: new messages append at the end
+	return msgs, nil
+}
 
+// aroundBefore is how many earlier messages GetChannelMessagesAround shows
+// above the one it's around.
+const aroundBefore = 25
+
+// GetChannelMessagesAround is channel history from a little before a
+// message (a thread's first one, for a reply) to the newest, at most limit
+// messages: where a jump to that message lands. newerMissing reports that
+// the newest ones didn't fit.
+func (db *DB) GetChannelMessagesAround(channelID, around uuid.UUID, limit int, userID uuid.UUID) (msgs []*models.Message, newerMissing bool, err error) {
+	at := []any{around.String()}
+	earlier, err := db.channelHistory(channelID, userID, "m.seq < (SELECT seq FROM messages WHERE id = ?)", at, "m.seq DESC", aroundBefore)
+	if err != nil {
+		return nil, false, err
+	}
+	reverseMessages(earlier)
+	rest := max(1, limit-len(earlier))
+	later, err := db.channelHistory(channelID, userID, "m.seq >= (SELECT seq FROM messages WHERE id = ?)", at, "m.seq ASC", rest+1)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(later) > rest {
+		later, newerMissing = later[:rest], true
+	}
+	return append(earlier, later...), newerMissing, nil
+}
+
+func reverseMessages(m []*models.Message) {
+	for i, j := 0, len(m)-1; i < j; i, j = i+1, j-1 {
+		m[i], m[j] = m[j], m[i]
+	}
+}
+
+// channelHistory is the channel's top-level messages the user may see that
+// also meet cond, in order, at most limit.
+func (db *DB) channelHistory(channelID, userID uuid.UUID, cond string, condArgs []any, order string, limit int) ([]*models.Message, error) {
 	// Filter: show regular messages to everyone, whispers only to sender/recipient, hide deleted messages.
 	// Thread replies aren't channel history (they load by thread, threads.go),
 	// and a deleted message that starts a thread with replies left stays, as
@@ -1717,24 +1761,17 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 	whisperFilter := "(m.is_whisper = 0 OR m.author_id = ? OR m.recipient_id = ?)"
 	deletedFilter := "(m.is_deleted = 0 OR m.is_deleted IS NULL OR EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND (r.is_deleted = 0 OR r.is_deleted IS NULL)))"
 	const columns = `m.id, m.channel_id, m.author_id, m.content, m.type, m.created_at, m.edited_at, m.is_pinned, m.is_whisper, m.recipient_id, m.reply_to_id, COALESCE(m.is_deleted, 0), COALESCE(m.seq, 0)`
-
-	if before != nil {
-		query = `
-			SELECT ` + columns + `
-			FROM messages m
-			WHERE m.channel_id = ? AND m.thread_id IS NULL AND m.seq < (SELECT seq FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY m.seq DESC
-			LIMIT ?`
-		args = []interface{}{channelID.String(), before.String(), userID.String(), userID.String(), limit}
-	} else {
-		query = `
-			SELECT ` + columns + `
-			FROM messages m
-			WHERE m.channel_id = ? AND m.thread_id IS NULL AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY m.seq DESC
-			LIMIT ?`
-		args = []interface{}{channelID.String(), userID.String(), userID.String(), limit}
+	if cond == "" {
+		cond = "1 = 1"
 	}
+	query := `
+		SELECT ` + columns + `
+		FROM messages m
+		WHERE m.channel_id = ? AND m.thread_id IS NULL AND (` + cond + `) AND ` + whisperFilter + ` AND ` + deletedFilter + `
+		ORDER BY ` + order + `
+		LIMIT ?`
+	args := append([]any{channelID.String()}, condArgs...)
+	args = append(args, userID.String(), userID.String(), limit)
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -1803,15 +1840,9 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 		}
 	}
 
-	// The query fetches the most-recent N rows with DESC order (needed for
-	// correct LIMIT behaviour). Reverse to chronological order (oldest first)
-	// so the client can simply append new real-time messages to the end.
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-
 	return messages, nil
 }
+
 
 // --- Message Retention Policy Operations ---
 
@@ -3697,6 +3728,20 @@ func (db *DB) MigratePluginPlatform() error {
 	}); err != nil {
 		return err
 	}
+	// Threads keep a read position too (the mentions inbox reads it), and
+	// every existing follow starts read.
+	if err := addColumnIfMissing(db, "thread_follows", "read_seq", "INTEGER"); err != nil {
+		return err
+	}
+	if err := runOnce(db, "2026-11-05-threads-read", func() error {
+		_, err := db.Exec(`UPDATE thread_follows SET read_seq = (SELECT COALESCE(MAX(seq), 0) FROM messages) WHERE read_seq IS NULL`)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := migrateSearch(db); err != nil { // the search index (search.go)
+		return err
+	}
 
 	// Voice permissions (2026-10-09): Connect and Speak were never checked,
 	// and @everyone never had them, so voice worked only by accident. Now
@@ -3716,14 +3761,20 @@ func (db *DB) MigratePluginPlatform() error {
 	// Moderator preset as it was then up to the new one, which adds Manage
 	// Channels and Deafen Members (enforced from the same day).
 	if err := runOnce(db, "2026-10-20-everyone-manage-channels", func() error {
-		oldModerator := int64(models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers))
+		oldModerator := int64(models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers | models.PermissionCreateInvite))
+		then := int64(models.PermissionsModerator &^ models.PermissionCreateInvite) // the preset on 2026-10-20
 		if _, err := db.Exec(`UPDATE roles SET permissions = ? WHERE is_default = 0 AND permissions = ?`,
-			int64(models.PermissionsModerator), oldModerator); err != nil {
+			then, oldModerator); err != nil {
 			return err
 		}
 		_, err := db.Exec(`UPDATE roles SET permissions = permissions & ~? WHERE is_default = 1`, int64(models.PermissionManageChannels))
 		return err
 	}); err != nil {
+		return err
+	}
+	// After that one: it brings old Moderator roles up to the preset of
+	// the day, and this adds Create Invite to them.
+	if err := migrateInvites(db); err != nil { // invites and join modes (invites.go)
 		return err
 	}
 

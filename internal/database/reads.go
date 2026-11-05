@@ -16,7 +16,7 @@ type ChannelUnread struct {
 	ChannelID uuid.UUID
 	ReadSeq   int64 // the last message read
 	Unread    int   // messages after it, from other people
-	Mentions  int   // ...that mention them, @everyone, or whisper to them
+	Mentions  int   // ...that mention them, @everyone, reply to them, or whisper to them
 }
 
 // MarkChannelRead records that the user has read the channel up to its
@@ -65,12 +65,13 @@ func (db *DB) ServerUnreads(userID, serverID uuid.UUID) ([]ChannelUnread, error)
 		              AND COALESCE(m.is_deleted, 0) = 0 AND m.author_id != ?
 		              AND (COALESCE(m.is_whisper, 0) = 0 OR m.recipient_id = ?)
 		              AND (COALESCE(m.mention_everyone, 0) = 1 OR m.recipient_id = ?
-		                   OR EXISTS (SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND mm.user_id = ?))
+		                   OR EXISTS (SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND mm.user_id = ?)
+		                   OR EXISTS (SELECT 1 FROM messages p WHERE p.id = m.reply_to_id AND p.author_id = ?))
 		            LIMIT 1000))
 		FROM channels c
 		LEFT JOIN channel_reads r ON r.channel_id = c.id AND r.user_id = ?
 		WHERE c.server_id = ? AND c.type NOT IN (2, 3, 4)`,
-		u, u, u, u, u, u, u, serverID.String())
+		u, u, u, u, u, u, u, u, serverID.String())
 	if err != nil {
 		return nil, fmt.Errorf("reading unread counts: %w", err)
 	}

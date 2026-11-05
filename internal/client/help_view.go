@@ -75,6 +75,12 @@ A thread keeps a side conversation in one box where it started. **Alt+M**, pick 
 
 Unread counts are kept by the server, so they're right after a restart and on every device you sign in on. A channel you open with new messages shows a **── new ──** line above the first one until you leave it; **Alt+U** jumps back to it.
 
+**Alt+I** (or ` + "`/mentions`" + `) is your mentions inbox: every @mention, reply to your messages, whisper and @everyone on every server you're connected to, newest first. **Tab** filters, **Enter** goes to the message (opening its thread), **R** marks them all read. The status bar shows **@N** while any are unread.
+
+**Ctrl+F** (or ` + "`/search words`" + `) searches messages: this server, or every server with **Tab**, best match first (**Ctrl+S** for newest). Use ` + "`\"a phrase\"`" + `, ` + "`pref*`" + `, and the filters ` + "`from:name`" + `, ` + "`in:#channel`" + `, ` + "`has:link`" + `, ` + "`has:file`" + `, ` + "`before:2026-11-05`" + ` and ` + "`after:2026-11-01`" + `. **Enter** goes to the message.
+
+` + "`/invite`" + ` (or **I** in the members list) invites people: make a code that expires and runs out when you choose, or email one from the server (it works once, for that address). Share the whole line, like ` + "`chat.example.com:8090/ABCD-EFGH`" + `: pasted into Add Server it fills in the address and the code. Moderators also see everyone's invites and the join requests. Administrators choose how people join (open, invite only, or approval) and switch email verification on or off in **Server Settings › Invites**.
+
 ### Whispers and files
 
 - ` + "`/w @user <message>`" + ` — a private message that isn't stored

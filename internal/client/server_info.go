@@ -25,6 +25,10 @@ type ClientServerInfo struct {
 	IconColor        string               `json:"icon_color"`                // Hex color for server icon
 	SoundOverride    *ServerSoundOverride `json:"sound_override,omitempty"`  // Per-server sound settings (nil = use global)
 	HubServerID      string               `json:"hub_server_id,omitempty"`   // Grapevine listing ID when joined via a hub (for the "joined" badge)
+	// Invite is an invite code waiting to be used on the next sign-in
+	// (pasted into Add Server, or typed on the join screen); cleared once
+	// it has made this profile a member (invites.go).
+	Invite string `json:"invite,omitempty"`
 }
 
 // SavedCredentials stores login credentials for auto-connect

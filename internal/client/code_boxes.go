@@ -44,7 +44,7 @@ func codeChars(v string) []rune {
 // usesBoxes reports whether the code screen shows its code as boxes (a
 // temporary password from an admin is typed in a plain field).
 func (st *AccountCodeState) usesBoxes() bool {
-	return !st.TempPassword && !st.Fixing && !(st.Mode == codeModeForgot && st.Step == 0)
+	return !st.TempPassword && !st.Fixing && !(st.Mode == codeModeForgot && st.Step == 0) && st.Mode != codeModeJoin
 }
 
 // trackCodeTyping notes when each letter was typed, for its flip. Called

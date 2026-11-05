@@ -32,7 +32,8 @@ func TestEveryoneLosesManageChannelsOnce(t *testing.T) {
 		}
 		return r
 	}
-	oldModerator := models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers)
+	// The preset before 2026-10-20 (Create Invite came later, 2026-11-05).
+	oldModerator := models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers | models.PermissionCreateInvite)
 	everyone := role("everyone", true, models.NewEveryoneRole(s.ID).Permissions|models.PermissionManageChannels) // as before
 	mod := role("Moderator", false, oldModerator)
 	helper := role("Helper", false, models.PermissionsText)
@@ -54,8 +55,9 @@ func TestEveryoneLosesManageChannelsOnce(t *testing.T) {
 	if p := perms(db, everyone); p&models.PermissionManageChannels != 0 || p&models.PermissionSendMessages == 0 {
 		t.Fatalf("@everyone after the migration: %b", p)
 	}
-	if p := perms(db, mod); p != models.PermissionsModerator {
-		t.Fatalf("Moderator after the migration: %b, want the new preset", p)
+	// Only this migration was re-run here, so the preset of 2026-10-20.
+	if p := perms(db, mod); p != models.PermissionsModerator&^models.PermissionCreateInvite {
+		t.Fatalf("Moderator after the migration: %b, want the 2026-10-20 preset", p)
 	}
 	if p := perms(db, helper); p != models.PermissionsText {
 		t.Fatalf("an unrelated role changed: %b", p)

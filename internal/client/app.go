@@ -137,6 +137,9 @@ type App struct {
 	profilesState *ProfilesState
 	codeState     *AccountCodeState
 	pendingVerify map[uuid.UUID]string
+	// pendingJoin holds servers that didn't let this profile in yet, with
+	// why (invites.go: invite_required, approval_pending, ...).
+	pendingJoin map[uuid.UUID]*joinState
 	addingProfile bool // the identity form is adding a profile, not the first one
 	formHintRows  int  // rows of shortcut hints under the login/register form (layoutBannerScreen)
 	stageStable   int  // the last stage page's reserved height (stage.go), for currentLockup
@@ -200,6 +203,7 @@ type App struct {
 	addServerAddress textinput.Model
 	addServerPort    textinput.Model
 	addServerUseTLS  bool
+	addServerInvite  string // an invite code pasted with the address (invites.go)
 	addServerFocus   int
 	addServerError   string
 
@@ -423,6 +427,10 @@ type App struct {
 	// "↳ who replied" and until when, and the chat lines holding an
 	// in-channel reply notice (a click opens that thread).
 	threadList        *threadListState
+	mentions          *mentionsInbox // the open mentions inbox (Alt+I, mentions.go)
+	pendingJump       *mentionJump   // a jump to a mention, landing once history loads
+	search            *searchView    // the open message search (Ctrl+F, search.go)
+	invitePeople      *invitesView   // the open Invite People overlay (/invite, invite_people.go)
 	threadFlash       string
 	threadFlashUntil  time.Time
 	threadNoticeLines map[int]uuid.UUID
@@ -784,15 +792,19 @@ func (a *App) saveAudioConfig() {
 	_ = a.configMgr.SaveAppConfig(cfg)
 }
 
+// viewerZone is the zone message times show in: this computer's (tests
+// set another; changing time.Local races with other goroutines).
+var viewerZone = time.Local
+
 // localDay is midnight of t's day here (Truncate would cut at UTC midnight).
 func localDay(t time.Time) time.Time {
-	t = t.Local()
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+	t = t.In(viewerZone)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, viewerZone)
 }
 
 // formatTimestamp formats a message timestamp according to the current display config.
 func (a *App) formatTimestamp(t time.Time) string {
-	t = t.Local() // times arrive in the server's zone
+	t = t.In(viewerZone) // times arrive in the server's zone
 	if a.uiConfig == nil {
 		return t.Format("01/02/06 15:04")
 	}
@@ -1265,6 +1277,7 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 			Token:             result.Token,
 			Err:               result.Err,
 			NeedsVerification: result.NeedsVerification,
+			Join:              result.Join,
 			ProfileID:         id.ID,
 		}
 	}
@@ -1309,6 +1322,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case channelReadFlushMsg:
 		a.flushChannelRead(m)
+		return a, nil
+	case searchDebounceMsg:
+		a.searchPaused(m) // search.go
 		return a, nil
 	case installerReadyMsg:
 		return a, a.runInstaller(m)
@@ -1583,7 +1599,10 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Captured BEFORE handleKeyPress/a.input.Update -- see the
 		// consuming check after the later `switch a.view` block.
 		wasComposing = a.view == ViewMain && a.focus == FocusInput && len(a.input.Value()) > 0
-		listWasOpen := a.threadList != nil // the Alt+T list keeps its keys (threads_find.go)
+		// The Alt+T list, the mentions inbox and the search box keep their
+		// keys (threads_find.go, mentions.go, search.go): none may reach the
+		// message box underneath.
+		listWasOpen := a.threadList != nil || a.mentions != nil || a.search != nil || a.invitePeople != nil
 		pickerWasOpen := a.emojiPicker != nil
 		cmd := a.handleKeyPress(msg)
 		if cmd != nil {
@@ -1591,7 +1610,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The emoji picker keeps its keys too, including the Ctrl+E that
 		// opened it and the Enter that inserts (which mustn't also send).
-		if listWasOpen || pickerWasOpen || a.emojiPicker != nil {
+		if listWasOpen || pickerWasOpen || a.emojiPicker != nil || a.mentions != nil || a.search != nil || a.invitePeople != nil {
 			return a, tea.Batch(cmds...)
 		}
 		// See inPasteBurst's doc comment: handleKeyPress may have just
@@ -1737,6 +1756,11 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.loginError = msg.Error
 		a.statusError = true
 
+	case joinRetryMsg: // invites.go
+		if cmd := a.joinRetry(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case accountCodeMsg:
 		if cmd := a.applyAccountCodeResult(msg); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1769,11 +1793,19 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.view == ViewMain && a.codeState == nil {
 				a.openCodeScreen(codeModeVerify, msg.ServerID, msg.Email)
 			}
+		} else if msg.Join != "" {
+			if cmd := a.joinBlocked(msg); cmd != nil { // invites.go
+				cmds = append(cmds, cmd)
+			}
 		} else if msg.Err != nil {
 			log.Printf("Auto-connect failed for server %s: %v", msg.ServerID, msg.Err)
 			a.statusMessage = fmt.Sprintf("Could not sign in to %s: %v", a.codeServerName(msg.ServerID), msg.Err)
 			a.statusError = true
+			if st := a.codeState; st != nil && st.Mode == codeModeJoin && st.ServerID == msg.ServerID {
+				st.Busy, st.Notice, st.IsErr = false, msg.Err.Error(), true
+			}
 		} else if msg.Token != "" {
+			a.joinedServer(msg.ServerID) // invites.go: a waiting invite or request is done
 			// Save token to disk for future sessions
 			go func() {
 				if err := a.configMgr.SaveServerSignIn(msg.ServerID, msg.ProfileID, msg.Email, msg.Token, msg.UserID); err != nil {
@@ -2286,6 +2318,29 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	if a.view == ViewMain && a.threadList != nil {
 		return a.handleThreadListKey(msg)
 	}
+	// The mentions inbox (mentions.go) likewise.
+	if a.view == ViewMain && a.mentions != nil {
+		return a.handleMentionsKey(msg)
+	}
+	if a.view == ViewMain && msg.String() == "alt+i" {
+		a.openMentions()
+		return nil
+	}
+	// Message search (search.go) likewise.
+	if a.view == ViewMain && a.search != nil {
+		return a.handleSearchKey(msg)
+	}
+	// Invite People (invite_people.go) likewise.
+	if a.view == ViewMain && a.invitePeople != nil {
+		return a.handleInvitePeopleKey(msg)
+	}
+	if a.view == ViewMain && a.focus == FocusUserList && a.memberContextMenu == nil && (msg.String() == "i" || msg.String() == "I") {
+		a.openInvitePeople()
+		return nil
+	}
+	if a.view == ViewMain && msg.String() == "ctrl+f" {
+		return a.openSearch("")
+	}
 	if a.view == ViewMain && msg.String() == "alt+t" {
 		a.openThreadList()
 		return nil
@@ -2671,6 +2726,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 					// A new account waiting for its emailed code: enter it.
 					if email, ok := a.pendingVerify[a.clientServers[a.serverIndex].ID]; ok {
 						a.openCodeScreen(codeModeVerify, a.clientServers[a.serverIndex].ID, email)
+						return nil
+					}
+					// Not a member yet (invite only, or waiting for approval).
+					if _, ok := a.pendingJoin[a.clientServers[a.serverIndex].ID]; ok {
+						a.openJoinScreen(a.clientServers[a.serverIndex].ID)
 						return nil
 					}
 					if a.activeConn == nil || a.activeConn.GetState() != StateReady {
@@ -5025,6 +5085,7 @@ func (a *App) selectChannel(index int) {
 		req := &protocol.MessageHistoryRequest{
 			ChannelID: a.currentChannel.ID,
 			Limit:     200,
+			Around:    a.jumpAround(a.activeConn.ServerID, a.currentChannel.ID), // a jump to a mention (mentions.go)
 		}
 
 		log.Printf("selectChannel: requesting history for channel=%s", a.currentChannel.ID)
@@ -5191,7 +5252,7 @@ func (a *App) updateChatContent() {
 				case msgDate.Equal(yesterday):
 					dateLabel = "Yesterday"
 				default:
-					dateLabel = msg.CreatedAt.Local().Format("January 2, 2006")
+					dateLabel = msg.CreatedAt.In(viewerZone).Format("January 2, 2006")
 				}
 				barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 				barLen := (viewportWidth - len([]rune(dateLabel)) - 4) / 2
@@ -6146,6 +6207,7 @@ type AutoConnectMsg struct {
 	Token             string
 	Err               error
 	NeedsVerification bool   // the account must enter an emailed code first
+	Join              string // the server didn't let this profile in (invites.go)
 	ProfileID         string // the profile that signed in
 }
 
@@ -6696,11 +6758,17 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			hasMention = true
 		}
 		if sc.User != nil {
-			for _, id := range payload.Message.Mentions { // the server resolves "@name" (v0.1.9+)
+			for _, id := range payload.Message.Mentions { // the server resolves "@name", and adds the person replied to (v0.1.9+)
 				if id == sc.User.ID {
 					hasMention = true
 				}
 			}
+			if payload.Message.IsWhisper && payload.Message.RecipientID != nil && *payload.Message.RecipientID == sc.User.ID {
+				hasMention = true // a whisper to you, as the server counts it
+			}
+		}
+		if hasMention && !display.IsOwn {
+			a.mentionArrived(serverID) // an open inbox shows it (mentions.go)
 		}
 		if isThreadReply && !display.IsOwn {
 			a.noteThreadReply(sc, display, followsThread || hasMention) // the optional in-channel line (threads_find.go)
@@ -6877,6 +6945,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
 			a.updateChatContent()
 			a.scrollToBottom()
+			if cmd := a.jumpHistoryLoaded(serverID, payload); cmd != nil {
+				return cmd
+			}
 		}
 
 	case protocol.EventMessageUpdate:
@@ -6926,6 +6997,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 		a.handleThreadMessages(sc, p)
+		if cmd := a.jumpThreadLoaded(serverID, p.ThreadID); cmd != nil {
+			return cmd
+		}
 
 	case protocol.EventMessageDelete:
 		// Parse message delete payload
@@ -7726,6 +7800,22 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		var p protocol.ChannelReadPayload
 		if err := json.Unmarshal(msg.Data, &p); err == nil {
 			a.channelReadElsewhere(serverID, sc, p)
+			a.inboxChannelRead(serverID, p.ChannelID, p.ReadSeq)
+		}
+
+	case protocol.EventMentions:
+		var p protocol.MentionsPayload
+		if err := json.Unmarshal(msg.Data, &p); err == nil {
+			a.handleMentions(serverID, sc, p)
+		}
+
+	case protocol.EventInvites, protocol.EventInvitesResult, protocol.EventJoinRequest:
+		a.handleInvitesEvent(sc, msg) // invite_people.go
+
+	case protocol.EventSearchResults:
+		var p protocol.SearchResultsPayload
+		if err := json.Unmarshal(msg.Data, &p); err == nil {
+			a.handleSearchResults(serverID, sc, p)
 		}
 
 	case protocol.EventPluginManageResult:

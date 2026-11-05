@@ -120,6 +120,7 @@ type ServerManagementState struct {
 	PreviousView     View          // View to return to on Esc
 
 	About *serverAboutState // the About category (server_about.go)
+	Invites *serverInvitesState // the Invites category (server_invites.go)
 
 	// Roles category state
 	RoleList         []*models.Role

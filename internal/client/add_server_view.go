@@ -33,6 +33,7 @@ func (a *App) initAddServerForm() {
 	a.addServerPort.SetValue("8080") // Default port
 
 	a.addServerUseTLS = false
+	a.addServerInvite = ""
 	a.addServerFocus = 0
 	a.addServerError = ""
 }
@@ -58,6 +59,10 @@ func (a *App) renderAddServerView() string {
 		tlsStyle = tlsStyle.Foreground(lipgloss.Color(a.theme.Colors.Purple)).Bold(true)
 	}
 	b.WriteString(a.stageField("TLS", a.addServerFocus == 3, tlsStyle.Render(tls)) + "\n")
+	if a.addServerInvite != "" {
+		ok := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Green)).Bold(true)
+		b.WriteString(a.stageField("Invite", false, ok.Render(a.addServerInvite[:4]+"-"+a.addServerInvite[4:])+a.dim("  used when you sign up")) + "\n")
+	}
 	if a.addServerError != "" {
 		b.WriteString("\n" + a.stageNotice(a.addServerError, true))
 	}
@@ -180,6 +185,8 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 
 	// Create new server info
 	newServer := NewClientServerInfo(name, address, port, a.addServerUseTLS)
+	newServer.Invite = a.addServerInvite
+	a.addServerInvite = ""
 
 	// Add to client servers list
 	a.clientServers = append(a.clientServers, newServer)
@@ -236,6 +243,7 @@ func (a *App) updateAddServerForm(msg tea.Msg) tea.Cmd {
 		a.addServerName, cmd = a.addServerName.Update(msg)
 	case 1:
 		a.addServerAddress, cmd = a.addServerAddress.Update(msg)
+		a.takePastedInvite() // invites.go: address:port/CODE fills the fields
 	case 2:
 		a.addServerPort, cmd = a.addServerPort.Update(msg)
 	}

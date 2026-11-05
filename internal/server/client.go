@@ -441,6 +441,21 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleChannelRead(c, msg)
 		})
 
+	case protocol.OpRequestMentions:
+		c.requireAuth(func() {
+			c.handlers.HandleRequestMentions(c, msg)
+		})
+
+	case protocol.OpSearch:
+		c.requireAuth(func() {
+			c.handlers.HandleSearch(c, msg)
+		})
+
+	case protocol.OpInvites:
+		c.requireAuth(func() {
+			c.handlers.HandleInvites(c, msg)
+		})
+
 	case protocol.OpUpdateChannelOverwrite:
 		c.requireAuth(func() {
 			c.handlers.HandleUpdateChannelOverwrite(c, msg)
