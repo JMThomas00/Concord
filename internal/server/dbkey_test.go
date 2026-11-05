@@ -117,6 +117,8 @@ func TestConvertDatabase(t *testing.T) {
 	olds, _ := filepath.Glob(c.DatabasePath + ".unencrypted-*")
 	if len(olds) == 0 {
 		t.Error("the original wasn't kept")
+	} else if fi, _ := os.Stat(olds[0]); fi.Mode().Perm() != 0o600 {
+		t.Errorf("the unencrypted original is mode %v, want 0600", fi.Mode())
 	}
 	if _, err := ConvertDatabase(c, cfg, true, nil); err == nil {
 		t.Error("encrypted twice")

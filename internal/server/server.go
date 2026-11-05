@@ -147,6 +147,7 @@ func New(config *Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	privateFiles(config.DatabasePath) // dbkey.go
 
 	// Ensure default server exists
 	defaultServer, _, err := db.EnsureDefaultServer(config.ServerName)

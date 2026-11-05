@@ -274,6 +274,7 @@ func ConvertDatabase(config *Config, configPath string, encrypt bool, ask func(p
 	if err := os.Rename(tmp, path); err != nil {
 		return "", fmt.Errorf("the converted database is at %s but couldn't be moved into place: %w", tmp, err)
 	}
+	privateFiles(path, old) // the original kept aside holds everything, unencrypted
 	if encrypt {
 		where := "the passphrase you typed (needed at every start)"
 		if info.KeyFile != "" {
@@ -282,4 +283,17 @@ func ConvertDatabase(config *Config, configPath string, encrypt bool, ask func(p
 		return fmt.Sprintf("Encrypted %s (%d messages) with %s.\nThe unencrypted original is kept as %s: delete it once the server runs fine.", path, after, where, old), nil
 	}
 	return fmt.Sprintf("Decrypted %s (%d messages).\nThe encrypted original is kept as %s.", path, after, old), nil
+}
+
+// privateFiles makes the database files at each path (and their WAL and
+// shared-memory files) readable by the server's own account only. SQLite
+// creates them with the process's umask, usually readable by everyone.
+func privateFiles(paths ...string) {
+	for _, p := range paths {
+		for _, f := range []string{p, p + "-wal", p + "-shm"} {
+			if _, err := os.Stat(f); err == nil {
+				_ = os.Chmod(f, 0o600)
+			}
+		}
+	}
 }
