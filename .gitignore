@@ -34,3 +34,9 @@ Text to ASCII Art Generator*
 Thumbs.db
 *.swp
 *.swo
+
+# Docker: each service's live data and the database key (docker-compose.yml)
+server-data/
+server-secrets/
+hub-data/
+*.key
