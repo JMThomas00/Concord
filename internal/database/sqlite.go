@@ -1642,7 +1642,7 @@ func (db *DB) GetPinnedMessages(channelID uuid.UUID) ([]*models.Message, error) 
 		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id, thread_id
 		FROM messages
 		WHERE channel_id = ? AND is_pinned = 1
-		ORDER BY created_at DESC`
+		ORDER BY seq DESC`
 
 	rows, err := db.Query(query, channelID.String())
 	if err != nil {
@@ -1722,8 +1722,8 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 		query = `
 			SELECT ` + columns + `
 			FROM messages m
-			WHERE m.channel_id = ? AND m.thread_id IS NULL AND m.created_at < (SELECT created_at FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY m.created_at DESC
+			WHERE m.channel_id = ? AND m.thread_id IS NULL AND m.seq < (SELECT seq FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
+			ORDER BY m.seq DESC
 			LIMIT ?`
 		args = []interface{}{channelID.String(), before.String(), userID.String(), userID.String(), limit}
 	} else {
@@ -1731,7 +1731,7 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 			SELECT ` + columns + `
 			FROM messages m
 			WHERE m.channel_id = ? AND m.thread_id IS NULL AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY m.created_at DESC
+			ORDER BY m.seq DESC
 			LIMIT ?`
 		args = []interface{}{channelID.String(), userID.String(), userID.String(), limit}
 	}
@@ -3677,6 +3677,7 @@ func (db *DB) MigratePluginPlatform() error {
 		UPDATE messages SET seq = rowid WHERE seq IS NULL AND NOT EXISTS (SELECT 1 FROM messages WHERE seq IS NOT NULL);
 		CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq);
 		CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq);
+		CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq);
 		CREATE INDEX IF NOT EXISTS idx_message_mentions_user ON message_mentions(user_id);
 		CREATE TABLE IF NOT EXISTS channel_reads (
 			user_id    TEXT NOT NULL,

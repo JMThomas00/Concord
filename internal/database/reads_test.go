@@ -2,6 +2,7 @@ package database
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -183,5 +184,37 @@ func TestReadPositionsMigration(t *testing.T) {
 	f.post(t, f.ch, f.alice, "four", nil)
 	if got := f.unread(t, bob, f.ch); got.Unread != 1 {
 		t.Errorf("after a new message: %+v", got)
+	}
+}
+
+// History follows arrival order, whatever the stored times say: they're text
+// in the server's own zone, so a server that moved zones sorts them wrongly.
+func TestHistoryIsInArrivalOrder(t *testing.T) {
+	f := newReadsFixture(t)
+	var sent []*models.Message
+	for _, text := range []string{"one", "two", "three"} {
+		sent = append(sent, f.post(t, f.ch, f.alice, text, nil))
+	}
+	// A server that moved from UTC to Central: each was written later than
+	// the one before, but as text "one" sorts last.
+	for i, at := range []string{"2026-11-04 16:00:00 +0000 UTC", "2026-11-04 10:30:00 -0600 CST", "2026-11-04 10:45:00 -0600 CST"} {
+		if _, err := f.db.Exec(`UPDATE messages SET created_at = ? WHERE id = ?`, at, sent[i].ID.String()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := f.db.GetChannelMessages(f.ch.ID, 10, nil, f.alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, m := range got {
+		order = append(order, m.Content)
+	}
+	if strings.Join(order, ",") != "one,two,three" {
+		t.Errorf("history %v", order)
+	}
+	older, err := f.db.GetChannelMessages(f.ch.ID, 10, &sent[2].ID, f.alice.ID)
+	if err != nil || len(older) != 2 || older[0].Content != "one" {
+		t.Errorf("before three: %d messages, %v", len(older), err)
 	}
 }
