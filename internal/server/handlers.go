@@ -474,6 +474,8 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	h.mentionReplied(newMsg) // the person replied to hears it as a mention (reads.go)
+
 	// Stop typing indicator for this user
 	h.typingManager.StopTyping(c.UserID, payload.ChannelID)
 
@@ -1098,7 +1100,8 @@ func (h *Handlers) notifyOwningPlugin(channel *models.Channel, event protocol.Ev
 	}
 }
 
-// HandleRequestMessages handles message history requests
+// HandleRequestMessages handles message history requests: the newest,
+// those before a message, or from a little before one (a jump to it).
 func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 	var req protocol.MessageHistoryRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
@@ -1113,8 +1116,29 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 
 	MsgLog.Debug("Requesting messages", "user_id", c.UserID, "channel_id", req.ChannelID, "limit", req.Limit)
 
+	// Only a member of the channel's server reads its history (plugins
+	// read only the channels they own, as everywhere else).
+	channel, err := h.db.GetChannelByID(req.ChannelID)
+	if err != nil {
+		c.sendError(protocol.ErrorCodeNotFound, "Channel not found")
+		return
+	}
+	serverID := channel.ServerID
+	if serverID != uuid.Nil && !c.IsPlugin {
+		if _, err := h.db.GetServerMember(serverID, c.UserID); err != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "Not a member of this server")
+			return
+		}
+	}
+
 	// Get messages from database (filtered by user for whispers)
-	messages, err := h.db.GetChannelMessages(req.ChannelID, req.Limit, nil, c.UserID)
+	var messages []*models.Message
+	newerMissing := false
+	if req.Around != nil {
+		messages, newerMissing, err = h.db.GetChannelMessagesAround(req.ChannelID, *req.Around, aroundLimit, c.UserID)
+	} else {
+		messages, err = h.db.GetChannelMessages(req.ChannelID, req.Limit, req.Before, c.UserID)
+	}
 	if err != nil {
 		c.sendError(protocol.ErrorCodeServerError, "Failed to retrieve messages")
 		MsgLog.Error("Failed to get channel messages", "channel_id", req.ChannelID, "error", err)
@@ -1123,60 +1147,12 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 
 	MsgLog.Debug("Messages retrieved", "count", len(messages), "channel_id", req.ChannelID)
 
-	// Look up the channel's server once, for the nickname lookups below.
-	var serverID uuid.UUID
-	if channel, chErr := h.db.GetChannelByID(req.ChannelID); chErr == nil {
-		serverID = channel.ServerID
-	}
-	memberCache := make(map[uuid.UUID]*models.ServerMember)
-
-	// Build MessageDisplay array with author info
+	names := h.newDisplayNames(serverID)
 	var displayMessages []*protocol.MessageDisplay
 	for _, dbMsg := range messages {
-		var author *models.User
-		var member *models.ServerMember
-		var recipient *models.User
-
-		// System messages don't have authors
-		if dbMsg.Type == models.MessageTypeSystem {
-			author = nil // System message
-		} else {
-			// Get author from database for regular messages
-			var err error
-			author, err = h.db.GetUserByID(dbMsg.AuthorID)
-			if err != nil {
-				MsgLog.Error("Failed to get author for message", "message_id", dbMsg.ID, "author_id", dbMsg.AuthorID, "error", err)
-				continue
-			}
-
-			// Nickname lookup (nil for plugin service accounts, which are
-			// never added as ServerMembers, and for non-server channels).
-			if serverID != uuid.Nil {
-				if cached, ok := memberCache[author.ID]; ok {
-					member = cached
-				} else {
-					member, _ = h.db.GetServerMember(serverID, author.ID)
-					memberCache[author.ID] = member
-				}
-			}
+		if d := names.display(dbMsg); d != nil {
+			displayMessages = append(displayMessages, d)
 		}
-
-		// For whispers, get recipient info
-		if dbMsg.IsWhisper && dbMsg.RecipientID != nil {
-			var err error
-			recipient, err = h.db.GetUserByID(*dbMsg.RecipientID)
-			if err != nil {
-				MsgLog.Warn("Failed to get recipient for whisper", "message_id", dbMsg.ID, "recipient_id", *dbMsg.RecipientID, "error", err)
-				// Continue anyway, whisper will just not show recipient name
-			}
-		}
-
-		displayMessages = append(displayMessages, &protocol.MessageDisplay{
-			Message:   dbMsg,
-			Author:    author,
-			Member:    member,
-			Recipient: recipient,
-		})
 	}
 
 	// Get all pinned messages for this channel (separate query to ensure we get them all)
@@ -1190,12 +1166,68 @@ func (h *Handlers) HandleRequestMessages(c *Client, msg *protocol.Message) {
 	payload := &protocol.MessageHistoryPayload{
 		ChannelID:      req.ChannelID,
 		Messages:       displayMessages,
-		HasMore:        len(messages) == req.Limit, // Simple pagination check
+		HasMore:        req.Around == nil && len(messages) == req.Limit, // Simple pagination check
 		PinnedMessages: pinnedMessages,
+		Around:         req.Around,
+		NewerMissing:   newerMissing,
 	}
 	h.attachThreadSummaries(displayMessages, req.ChannelID, serverID, c.UserID) // threads.go
 
-	h.hub.SendToUser(c.UserID, protocol.EventMessagesHistory, payload)
+	h.dispatchTo(c, protocol.EventMessagesHistory, payload)
+}
+
+// aroundLimit is the most messages a jump to an old message loads.
+const aroundLimit = 1000
+
+// displayNames turns stored messages into what clients show (author,
+// nickname, whisper recipient), looking each person up once.
+type displayNames struct {
+	h        *Handlers
+	serverID uuid.UUID
+	users    map[uuid.UUID]*models.User
+	members  map[uuid.UUID]*models.ServerMember
+}
+
+func (h *Handlers) newDisplayNames(serverID uuid.UUID) *displayNames {
+	return &displayNames{h: h, serverID: serverID, users: map[uuid.UUID]*models.User{}, members: map[uuid.UUID]*models.ServerMember{}}
+}
+
+func (n *displayNames) user(id uuid.UUID) *models.User {
+	if u, ok := n.users[id]; ok {
+		return u
+	}
+	u, err := n.h.db.GetUserByID(id)
+	if err != nil {
+		u = nil
+	}
+	n.users[id] = u
+	return u
+}
+
+// display is the message as clients show it, or nil when its author is
+// gone (a system message has none).
+func (n *displayNames) display(m *models.Message) *protocol.MessageDisplay {
+	d := &protocol.MessageDisplay{Message: m}
+	if m.Type != models.MessageTypeSystem {
+		if d.Author = n.user(m.AuthorID); d.Author == nil {
+			MsgLog.Error("Failed to get author for message", "message_id", m.ID, "author_id", m.AuthorID)
+			return nil
+		}
+		// Nickname lookup (nil for plugin service accounts, which are
+		// never added as ServerMembers, and for non-server channels).
+		if n.serverID != uuid.Nil {
+			member, ok := n.members[m.AuthorID]
+			if !ok {
+				member, _ = n.h.db.GetServerMember(n.serverID, m.AuthorID)
+				n.members[m.AuthorID] = member
+			}
+			d.Member = member
+		}
+	}
+	if m.IsWhisper && m.RecipientID != nil {
+		d.Recipient = n.user(*m.RecipientID) // nil: shown without the recipient's name
+	}
+	return d
 }
 
 // hashToken creates a SHA-256 hash of a token

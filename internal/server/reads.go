@@ -100,3 +100,87 @@ func (h *Handlers) resolveMentions(m *models.Message, serverID uuid.UUID) {
 		}
 	}
 }
+
+// mentionReplied adds the author of the message m replies to (in the same
+// channel) to m's Mentions as it goes out, so their client counts it as a
+// mention. It isn't stored as one: the inbox finds replies by what they
+// answer (database.MentionsFor), which keeps "replied to you" apart from
+// "@you".
+func (h *Handlers) mentionReplied(m *models.Message) {
+	if m.ReplyToID == nil {
+		return
+	}
+	parent, err := h.db.GetMessage(*m.ReplyToID)
+	if err != nil || parent.ChannelID != m.ChannelID || parent.AuthorID == m.AuthorID {
+		return
+	}
+	for _, id := range m.Mentions {
+		if id == parent.AuthorID {
+			return
+		}
+	}
+	m.Mentions = append(m.Mentions, parent.AuthorID)
+}
+
+// mentionsPage is how many mentions one MENTIONS carries.
+const mentionsPage = 50
+
+// HandleRequestMentions answers a page of the sender's mentions in a
+// server (OpRequestMentions), leaving out channels they can't view.
+func (h *Handlers) HandleRequestMentions(c *Client, msg *protocol.Message) {
+	var req protocol.MentionsRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid request format")
+		return
+	}
+	if _, err := h.db.GetServerMember(req.ServerID, c.UserID); err != nil {
+		c.sendError(protocol.ErrorCodeForbidden, "Not a member of this server")
+		return
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > mentionsPage {
+		limit = mentionsPage
+	}
+	out := protocol.MentionsPayload{ServerID: req.ServerID, Before: req.Before, Items: []protocol.MentionItem{}}
+	names := h.newDisplayNames(req.ServerID)
+	canView := map[uuid.UUID]bool{}
+	before := req.Before
+	// Pages of hidden channels' mentions are skipped, a few at most.
+	for tries := 0; tries < 4 && len(out.Items) < limit; tries++ {
+		list, err := h.db.MentionsFor(c.UserID, req.ServerID, before, limit+1)
+		if err != nil {
+			MsgLog.Error("Failed to read mentions", "user_id", c.UserID, "server_id", req.ServerID, "error", err)
+			c.sendError(protocol.ErrorCodeServerError, "Couldn't read your mentions")
+			return
+		}
+		more := len(list) > limit
+		if more {
+			list = list[:limit]
+		}
+		out.HasMore = more
+		for _, m := range list {
+			if len(out.Items) == limit {
+				out.HasMore = true // the next page starts after the last one sent
+				break
+			}
+			before = m.Message.Seq
+			ok, seen := canView[m.Message.ChannelID]
+			if !seen {
+				if ch, err := h.db.GetChannelByID(m.Message.ChannelID); err == nil {
+					ok = h.hasChannelPermission(c.UserID, ch, models.PermissionViewChannels) == nil
+				}
+				canView[m.Message.ChannelID] = ok
+			}
+			if !ok {
+				continue
+			}
+			if d := names.display(m.Message); d != nil {
+				out.Items = append(out.Items, protocol.MentionItem{Message: d, Kind: m.Kind, Unread: m.Unread})
+			}
+		}
+		if !more {
+			break
+		}
+	}
+	_ = h.dispatchTo(c, protocol.EventMentions, out)
+}

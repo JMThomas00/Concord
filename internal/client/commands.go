@@ -141,6 +141,9 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 	case "threads":
 		ch.app.openThreadList() // threads_find.go
 		return "", nil
+	case "mentions":
+		ch.app.openMentions() // mentions.go
+		return "", nil
 	case "status":
 		return ch.handleStatus(cmd.Args)
 	case "title":

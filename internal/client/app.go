@@ -423,6 +423,8 @@ type App struct {
 	// "↳ who replied" and until when, and the chat lines holding an
 	// in-channel reply notice (a click opens that thread).
 	threadList        *threadListState
+	mentions          *mentionsInbox // the open mentions inbox (Alt+I, mentions.go)
+	pendingJump       *mentionJump   // a jump to a mention, landing once history loads
 	threadFlash       string
 	threadFlashUntil  time.Time
 	threadNoticeLines map[int]uuid.UUID
@@ -784,15 +786,19 @@ func (a *App) saveAudioConfig() {
 	_ = a.configMgr.SaveAppConfig(cfg)
 }
 
+// viewerZone is the zone message times show in: this computer's (tests
+// set another; changing time.Local races with other goroutines).
+var viewerZone = time.Local
+
 // localDay is midnight of t's day here (Truncate would cut at UTC midnight).
 func localDay(t time.Time) time.Time {
-	t = t.Local()
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+	t = t.In(viewerZone)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, viewerZone)
 }
 
 // formatTimestamp formats a message timestamp according to the current display config.
 func (a *App) formatTimestamp(t time.Time) string {
-	t = t.Local() // times arrive in the server's zone
+	t = t.In(viewerZone) // times arrive in the server's zone
 	if a.uiConfig == nil {
 		return t.Format("01/02/06 15:04")
 	}
@@ -2285,6 +2291,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Alt+T opens it from anywhere in the main window.
 	if a.view == ViewMain && a.threadList != nil {
 		return a.handleThreadListKey(msg)
+	}
+	// The mentions inbox (mentions.go) likewise.
+	if a.view == ViewMain && a.mentions != nil {
+		return a.handleMentionsKey(msg)
+	}
+	if a.view == ViewMain && msg.String() == "alt+i" {
+		a.openMentions()
+		return nil
 	}
 	if a.view == ViewMain && msg.String() == "alt+t" {
 		a.openThreadList()
@@ -5025,6 +5039,7 @@ func (a *App) selectChannel(index int) {
 		req := &protocol.MessageHistoryRequest{
 			ChannelID: a.currentChannel.ID,
 			Limit:     200,
+			Around:    a.jumpAround(a.activeConn.ServerID, a.currentChannel.ID), // a jump to a mention (mentions.go)
 		}
 
 		log.Printf("selectChannel: requesting history for channel=%s", a.currentChannel.ID)
@@ -5191,7 +5206,7 @@ func (a *App) updateChatContent() {
 				case msgDate.Equal(yesterday):
 					dateLabel = "Yesterday"
 				default:
-					dateLabel = msg.CreatedAt.Local().Format("January 2, 2006")
+					dateLabel = msg.CreatedAt.In(viewerZone).Format("January 2, 2006")
 				}
 				barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 				barLen := (viewportWidth - len([]rune(dateLabel)) - 4) / 2
@@ -6696,11 +6711,17 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			hasMention = true
 		}
 		if sc.User != nil {
-			for _, id := range payload.Message.Mentions { // the server resolves "@name" (v0.1.9+)
+			for _, id := range payload.Message.Mentions { // the server resolves "@name", and adds the person replied to (v0.1.9+)
 				if id == sc.User.ID {
 					hasMention = true
 				}
 			}
+			if payload.Message.IsWhisper && payload.Message.RecipientID != nil && *payload.Message.RecipientID == sc.User.ID {
+				hasMention = true // a whisper to you, as the server counts it
+			}
+		}
+		if hasMention && !display.IsOwn {
+			a.mentionArrived(serverID) // an open inbox shows it (mentions.go)
 		}
 		if isThreadReply && !display.IsOwn {
 			a.noteThreadReply(sc, display, followsThread || hasMention) // the optional in-channel line (threads_find.go)
@@ -6877,6 +6898,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			a.currentChannel != nil && a.currentChannel.ID == payload.ChannelID {
 			a.updateChatContent()
 			a.scrollToBottom()
+			if cmd := a.jumpHistoryLoaded(serverID, payload); cmd != nil {
+				return cmd
+			}
 		}
 
 	case protocol.EventMessageUpdate:
@@ -6926,6 +6950,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 		a.handleThreadMessages(sc, p)
+		if cmd := a.jumpThreadLoaded(serverID, p.ThreadID); cmd != nil {
+			return cmd
+		}
 
 	case protocol.EventMessageDelete:
 		// Parse message delete payload
@@ -7726,6 +7753,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		var p protocol.ChannelReadPayload
 		if err := json.Unmarshal(msg.Data, &p); err == nil {
 			a.channelReadElsewhere(serverID, sc, p)
+			a.inboxChannelRead(serverID, p.ChannelID, p.ReadSeq)
+		}
+
+	case protocol.EventMentions:
+		var p protocol.MentionsPayload
+		if err := json.Unmarshal(msg.Data, &p); err == nil {
+			a.handleMentions(serverID, sc, p)
 		}
 
 	case protocol.EventPluginManageResult:

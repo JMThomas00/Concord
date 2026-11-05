@@ -165,9 +165,9 @@ func TestMarkReadIsThrottled(t *testing.T) {
 
 // Message times show in this computer's zone, whatever zone the server is in.
 func TestTimesAreLocal(t *testing.T) {
-	prev := time.Local
-	time.Local = time.FixedZone("HERE", -6*3600)
-	defer func() { time.Local = prev }()
+	prev := viewerZone
+	viewerZone = time.FixedZone("HERE", -6*3600)
+	defer func() { viewerZone = prev }()
 	a := &App{}
 	at := time.Date(2026, 11, 5, 3, 30, 0, 0, time.UTC) // 21:30 the day before, here
 	if got := a.formatTimestamp(at); got != "11/04/26 21:30" {

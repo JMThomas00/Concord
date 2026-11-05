@@ -1041,6 +1041,9 @@ func (a *App) renderMainView() string {
 	if a.threadList != nil { // Alt+T (threads_find.go)
 		view = overlayCenter(view, a.renderThreadList(), a.width, a.height)
 	}
+	if a.mentions != nil { // Alt+I (mentions.go)
+		view = overlayCenter(view, a.renderMentions(), a.width, a.height)
+	}
 	return view
 }
 
@@ -2338,6 +2341,10 @@ func (a *App) renderStatusBar() string {
 	}
 	if currentUser != nil {
 		leftContent += textStyle.Render("  |  " + currentUser.FullUsername())
+	}
+	if n := a.mentionTotal(); n > 0 { // unread @mentions everywhere: Alt+I lists them (mentions.go)
+		leftContent += textStyle.Render("  |  ") + lipgloss.NewStyle().Background(lipgloss.Color(a.theme.Colors.Selection)).
+			Foreground(lipgloss.Color(a.theme.Colors.Red)).Bold(true).Render(fmt.Sprintf("@%d", n)) + textStyle.Render(" Alt+I")
 	}
 
 	// Voice channel pill — shown whenever the local user is in a voice channel,

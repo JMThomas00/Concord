@@ -191,9 +191,10 @@ func (db *DB) GetThreadMessages(threadID uuid.UUID, limit int, userID uuid.UUID)
 func (db *DB) FollowThread(userID, threadID uuid.UUID, read bool) error {
 	if read {
 		_, err := db.Exec(`
-			INSERT INTO thread_follows (user_id, thread_id, last_read_at) VALUES (?, ?, ?)
-			ON CONFLICT(user_id, thread_id) DO UPDATE SET last_read_at = excluded.last_read_at`,
-			userID.String(), threadID.String(), time.Now().UTC())
+			INSERT INTO thread_follows (user_id, thread_id, last_read_at, read_seq) VALUES (?, ?, ?, `+threadSeq+`)
+			ON CONFLICT(user_id, thread_id) DO UPDATE SET last_read_at = excluded.last_read_at,
+				read_seq = MAX(COALESCE(read_seq, 0), excluded.read_seq)`,
+			userID.String(), threadID.String(), time.Now().UTC(), threadID.String())
 		return err
 	}
 	_, err := db.Exec(`INSERT OR IGNORE INTO thread_follows (user_id, thread_id) VALUES (?, ?)`,
@@ -204,10 +205,14 @@ func (db *DB) FollowThread(userID, threadID uuid.UUID, read bool) error {
 // MarkThreadRead records that the user has read a thread up to now. Only a
 // thread they follow keeps a read position.
 func (db *DB) MarkThreadRead(userID, threadID uuid.UUID) error {
-	_, err := db.Exec(`UPDATE thread_follows SET last_read_at = ? WHERE user_id = ? AND thread_id = ?`,
-		time.Now().UTC(), userID.String(), threadID.String())
+	_, err := db.Exec(`UPDATE thread_follows SET last_read_at = ?, read_seq = MAX(COALESCE(read_seq, 0), `+threadSeq+`)
+		WHERE user_id = ? AND thread_id = ?`,
+		time.Now().UTC(), threadID.String(), userID.String(), threadID.String())
 	return err
 }
+
+// threadSeq is a thread's newest reply's Seq (one ? : the thread's ID).
+const threadSeq = `(SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id = ?)`
 
 // ThreadFollow is one user's follow of a thread.
 type ThreadFollow struct {
