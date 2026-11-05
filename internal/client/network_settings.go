@@ -35,7 +35,7 @@ type networkTickMsg struct{}
 var bridgeChoices = []struct{ kind, label, about string }{
 	{tor.BridgesNone, "None", "connect to Tor directly"},
 	{tor.BridgesSnowflake, "Snowflake", "looks like a video call; works in most places that block Tor"},
-	{tor.BridgesObfs4, "obfs4", "looks like random bytes"},
+	{tor.BridgesObfs4, "obfs4", "looks like random bytes; the built-in ones are busy and can be slow, so your own obfs4 lines work better"},
 	{tor.BridgesCustom, "My own bridges", "lines from bridges.torproject.org, @GetBridgesBot on Telegram, or bridges@torproject.org"},
 }
 
