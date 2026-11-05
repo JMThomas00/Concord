@@ -23,3 +23,7 @@ demo/*.gif
 # plugins, plugin-secrets.key) in these folders inside the checkout.
 server-data/
 hub-data/
+
+# The database key (docker-compose.yml mounts it; never in the image)
+server-secrets
+*.key
