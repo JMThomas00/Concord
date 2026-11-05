@@ -14,6 +14,9 @@ const (
 	ServerAdminBackup  = "backup"  // take a backup now (Administrator)
 	ServerAdminRestart = "restart" // stop and start again (Administrator)
 	ServerAdminUpdate  = "update"  // install a release and restart (Administrator)
+	// ServerAdminBackupKey shows the backup key (Administrator), in the
+	// result's BackupKey.
+	ServerAdminBackupKey = "backup_key"
 )
 
 // ServerAdminRequest asks the server for its status or to act.
@@ -34,6 +37,8 @@ type ServerAdminResult struct {
 	Busy bool `json:"busy,omitempty"`
 	// Restarting: the server is about to stop and start again.
 	Restarting bool `json:"restarting,omitempty"`
+	// BackupKey, for "backup_key": the key that opens this server's backups.
+	BackupKey string `json:"backup_key,omitempty"`
 }
 
 // How a server can be updated (ServerStatusPayload.UpdateHow).
@@ -78,7 +83,12 @@ type ServerStatusPayload struct {
 	BackupCount     int       `json:"backup_count"`
 	LastBackupAt    time.Time `json:"last_backup_at,omitempty"`
 	LastBackupBytes int64     `json:"last_backup_bytes,omitempty"`
-	BackingUp       bool      `json:"backing_up,omitempty"`
+	// Since v0.2.0 backups are encrypted with the server's backup key.
+	LastBackupEncrypted bool      `json:"last_backup_encrypted,omitempty"`
+	BackupKeyMade       bool      `json:"backup_key_made,omitempty"` // the key exists (it's made with the first backup)
+	BackupEvery         string    `json:"backup_every,omitempty"`    // scheduled backups ("0s": off)
+	NextBackupAt        time.Time `json:"next_backup_at,omitempty"`
+	BackingUp           bool      `json:"backing_up,omitempty"`
 
 	RunsAs     string `json:"runs_as"`
 	CanRestart bool   `json:"can_restart"`

@@ -7,6 +7,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/atotto/clipboard"
 	"strings"
 	"time"
 
@@ -37,7 +38,8 @@ type serverAboutState struct {
 
 	confirmRestart bool
 	confirmUpdate  bool
-	restarting     bool // asked; waiting for the server to come back
+	backupKey      string // shown on K (administrators); forgotten when the page closes
+	restarting     bool   // asked; waiting for the server to come back
 }
 
 // serverReleaseMsg is the latest release, for the About page (the Updates
@@ -143,6 +145,10 @@ func (a *App) handleServerAdminEvent(sc *ServerConnection, msg *protocol.Message
 			return
 		}
 		ab.notice, ab.noticeErr = res.Message, !res.OK
+		if res.BackupKey != "" {
+			ab.backupKey = res.BackupKey
+			ab.notice = "The backup key opens this server's backups: keep a copy somewhere safe (C copies it) · K hides it"
+		}
 		if res.Restarting {
 			ab.restarting = true
 		}
@@ -232,6 +238,26 @@ func (a *App) handleServerAboutKey(key string) (bool, tea.Cmd) {
 		}
 		ab.confirmUpdate = true
 		ab.notice, ab.noticeErr = "Press U again to update to "+ab.release.latest+" and restart (everyone reconnects in a few seconds) · any other key cancels", true
+		return true, nil
+	case "k", "K":
+		if !canAct {
+			return true, nil
+		}
+		if ab.backupKey != "" {
+			ab.backupKey, ab.notice = "", ""
+			return true, nil
+		}
+		a.askServerStatus(protocol.ServerAdminBackupKey)
+		return true, nil
+	case "c", "C":
+		if ab.backupKey == "" {
+			return false, nil
+		}
+		if err := clipboard.WriteAll(ab.backupKey); err != nil {
+			ab.notice, ab.noticeErr = "Couldn't copy: "+err.Error(), true
+		} else {
+			ab.notice, ab.noticeErr = "Backup key copied", false
+		}
 		return true, nil
 	case "s", "S":
 		ab.notice = ""
@@ -373,10 +399,25 @@ func (a *App) renderServerAboutContent(width, height int) string {
 			case st.BackupCount == 0:
 				row("Backups", dim.Render("None from here yet"))
 			default:
-				row("Backups", normal.Render(fmt.Sprintf("%d · newest %s (%s)", st.BackupCount, st.LastBackupAt.Local().Format("Jan 2 15:04"), aboutBytes(st.LastBackupBytes))))
+				enc := " · encrypted"
+				if !st.LastBackupEncrypted {
+					enc = " · not encrypted (from before v0.2.0)"
+				}
+				row("Backups", normal.Render(fmt.Sprintf("%d · newest %s (%s)", st.BackupCount, st.LastBackupAt.Local().Format("Jan 2 15:04"), aboutBytes(st.LastBackupBytes)))+dim.Render(enc))
+			}
+			switch {
+			case st.BackupEvery == "" || st.BackupEvery == "0s":
+				more(dim.Render("only when you back up (no [backups] every_hours)"))
+			case !st.NextBackupAt.IsZero():
+				more(dim.Render("every " + strings.TrimSuffix(strings.TrimSuffix(st.BackupEvery, "0s"), "0m") + " · next " + st.NextBackupAt.Local().Format("Jan 2 15:04")))
 			}
 			if st.BackupsDir != "" {
 				more(dim.Render("in " + st.BackupsDir))
+			}
+			if ab.backupKey != "" {
+				more(warn.Render(ab.backupKey))
+			} else if st.CanAct && st.BackupKeyMade {
+				more(dim.Render("K shows the key that opens them"))
 			}
 		}
 		if ab != nil && ab.notice != "" {
@@ -395,7 +436,7 @@ func (a *App) renderServerAboutContent(width, height int) string {
 	bottom.writeLine(a.renderSeparator(w))
 	hint := "S check again · Esc close"
 	if ab != nil && ab.status != nil && ab.status.CanAct {
-		hint = "B back up now · R restart · " + hint
+		hint = "B back up now · K backup key · R restart · " + hint
 		if a.canUpdateServer() {
 			hint = "U update · " + hint
 		}

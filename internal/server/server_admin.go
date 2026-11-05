@@ -24,6 +24,7 @@ import (
 type serverAdmin interface {
 	adminStatus() protocol.ServerStatusPayload
 	backupNow() (string, error)
+	backupKeyText() (string, error)
 	requestRestart() error
 	updateServer(tag string, progress func(string)) (string, error)
 }
@@ -38,8 +39,10 @@ const (
 type adminState struct {
 	startedAt time.Time
 
-	backupMu  sync.Mutex
-	backingUp atomic.Bool
+	backupMu sync.Mutex
+	// backupRetryAt (Unix seconds): a scheduled backup failed; not again before this.
+	backupRetryAt atomic.Int64
+	backingUp     atomic.Bool
 
 	updateMu sync.Mutex
 	updating atomic.Bool
@@ -104,6 +107,19 @@ func (h *Handlers) HandleServerAdmin(c *Client, msg *protocol.Message) {
 			}
 			sendStatus()
 		}()
+
+	case protocol.ServerAdminBackupKey:
+		if !canAct {
+			result(false, "Only administrators can see the backup key")
+			return
+		}
+		key, err := h.admin.backupKeyText()
+		if err != nil {
+			result(false, err.Error())
+			return
+		}
+		Logger.Info("Backup key shown", "admin", c.UserID) // who, never the key
+		send(protocol.ServerAdminResult{OK: true, Message: "The backup key: keep a copy somewhere safe", BackupKey: key})
 
 	case protocol.ServerAdminRestart:
 		if !canAct {
@@ -187,9 +203,15 @@ func (s *Server) adminStatus() protocol.ServerStatusPayload {
 	if n := len(backups); n > 0 {
 		last := backups[n-1]
 		st.LastBackupAt = last.at
-		if fi, err := os.Stat(filepath.Join(dir, last.name, "concord.db")); err == nil {
-			st.LastBackupBytes = fi.Size()
-		}
+		st.LastBackupBytes = backupSize(dir, last)
+		st.LastBackupEncrypted = !last.dir
+	}
+	if fi, err := os.Stat(backupKeyPath(s.config.DatabasePath)); err == nil && !fi.IsDir() {
+		st.BackupKeyMade = true
+	}
+	st.BackupEvery = s.backupEvery().String()
+	if next := s.nextBackupAt(); !next.IsZero() {
+		st.NextBackupAt = next
 	}
 
 	st.CanRestart, st.RestartNote = s.canRestart()
@@ -206,9 +228,11 @@ func (s *Server) backupsDir() string {
 type backupEntry struct {
 	name string
 	at   time.Time
+	dir  bool // a folder from before v0.2.0 (not encrypted)
 }
 
-// listBackups finds finished backups (oldest first).
+// listBackups finds finished backups (oldest first): encrypted files, and
+// the folders older versions wrote.
 func listBackups(dir string) []backupEntry {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -216,22 +240,44 @@ func listBackups(dir string) []backupEntry {
 	}
 	var out []backupEntry
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), backupPrefix) {
+		name := e.Name()
+		if !strings.HasPrefix(name, backupPrefix) {
 			continue
 		}
-		at, err := time.ParseInLocation(backupLayout, strings.TrimPrefix(e.Name(), backupPrefix), time.UTC)
-		if err != nil {
-			continue // a .partial one, or someone else's folder
+		stamp := strings.TrimPrefix(name, backupPrefix)
+		if !e.IsDir() {
+			if !strings.HasSuffix(name, backupFileExt) {
+				continue // a .partial one
+			}
+			stamp = strings.TrimSuffix(stamp, backupFileExt)
 		}
-		out = append(out, backupEntry{e.Name(), at})
+		at, err := time.ParseInLocation(backupLayout, stamp, time.UTC)
+		if err != nil {
+			continue // a .partial one, or someone else's file
+		}
+		out = append(out, backupEntry{name, at, e.IsDir()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].at.Before(out[j].at) })
 	return out
 }
 
-// backupNow writes backups/concord-backup-<UTC time>/ with the database
-// (a consistent snapshot), the settings file and the plugin secrets key:
-// everything needed to bring the server back. It keeps the newest ten.
+// backupSize is a backup's size on disk (a folder's database, for old ones).
+func backupSize(dir string, b backupEntry) int64 {
+	p := filepath.Join(dir, b.name)
+	if b.dir {
+		p = filepath.Join(p, backupDBName)
+	}
+	if fi, err := os.Stat(p); err == nil {
+		return fi.Size()
+	}
+	return 0
+}
+
+// backupNow writes backups/concord-backup-<UTC time>.tar.gz.age: the
+// database (a consistent snapshot), the settings file, the plugin secrets
+// key and the plugins' data, encrypted with the backup key (backup_crypt.go).
+// Everything needed to bring the server back but the plugins themselves,
+// which install again from their source. It keeps the newest ten.
 func (s *Server) backupNow() (string, error) {
 	if !s.admin.backupMu.TryLock() {
 		return "", fmt.Errorf("a backup is already running")
@@ -240,40 +286,44 @@ func (s *Server) backupNow() (string, error) {
 	s.admin.backingUp.Store(true)
 	defer s.admin.backingUp.Store(false)
 
+	key, err := s.backupKey()
+	if err != nil {
+		return "", err
+	}
 	dir := s.backupsDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("making %s: %w", dir, err)
 	}
 	now := time.Now().UTC()
-	name := backupPrefix + now.Format(backupLayout)
+	name := backupPrefix + now.Format(backupLayout) + backupFileExt
 	final := filepath.Join(dir, name)
 	if _, err := os.Stat(final); err == nil {
 		return "", fmt.Errorf("a backup was taken this second; try again")
 	}
 	partial := final + ".partial"
-	_ = os.RemoveAll(partial)
-	if err := os.Mkdir(partial, 0o700); err != nil {
-		return "", err
-	}
+	snap := filepath.Join(dir, ".snapshot-"+now.Format(backupLayout)+".db")
+	_ = os.Remove(partial)
+	_ = os.Remove(snap)
+	defer os.Remove(snap)
 	fail := func(err error) (string, error) {
-		_ = os.RemoveAll(partial)
+		_ = os.Remove(partial)
 		return "", err
 	}
 
-	if err := s.db.BackupTo(filepath.Join(partial, "concord.db")); err != nil {
+	if err := s.db.BackupTo(snap); err != nil {
 		return fail(err)
 	}
-	if err := os.Chmod(filepath.Join(partial, "concord.db"), 0o600); err != nil { // VACUUM INTO makes it readable by everyone
-		return fail(err)
-	}
-	extras := []string{filepath.Join(filepath.Dir(s.config.DatabasePath), "plugin-secrets.key")}
+	_ = os.Chmod(snap, 0o600) // VACUUM INTO makes it readable by everyone
+	dataDir := filepath.Dir(s.config.DatabasePath)
+	extras := []string{filepath.Join(dataDir, "plugin-secrets.key")}
 	if s.configPath != "" {
 		extras = append(extras, s.configPath)
 	}
-	for _, src := range extras {
-		if err := copyIfExists(src, filepath.Join(partial, filepath.Base(src))); err != nil {
-			return fail(err)
-		}
+	if s.config.PluginsDir != "" {
+		extras = append(extras, filepath.Join(filepath.Dir(s.config.PluginsDir), backupDataDir))
+	}
+	if err := writeEncryptedBackup(partial, key.Recipient(), snap, extras); err != nil {
+		return fail(err)
 	}
 	if err := os.Rename(partial, final); err != nil {
 		return fail(err)
@@ -286,14 +336,14 @@ func (s *Server) backupNow() (string, error) {
 	}
 
 	if abs, err := filepath.Abs(final); err == nil {
-		Logger.Info("Backed up", "to", abs)
+		Logger.Info("Backed up (encrypted)", "to", abs)
 	}
-	// The page shows the backups folder already, so the folder's name is enough.
+	// The page shows the backups folder already, so the file's name is enough.
 	size := ""
-	if fi, err := os.Stat(filepath.Join(final, "concord.db")); err == nil {
+	if fi, err := os.Stat(final); err == nil {
 		size = " (" + humanBytes(fi.Size()) + ")"
 	}
-	return "Backed up as " + name + size, nil
+	return "Backed up as " + name + size + ", encrypted", nil
 }
 
 // copyIfExists copies a file readable only by its owner; a missing source

@@ -63,7 +63,7 @@ The installer:
    - **Browse the Grapevine:** **Ctrl+G** on the login screen, or **Settings → Manage Servers → B**. Pick a server and press **A** to join.
 4. **Chat:** type and press **Enter**. **Tab** moves between panels, `/help` finds every command, and **Settings → Help** has the full guide.
 
-**Running your own server?** The first person to sign up on a new server becomes its owner. Give friends its address (on your network, the installer's summary shows it; across the internet, forward the port or put it behind a tunnel). Then manage channels, roles, members and plugins in **Server Settings**: **Ctrl+B** while you're on your server. **Server Settings → Invites** decides how people join (open, invite only, or approval) and turns email verification on or off; `/invite` makes and emails invite codes.
+**Running your own server?** The first person to sign up on a new server becomes its owner. Give friends its address (on your network, the installer's summary shows it; across the internet, forward the port or put it behind a tunnel). Then manage channels, roles, members and plugins in **Server Settings**: **Ctrl+B** while you're on your server. **Server Settings → Invites** decides how people join (open, invite only, or approval) and turns email verification on or off; `/invite` makes and emails invite codes. The server backs itself up every day, encrypted, into a `backups` folder beside its database: keep a copy of the backup key (**Server Settings → About → K**) somewhere safe, because without it the backups can't be read.
 
 ## Plugins
 

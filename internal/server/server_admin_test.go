@@ -87,22 +87,31 @@ func TestServerStatusAndBackup(t *testing.T) {
 		t.Errorf("a manager backed up: %+v", res)
 	}
 
-	// The owner backs up: a folder with the database, which opens and holds the message.
+	// The owner backs up: one encrypted file, which the backup key opens
+	// into the database (holding the message) and the secrets key.
 	m = adminAsk(t, wsURL, tokens[0], protocol.ServerAdminRequest{ServerID: s.ID, Action: protocol.ServerAdminBackup}, protocol.EventServerAdminResult)
 	mustUnmarshal(t, m.Data, &res)
 	if !res.OK {
 		t.Fatalf("backup failed: %s", res.Message)
 	}
 	backups := listBackups(srv.backupsDir())
-	if len(backups) != 1 {
-		t.Fatalf("%d backups, want 1", len(backups))
+	if len(backups) != 1 || backups[0].dir {
+		t.Fatalf("backups %+v, want one file", backups)
 	}
-	dir := filepath.Join(srv.backupsDir(), backups[0].name)
+	file := filepath.Join(srv.backupsDir(), backups[0].name)
+	if fi, err := os.Stat(file); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
+		t.Errorf("backup file: %v, mode %v (want 0600)", err, fi.Mode())
+	}
+	key, err := BackupKeyText(srv.config.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "opened")
+	if _, err := OpenBackup(file, key, dir); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(filepath.Join(dir, "plugin-secrets.key")); err != nil {
 		t.Errorf("the secrets key wasn't backed up: %v", err)
-	}
-	if fi, err := os.Stat(filepath.Join(dir, "concord.db")); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
-		t.Errorf("backed-up database: %v, mode %v (want 0600: it holds every account)", err, fi.Mode())
 	}
 	copyDB, err := database.New(filepath.Join(dir, "concord.db"))
 	if err != nil {
@@ -112,8 +121,21 @@ func TestServerStatusAndBackup(t *testing.T) {
 	if _, msgs, err := copyDB.ContentCounts(); err != nil || msgs < 1 {
 		t.Errorf("backup holds %d messages (%v)", msgs, err)
 	}
-	if st, _ := status(tokens[0]); st.BackupCount != 1 || st.LastBackupBytes == 0 || st.LastBackupAt.IsZero() {
+	if st, _ := status(tokens[0]); st.BackupCount != 1 || st.LastBackupBytes == 0 || st.LastBackupAt.IsZero() || !st.LastBackupEncrypted || !st.BackupKeyMade {
 		t.Errorf("after a backup: %+v", st)
+	}
+
+	// The key: administrators only.
+	m = adminAsk(t, wsURL, tokens[1], protocol.ServerAdminRequest{ServerID: s.ID, Action: protocol.ServerAdminBackupKey}, protocol.EventServerAdminResult)
+	res = protocol.ServerAdminResult{}
+	mustUnmarshal(t, m.Data, &res)
+	if res.OK || res.BackupKey != "" {
+		t.Errorf("a manager saw the key: %+v", res)
+	}
+	m = adminAsk(t, wsURL, tokens[0], protocol.ServerAdminRequest{ServerID: s.ID, Action: protocol.ServerAdminBackupKey}, protocol.EventServerAdminResult)
+	mustUnmarshal(t, m.Data, &res)
+	if !res.OK || res.BackupKey != key {
+		t.Errorf("the owner's key: %+v", res)
 	}
 }
 
@@ -139,6 +161,9 @@ func TestBackupsKeepTheNewestTen(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "mine")); err != nil {
 		t.Error("a folder that isn't a backup was removed")
+	}
+	if got[len(got)-1].dir {
+		t.Error("the new backup isn't an encrypted file")
 	}
 }
 

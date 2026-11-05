@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	charmlog "github.com/charmbracelet/log"
 	"github.com/concord-chat/concord/internal/database"
@@ -37,7 +38,17 @@ func main() {
 	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
 	testMail := flag.String("test-mail", "", "Send a test email to this address with the [mail] settings, then exit")
 	resetPassword := flag.String("reset-password", "", "Give the account with this email a new temporary password, then exit")
+	showBackupKey := flag.Bool("backup-key", false, "Print the key that opens this server's encrypted backups, then exit")
+	openBackup := flag.String("open-backup", "", "Decrypt and unpack an encrypted backup (concord-backup-….tar.gz.age), then exit")
+	openTo := flag.String("to", "", "With --open-backup: the new folder to unpack into (default: the backup's name)")
+	keyFile := flag.String("key", "", "With --open-backup: the backup key file, or the key itself (default: this server's backup.key)")
 	flag.Parse()
+
+	// Opening a backup needs no server settings when the key is given (a
+	// restore on a new machine), so it comes before the setup wizard.
+	if *openBackup != "" && *keyFile != "" {
+		os.Exit(runOpenBackup(*openBackup, *openTo, *keyFile))
+	}
 
 	// Parse and initialize logger early
 	if *debugMode {
@@ -120,6 +131,23 @@ func main() {
 	}
 	if *dbPath != "" {
 		config.DatabasePath = *dbPath
+	}
+
+	// Backup key tools that exit without starting the server.
+	if *showBackupKey {
+		key, err := server.BackupKeyText(config.DatabasePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("This key opens this server's backups. Keep a copy somewhere safe (a password manager);")
+		fmt.Println("without it the backups can't be read. Never share it.")
+		fmt.Println()
+		fmt.Println(key)
+		return
+	}
+	if *openBackup != "" {
+		os.Exit(runOpenBackup(*openBackup, *openTo, server.BackupKeyPath(config.DatabasePath)))
 	}
 
 	// One-off account tools that exit without starting the server.
@@ -263,3 +291,34 @@ func loadConfig(path string, config *server.Config) error {
 }
 
 // Old printBanner removed - now using server.PrintBanner() with beautiful ASCII art
+
+// runOpenBackup unpacks an encrypted backup with key (a key file, or the
+// key itself) into to (default: beside it, named after it).
+func runOpenBackup(file, to, key string) int {
+	keyText := key
+	if data, err := os.ReadFile(key); err == nil {
+		keyText = string(data)
+	} else if !strings.HasPrefix(strings.TrimSpace(key), "AGE-SECRET-KEY-") {
+		fmt.Fprintf(os.Stderr, "Can't read the backup key %s: %v\n", key, err)
+		return 1
+	}
+	if to == "" {
+		to = strings.TrimSuffix(file, ".tar.gz.age")
+		if to == file {
+			to = file + ".opened"
+		}
+	}
+	wrote, err := server.OpenBackup(file, keyText, to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Couldn't open the backup: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Unpacked %d files into %s:\n", len(wrote), to)
+	for _, w := range wrote {
+		if !strings.Contains(w, "/") {
+			fmt.Println("  " + w)
+		}
+	}
+	fmt.Println("To restore, stop the server and put concord.db (and the other files) back where they came from.")
+	return 0
+}

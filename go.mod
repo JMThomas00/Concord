@@ -30,6 +30,7 @@ require (
 )
 
 require (
+	filippo.io/age v1.2.1 // indirect
 	git.sr.ht/~jackmordaunt/go-toast v1.1.2 // indirect
 	github.com/TheTitanrain/w32 v0.0.0-20180517000239-4f5cfb03fabf // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

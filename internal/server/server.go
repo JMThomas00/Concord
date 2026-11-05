@@ -42,6 +42,7 @@ type Config struct {
 	PluginsDir     string               `toml:"plugins_dir"` // Folder scanned for plugin.toml subfolders at startup
 	Mail           MailConfig           `toml:"mail"`        // Outgoing email for verification and password reset (optional)
 	Voice          VoiceConfig          `toml:"voice"`       // STUN/TURN servers for voice calls (voice_ice.go; optional)
+	Backups        BackupsConfig        `toml:"backups"`     // scheduled encrypted backups (backup_crypt.go)
 	// RealIPHeader: the header a trusted proxy sets to each visitor's
 	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
 	// empty unless the server is reachable only through that proxy.
@@ -67,6 +68,7 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			IntervalHours: 24,
 		},
+		Backups:    BackupsConfig{EveryHours: 24},
 		PluginsDir: "Plugins",
 	}
 }
@@ -331,6 +333,7 @@ func (s *Server) Run() error {
 
 	// Start cleanup tasks for expired timeouts and mutes
 	go s.runCleanupTasks()
+	go s.runScheduledBackups() // backup_crypt.go
 
 	// Start message pruning task
 	if s.config.MessagePruning.Enabled {
@@ -908,6 +911,7 @@ func (s *Server) runWithDashboard() error {
 
 	// Start cleanup tasks
 	go s.runCleanupTasks()
+	go s.runScheduledBackups() // backup_crypt.go
 
 	// Start message pruning task
 	if s.config.MessagePruning.Enabled {
@@ -1136,6 +1140,7 @@ func (s *Server) runWithHybridDashboard() error {
 
 	// Start cleanup tasks
 	go s.runCleanupTasks()
+	go s.runScheduledBackups() // backup_crypt.go
 
 	// Start message pruning
 	if s.config.MessagePruning.Enabled {

@@ -77,3 +77,15 @@ public_port = 0
 #    works wherever this server runs; 1,000 GB/month free at the time of writing):
 # cloudflare_turn_key_id = "..."
 # cloudflare_turn_token  = "..."
+
+# Backups (encrypted). The server backs itself up into backups/ beside the
+# database: one file per backup, holding the database, this settings file,
+# plugin-secrets.key and the plugins' data, encrypted with the backup key
+# (backup.key beside the database, made with the first backup). The newest
+# ten are kept. Keep a copy of the key somewhere safe: without it backups
+# can't be read. `concord-server --backup-key` prints it, administrators see
+# it in Server Settings > About (K), and
+# `concord-server --open-backup <file> [--to <folder>] [--key <key file>]`
+# unpacks a backup (so does `age -d -i backup.key <file> | tar xz`).
+[backups]
+every_hours = 24   # 0: only when an administrator presses B in Server Settings > About
