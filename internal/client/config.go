@@ -160,6 +160,10 @@ type AudioConfig struct {
 	// Plugin sounds (game moves, alerts): their own volume, and a mute.
 	PluginSoundVolume float64 `json:"plugin_sound_volume"` // 0.0–1.0, default 0.8
 	PluginSoundsMuted bool    `json:"plugin_sounds_muted"`
+	// KeepOutputOpen keeps the sound output (plugin and notification
+	// sounds) open while Concord runs, so it stays listed in mixers such as
+	// Waveform instead of appearing only while something plays.
+	KeepOutputOpen bool `json:"keep_output_open,omitempty"`
 }
 
 // NotificationConfig holds notification and sound alert preferences

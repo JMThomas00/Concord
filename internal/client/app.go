@@ -1084,6 +1084,9 @@ func (a *App) Init() tea.Cmd {
 	a.fx.stageAt = time.Now()
 	a.startLoading()
 	a.lastInput = time.Now()
+	if a.audioConfig.KeepOutputOpen && sfxAvailable {
+		a.soundOut()
+	}
 	if cal := a.calendar(); cal != "" {
 		a.findEgg(cal)
 	}

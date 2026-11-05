@@ -14,6 +14,8 @@ func newSFXPlayer(string) *sfxPlayer { return &sfxPlayer{} }
 
 func (p *sfxPlayer) Play([]int16, float64) error { return nil }
 
+func (p *sfxPlayer) SetKeepOpen(bool) error { return nil }
+
 func decodeOggOpus([]byte) ([]int16, error) {
 	return nil, errors.New("this build has no audio")
 }

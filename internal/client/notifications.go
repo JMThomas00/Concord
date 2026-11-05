@@ -2,6 +2,8 @@ package client
 
 import (
 	"fmt"
+	"log"
+	"math"
 	"time"
 
 	"github.com/gen2brain/beeep"
@@ -127,11 +129,23 @@ func (a *App) playSound(name string) {
 		if opt.Name != name {
 			continue
 		}
+		if opt.Name == "Terminal Bell" || len(opt.Tones) == 0 {
+			go fmt.Print("\a")
+			return
+		}
+		// beeep.Beep only reaches a PC speaker on Linux and otherwise
+		// writes a terminal bell, so every sound came out the same (or not
+		// at all): play the tones through the sound output instead.
+		if sfxAvailable {
+			pcm, player := toneSound(opt.Tones), a.soundOut()
+			go func() {
+				if err := player.Play(pcm, notifySoundGain); err != nil {
+					log.Printf("notification sound: %v", err)
+				}
+			}()
+			return
+		}
 		go func(o SoundOption) {
-			if o.Name == "Terminal Bell" || len(o.Tones) == 0 {
-				fmt.Print("\a")
-				return
-			}
 			for i, t := range o.Tones {
 				beeep.Beep(t.Freq, t.Dur) //nolint:errcheck
 				if i < len(o.Tones)-1 {
@@ -141,6 +155,45 @@ func (a *App) playSound(name string) {
 		}(opt)
 		return
 	}
+}
+
+// notifySoundGain is how loud notification sounds play (tones are full scale).
+const notifySoundGain = 0.35
+
+// toneSound renders tones as 48 kHz stereo sine waves, each faded in and
+// out over 5 ms (no clicks), with 40 ms of silence between them.
+func toneSound(tones []soundTone) []int16 {
+	const fade = sfxRate * 5 / 1000
+	gap := sfxRate * 40 / 1000
+	var out []int16
+	for i, t := range tones {
+		n := sfxRate * t.Dur / 1000
+		for j := 0; j < n; j++ {
+			env := 1.0
+			if j < fade {
+				env = float64(j) / fade
+			} else if n-j < fade {
+				env = float64(n-j) / fade
+			}
+			v := int16(env * 32767 * math.Sin(2*math.Pi*t.Freq*float64(j)/sfxRate))
+			out = append(out, v, v)
+		}
+		if i < len(tones)-1 {
+			out = append(out, make([]int16, gap*2)...)
+		}
+	}
+	return out
+}
+
+// soundOut is the output plugin and notification sounds share.
+func (a *App) soundOut() *sfxPlayer {
+	if a.sfx == nil {
+		a.sfx = newSFXPlayer(a.audioConfig.OutputDevice)
+		if a.audioConfig.KeepOutputOpen {
+			go a.sfx.SetKeepOpen(true) // opening the device can take a moment
+		}
+	}
+	return a.sfx
 }
 
 // triggerMessageNotification fires the appropriate sound (and, if enabled,

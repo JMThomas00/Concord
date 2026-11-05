@@ -172,3 +172,28 @@ func TestSettingsCategoriesHasNoStandaloneMessagesCategory(t *testing.T) {
 		t.Fatalf("expected Help & Guide to remain the last category, got %v", cats)
 	}
 }
+
+// Notification tones are real audio now (beeep only wrote a terminal bell
+// on Linux): the right length, faded at both ends, stereo.
+func TestToneSound(t *testing.T) {
+	pcm := toneSound([]soundTone{{880, 100}, {660, 180}})
+	want := (sfxRate*100/1000 + sfxRate*40/1000 + sfxRate*180/1000) * 2
+	if len(pcm) != want {
+		t.Fatalf("%d samples, want %d", len(pcm), want)
+	}
+	if pcm[0] != 0 || pcm[len(pcm)-2] > 2000 || pcm[len(pcm)-2] < -2000 {
+		t.Errorf("not faded: first %d, last %d", pcm[0], pcm[len(pcm)-2])
+	}
+	loud := int16(0)
+	for i := 0; i < len(pcm); i += 2 {
+		if pcm[i] != pcm[i+1] {
+			t.Fatal("left and right differ")
+		}
+		if pcm[i] > loud {
+			loud = pcm[i]
+		}
+	}
+	if loud < 30000 {
+		t.Errorf("peak %d", loud)
+	}
+}

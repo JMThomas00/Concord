@@ -25,6 +25,7 @@ type sfxPlayer struct {
 	playing []*sfxVoice
 	idle    *time.Timer
 	output  string // device name ("" = the system default)
+	keep    bool   // stay open when idle (AudioConfig.KeepOutputOpen)
 }
 
 type sfxVoice struct {
@@ -86,6 +87,30 @@ func (p *sfxPlayer) Play(pcm []int16, gain float64) error {
 	return nil
 }
 
+// SetKeepOpen keeps the device open while idle (opening it now), or lets
+// it close after sfxIdleClose again.
+func (p *sfxPlayer) SetKeepOpen(keep bool) error {
+	p.mu.Lock()
+	p.keep = keep
+	open := p.dev != nil
+	if !keep && open && len(p.playing) == 0 && p.idle == nil {
+		p.idle = time.AfterFunc(sfxIdleClose, p.closeIfIdle)
+	}
+	p.mu.Unlock()
+	if !keep || open {
+		return nil
+	}
+	p.openMu.Lock()
+	defer p.openMu.Unlock()
+	p.mu.Lock()
+	open = p.dev != nil
+	p.mu.Unlock()
+	if open {
+		return nil
+	}
+	return p.open()
+}
+
 // open starts the output device. Called with openMu held and mu not held.
 func (p *sfxPlayer) open() error {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
@@ -138,7 +163,7 @@ func (p *sfxPlayer) fill(out, _ []byte, frames uint32) {
 		}
 	}
 	p.playing = kept
-	if len(p.playing) == 0 && p.idle == nil && p.dev != nil {
+	if len(p.playing) == 0 && p.idle == nil && p.dev != nil && !p.keep {
 		p.idle = time.AfterFunc(sfxIdleClose, p.closeIfIdle)
 	}
 	p.mu.Unlock()
@@ -149,7 +174,7 @@ func (p *sfxPlayer) fill(out, _ []byte, frames uint32) {
 
 func (p *sfxPlayer) closeIfIdle() {
 	p.mu.Lock()
-	if len(p.playing) > 0 || p.dev == nil {
+	if len(p.playing) > 0 || p.dev == nil || p.keep {
 		p.mu.Unlock()
 		return
 	}
