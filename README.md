@@ -179,6 +179,8 @@ Concord can use [Tor](https://www.torproject.org) to hide where a server is and 
 - **Bridges** for places that block Tor: Snowflake or obfs4 (built in; they need the `snowflake-client` or `lyrebird`/`obfs4proxy` program) or lines you paste from [bridges.torproject.org](https://bridges.torproject.org).
 - **Over Tor, voice is off and files go through the server**, since both would otherwise connect you straight to other people and show them your address. The server passes files along without keeping them.
 
+**What this protects, and what it doesn't:** Tor hides where you and the server are, not what you write; the server's admin can read everything on it; encrypting the database protects copies, not a seized running server. Read [docs/what-concord-protects.md](docs/what-concord-protects.md) before relying on any of it.
+
 ## The Grapevine
 
 The Grapevine is Concord's opt-in server directory. A **hub** lists the servers that register with it, and hubs can connect to share their listings. Anyone can run one; the official hub is `https://grapevine.concordchat.cc`.

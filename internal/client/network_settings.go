@@ -304,7 +304,7 @@ func (a *App) renderNetworkContent(width, height int) string {
 		}
 	}
 	middle.writeBlank()
-	for _, l := range wrapWords("Over Tor, voice is off and files go through the server: both would otherwise connect you directly to other people and show them your address.", w-2) {
+	for _, l := range wrapWords("Over Tor, voice is off and files go through the server: both would otherwise connect you directly to other people and show them your address. Tor hides where you are, not what you write. What it protects and what it doesn't: Help & Guide, or docs/what-concord-protects.md.", w-2) {
 		middle.writeLine(dim.Render("  " + l))
 	}
 	middle.pad()

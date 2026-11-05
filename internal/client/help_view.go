@@ -50,6 +50,8 @@ One profile signs you in to every server. Switching servers keeps your voice cal
 
 A server on Tor has a ` + "`.onion`" + ` address that only invited people can find: its invites end in ` + "`#`" + ` and an access key. Paste the whole thing into Add Server. **Settings → Network** chooses when you use Tor (*Where needed*, or *Everything*) and bridges for places that block it; **O** in Manage Servers switches a server to Tor. Over Tor, voice is off and files go through the server, so nobody sees your address.
 
+**What it protects, and what it doesn't.** Tor hides where you are and where the server is, not what you write: your name, your writing and when you're online can still identify you. The server's admin can read everything on their server. An encrypted database protects copies and stolen disks, not a running server or one seized with its key file. Your ` + "`~/.concord`" + ` folder holds your sign-ins unencrypted. The whole page: https://github.com/JMThomas00/Concord/blob/main/docs/what-concord-protects.md
+
 A server that isn't letting you in yet asks for an invite code, or, if it lets people in by approval, shows that you're waiting (Concord checks every 30 seconds).
 
 ## Channels
