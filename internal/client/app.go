@@ -264,6 +264,11 @@ type App struct {
 	// Unread tracking (client-side only)
 	unreadCounts  map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → count
 	mentionCounts map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → @mention count
+	// Read positions kept by the server (reads.go): the open channel's
+	// "new" divider, and when each channel was last marked read.
+	divider     *newDivider
+	readSentAt  map[uuid.UUID]time.Time
+	readPending map[uuid.UUID]bool
 	mutedChannels map[uuid.UUID]bool              // channelID → muted
 	mutedServers  map[uuid.UUID]bool              // clientServerID → muted
 
@@ -1293,6 +1298,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case serverReleaseMsg:
 		a.handleServerRelease(m)
 		return a, nil
+	case channelReadFlushMsg:
+		a.flushChannelRead(m)
+		return a, nil
 	case installerReadyMsg:
 		return a, a.runInstaller(m)
 	case installerDoneMsg:
@@ -2271,6 +2279,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	}
 	if a.view == ViewMain && msg.String() == "alt+t" {
 		a.openThreadList()
+		return nil
+	}
+	if a.view == ViewMain && msg.String() == "alt+u" && a.currentChannel != nil && !a.isRemotePaneChannel(a.currentChannel) {
+		a.jumpToUnread() // reads.go
 		return nil
 	}
 
@@ -4963,9 +4975,13 @@ func (a *App) selectChannel(index int) {
 	// Clear typing indicators from the previous channel
 	a.clearTypingState()
 
-	// Clear unread counts for this channel
+	// Clear unread counts for this channel, after placing its "new"
+	// divider and telling the server it's read (reads.go).
 	if a.currentClientServer != nil && a.currentChannel != nil {
 		serverID := a.currentClientServer.ID
+		if a.currentChannel.Type != models.ChannelTypeCategory && a.activeConn != nil {
+			a.openedChannel(serverID, a.activeConn, a.currentChannel.ID)
+		}
 		if a.unreadCounts[serverID] != nil {
 			delete(a.unreadCounts[serverID], a.currentChannel.ID)
 		}
@@ -5078,6 +5094,9 @@ func (a *App) updateChatContent() {
 
 	// Get messages for current channel, with expanded threads' replies (threads.go)
 	messages := a.visibleMessages()
+	if a.divider != nil {
+		a.divider.line = -1 // found again below
+	}
 	a.threadBorderLines = make(map[int]uuid.UUID)
 
 	// Get viewport width for full-width backgrounds
@@ -5177,6 +5196,14 @@ func (a *App) updateChatContent() {
 				content.WriteString("\n")
 			}
 			lastRenderedDate = msgDate
+		}
+
+		// The "new" divider above the first message that was unread when
+		// the channel opened (reads.go).
+		if msg.ThreadID == nil && a.dividerAbove(messages, i) {
+			a.divider.line = runningLines + strings.Count(content.String()[msgStartLen:], "\n")
+			content.WriteString(a.dividerLine(viewportWidth) + "\n")
+			showHeader = true
 		}
 
 		// A message in a thread box is drawn 4 columns narrower, then boxed
@@ -6572,6 +6599,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		for _, vs := range payload.VoiceStates {
 			a.onVoiceJoin(vs.UserID, "", false) // already in voice: noted quietly
 		}
+		a.seedUnreads(serverID, sc, payload.Unreads) // reads.go
 
 		log.Printf("Received SERVER_CREATE for %s: %d channels, %d members, %d roles",
 			payload.Server.Name, len(payload.Channels), len(displays), len(payload.Roles))
@@ -6658,6 +6686,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		if payload.Message.MentionEveryone {
 			hasMention = true
+		}
+		if sc.User != nil {
+			for _, id := range payload.Message.Mentions { // the server resolves "@name" (v0.1.9+)
+				if id == sc.User.ID {
+					hasMention = true
+				}
+			}
 		}
 		if isThreadReply && !display.IsOwn {
 			a.noteThreadReply(sc, display, followsThread || hasMention) // the optional in-channel line (threads_find.go)
@@ -6747,6 +6782,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				// whole window for a frame on every message (a black flash
 				// each time anyone posted); repaintAll rewrites every line
 				// in place instead.
+				if !display.IsOwn {
+					return tea.Batch(repaintAll, a.markRead(serverID, sc, payload.Message.ChannelID)) // seen as it arrives (reads.go)
+				}
 				return repaintAll
 			} else if a.currentChannel != nil {
 				log.Printf("Message not for current channel: msg=%s, current=%s",
@@ -7675,6 +7713,12 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 	case protocol.EventServerStatus, protocol.EventServerAdminResult:
 		a.handleServerAdminEvent(sc, msg)
+
+	case protocol.EventChannelRead:
+		var p protocol.ChannelReadPayload
+		if err := json.Unmarshal(msg.Data, &p); err == nil {
+			a.channelReadElsewhere(serverID, sc, p)
+		}
 
 	case protocol.EventPluginManageResult:
 		var result protocol.PluginManageResult

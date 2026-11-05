@@ -81,6 +81,7 @@ type ServerConnection struct {
 	PluginRecords map[string]protocol.PluginRecord
 	Channels map[uuid.UUID][]*models.Channel // Channels per protocol server
 	Messages map[uuid.UUID][]*MessageDisplay // Messages per channel
+	ReadSeq  map[uuid.UUID]int64             // read position per channel, from the server (reads.go)
 	Members  []*MemberDisplay        // Members in current server
 	Roles    map[uuid.UUID][]*models.Role    // Roles per protocol server
 	PinnedMessages map[uuid.UUID][]*models.Message // Pinned messages per channel
