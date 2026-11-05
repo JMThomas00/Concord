@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
 	"github.com/concord-chat/concord/internal/models"
 )
 
@@ -33,11 +32,20 @@ type DB struct {
 	*sql.DB
 }
 
-// New creates a new database connection and initializes schema
-func New(path string) (*DB, error) {
-	db, err := sql.Open("sqlite", path+"?_foreign_keys=on&_journal_mode=WAL")
+// New opens (or creates) an unencrypted database and brings its schema up
+// to date.
+func New(path string) (*DB, error) { return Open(path, Key{}) }
+
+// Open opens (or creates) the database at path, encrypted with key when
+// it's set (open.go), and brings its schema up to date.
+func Open(path string, key Key) (*DB, error) {
+	db, err := sql.Open("sqlite3", dataSource(path, key))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := checkReadable(db, key); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	// Set connection pool settings
@@ -46,6 +54,11 @@ func New(path string) (*DB, error) {
 	db.SetConnMaxLifetime(time.Hour)
 
 	wrapper := &DB{db}
+	// Times first: everything after reads them (open.go).
+	if err := convertTimes(wrapper); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to convert stored times: %w", err)
+	}
 	if err := wrapper.initSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)

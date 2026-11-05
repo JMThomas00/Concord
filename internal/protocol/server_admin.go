@@ -72,6 +72,11 @@ type ServerStatusPayload struct {
 	Messages int `json:"messages"`
 
 	DatabaseBytes int64 `json:"database_bytes"` // the database plus its write-ahead log
+	// Encryption at rest (since v0.2.0): the key file's path (administrators
+	// only), or a passphrase typed at start.
+	DatabaseEncrypted  bool   `json:"database_encrypted,omitempty"`
+	DatabaseKeyFile    string `json:"database_key_file,omitempty"`
+	DatabasePassphrase bool   `json:"database_passphrase,omitempty"`
 
 	PluginsInstalled int `json:"plugins_installed"`
 	PluginsRunning   int `json:"plugins_running"`

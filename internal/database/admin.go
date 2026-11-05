@@ -18,7 +18,9 @@ func (db *DB) BackupTo(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%s already exists", path)
 	}
-	if _, err := db.Exec(`VACUUM INTO ?`, path); err != nil {
+	// Unencrypted even when the database is (vfs=os): backups encrypt the
+	// copy themselves, with their own key.
+	if _, err := db.Exec(`VACUUM INTO ?`, plainTarget(path)); err != nil {
 		return fmt.Errorf("backing up the database: %w", err)
 	}
 	return nil

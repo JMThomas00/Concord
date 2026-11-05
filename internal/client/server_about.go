@@ -380,7 +380,20 @@ func (a *App) renderServerAboutContent(width, height int) string {
 			row("Runs as", normal.Render(runsAsText(st.RunsAs))+dim.Render(" · "+st.OS+"/"+st.Arch))
 			row("People", normal.Render(count(st.Members, "member", "members")+" · "+commas(st.Online)+" online now"))
 			row("Content", normal.Render(count(st.Channels, "channel", "channels")+" · "+count(st.Messages, "message", "messages")))
-			row("Database", normal.Render(aboutBytes(st.DatabaseBytes)))
+			switch {
+			case st.DatabasePassphrase:
+				row("Database", normal.Render(aboutBytes(st.DatabaseBytes))+dim.Render(" · encrypted · passphrase typed at start"))
+			case st.DatabaseEncrypted:
+				row("Database", normal.Render(aboutBytes(st.DatabaseBytes))+dim.Render(" · encrypted"))
+				if st.DatabaseKeyFile != "" {
+					more(dim.Render("key " + st.DatabaseKeyFile))
+				}
+			default:
+				row("Database", normal.Render(aboutBytes(st.DatabaseBytes))+warn.Render(" · not encrypted"))
+				if st.CanAct {
+					more(dim.Render("to encrypt it: stop the server, then concord-server --encrypt-database"))
+				}
+			}
 			row("Plugins", normal.Render(fmt.Sprintf("%d installed · %d running", st.PluginsInstalled, st.PluginsRunning)))
 			g := st.Grapevine
 			switch {

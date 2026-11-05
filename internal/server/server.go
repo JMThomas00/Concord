@@ -43,6 +43,12 @@ type Config struct {
 	Mail           MailConfig           `toml:"mail"`        // Outgoing email for verification and password reset (optional)
 	Voice          VoiceConfig          `toml:"voice"`       // STUN/TURN servers for voice calls (voice_ice.go; optional)
 	Backups        BackupsConfig        `toml:"backups"`     // scheduled encrypted backups (backup_crypt.go)
+	Database       DatabaseConfig       `toml:"database"`    // encryption at rest (dbkey.go)
+
+	// DatabaseKey opens an encrypted database (ResolveDatabaseKey); zero
+	// for an unencrypted one. DatabaseKeyInfo says how, for About.
+	DatabaseKey     database.Key    `toml:"-"`
+	DatabaseKeyInfo DatabaseKeyInfo `toml:"-"`
 	// RealIPHeader: the header a trusted proxy sets to each visitor's
 	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
 	// empty unless the server is reachable only through that proxy.
@@ -137,7 +143,7 @@ type Server struct {
 func New(config *Config) (*Server, error) {
 	realIPHeader = strings.TrimSpace(config.RealIPHeader)
 	// Open database
-	db, err := database.New(config.DatabasePath)
+	db, err := database.Open(config.DatabasePath, config.DatabaseKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

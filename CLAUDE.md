@@ -154,9 +154,13 @@ Client                          Server
 
 ## Database Schema
 
-Schema and migrations live in `internal/database/sqlite.go`.
+Schema and migrations live in `internal/database/sqlite.go`; opening is `internal/database/open.go`.
 
-**Important:** SQLite uses `modernc.org/sqlite` (pure Go) for the **server**. CGO is only needed for the **client** voice engine (malgo + opus).
+**The server's SQLite is `github.com/ncruces/go-sqlite3` v0.31.0** (since Privacy Pack 1, 2026-11-05; before it `modernc.org/sqlite`, which the Grapevine hub still uses and the database tests use to write old-format files). It's pure Go too: SQLite compiled to WebAssembly and run by wazero v1.11.0, the version the client's plugin code already pins (newer releases of the library need Go 1.26). CGO is still only needed for the client's voice engine.
+- **Encryption at rest:** the `adiantum` file layer (`vfs=adiantum` with `hexkey`/`textkey`, first PRAGMA), on the database, its WAL and temp files (`temp_store(memory)`). It protects data at rest only: no tamper detection, and several copies over time show which 4 KiB blocks changed. `database.Open(path, Key{Raw|Passphrase})`; `New(path)` is unencrypted. A wrong or missing key fails at open with `ErrWrongKey`. `BackupTo` writes an **unencrypted** snapshot (`VACUUM INTO …?vfs=os`) that the backup then encrypts with age; `ConvertedCopyTo` writes an encrypted or plain copy.
+- **Times** are stored as SQLite's own text, UTC, to the second (`_timefmt=sqlite`: reads every SQLite format, writes `2006-01-02 15:04:05` in UTC, what `CURRENT_TIMESTAMP` writes), so they sort as text. The old driver wrote Go's debug form in the server's zone (`… -0600 CST m=+2.03`); `convertTimes` rewrites any DATE/DATETIME/TIMESTAMP text not in that form on every open (one cheap query per column once done). **Anything ordered or compared by recency uses `seq`, not times** (threads' unread now compares `read_seq` with the last reply's `seq`).
+- **Foreign keys are off** (`foreign_keys(0)`): the old driver silently ignored the `_foreign_keys=on` it was given, so existing data was never held to them, and this SQLite build turns them on by default.
+- **The key (`internal/server/dbkey.go`):** `[database] encrypt` (new databases; default true), `key_file` (default `concord-database.key` beside the settings file; `CONCORD_DATABASE_KEY_FILE` wins; the installer sets `~/.concord/keys/concord-database.key`, Docker mounts `server-secrets` at `/app/secrets`), `ask_passphrase` (typed at every start, twice for a new database; no terminal, no start). `ResolveDatabaseKey` (called by `cmd/server` before anything opens the database) opens an unencrypted file as it is, never makes a new key for an existing encrypted database, and makes one for a new database. `concord-server --encrypt-database` / `--decrypt-database` (server stopped; `ConvertDatabase`) write a converted copy, check its message count, keep the original as `concord.db.unencrypted-<UTC>` / `.encrypted-<UTC>` and swap. About shows "encrypted" and, to administrators, the key file's path.
 
 ---
 

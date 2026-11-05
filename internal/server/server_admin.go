@@ -78,6 +78,9 @@ func (h *Handlers) HandleServerAdmin(c *Client, msg *protocol.Message) {
 	sendStatus := func() {
 		st := h.admin.adminStatus()
 		st.CanAct = canAct
+		if !canAct {
+			st.DatabaseKeyFile = "" // where the key lives: administrators only
+		}
 		_ = h.dispatchTo(c, protocol.EventServerStatus, st)
 	}
 	send := func(r protocol.ServerAdminResult) {
@@ -214,6 +217,11 @@ func (s *Server) adminStatus() protocol.ServerStatusPayload {
 		st.NextBackupAt = next
 	}
 
+	ki := s.config.DatabaseKeyInfo
+	st.DatabaseEncrypted, st.DatabaseKeyFile, st.DatabasePassphrase = ki.Encrypted, ki.KeyFile, ki.Passphrase
+	if abs, err := filepath.Abs(ki.KeyFile); err == nil && ki.KeyFile != "" {
+		st.DatabaseKeyFile = abs
+	}
 	st.CanRestart, st.RestartNote = s.canRestart()
 	st.UpdateHow, st.UpdateNote = s.updateHow()
 	st.Updating = s.admin.updating.Load()

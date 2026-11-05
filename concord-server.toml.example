@@ -89,3 +89,19 @@ public_port = 0
 # unpacks a backup (so does `age -d -i backup.key <file> | tar xz`).
 [backups]
 every_hours = 24   # 0: only when an administrator presses B in Server Settings > About
+
+# The database, encrypted at rest. A new database is encrypted with a random
+# key in a key file; an existing unencrypted one keeps working until you
+# convert it: stop the server, run `concord-server --encrypt-database`, and
+# start it again (--decrypt-database turns it back). Keep a copy of the key
+# somewhere safe: without it the database can't be read.
+#
+# A key file on the same machine protects a copied data folder or disk, not
+# a seized running server; for that, ask_passphrase = true has you type a
+# passphrase at every start (the server then can't restart by itself:
+# reboots, crashes and updates wait for you).
+[database]
+# encrypt = true          # new databases only; false makes them unencrypted
+# key_file = "/somewhere/else/concord-database.key"   # default: beside this file
+#                         # (the CONCORD_DATABASE_KEY_FILE environment variable wins)
+# ask_passphrase = false

@@ -23,6 +23,7 @@ type ThreadStat struct {
 	ReplyCount   int
 	LastReplyID  uuid.UUID
 	LastReplyAt  time.Time
+	LastReplySeq int64 // arrival order: what read positions compare against
 	Participants []uuid.UUID // in the order they first posted, at most 5
 }
 
@@ -100,7 +101,7 @@ func (db *DB) GetThreadStats(threadIDs []uuid.UUID, userID uuid.UUID) (map[uuid.
 	// The latest reply in each thread (a second query: the pool has one
 	// connection, so queries never nest).
 	rows, err = db.Query(fmt.Sprintf(`
-		SELECT thread_id, id, created_at FROM messages m
+		SELECT thread_id, id, created_at, COALESCE(seq, 0) FROM messages m
 		WHERE thread_id IN (%s) AND %s
 		ORDER BY seq DESC`, in, visible), args...)
 	if err != nil {
@@ -110,13 +111,14 @@ func (db *DB) GetThreadStats(threadIDs []uuid.UUID, userID uuid.UUID) (map[uuid.
 	for rows.Next() {
 		var threadStr, idStr string
 		var at time.Time
-		if err := rows.Scan(&threadStr, &idStr, &at); err != nil {
+		var seq int64
+		if err := rows.Scan(&threadStr, &idStr, &at, &seq); err != nil {
 			return nil, err
 		}
 		tid, _ := uuid.Parse(threadStr)
 		if st := out[tid]; st != nil && st.LastReplyID == uuid.Nil {
 			st.LastReplyID, _ = uuid.Parse(idStr)
-			st.LastReplyAt = at
+			st.LastReplyAt, st.LastReplySeq = at, seq
 		}
 	}
 	return out, rows.Err()
@@ -217,6 +219,7 @@ const threadSeq = `(SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id =
 // ThreadFollow is one user's follow of a thread.
 type ThreadFollow struct {
 	LastReadAt *time.Time // nil: never read
+	ReadSeq    int64      // the last reply read, in arrival order (0: none)
 }
 
 // GetThreadFollows returns which of the threads the user follows, and how
@@ -227,7 +230,7 @@ func (db *DB) GetThreadFollows(userID uuid.UUID, threadIDs []uuid.UUID) (map[uui
 		return out, nil
 	}
 	in, args := inList(threadIDs)
-	rows, err := db.Query(fmt.Sprintf(`SELECT thread_id, last_read_at FROM thread_follows WHERE user_id = ? AND thread_id IN (%s)`, in),
+	rows, err := db.Query(fmt.Sprintf(`SELECT thread_id, last_read_at, COALESCE(read_seq, 0) FROM thread_follows WHERE user_id = ? AND thread_id IN (%s)`, in),
 		append([]any{userID.String()}, args...)...)
 	if err != nil {
 		return nil, err
@@ -236,14 +239,15 @@ func (db *DB) GetThreadFollows(userID uuid.UUID, threadIDs []uuid.UUID) (map[uui
 	for rows.Next() {
 		var threadStr string
 		var read sql.NullTime
-		if err := rows.Scan(&threadStr, &read); err != nil {
+		var readSeq int64
+		if err := rows.Scan(&threadStr, &read, &readSeq); err != nil {
 			return nil, err
 		}
 		tid, err := uuid.Parse(threadStr)
 		if err != nil {
 			continue
 		}
-		f := ThreadFollow{}
+		f := ThreadFollow{ReadSeq: readSeq}
 		if read.Valid {
 			t := read.Time
 			f.LastReadAt = &t

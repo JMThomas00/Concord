@@ -45,6 +45,16 @@ type serverConfig struct {
 		Tags        []string `toml:"tags,omitempty"`
 	} `toml:"grapevine"`
 	PluginsDir string `toml:"plugins_dir"`
+	Database   struct {
+		KeyFile string `toml:"key_file,omitempty"`
+	} `toml:"database"`
+}
+
+// DatabaseKeyFile is where an installed server's database key goes: in
+// Concord's settings folder (~/.concord/keys), outside the server's own
+// folder, so a copy of that folder doesn't carry the key with it.
+func DatabaseKeyFile(home string) string {
+	return filepath.Join(ConfigDir(home), "keys", "concord-database.key")
 }
 
 // hubConfig mirrors internal/hub's Config.
@@ -91,6 +101,7 @@ func (pl *Plan) ServerConfigTOML(hubURL string) ([]byte, error) {
 		c.Grapevine.Tags = tags
 	}
 	c.PluginsDir = "Plugins"
+	c.Database.KeyFile = DatabaseKeyFile(pl.Platform.Home)
 	return toml.Marshal(c)
 }
 
