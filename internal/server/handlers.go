@@ -50,6 +50,7 @@ type Handlers struct {
 	// The Server, for Server Settings › About (server_admin.go); nil in
 	// tests that build Handlers alone.
 	admin serverAdmin
+	join  joinHost // invites.go: mail and the verification switch
 }
 
 // SetPluginsDir records the resolved plugins directory, called once at

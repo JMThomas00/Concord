@@ -217,6 +217,7 @@ func New(config *Config) (*Server, error) {
 		},
 	}
 	handlers.admin = s
+	handlers.join = s
 	if config.Mail.Enabled() {
 		s.mailer = &smtpMailer{cfg: config.Mail}
 		AuthLog.Info("Outgoing mail configured", "smtp_host", config.Mail.SMTPHost, "verification_required", config.Mail.VerificationRequired())
@@ -302,6 +303,14 @@ func (s *Server) startGrapevine(mux *http.ServeMux) {
 		func() int { return s.hub.PeopleOnlineCount() },
 		s.saveConfig,
 	)
+	s.grapevine.joinMode = func() string {
+		srv, _, err := s.db.EnsureDefaultServer(s.config.ServerName)
+		if err != nil {
+			return database.JoinOpen
+		}
+		mode, _ := s.db.JoinMode(srv.ID)
+		return mode
+	}
 	s.grapevine.Start()
 }
 
@@ -626,6 +635,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Invite   string `json:"invite"` // a code, or address/CODE (invites.go)
+		Note     string `json:"note"`   // for a join request (approval mode)
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -657,6 +668,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.Email != "" {
 		req.Email = email
 	}
+	// Invite only: no account without a usable code.
+	if refusal := s.preRegisterCheck(req.Email, req.Invite); refusal != nil {
+		AuthLog.Info("Registration needs an invite", "username", req.Username, "code", refusal.code, "from", remoteIP(r))
+		refusal.write(w)
+		return
+	}
+	// An emailed invite proves the address: no separate verification.
+	emailProven := s.emailedInviteFor(req.Invite, req.Email)
 	if taken, _ := s.db.EmailInUse(req.Email, uuid.Nil); taken && req.Email != "" {
 		AuthLog.Warn("Registration for an email that's already in use (client will retry login)", "username", req.Username, "from", remoteIP(r))
 		http.Error(w, "Failed to create user (email or username may already exist)", http.StatusConflict)
@@ -695,36 +714,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	AuthLog.Debug("User retrieval verified", "user_id", retrievedUser.ID, "username", retrievedUser.Username)
 
-	// Add user to default server
-	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer(s.config.ServerName)
-	if err != nil {
-		DBLog.Error("Failed to get default server", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// Create server member
-	member := &models.ServerMember{
-		UserID:     user.ID,
-		ServerID:   defaultServer.ID,
-		JoinedAt:   time.Now(),
-		IsMuted:    false,
-		IsDeafened: false,
-	}
-	if err := s.db.AddServerMember(member); err != nil {
-		DBLog.Error("Failed to add user to default server", "user_id", user.ID, "server_id", defaultServer.ID, "error", err)
-		// Don't fail registration, just log the error
-	} else {
-		DBLog.Info("User added to default server", "user_id", user.ID, "server_id", defaultServer.ID)
-	}
-
-	// Assign @everyone role
-	if err := s.db.AddMemberRole(user.ID, defaultServer.ID, everyoneRole.ID); err != nil {
-		DBLog.Error("Failed to assign @everyone role", "user_id", user.ID, "role_id", everyoneRole.ID, "error", err)
-		// Don't fail registration, just log the error
-	} else {
-		DBLog.Info("User assigned @everyone role", "user_id", user.ID, "role_id", everyoneRole.ID)
-	}
+	// Membership follows the server's join mode (invites.go); a refusal
+	// here (approval: waiting for a moderator) is answered below, once the
+	// account is set up.
+	refusal := s.admitMember(user, req.Invite, req.Note)
 
 	// Auto-grant admin to the very first real user
 	if count, err := s.db.CountRealUsers(); err == nil && count == 1 {
@@ -737,7 +730,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// A server that verifies emails holds the account until its code is
 	// entered: no session yet, and admin-by-email waits for proof.
-	if needsVerification {
+	if needsVerification && !emailProven {
 		if err := s.db.SetEmailVerified(user.ID, false); err != nil {
 			AuthLog.Error("Failed to mark new account unverified", "user_id", user.ID, "error", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -752,6 +745,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.accountActivated(user)
+	if refusal != nil {
+		refusal.write(w)
+		return
+	}
 
 	// Generate auth token
 	token, err := s.handlers.CreateAuthToken(user.ID, remoteIP(r), r.UserAgent())
@@ -781,6 +778,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Invite   string `json:"invite"` // for someone who isn't a member yet (invites.go)
+		Note     string `json:"note"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -813,7 +812,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// An account that hasn't confirmed its email can't sign in while the
 	// server requires it (turning verification off lets everyone in).
 	if s.config.Mail.VerificationRequired() {
-		if verified, _ := s.db.IsEmailVerified(user.ID); !verified {
+		verified, _ := s.db.IsEmailVerified(user.ID)
+		if !verified && s.emailedInviteFor(req.Invite, user.Email) {
+			_ = s.db.SetEmailVerified(user.ID, true) // the emailed invite proves it
+			verified = true
+		}
+		if !verified {
 			AuthLog.Info("Login held for email verification", "user_id", user.ID, "from", from)
 			writeJSON(w, http.StatusForbidden, map[string]string{
 				"error": "Check your email for a verification code from " + s.config.ServerName + ".",
@@ -824,36 +828,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	AuthLog.Info("Login succeeded", "user_id", user.ID, "username", user.Username, "from", from)
 
-	// Ensure user is a member of the default server
-	defaultServer, everyoneRole, err := s.db.EnsureDefaultServer(s.config.ServerName)
-	if err != nil {
-		DBLog.Error("Failed to get default server", "error", err)
-		// Don't fail login, continue
-	} else {
-		// Check if user is already a member
-		_, err := s.db.GetServerMember(defaultServer.ID, user.ID)
-		if err != nil {
-			// User is not a member, add them
-			member := &models.ServerMember{
-				UserID:     user.ID,
-				ServerID:   defaultServer.ID,
-				JoinedAt:   time.Now(),
-				IsMuted:    false,
-				IsDeafened: false,
-			}
-			if err := s.db.AddServerMember(member); err != nil {
-				DBLog.Error("Failed to add user to default server on login", "user_id", user.ID, "server_id", defaultServer.ID, "error", err)
-			} else {
-				DBLog.Info("User added to default server on login", "user_id", user.ID, "server_id", defaultServer.ID)
-
-				// Assign @everyone role
-				if err := s.db.AddMemberRole(user.ID, defaultServer.ID, everyoneRole.ID); err != nil {
-					DBLog.Error("Failed to assign @everyone role on login", "user_id", user.ID, "role_id", everyoneRole.ID, "error", err)
-				} else {
-					DBLog.Info("User assigned @everyone role on login", "user_id", user.ID, "role_id", everyoneRole.ID)
-				}
-			}
-		}
+	// Membership follows the server's join mode (invites.go).
+	if refusal := s.admitMember(user, req.Invite, req.Note); refusal != nil {
+		AuthLog.Info("Sign-in without membership", "user_id", user.ID, "code", refusal.code, "from", from)
+		refusal.write(w)
+		return
 	}
 
 	// Generate auth token

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"html/template"
 	"strings"
+	"time"
 )
 
 // Concord's emails look like Concord: a terminal window in the Dracula
@@ -158,6 +159,39 @@ func codeEmail(serverName, username, purpose, code string) Email {
 		v.Note = "Didn't sign up? Ignore this email. Nothing happens."
 	}
 	return Email{Subject: subject, Text: text, HTML: renderMailHTML(v)}
+}
+
+// inviteEmail invites someone to a server: the code, and the one string
+// that pastes into Concord's Add Server (address/CODE).
+func inviteEmail(serverName, from, address, code, note string, expires time.Time) Email {
+	shown := code[:4] + "-" + code[4:]
+	paste := code
+	if address != "" {
+		paste = address + "/" + code
+	}
+	when := "never expires"
+	if !expires.IsZero() {
+		when = "expires " + expires.UTC().Format("Jan 2, 2006 15:04 UTC")
+	}
+	lines := []string{from + " invited you to " + serverName + ", a Concord chat server."}
+	text := "Hi!\n\n" + from + " invited you to the Concord server \"" + serverName + "\".\n\n"
+	if note != "" {
+		lines = append(lines, "“"+note+"”")
+		text += "They wrote: " + note + "\n\n"
+	}
+	lines = append(lines, "In Concord, open Add Server and paste this (it fills in the address and the code), then sign up with this email address:")
+	text += "In Concord, open Add Server and paste:\n\n    " + paste + "\n\nthen sign up with this email address. Your invite code is " + shown + "; it " + when + " and works once.\n\n" +
+		"New to Concord? See https://concordchat.cc to install it.\n"
+	facts := [][2]string{{"server", serverName}, {"paste", paste}, {"expires", strings.TrimPrefix(when, "expires ")}, {"uses", "once"}}
+	return Email{
+		Subject: from + " invited you to " + serverName + " on Concord",
+		Text:    text,
+		HTML: renderMailHTML(mailView{
+			Title: serverName, Section: "#invite", Prompt: "you@" + promptHost(serverName), Command: "concord join",
+			Lines: lines, Code: shown, Facts: facts,
+			Note: "Not expecting this? Ignore it. Nothing happens unless you use the code.",
+		}),
+	}
 }
 
 // testEmail is the concord-server --test-mail message.

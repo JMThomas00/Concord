@@ -3761,14 +3761,20 @@ func (db *DB) MigratePluginPlatform() error {
 	// Moderator preset as it was then up to the new one, which adds Manage
 	// Channels and Deafen Members (enforced from the same day).
 	if err := runOnce(db, "2026-10-20-everyone-manage-channels", func() error {
-		oldModerator := int64(models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers))
+		oldModerator := int64(models.PermissionsModerator &^ (models.PermissionManageChannels | models.PermissionDeafenMembers | models.PermissionCreateInvite))
+		then := int64(models.PermissionsModerator &^ models.PermissionCreateInvite) // the preset on 2026-10-20
 		if _, err := db.Exec(`UPDATE roles SET permissions = ? WHERE is_default = 0 AND permissions = ?`,
-			int64(models.PermissionsModerator), oldModerator); err != nil {
+			then, oldModerator); err != nil {
 			return err
 		}
 		_, err := db.Exec(`UPDATE roles SET permissions = permissions & ~? WHERE is_default = 1`, int64(models.PermissionManageChannels))
 		return err
 	}); err != nil {
+		return err
+	}
+	// After that one: it brings old Moderator roles up to the preset of
+	// the day, and this adds Create Invite to them.
+	if err := migrateInvites(db); err != nil { // invites and join modes (invites.go)
 		return err
 	}
 

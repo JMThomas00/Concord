@@ -288,8 +288,13 @@ func (s *Server) accountActivated(user *models.User) {
 	}
 }
 
-// issueSession answers {user, token} for a fresh session.
+// issueSession answers {user, token} for a fresh session, if the user is
+// (or may now become) a member: otherwise why not (invites.go).
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, user *models.User) {
+	if refusal := s.admitMember(user, "", ""); refusal != nil {
+		refusal.write(w)
+		return
+	}
 	token, err := s.handlers.CreateAuthToken(user.ID, remoteIP(r), r.UserAgent())
 	if err != nil {
 		AuthLog.Error("Failed to create auth token", "user_id", user.ID, "error", err)

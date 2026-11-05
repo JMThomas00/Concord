@@ -133,6 +133,11 @@ const (
 	// v0.1.9 don't know it.
 	OpSearch OpCode = 69
 
+	// OpInvites (70): C→S. Invites and join requests (InvitesRequest):
+	// list, create, email, revoke, approve, deny, and for administrators
+	// the join settings. Answered with INVITES and INVITES_RESULT.
+	OpInvites OpCode = 70
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -230,6 +235,9 @@ const (
 	EventChannelRead          EventType = "CHANNEL_READ"           // S→C: your read position in a channel moved (any of your devices)
 	EventMentions             EventType = "MENTIONS"               // S→C: a page of your mentions (OpRequestMentions)
 	EventSearchResults        EventType = "SEARCH_RESULTS"         // S→C: a page of search results (OpSearch)
+	EventInvites              EventType = "INVITES"                // S→C: invites, join requests and join settings (OpInvites)
+	EventInvitesResult        EventType = "INVITES_RESULT"         // S→C: how an invite action went
+	EventJoinRequest          EventType = "JOIN_REQUEST"           // S→C: someone asked to join (to those who can let them in)
 )
 
 // Message represents a WebSocket message envelope

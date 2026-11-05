@@ -71,7 +71,8 @@ const (
 		PermissionDeafenMembers |
 		PermissionMoveMembers |
 		PermissionManageNicknames |
-		PermissionPinMessages
+		PermissionPinMessages |
+		PermissionCreateInvite // since 2026-11-05 (invites)
 
 	PermissionsAdmin = PermissionAdministrator
 )
