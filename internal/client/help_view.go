@@ -37,9 +37,16 @@ Start typing anywhere in the chat and it goes to the message box.
 - **Ctrl+N** — add a server: its address, port and a name for it
 - **Ctrl+G** (login screen) — browse public servers on the Grapevine
 - **Settings → Manage Servers** — edit or remove servers; **B** browses the Grapevine
-- **Ctrl+B** — Server Settings, for admins: channels, roles, members, messages and plugins
+- **Ctrl+B** — Server Settings, for admins: channels, roles, members, messages, plugins and invites
+- ` + "`/invite`" + ` or **I** in the members list — invite people
 
 One profile signs you in to every server. Switching servers keeps your voice call.
+
+### Invites
+
+` + "`/invite`" + ` makes a code that expires and runs out when you choose, or emails one from the server (it works once, for that address). Share the whole line, like ` + "`chat.example.com:8090/ABCD-EFGH`" + `: pasted into Add Server's address it fills in the address, port and code. Moderators also see everyone's invites and answer join requests. Administrators choose how people join (open, invite only, or approval) and switch email verification on or off in **Server Settings › Invites**.
+
+A server that isn't letting you in yet asks for an invite code, or, if it lets people in by approval, shows that you're waiting (Concord checks every 30 seconds).
 
 ## Channels
 
@@ -55,6 +62,9 @@ One profile signs you in to every server. Switching servers keeps your voice cal
 - **Ctrl+E** — pick an emoji: type to search, arrows and **Tab** to browse (or click, and scroll with the wheel), **Ctrl+T** for a skin tone, **Enter** to add it. Recently used come first. Or type a shortcode like ` + "`:grapes:`" + `, which becomes 🍇 as you type the last colon.
 - **/** — a command; ` + "`/help`" + ` searches them all
 - **PgUp** / **PgDn** — scroll back
+- **Alt+U** — jump to the first unread message
+- **Alt+I** — your mentions inbox (also ` + "`/mentions`" + `)
+- **Ctrl+F** — search messages (also ` + "`/search words`" + `)
 - Markdown works: **bold**, *italic*, ` + "`code`" + `, lists and code blocks. Links are clickable in most terminals.
 
 ### Message navigation (Alt+M)
@@ -71,15 +81,13 @@ Pick a message with **↑**/**↓**, then:
 
 A thread keeps a side conversation in one box where it started. **Alt+M**, pick a message, **T**, and type; **Esc** stops replying in it. **Alt+T** (or ` + "`/threads`" + `) lists the channel's threads.
 
-### What's new
+### Unread, mentions and search
 
 Unread counts are kept by the server, so they're right after a restart and on every device you sign in on. A channel you open with new messages shows a **── new ──** line above the first one until you leave it; **Alt+U** jumps back to it.
 
 **Alt+I** (or ` + "`/mentions`" + `) is your mentions inbox: every @mention, reply to your messages, whisper and @everyone on every server you're connected to, newest first. **Tab** filters, **Enter** goes to the message (opening its thread), **R** marks them all read. The status bar shows **@N** while any are unread.
 
 **Ctrl+F** (or ` + "`/search words`" + `) searches messages: this server, or every server with **Tab**, best match first (**Ctrl+S** for newest). Use ` + "`\"a phrase\"`" + `, ` + "`pref*`" + `, and the filters ` + "`from:name`" + `, ` + "`in:#channel`" + `, ` + "`has:link`" + `, ` + "`has:file`" + `, ` + "`before:2026-11-05`" + ` and ` + "`after:2026-11-01`" + `. **Enter** goes to the message.
-
-` + "`/invite`" + ` (or **I** in the members list) invites people: make a code that expires and runs out when you choose, or email one from the server (it works once, for that address). Share the whole line, like ` + "`chat.example.com:8090/ABCD-EFGH`" + `: pasted into Add Server it fills in the address and the code. Moderators also see everyone's invites and the join requests. Administrators choose how people join (open, invite only, or approval) and switch email verification on or off in **Server Settings › Invites**.
 
 ### Whispers and files
 

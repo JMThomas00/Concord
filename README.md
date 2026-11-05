@@ -59,11 +59,11 @@ The installer:
 2. **Make your profile:** a name, your email and a password. One profile signs you in to every server you join.
 3. **Join a server:**
    - **The official server**, `server.concordchat.cc`, is already in your list if you said yes in the installer. Say hi!
-   - **Any other server:** press **Ctrl+N** (or open **Settings → Manage Servers** and press **Ctrl+N** there), then enter its address and port (and turn on TLS for servers behind HTTPS, like the official one on port 443).
+   - **Any other server:** press **Ctrl+N** (or open **Settings → Manage Servers** and press **Ctrl+N** there), then enter its address and port (and turn on TLS for servers behind HTTPS, like the official one on port 443). Got an invite like `chat.example.com:8090/ABCD-EFGH`? Paste the whole line into the address: Concord fills in the address, port and code.
    - **Browse the Grapevine:** **Ctrl+G** on the login screen, or **Settings → Manage Servers → B**. Pick a server and press **A** to join.
 4. **Chat:** type and press **Enter**. **Tab** moves between panels, `/help` finds every command, and **Settings → Help** has the full guide.
 
-**Running your own server?** The first person to sign up on a new server becomes its owner. Give friends its address (on your network, the installer's summary shows it; across the internet, forward the port or put it behind a tunnel). Then manage channels, roles, members and plugins in **Server Settings**: **Ctrl+B** while you're on your server.
+**Running your own server?** The first person to sign up on a new server becomes its owner. Give friends its address (on your network, the installer's summary shows it; across the internet, forward the port or put it behind a tunnel). Then manage channels, roles, members and plugins in **Server Settings**: **Ctrl+B** while you're on your server. **Server Settings → Invites** decides how people join (open, invite only, or approval) and turns email verification on or off; `/invite` makes and emails invite codes.
 
 ## Plugins
 
@@ -92,10 +92,14 @@ Plugins are separate programs a server runs alongside itself. They add channels 
 | `Ctrl+T` | Theme browser |
 | `Ctrl+G` | Grapevine browser (login and Add Server screens) |
 | `Ctrl+P` / `Ctrl+F` / `Ctrl+U` | Profiles / forgot password / updates (login screen) |
+| `Ctrl+F` | Search messages: this server, or every server with `Tab` (main window) |
+| `Alt+I` | Mentions inbox: @mentions, replies, whispers and @everyone on every server |
+| `Alt+U` | Jump to the first unread message in the channel |
 | `[` / `]` | Hide or show the server list / member list |
 | `Ctrl+M` / `Ctrl+D` | Mute / deafen yourself in voice |
 | `Alt+M` | Message navigation: reply, reply in a thread, edit, delete, links, pin, copy |
 | `Alt+T` | This channel's threads |
+| `I` (members list) | Invite people: make or email an invite code (also `/invite`) |
 | `Ctrl+J` | New line in a message |
 | `Ctrl+Q` | Quit |
 
