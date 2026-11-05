@@ -164,12 +164,16 @@ func codeEmail(serverName, username, purpose, code string) Email {
 }
 
 // inviteEmail invites someone to a server: the code, and the one string
-// that pastes into Concord's Add Server (address/CODE).
-func inviteEmail(serverName, from, address, code, note string, expires time.Time) Email {
+// that pastes into Concord's Add Server (address/CODE). onion, when the
+// server has an onion address, is the invite for Tor (onion:port/CODE#KEY):
+// the one to paste when there's no normal address, else a second choice.
+func inviteEmail(serverName, from, address, onion, code, note string, expires time.Time) Email {
 	shown := code[:4] + "-" + code[4:]
 	paste := code
 	if address != "" {
 		paste = address + "/" + code
+	} else if onion != "" {
+		paste, onion = onion, ""
 	}
 	when := "never expires"
 	if !expires.IsZero() {
@@ -184,7 +188,12 @@ func inviteEmail(serverName, from, address, code, note string, expires time.Time
 	lines = append(lines, "In Concord, open Add Server and paste this (it fills in the address and the code), then sign up with this email address:")
 	text += "In Concord, open Add Server and paste:\n\n    " + paste + "\n\nthen sign up with this email address. Your invite code is " + shown + "; it " + when + " and works once.\n\n" +
 		"New to Concord? Install it in one line from https://concordchat.cc/#install\n"
-	facts := [][2]string{{"server", serverName}, {"paste", paste}, {"expires", strings.TrimPrefix(when, "expires ")}, {"uses", "once"}}
+	facts := [][2]string{{"server", serverName}, {"paste", paste}}
+	if onion != "" {
+		text += "\nTo connect through Tor instead, paste this:\n\n    " + onion + "\n"
+		facts = append(facts, [2]string{"over tor", onion})
+	}
+	facts = append(facts, [2]string{"expires", strings.TrimPrefix(when, "expires ")}, [2]string{"uses", "once"})
 	return Email{
 		Subject: from + " invited you to " + serverName + " on Concord",
 		Text:    text,

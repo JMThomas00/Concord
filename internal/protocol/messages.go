@@ -596,6 +596,9 @@ type ServerCreatePayload struct {
 	// Unreads: the receiver's read position and unread counts per channel
 	// (servers v0.1.9+; reads.go).
 	Unreads []ChannelUnread `json:"unreads,omitempty"`
+	// Onion: how to reach the server over Tor, when it has an onion
+	// address (tor.go).
+	Onion *OnionAccess `json:"onion,omitempty"`
 }
 
 // ChannelUnread is one channel's unread state for the receiver.

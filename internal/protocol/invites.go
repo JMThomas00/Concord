@@ -92,6 +92,12 @@ type InvitesPayload struct {
 	// CanSaveSettings is false when the server has no settings file to
 	// write the verification switch to.
 	CanSaveSettings bool `json:"can_save_settings"`
+
+	// Onion: the server's onion address (host:port) and access key, so
+	// invites can carry them: host:port/CODE#KEY.
+	Onion    string `json:"onion,omitempty"`
+	OnionKey string `json:"onion_key,omitempty"`
+	TorOnly  bool   `json:"tor_only,omitempty"`
 }
 
 // InvitesResult says how an action went; Code is a new invite's.

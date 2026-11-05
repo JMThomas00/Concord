@@ -38,6 +38,7 @@ type serverAboutState struct {
 
 	confirmRestart bool
 	confirmUpdate  bool
+	confirmTorKey  bool
 	backupKey      string // shown on K (administrators); forgotten when the page closes
 	restarting     bool   // asked; waiting for the server to come back
 }
@@ -192,6 +193,18 @@ func (a *App) handleServerAboutKey(key string) (bool, tea.Cmd) {
 			return true, nil
 		}
 	}
+	if ab.confirmTorKey {
+		ab.confirmTorKey = false
+		if key == "t" || key == "T" {
+			ab.notice, ab.noticeErr = "Making a new Tor access key…", false
+			a.askServerStatus(protocol.ServerAdminTorKey)
+			return true, nil
+		}
+		ab.notice = ""
+		if key == "esc" {
+			return true, nil
+		}
+	}
 	if ab.confirmRestart {
 		ab.confirmRestart = false
 		switch key {
@@ -238,6 +251,13 @@ func (a *App) handleServerAboutKey(key string) (bool, tea.Cmd) {
 		}
 		ab.confirmUpdate = true
 		ab.notice, ab.noticeErr = "Press U again to update to "+ab.release.latest+" and restart (everyone reconnects in a few seconds) · any other key cancels", true
+		return true, nil
+	case "t", "T":
+		if !canAct || !ab.status.TorEnabled || !ab.status.TorClientAuth {
+			return true, nil
+		}
+		ab.confirmTorKey = true
+		ab.notice, ab.noticeErr = "Press T again for a new Tor access key (for when invites have leaked: members get it as they sign in, the old one works a week) · any other key cancels", true
 		return true, nil
 	case "k", "K":
 		if !canAct {
@@ -394,6 +414,9 @@ func (a *App) renderServerAboutContent(width, height int) string {
 					more(dim.Render("to encrypt it: stop the server, then concord-server --encrypt-database"))
 				}
 			}
+			if st.TorEnabled {
+				a.renderTorRows(st, row, more, normal, dim, good, warn)
+			}
 			row("Plugins", normal.Render(fmt.Sprintf("%d installed · %d running", st.PluginsInstalled, st.PluginsRunning)))
 			g := st.Grapevine
 			switch {
@@ -450,6 +473,9 @@ func (a *App) renderServerAboutContent(width, height int) string {
 	hint := "S check again · Esc close"
 	if ab != nil && ab.status != nil && ab.status.CanAct {
 		hint = "B back up now · K backup key · R restart · " + hint
+		if ab.status.TorEnabled && ab.status.TorClientAuth {
+			hint = "T new Tor key · " + hint
+		}
 		if a.canUpdateServer() {
 			hint = "U update · " + hint
 		}
@@ -535,4 +561,36 @@ func aboutBytes(n int64) string {
 		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
 	}
 	return fmt.Sprintf("%d bytes", n)
+}
+
+// renderTorRows is the onion address and how tor is doing.
+func (a *App) renderTorRows(st *protocol.ServerStatusPayload, row func(string, string), more func(string), normal, dim, good, warn lipgloss.Style) {
+	how := " · also reachable normally"
+	if st.TorOnly {
+		how = " · reachable only through Tor"
+	}
+	switch {
+	case st.TorError != "" && !st.TorRunning:
+		row("Tor", warn.Render(st.TorError))
+	case !st.TorRunning:
+		row("Tor", dim.Render("starting…"))
+	case st.TorBootstrapped < 100:
+		row("Tor", normal.Render(fmt.Sprintf("connecting to the Tor network (%d%%)", st.TorBootstrapped))+dim.Render(how))
+	default:
+		row("Tor", good.Render("connected")+dim.Render(how))
+	}
+	if st.TorAddress != "" {
+		more(normal.Render(st.TorAddress))
+	}
+	switch {
+	case !st.TorClientAuth:
+		more(warn.Render("no access key: anyone who learns the address can reach the server"))
+	case !st.TorOldKeyUntil.IsZero():
+		more(dim.Render("only with the access key in invites · the old key works until " + st.TorOldKeyUntil.Local().Format("Jan 2 15:04")))
+	default:
+		more(dim.Render("only with the access key in invites"))
+	}
+	if st.TorError != "" && st.TorRunning {
+		more(warn.Render(st.TorError))
+	}
 }

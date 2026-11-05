@@ -48,6 +48,10 @@ type serverConfig struct {
 	Database   struct {
 		KeyFile string `toml:"key_file,omitempty"`
 	} `toml:"database"`
+	Tor struct {
+		Enabled bool `toml:"enabled"`
+		Only    bool `toml:"only,omitempty"`
+	} `toml:"tor"`
 }
 
 // DatabaseKeyFile is where an installed server's database key goes: in
@@ -87,7 +91,8 @@ func (pl *Plan) ServerConfigTOML(hubURL string) ([]byte, error) {
 	c.MessagePruning.IntervalHours = 24
 	c.TermsAccepted = pl.TermsAccepted
 	c.AdminEmail = strings.ToLower(pl.AdminEmail)
-	if pl.ServerOnHub {
+	c.Tor.Enabled, c.Tor.Only = pl.ServerTor != TorOff, pl.ServerTor == TorOnly
+	if pl.ServerOnHub && pl.ServerTor == TorOff {
 		c.Grapevine.Enabled = true
 		c.Grapevine.HubURL = hubURL
 		c.Grapevine.PublicHost = pl.PublicHost

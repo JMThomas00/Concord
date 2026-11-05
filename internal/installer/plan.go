@@ -23,6 +23,13 @@ const (
 	StartNever   = "never" // only when you run it
 )
 
+// Reaching a server over Tor.
+const (
+	TorOff  = ""     // no onion address
+	TorAlso = "also" // an onion address as well as the normal one
+	TorOnly = "only" // reachable through Tor alone
+)
+
 // Plan is everything the form asked, and all the installer needs to know.
 type Plan struct {
 	Platform   Platform
@@ -36,6 +43,7 @@ type Plan struct {
 	AdminEmail    string
 	ServerStart   string
 	ServerOnHub   bool   // list it on the official Grapevine hub
+	ServerTor     string // TorOff, TorAlso or TorOnly: an onion address
 	PublicHost    string // the address people use to reach it, for the hub
 	Description   string
 	Tags          []string // chosen from the presets

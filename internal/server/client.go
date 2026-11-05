@@ -586,6 +586,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 			Users:       users,
 			VoiceStates: voiceStates,
 			Unreads:     c.handlers.unreadsFor(c.UserID, server.ID),
+			Onion:       c.handlers.onionFor(server.ID),
 		}
 
 		// Use sequence number starting from 1

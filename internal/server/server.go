@@ -44,6 +44,7 @@ type Config struct {
 	Voice          VoiceConfig          `toml:"voice"`       // STUN/TURN servers for voice calls (voice_ice.go; optional)
 	Backups        BackupsConfig        `toml:"backups"`     // scheduled encrypted backups (backup_crypt.go)
 	Database       DatabaseConfig       `toml:"database"`    // encryption at rest (dbkey.go)
+	Tor            TorConfig            `toml:"tor"`         // an onion address (tor.go)
 
 	// DatabaseKey opens an encrypted database (ResolveDatabaseKey); zero
 	// for an unencrypted one. DatabaseKeyInfo says how, for About.
@@ -126,6 +127,8 @@ type Server struct {
 	configPath      string
 	grapevine       *GrapevineClient
 	grapevineTokens *tokenStore
+
+	onion *onionService // tor.go: nil without [tor]
 
 	// Plugin platform
 	plugins *plugins.Manager
@@ -227,6 +230,7 @@ func New(config *Config) (*Server, error) {
 	}
 	handlers.admin = s
 	handlers.join = s
+	handlers.onion = s.onionAccess
 	if config.Mail.Enabled() {
 		s.mailer = &smtpMailer{cfg: config.Mail}
 		AuthLog.Info("Outgoing mail configured", "smtp_host", config.Mail.SMTPHost, "verification_required", config.Mail.VerificationRequired())
@@ -350,12 +354,15 @@ func (s *Server) Run() error {
 	// Set up HTTP routes
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
-	if s.config.Grapevine.Enabled {
+	if s.config.Grapevine.Enabled && s.grapevineAllowed() {
 		s.startGrapevine(mux)
+	} else if s.config.Grapevine.Enabled {
+		Logger.Info("Not listed on Grapevine: the server has an onion address (set [tor] grapevine = true to list its normal address)")
 	}
 
 	// Create HTTP server
-	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.startTor() // tor.go
+	addr := fmt.Sprintf("%s:%d", s.listenHost(), s.config.Port)
 	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -431,6 +438,10 @@ func (s *Server) shutdown() {
 	// Deregister from Grapevine hub before closing
 	if s.grapevine != nil {
 		s.grapevine.Stop()
+	}
+
+	if s.onion != nil {
+		s.onion.stop() // a restart starts it again; the same tor would hold its folder
 	}
 
 	// Stop all supervised plugin processes before closing the database they
@@ -928,12 +939,15 @@ func (s *Server) runWithDashboard() error {
 	// Set up HTTP routes
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
-	if s.config.Grapevine.Enabled {
+	if s.config.Grapevine.Enabled && s.grapevineAllowed() {
 		s.startGrapevine(mux)
+	} else if s.config.Grapevine.Enabled {
+		Logger.Info("Not listed on Grapevine: the server has an onion address (set [tor] grapevine = true to list its normal address)")
 	}
 
 	// Create HTTP server
-	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.startTor() // tor.go
+	addr := fmt.Sprintf("%s:%d", s.listenHost(), s.config.Port)
 	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -1118,11 +1132,14 @@ func (s *Server) runWithHybridDashboard() error {
 	// Set up HTTP routes (needed for startup info)
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
-	if s.config.Grapevine.Enabled {
+	if s.config.Grapevine.Enabled && s.grapevineAllowed() {
 		s.startGrapevine(mux)
+	} else if s.config.Grapevine.Enabled {
+		Logger.Info("Not listed on Grapevine: the server has an onion address (set [tor] grapevine = true to list its normal address)")
 	}
 
-	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.startTor() // tor.go
+	addr := fmt.Sprintf("%s:%d", s.listenHost(), s.config.Port)
 	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,

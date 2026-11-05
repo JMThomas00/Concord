@@ -45,6 +45,15 @@ func (pl *Plan) LoadSettings() {
 			pl.OtherTags = strings.Join(other, ", ")
 		}
 		pl.TermsAccepted, _ = m["terms_accepted"].(bool)
+		pl.ServerTor = TorOff
+		if t, ok := m["tor"].(map[string]any); ok {
+			if on, _ := t["enabled"].(bool); on {
+				pl.ServerTor = TorAlso
+				if only, _ := t["only"].(bool); only {
+					pl.ServerTor = TorOnly
+				}
+			}
+		}
 	}
 	if m := readTOML(filepath.Join(pl.HubDir, HubConfigFile)); m != nil {
 		pl.HubName = str(m["hub_name"], pl.HubName)
@@ -101,11 +110,22 @@ func (pl *Plan) mergeServerConfig(hubURL string) ([]byte, error) {
 	} else {
 		delete(m, "admin_email")
 	}
+	t, _ := m["tor"].(map[string]any)
+	if t == nil {
+		t = map[string]any{}
+	}
+	t["enabled"] = pl.ServerTor != TorOff
+	if pl.ServerTor == TorOnly {
+		t["only"] = true
+	} else {
+		delete(t, "only")
+	}
+	m["tor"] = t
 	g, _ := m["grapevine"].(map[string]any)
 	if g == nil {
 		g = map[string]any{}
 	}
-	g["enabled"] = pl.ServerOnHub
+	g["enabled"] = pl.ServerOnHub && pl.ServerTor == TorOff
 	if pl.ServerOnHub {
 		if str(g["hub_url"], "") == "" {
 			g["hub_url"] = hubURL

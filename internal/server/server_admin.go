@@ -25,6 +25,7 @@ type serverAdmin interface {
 	adminStatus() protocol.ServerStatusPayload
 	backupNow() (string, error)
 	backupKeyText() (string, error)
+	rotateTorKey() error
 	requestRestart() error
 	updateServer(tag string, progress func(string)) (string, error)
 }
@@ -80,6 +81,7 @@ func (h *Handlers) HandleServerAdmin(c *Client, msg *protocol.Message) {
 		st.CanAct = canAct
 		if !canAct {
 			st.DatabaseKeyFile = "" // where the key lives: administrators only
+			st.TorError = ""
 		}
 		_ = h.dispatchTo(c, protocol.EventServerStatus, st)
 	}
@@ -123,6 +125,19 @@ func (h *Handlers) HandleServerAdmin(c *Client, msg *protocol.Message) {
 		}
 		Logger.Info("Backup key shown", "admin", c.UserID) // who, never the key
 		send(protocol.ServerAdminResult{OK: true, Message: "The backup key: keep a copy somewhere safe", BackupKey: key})
+
+	case protocol.ServerAdminTorKey:
+		if !canAct {
+			result(false, "Only administrators can make a new Tor access key")
+			return
+		}
+		if err := h.admin.rotateTorKey(); err != nil {
+			result(false, err.Error())
+			return
+		}
+		Logger.Warn("New Tor access key made", "admin", c.UserID) // who, never the key
+		result(true, "New Tor access key: members online have it now, the rest when they sign in; the old one works for another week")
+		sendStatus()
 
 	case protocol.ServerAdminRestart:
 		if !canAct {
@@ -222,6 +237,7 @@ func (s *Server) adminStatus() protocol.ServerStatusPayload {
 	if abs, err := filepath.Abs(ki.KeyFile); err == nil && ki.KeyFile != "" {
 		st.DatabaseKeyFile = abs
 	}
+	s.torStatus(&st)
 	st.CanRestart, st.RestartNote = s.canRestart()
 	st.UpdateHow, st.UpdateNote = s.updateHow()
 	st.Updating = s.admin.updating.Load()
@@ -330,6 +346,9 @@ func (s *Server) backupNow() (string, error) {
 	if s.config.PluginsDir != "" {
 		extras = append(extras, filepath.Join(filepath.Dir(s.config.PluginsDir), backupDataDir))
 	}
+	// The onion address (the onion service's own key) and the access keys;
+	// not tor's state, which it rebuilds.
+	extras = append(extras, filepath.Join(torDir(s.config.DatabasePath), onionDirName), filepath.Join(torDir(s.config.DatabasePath), accessKeysName))
 	if err := writeEncryptedBackup(partial, key.Recipient(), snap, extras); err != nil {
 		return fail(err)
 	}

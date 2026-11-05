@@ -105,3 +105,26 @@ every_hours = 24   # 0: only when an administrator presses B in Server Settings 
 # key_file = "/somewhere/else/concord-database.key"   # default: beside this file
 #                         # (the CONCORD_DATABASE_KEY_FILE environment variable wins)
 # ask_passphrase = false
+
+# Tor (since v0.2.0): give the server a .onion address. The server runs the
+# tor program installed on this machine (apt/dnf/pacman/brew install tor;
+# the Docker image has it), with its own settings in tor/ beside the
+# database. That folder holds the onion address's key and the access keys:
+# backups carry them, and whoever has them can pose as the server.
+#
+# With client_auth (the default), the address is useless without the access
+# key that invites carry (host.onion:port/CODE#KEY), so nobody can find or
+# probe the server by learning its address. Members get the key when they
+# sign in. If an invite leaks, Server Settings › About › T (twice) makes a
+# new key; the old one keeps working for a week while members pick it up.
+#
+# only = true listens on 127.0.0.1 alone: the server can be reached through
+# Tor and nothing else (in Docker, also remove the ports: mapping). An onion
+# server isn't listed on Grapevine unless grapevine = true, which lists its
+# normal address (never the onion one, and never with only).
+[tor]
+enabled = false
+# only = false
+# client_auth = true
+# grapevine = false
+# tor_path = "/usr/bin/tor"   # default: found on the PATH

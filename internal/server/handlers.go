@@ -51,6 +51,9 @@ type Handlers struct {
 	// tests that build Handlers alone.
 	admin serverAdmin
 	join  joinHost // invites.go: mail and the verification switch
+	// onion is how members reach the server over Tor (tor.go); nil or
+	// returning nil without an onion address.
+	onion func() *protocol.OnionAccess
 }
 
 // SetPluginsDir records the resolved plugins directory, called once at
@@ -746,6 +749,7 @@ func (h *Handlers) HandleRequestGuild(c *Client, msg *protocol.Message) {
 		Roles:       roles,
 		Users:       users,
 		VoiceStates: voiceStates,
+		Onion:       h.onionFor(server.ID),
 	}
 
 	c.SendDispatch(protocol.EventServerCreate, guildPayload)

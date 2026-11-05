@@ -187,7 +187,7 @@ func (a *App) handleInvitesEvent(sc *ServerConnection, msg *protocol.Message) {
 			if r.OK && (r.Action == protocol.InvitesCreate || r.Action == protocol.InvitesEmail) {
 				v.lastCode = r.Code
 				if r.Action == protocol.InvitesCreate {
-					v.notice = "Invite made: " + inviteString(v.sc.ServerInfo, r.Code) + "  (C copies it)"
+					v.notice = "Invite made: " + v.invite(r.Code) + "  (C copies it)"
 				} else {
 					v.email.SetValue("")
 					v.note.SetValue("")
@@ -276,7 +276,9 @@ func (a *App) handleInvitesKey(v *invitesView, msg tea.KeyMsg) (done bool, cmd t
 			v.notice = ""
 			a.sendInvites(v, protocol.InvitesRequest{Action: protocol.InvitesCreate, MaxAge: inviteAges[v.age].secs, MaxUses: inviteUses[v.use].n})
 		case "c", "C":
-			a.copyInvite(v, v.lastCode)
+			a.copyInvite(v, v.lastCode, false)
+		case "o", "O":
+			a.copyInvite(v, v.lastCode, true)
 		}
 	case inviteTabEmail:
 		switch key {
@@ -329,7 +331,9 @@ func (a *App) handleInvitesKey(v *invitesView, msg tea.KeyMsg) (done bool, cmd t
 			in := v.p.Invites[v.cursor]
 			switch key {
 			case "c", "C":
-				a.copyInvite(v, in.Code)
+				a.copyInvite(v, in.Code, false)
+			case "o", "O":
+				a.copyInvite(v, in.Code, true)
 			case "x", "X", "delete":
 				if confirm == in.Code {
 					a.sendInvites(v, protocol.InvitesRequest{Action: protocol.InvitesRevoke, Code: in.Code})
@@ -369,11 +373,16 @@ func (v *invitesView) focusFields() {
 	}
 }
 
-func (a *App) copyInvite(v *invitesView, code string) {
+func (a *App) copyInvite(v *invitesView, code string, overTor bool) {
 	if code == "" {
 		return
 	}
-	s := inviteString(v.sc.ServerInfo, code)
+	s := v.invite(code)
+	if overTor {
+		if s = v.torInvite(code); s == "" {
+			return
+		}
+	}
 	if err := clipboard.WriteAll(s); err != nil {
 		v.notice, v.isErr = "Couldn't copy ("+err.Error()+"): "+s, true
 		return
@@ -462,9 +471,15 @@ func (a *App) renderInvitesBody(v *invitesView, width, rows int) string {
 		b.WriteString(chooser(v.field == 0, "Expires", inviteAges[v.age].label) + "\n")
 		b.WriteString(chooser(v.field == 1, "Uses", inviteUses[v.use].label) + "\n")
 		if v.lastCode != "" {
-			b.WriteString("\n  " + green.Render(inviteString(v.sc.ServerInfo, v.lastCode)) + "\n")
+			b.WriteString("\n  " + green.Render(v.invite(v.lastCode)) + "\n")
+			if t := v.torInvite(v.lastCode); t != "" {
+				b.WriteString(dim.Render("  over Tor: ") + green.Render(t) + "\n")
+			}
 		}
 		hint = "↑↓ choose · ←→ change · Enter make it · C copy · Tab next tab · Esc close"
+		if v.p != nil && v.torInvite("X") != "" {
+			hint = "↑↓ choose · ←→ change · Enter make it · C copy · O copy for Tor · Tab next tab · Esc close"
+		}
 	case inviteTabEmail:
 		from := "the server's email address"
 		if v.p.MailFrom != "" {
@@ -511,6 +526,9 @@ func (a *App) renderInvitesBody(v *invitesView, width, rows int) string {
 			}
 		}
 		hint = "↑↓ choose · C copy · X cancel · Tab next tab · Esc close"
+		if v.p != nil && v.torInvite("X") != "" {
+			hint = "↑↓ choose · C copy · O copy for Tor · X cancel · Tab next tab · Esc close"
+		}
 	case inviteTabRequests:
 		if len(v.p.Requests) == 0 {
 			b.WriteString(dim.Render("  Nobody is waiting.") + "\n")
@@ -559,4 +577,35 @@ func (a *App) renderInvitePeople() string {
 		Width(w - 2).
 		Background(lipgloss.Color(c.Background)).
 		Render(title + "\n\n" + body)
+}
+
+// invite is the invite to paste: the normal one, or the Tor one when the
+// server is reachable only through Tor (or this client reaches it that way).
+func (v *invitesView) invite(code string) string {
+	if v.p != nil && v.p.Onion != "" {
+		onion := v.p.Onion + "/" + code
+		if v.p.OnionKey != "" {
+			onion += "#" + v.p.OnionKey
+		}
+		if v.p.TorOnly || (v.sc.ServerInfo != nil && strings.HasSuffix(strings.ToLower(v.sc.ServerInfo.Address), ".onion")) {
+			return onion
+		}
+	}
+	return inviteString(v.sc.ServerInfo, code)
+}
+
+// torInvite is the Tor invite (host.onion:port/CODE#KEY) when it isn't
+// already the one invite shows; "" otherwise.
+func (v *invitesView) torInvite(code string) string {
+	if v.p == nil || v.p.Onion == "" {
+		return ""
+	}
+	t := v.p.Onion + "/" + code
+	if v.p.OnionKey != "" {
+		t += "#" + v.p.OnionKey
+	}
+	if t == v.invite(code) {
+		return ""
+	}
+	return t
 }

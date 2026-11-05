@@ -17,6 +17,9 @@ const (
 	// ServerAdminBackupKey shows the backup key (Administrator), in the
 	// result's BackupKey.
 	ServerAdminBackupKey = "backup_key"
+	// ServerAdminTorKey makes a new Tor access key (Administrator); the
+	// old one keeps working for a week.
+	ServerAdminTorKey = "tor_key"
 )
 
 // ServerAdminRequest asks the server for its status or to act.
@@ -77,6 +80,17 @@ type ServerStatusPayload struct {
 	DatabaseEncrypted  bool   `json:"database_encrypted,omitempty"`
 	DatabaseKeyFile    string `json:"database_key_file,omitempty"`
 	DatabasePassphrase bool   `json:"database_passphrase,omitempty"`
+
+	// Tor (since v0.2.0): the onion address, whether tor is connected, and
+	// whether an access key is needed to find it (tor.go).
+	TorEnabled      bool      `json:"tor_enabled,omitempty"`
+	TorOnly         bool      `json:"tor_only,omitempty"`
+	TorClientAuth   bool      `json:"tor_client_auth,omitempty"`
+	TorAddress      string    `json:"tor_address,omitempty"`
+	TorRunning      bool      `json:"tor_running,omitempty"`
+	TorBootstrapped int       `json:"tor_bootstrapped,omitempty"`
+	TorError        string    `json:"tor_error,omitempty"`
+	TorOldKeyUntil  time.Time `json:"tor_old_key_until,omitempty"` // a replaced access key still works until then
 
 	PluginsInstalled int `json:"plugins_installed"`
 	PluginsRunning   int `json:"plugins_running"`
