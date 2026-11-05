@@ -38,7 +38,7 @@ func (a *App) openServerManagement(returnTo View, categoryIndex int) tea.Cmd {
 		return nil
 	}
 
-	categories := []string{"Channels", "Roles", "Members", "Messages", "Plugins", "About"}
+	categories := []string{"Channels", "Roles", "Members", "Messages", "Plugins", "Invites", "About"}
 
 	// Load initial data for the selected category
 	serverID := a.getActiveServerID()
@@ -558,6 +558,11 @@ func (a *App) handleServerManagementKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	if s.SelectedCategory == 5 {
+		if ok, cmd := a.handleServerInvitesKey(msg); ok { // server_invites.go
+			return cmd
+		}
+	}
+	if s.SelectedCategory == 6 {
 		if ok, cmd := a.handleServerAboutKey(msg.String()); ok {
 			return cmd
 		}
@@ -743,7 +748,9 @@ func (a *App) loadCategoryData(categoryIndex int) tea.Cmd {
 	case 4: // Plugins
 		a.loadPluginListForManagement(serverID)
 		a.serverManagementState.SelectedPlugin = 0
-	case 5: // About
+	case 5: // Invites
+		return a.openServerInvites()
+	case 6: // About
 		return a.openServerAbout()
 	}
 	return nil
@@ -3441,7 +3448,9 @@ func (a *App) renderServerManagementView() string {
 		} else {
 			contentPanel = a.renderPluginsCategory(contentWidth, totalHeight-1, s)
 		}
-	case 5: // About
+	case 5: // Invites
+		contentPanel = a.renderServerInvitesContent(contentWidth, totalHeight-1)
+	case 6: // About
 		contentPanel = a.renderServerAboutContent(contentWidth, totalHeight-1)
 	}
 

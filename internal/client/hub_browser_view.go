@@ -1014,6 +1014,9 @@ func (a *App) renderHubBrowserView() string {
 			if a.isHubServerJoined(sv.ID) {
 				nameCell += " ✓"
 			}
+			if badge := joinBadge(sv.Tags); badge != "" {
+				nameCell += " " + badge
+			}
 			nameCell = truncate(nameCell, colW[0]-2)
 			catCell := truncate(sv.Category, colW[1])
 			onlineCell := fmt.Sprintf("%d", sv.OnlineCount)
@@ -1102,12 +1105,16 @@ func (a *App) renderHubDetailOverlay(base string) string {
 	}
 
 	tagStr := ""
-	if len(sv.Tags) > 0 {
-		tags := make([]string, len(sv.Tags))
-		for i, t := range sv.Tags {
+	if how := joinHow(sv.Tags); how != "" {
+		tagStr = "\n" + lipgloss.NewStyle().Foreground(dim).Render("Joining:    ") +
+			lipgloss.NewStyle().Foreground(accent).Render(how)
+	}
+	if plain := plainTags(sv.Tags); len(plain) > 0 {
+		tags := make([]string, len(plain))
+		for i, t := range plain {
 			tags[i] = lipgloss.NewStyle().Foreground(dim).Render(t)
 		}
-		tagStr = "\n" + lipgloss.NewStyle().Foreground(dim).Render("Tags:       ") +
+		tagStr += "\n" + lipgloss.NewStyle().Foreground(dim).Render("Tags:       ") +
 			strings.Join(tags, lipgloss.NewStyle().Foreground(dim).Render(" • "))
 	}
 

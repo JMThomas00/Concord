@@ -769,6 +769,7 @@ func (cm *ConfigManager) SaveServerSignIn(serverID uuid.UUID, profileID, email, 
 		if server.ID == serverID {
 			server.SavedCredentials = creds
 			server.UserID = userID
+			server.Invite = "" // signed in: a member now, the code is spent
 			return cm.SaveServers(config)
 		}
 	}

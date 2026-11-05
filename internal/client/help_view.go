@@ -79,6 +79,8 @@ Unread counts are kept by the server, so they're right after a restart and on ev
 
 **Ctrl+F** (or ` + "`/search words`" + `) searches messages: this server, or every server with **Tab**, best match first (**Ctrl+S** for newest). Use ` + "`\"a phrase\"`" + `, ` + "`pref*`" + `, and the filters ` + "`from:name`" + `, ` + "`in:#channel`" + `, ` + "`has:link`" + `, ` + "`has:file`" + `, ` + "`before:2026-11-05`" + ` and ` + "`after:2026-11-01`" + `. **Enter** goes to the message.
 
+` + "`/invite`" + ` (or **I** in the members list) invites people: make a code that expires and runs out when you choose, or email one from the server (it works once, for that address). Share the whole line, like ` + "`chat.example.com:8090/ABCD-EFGH`" + `: pasted into Add Server it fills in the address and the code. Moderators also see everyone's invites and the join requests. Administrators choose how people join (open, invite only, or approval) and switch email verification on or off in **Server Settings › Invites**.
+
 ### Whispers and files
 
 - ` + "`/w @user <message>`" + ` — a private message that isn't stored

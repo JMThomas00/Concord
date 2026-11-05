@@ -137,6 +137,9 @@ type App struct {
 	profilesState *ProfilesState
 	codeState     *AccountCodeState
 	pendingVerify map[uuid.UUID]string
+	// pendingJoin holds servers that didn't let this profile in yet, with
+	// why (invites.go: invite_required, approval_pending, ...).
+	pendingJoin map[uuid.UUID]*joinState
 	addingProfile bool // the identity form is adding a profile, not the first one
 	formHintRows  int  // rows of shortcut hints under the login/register form (layoutBannerScreen)
 	stageStable   int  // the last stage page's reserved height (stage.go), for currentLockup
@@ -200,6 +203,7 @@ type App struct {
 	addServerAddress textinput.Model
 	addServerPort    textinput.Model
 	addServerUseTLS  bool
+	addServerInvite  string // an invite code pasted with the address (invites.go)
 	addServerFocus   int
 	addServerError   string
 
@@ -426,6 +430,7 @@ type App struct {
 	mentions          *mentionsInbox // the open mentions inbox (Alt+I, mentions.go)
 	pendingJump       *mentionJump   // a jump to a mention, landing once history loads
 	search            *searchView    // the open message search (Ctrl+F, search.go)
+	invitePeople      *invitesView   // the open Invite People overlay (/invite, invite_people.go)
 	threadFlash       string
 	threadFlashUntil  time.Time
 	threadNoticeLines map[int]uuid.UUID
@@ -1272,6 +1277,7 @@ func (a *App) autoConnectServer(serverID uuid.UUID) tea.Cmd {
 			Token:             result.Token,
 			Err:               result.Err,
 			NeedsVerification: result.NeedsVerification,
+			Join:              result.Join,
 			ProfileID:         id.ID,
 		}
 	}
@@ -1596,7 +1602,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The Alt+T list, the mentions inbox and the search box keep their
 		// keys (threads_find.go, mentions.go, search.go): none may reach the
 		// message box underneath.
-		listWasOpen := a.threadList != nil || a.mentions != nil || a.search != nil
+		listWasOpen := a.threadList != nil || a.mentions != nil || a.search != nil || a.invitePeople != nil
 		pickerWasOpen := a.emojiPicker != nil
 		cmd := a.handleKeyPress(msg)
 		if cmd != nil {
@@ -1604,7 +1610,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The emoji picker keeps its keys too, including the Ctrl+E that
 		// opened it and the Enter that inserts (which mustn't also send).
-		if listWasOpen || pickerWasOpen || a.emojiPicker != nil || a.mentions != nil || a.search != nil {
+		if listWasOpen || pickerWasOpen || a.emojiPicker != nil || a.mentions != nil || a.search != nil || a.invitePeople != nil {
 			return a, tea.Batch(cmds...)
 		}
 		// See inPasteBurst's doc comment: handleKeyPress may have just
@@ -1750,6 +1756,11 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.loginError = msg.Error
 		a.statusError = true
 
+	case joinRetryMsg: // invites.go
+		if cmd := a.joinRetry(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case accountCodeMsg:
 		if cmd := a.applyAccountCodeResult(msg); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1782,11 +1793,19 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.view == ViewMain && a.codeState == nil {
 				a.openCodeScreen(codeModeVerify, msg.ServerID, msg.Email)
 			}
+		} else if msg.Join != "" {
+			if cmd := a.joinBlocked(msg); cmd != nil { // invites.go
+				cmds = append(cmds, cmd)
+			}
 		} else if msg.Err != nil {
 			log.Printf("Auto-connect failed for server %s: %v", msg.ServerID, msg.Err)
 			a.statusMessage = fmt.Sprintf("Could not sign in to %s: %v", a.codeServerName(msg.ServerID), msg.Err)
 			a.statusError = true
+			if st := a.codeState; st != nil && st.Mode == codeModeJoin && st.ServerID == msg.ServerID {
+				st.Busy, st.Notice, st.IsErr = false, msg.Err.Error(), true
+			}
 		} else if msg.Token != "" {
+			a.joinedServer(msg.ServerID) // invites.go: a waiting invite or request is done
 			// Save token to disk for future sessions
 			go func() {
 				if err := a.configMgr.SaveServerSignIn(msg.ServerID, msg.ProfileID, msg.Email, msg.Token, msg.UserID); err != nil {
@@ -2311,6 +2330,14 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	if a.view == ViewMain && a.search != nil {
 		return a.handleSearchKey(msg)
 	}
+	// Invite People (invite_people.go) likewise.
+	if a.view == ViewMain && a.invitePeople != nil {
+		return a.handleInvitePeopleKey(msg)
+	}
+	if a.view == ViewMain && a.focus == FocusUserList && a.memberContextMenu == nil && (msg.String() == "i" || msg.String() == "I") {
+		a.openInvitePeople()
+		return nil
+	}
 	if a.view == ViewMain && msg.String() == "ctrl+f" {
 		return a.openSearch("")
 	}
@@ -2699,6 +2726,11 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 					// A new account waiting for its emailed code: enter it.
 					if email, ok := a.pendingVerify[a.clientServers[a.serverIndex].ID]; ok {
 						a.openCodeScreen(codeModeVerify, a.clientServers[a.serverIndex].ID, email)
+						return nil
+					}
+					// Not a member yet (invite only, or waiting for approval).
+					if _, ok := a.pendingJoin[a.clientServers[a.serverIndex].ID]; ok {
+						a.openJoinScreen(a.clientServers[a.serverIndex].ID)
 						return nil
 					}
 					if a.activeConn == nil || a.activeConn.GetState() != StateReady {
@@ -6175,6 +6207,7 @@ type AutoConnectMsg struct {
 	Token             string
 	Err               error
 	NeedsVerification bool   // the account must enter an emailed code first
+	Join              string // the server didn't let this profile in (invites.go)
 	ProfileID         string // the profile that signed in
 }
 
@@ -7775,6 +7808,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		if err := json.Unmarshal(msg.Data, &p); err == nil {
 			a.handleMentions(serverID, sc, p)
 		}
+
+	case protocol.EventInvites, protocol.EventInvitesResult, protocol.EventJoinRequest:
+		a.handleInvitesEvent(sc, msg) // invite_people.go
 
 	case protocol.EventSearchResults:
 		var p protocol.SearchResultsPayload

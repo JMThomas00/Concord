@@ -670,6 +670,13 @@ func (a *App) handleLoginSubmit() tea.Cmd {
 			a.codeState.Back = ViewMain
 			break
 		}
+		if a.codeState == nil {
+			for serverID := range a.pendingJoin {
+				a.openJoinScreen(serverID)
+				a.codeState.Back = ViewMain
+				break
+			}
+		}
 
 		// Only auto-connect servers that aren't already connected
 		// (servers auto-connect in background during Init, so they may already be ready)
@@ -1046,6 +1053,9 @@ func (a *App) renderMainView() string {
 	}
 	if a.search != nil { // Ctrl+F (search.go)
 		view = overlayCenter(view, a.renderSearch(), a.width, a.height)
+	}
+	if a.invitePeople != nil { // /invite (invite_people.go)
+		view = overlayCenter(view, a.renderInvitePeople(), a.width, a.height)
 	}
 	return view
 }

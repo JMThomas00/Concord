@@ -22,6 +22,9 @@ type Connection struct {
 	
 	// Server address
 	serverAddr string
+
+	// Join: an invite code and note sent with sign-ins (invites.go).
+	Join JoinDetails
 	
 	// Message handlers
 	onMessage     func(*protocol.Message)
@@ -508,10 +511,21 @@ type LoginResponse struct {
 // *APIError whose Code is "verification_required".
 func (c *Connection) Login(email, password string) (*models.User, string, error) {
 	var r sessionResponse
-	if _, err := postAPI(c.serverAddr, "/api/login", "", map[string]string{"email": email, "password": password}, &r); err != nil {
+	if _, err := postAPI(c.serverAddr, "/api/login", "", c.join(map[string]string{"email": email, "password": password}), &r); err != nil {
 		return nil, "", err
 	}
 	return r.User, r.Token, nil
+}
+
+// join adds the invite code and join note (JoinDetails) to a sign-in.
+func (c *Connection) join(body map[string]string) map[string]string {
+	if c.Join.Invite != "" {
+		body["invite"] = c.Join.Invite
+	}
+	if c.Join.Note != "" {
+		body["note"] = c.Join.Note
+	}
+	return body
 }
 
 // Register creates a new account on the server. On a server that verifies
@@ -524,7 +538,7 @@ func (c *Connection) Register(username, email, password string) (*models.User, s
 		Email                string `json:"email"`
 		MailError            string `json:"mail_error"`
 	}
-	status, err := postAPI(c.serverAddr, "/api/register", "", map[string]string{"username": username, "email": email, "password": password}, &r)
+	status, err := postAPI(c.serverAddr, "/api/register", "", c.join(map[string]string{"username": username, "email": email, "password": password}), &r)
 	if err != nil {
 		return nil, "", err
 	}

@@ -144,6 +144,9 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 	case "mentions":
 		ch.app.openMentions() // mentions.go
 		return "", nil
+	case "invite", "invites":
+		ch.app.openInvitePeople() // invite_people.go
+		return "", nil
 	case "search", "find":
 		// The arguments come split like a shell's: quote again any that
 		// had spaces, so "a phrase" stays one.

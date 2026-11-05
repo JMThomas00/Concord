@@ -44,6 +44,7 @@ func allSlashCommands() []slashCommandInfo {
 		{"links", "[N]", "Show links from recent N messages (default: 20)", roleLevelMember},
 		{"threads", "", "List this channel's threads (Alt+T)", roleLevelMember},
 		{"mentions", "", "Your mentions on every server (Alt+I)", roleLevelMember},
+		{"invite", "", "Invite people: make or email an invite code, answer join requests", roleLevelMember},
 		{"search", "[words]", "Search messages (Ctrl+F)", roleLevelMember},
 		{"theme", "[name]", "Open theme browser, or apply theme directly", roleLevelMember},
 		{"status", "<message>", "Set your status (use /status clear to remove)", roleLevelMember},
