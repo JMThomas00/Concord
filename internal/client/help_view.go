@@ -77,6 +77,8 @@ Unread counts are kept by the server, so they're right after a restart and on ev
 
 **Alt+I** (or ` + "`/mentions`" + `) is your mentions inbox: every @mention, reply to your messages, whisper and @everyone on every server you're connected to, newest first. **Tab** filters, **Enter** goes to the message (opening its thread), **R** marks them all read. The status bar shows **@N** while any are unread.
 
+**Ctrl+F** (or ` + "`/search words`" + `) searches messages: this server, or every server with **Tab**, best match first (**Ctrl+S** for newest). Use ` + "`\"a phrase\"`" + `, ` + "`pref*`" + `, and the filters ` + "`from:name`" + `, ` + "`in:#channel`" + `, ` + "`has:link`" + `, ` + "`has:file`" + `, ` + "`before:2026-11-05`" + ` and ` + "`after:2026-11-01`" + `. **Enter** goes to the message.
+
 ### Whispers and files
 
 - ` + "`/w @user <message>`" + ` — a private message that isn't stored

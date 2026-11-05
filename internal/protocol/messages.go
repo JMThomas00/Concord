@@ -128,6 +128,11 @@ const (
 	// (MentionsPayload). Servers before v0.1.9 don't know it.
 	OpRequestMentions OpCode = 68
 
+	// OpSearch (69): C→S. Search a server's messages (SearchRequest); the
+	// server answers SEARCH_RESULTS (SearchResultsPayload). Servers before
+	// v0.1.9 don't know it.
+	OpSearch OpCode = 69
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -224,6 +229,7 @@ const (
 	EventServerAdminResult    EventType = "SERVER_ADMIN_RESULT"    // S→C: how a backup or restart went
 	EventChannelRead          EventType = "CHANNEL_READ"           // S→C: your read position in a channel moved (any of your devices)
 	EventMentions             EventType = "MENTIONS"               // S→C: a page of your mentions (OpRequestMentions)
+	EventSearchResults        EventType = "SEARCH_RESULTS"         // S→C: a page of search results (OpSearch)
 )
 
 // Message represents a WebSocket message envelope
@@ -624,6 +630,39 @@ type MentionItem struct {
 	Message *MessageDisplay `json:"message"` // ThreadID set for a reply in a thread
 	Kind    string          `json:"kind"`
 	Unread  bool            `json:"unread,omitempty"`
+}
+
+// SearchRequest searches a server's messages (OpSearch). Query is what was
+// typed: words, "phrases", prefix*, and the filters from:name, in:#channel,
+// has:link, has:file, before:YYYY-MM-DD and after:YYYY-MM-DD (dates in the
+// searcher's zone, UTCOffset seconds east of UTC).
+type SearchRequest struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	Query     string    `json:"query"`
+	Newest    bool      `json:"newest,omitempty"` // newest first instead of best match
+	Offset    int       `json:"offset,omitempty"`
+	Limit     int       `json:"limit,omitempty"` // default and most: 25
+	UTCOffset int       `json:"utc_offset,omitempty"`
+}
+
+// SearchHit is one message found. Snippet is the text around the matches,
+// each match between \x02 and \x03.
+type SearchHit struct {
+	Message *MessageDisplay `json:"message"`
+	Snippet string          `json:"snippet,omitempty"`
+	Score   float64         `json:"score,omitempty"` // lower is better; comparable across servers
+}
+
+// SearchResultsPayload is SEARCH_RESULTS: a page of hits, or Error (a
+// filter that names no one or no channel).
+type SearchResultsPayload struct {
+	ServerID uuid.UUID   `json:"server_id"`
+	Query    string      `json:"query"`
+	Newest   bool        `json:"newest,omitempty"`
+	Offset   int         `json:"offset,omitempty"`
+	Items    []SearchHit `json:"items"`
+	HasMore  bool        `json:"has_more,omitempty"`
+	Error    string      `json:"error,omitempty"`
 }
 
 // MentionsPayload is MENTIONS: a page of your mentions, newest first.

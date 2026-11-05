@@ -3739,6 +3739,9 @@ func (db *DB) MigratePluginPlatform() error {
 	}); err != nil {
 		return err
 	}
+	if err := migrateSearch(db); err != nil { // the search index (search.go)
+		return err
+	}
 
 	// Voice permissions (2026-10-09): Connect and Speak were never checked,
 	// and @everyone never had them, so voice worked only by accident. Now

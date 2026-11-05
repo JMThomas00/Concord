@@ -1044,6 +1044,9 @@ func (a *App) renderMainView() string {
 	if a.mentions != nil { // Alt+I (mentions.go)
 		view = overlayCenter(view, a.renderMentions(), a.width, a.height)
 	}
+	if a.search != nil { // Ctrl+F (search.go)
+		view = overlayCenter(view, a.renderSearch(), a.width, a.height)
+	}
 	return view
 }
 

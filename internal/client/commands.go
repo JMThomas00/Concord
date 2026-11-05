@@ -144,6 +144,18 @@ func (ch *CommandHandler) Execute(cmd *Command) (string, error) {
 	case "mentions":
 		ch.app.openMentions() // mentions.go
 		return "", nil
+	case "search", "find":
+		// The arguments come split like a shell's: quote again any that
+		// had spaces, so "a phrase" stays one.
+		parts := make([]string, len(cmd.Args))
+		for i, arg := range cmd.Args {
+			if strings.ContainsAny(arg, " \t") {
+				arg = `"` + arg + `"`
+			}
+			parts[i] = arg
+		}
+		ch.app.openSearch(strings.Join(parts, " ")) // search.go
+		return "", nil
 	case "status":
 		return ch.handleStatus(cmd.Args)
 	case "title":

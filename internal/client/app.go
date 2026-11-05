@@ -425,6 +425,7 @@ type App struct {
 	threadList        *threadListState
 	mentions          *mentionsInbox // the open mentions inbox (Alt+I, mentions.go)
 	pendingJump       *mentionJump   // a jump to a mention, landing once history loads
+	search            *searchView    // the open message search (Ctrl+F, search.go)
 	threadFlash       string
 	threadFlashUntil  time.Time
 	threadNoticeLines map[int]uuid.UUID
@@ -1315,6 +1316,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case channelReadFlushMsg:
 		a.flushChannelRead(m)
+		return a, nil
+	case searchDebounceMsg:
+		a.searchPaused(m) // search.go
 		return a, nil
 	case installerReadyMsg:
 		return a, a.runInstaller(m)
@@ -2299,6 +2303,13 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	if a.view == ViewMain && msg.String() == "alt+i" {
 		a.openMentions()
 		return nil
+	}
+	// Message search (search.go) likewise.
+	if a.view == ViewMain && a.search != nil {
+		return a.handleSearchKey(msg)
+	}
+	if a.view == ViewMain && msg.String() == "ctrl+f" {
+		return a.openSearch("")
 	}
 	if a.view == ViewMain && msg.String() == "alt+t" {
 		a.openThreadList()
@@ -7760,6 +7771,12 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		var p protocol.MentionsPayload
 		if err := json.Unmarshal(msg.Data, &p); err == nil {
 			a.handleMentions(serverID, sc, p)
+		}
+
+	case protocol.EventSearchResults:
+		var p protocol.SearchResultsPayload
+		if err := json.Unmarshal(msg.Data, &p); err == nil {
+			a.handleSearchResults(serverID, sc, p)
 		}
 
 	case protocol.EventPluginManageResult:
