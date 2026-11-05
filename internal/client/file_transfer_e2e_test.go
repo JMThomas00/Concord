@@ -130,7 +130,11 @@ func newTestFileClient(t *testing.T, httpAddr, username, downloadDir string) *te
 		if msg.Type == protocol.EventFileTransferSignal {
 			var sig protocol.FileTransferSignalRelayPayload
 			if err := json.Unmarshal(msg.Data, &sig); err == nil {
-				tc.engine.HandleSignal(sig.SourceUserID, sig.AttachmentID, sig.Type, sig.SDP, sig.Candidate)
+				if isRelaySignal(sig.Type) {
+					tc.engine.HandleRelaySignal(sig, tc.reply)
+				} else {
+					tc.engine.HandleSignal(sig.SourceUserID, sig.AttachmentID, sig.Type, sig.SDP, sig.Candidate)
+				}
 			}
 		}
 		select {
@@ -155,18 +159,7 @@ func newTestFileClient(t *testing.T, httpAddr, username, downloadDir string) *te
 	// connection, exactly as app.go's FileTransferSignalOut case does.
 	go func() {
 		for sig := range tc.sigOut {
-			payload := &protocol.FileTransferSignalPayload{
-				TargetUserID: sig.TargetUserID,
-				AttachmentID: sig.AttachmentID,
-				Type:         sig.Type,
-				SDP:          sig.SDP,
-				Candidate:    sig.Candidate,
-			}
-			wsMsg, err := protocol.NewMessage(protocol.OpFileTransferSignal, payload)
-			if err != nil {
-				continue
-			}
-			_ = conn.Send(wsMsg)
+			tc.reply(sig)
 		}
 	}()
 
@@ -340,4 +333,20 @@ func createTestChannel(t *testing.T, tc *testFileClient, serverID uuid.UUID) uui
 		t.Fatalf("failed to decode channel create payload: %v", err)
 	}
 	return payload.Channel.ID
+}
+
+// reply sends a file signal over the real connection, as app.go does.
+func (tc *testFileClient) reply(sig FileTransferSignalOut) {
+	payload := &protocol.FileTransferSignalPayload{
+		TargetUserID: sig.TargetUserID,
+		AttachmentID: sig.AttachmentID,
+		Type:         sig.Type,
+		SDP:          sig.SDP,
+		Candidate:    sig.Candidate,
+		Seq:          sig.Seq,
+		Data:         sig.Data,
+	}
+	if wsMsg, err := protocol.NewMessage(protocol.OpFileTransferSignal, payload); err == nil {
+		_ = tc.conn.Send(wsMsg)
+	}
 }

@@ -3,6 +3,7 @@ package tor
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -341,4 +342,23 @@ func Control(addr string, cookie []byte, command string) error {
 	}
 	_ = ask("QUIT")
 	return nil
+}
+
+// AddClientAuth gives a running tor the access key for an onion address,
+// so it can reach it straight away (the ClientOnionAuthDir file is what a
+// tor started later reads).
+func (p *Process) AddClientAuth(onion string, k ClientKey) error {
+	host := strings.TrimSuffix(strings.ToLower(onion), ".onion")
+	return p.control("ONION_CLIENT_AUTH_ADD " + host + " x25519:" + base64.StdEncoding.EncodeToString(k.Private))
+}
+
+// SocksAddr reads a SocksPort setting's address back from the options
+// ("" if there's none).
+func (o Options) SocksAddr() string {
+	for _, l := range o.Lines {
+		if f := strings.Fields(l); len(f) >= 2 && f[0] == "SocksPort" && f[1] != "0" {
+			return f[1]
+		}
+	}
+	return ""
 }

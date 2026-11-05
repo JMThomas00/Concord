@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -10,6 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/concord-chat/concord/internal/tor"
 )
 
 // initAddServerForm initializes the Add Server form
@@ -34,6 +37,7 @@ func (a *App) initAddServerForm() {
 
 	a.addServerUseTLS = false
 	a.addServerInvite = ""
+	a.addServerOnionKey = ""
 	a.addServerFocus = 0
 	a.addServerError = ""
 }
@@ -187,6 +191,12 @@ func (a *App) handleAddServerSubmit() tea.Cmd {
 	newServer := NewClientServerInfo(name, address, port, a.addServerUseTLS)
 	newServer.Invite = a.addServerInvite
 	a.addServerInvite = ""
+	if tor.IsOnion(address) {
+		newServer.Onion = net.JoinHostPort(address, strconv.Itoa(port))
+		newServer.OnionKey, newServer.OverTor = a.addServerOnionKey, true
+		newServer.rememberKey()
+	}
+	a.addServerOnionKey = ""
 
 	// Add to client servers list
 	a.clientServers = append(a.clientServers, newServer)

@@ -36,6 +36,7 @@ type Plan struct {
 	Components []string
 
 	ClientDir string
+	ClientTor string // TorOff, TorAlso (onion servers) or TorOnly (everything)
 
 	ServerDir     string
 	ServerName    string

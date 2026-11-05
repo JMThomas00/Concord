@@ -2,10 +2,14 @@ package client
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/concord-chat/concord/internal/tor"
 )
 
 // ClientServerInfo represents client-side metadata for a server
@@ -29,6 +33,35 @@ type ClientServerInfo struct {
 	// (pasted into Add Server, or typed on the join screen); cleared once
 	// it has made this profile a member (invites.go).
 	Invite string `json:"invite,omitempty"`
+
+	// Tor (tor_net.go): the server's onion address (host:port) and access
+	// key, from an invite or from the server itself; OverTor connects there
+	// instead of Address (Tor-only mode always does when Onion is known).
+	Onion    string `json:"onion,omitempty"`
+	OnionKey string `json:"onion_key,omitempty"`
+	OverTor  bool   `json:"over_tor,omitempty"`
+}
+
+// dialHostPort is where the client connects: the onion address when it
+// goes over Tor, else the normal one.
+func (s *ClientServerInfo) dialHostPort() string {
+	if s.Onion != "" && (s.OverTor || torOnly() || s.Address == "") {
+		return s.Onion
+	}
+	return net.JoinHostPort(s.Address, strconv.Itoa(s.Port))
+}
+
+// overTor reports whether this server is reached through Tor.
+func (s *ClientServerInfo) overTor() bool { return viaTor(s.dialHostPort()) }
+
+// rememberKey hands this server's access key to the Tor layer.
+func (s *ClientServerInfo) rememberKey() {
+	if s.Onion != "" && s.OnionKey != "" {
+		rememberOnionKey(s.Onion, s.OnionKey)
+	}
+	if tor.IsOnion(s.Address) && s.OnionKey != "" {
+		rememberOnionKey(s.Address, s.OnionKey)
+	}
 }
 
 // SavedCredentials stores login credentials for auto-connect
@@ -84,7 +117,7 @@ func (s *ClientServerInfo) GetWebSocketURL() string {
 	if s.UseTLS {
 		protocol = "wss"
 	}
-	return fmt.Sprintf("%s://%s:%d/ws", protocol, s.Address, s.Port)
+	return fmt.Sprintf("%s://%s/ws", protocol, s.dialHostPort())
 }
 
 // GetHTTPURL returns the base HTTP URL for this server
@@ -93,7 +126,7 @@ func (s *ClientServerInfo) GetHTTPURL() string {
 	if s.UseTLS {
 		protocol = "https"
 	}
-	return fmt.Sprintf("%s://%s:%d", protocol, s.Address, s.Port)
+	return fmt.Sprintf("%s://%s", protocol, s.dialHostPort())
 }
 
 // String returns a human-readable string representation

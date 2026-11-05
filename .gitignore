@@ -40,3 +40,6 @@ server-data/
 server-secrets/
 hub-data/
 *.key
+
+# go build ./cmd/install in the repo root writes this; builds belong in build/
+/install

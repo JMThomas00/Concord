@@ -103,6 +103,15 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 
 	// The client.
 	groups = append(groups, b.group(dirInput(installer.Client, "Where should the client live?", &pl.ClientDir)).WithHideFunc(notChosen(installer.Client)))
+	groups = append(groups, b.group(
+		huh.NewSelect[string]().Title("How should Concord connect?").
+			Description("Tor hides your address from the servers you use. It's slower, and over\nTor voice is off and files go through the server. Tor gets installed.").
+			Options(
+				huh.NewOption("Normally", installer.TorOff),
+				huh.NewOption("Normally, and through Tor for .onion servers", installer.TorAlso),
+				huh.NewOption("Everything through Tor", installer.TorOnly),
+			).Value(&pl.ClientTor),
+	).WithHideFunc(fresh(installer.Client)))
 
 	// The server.
 	groups = append(groups,
@@ -422,6 +431,12 @@ func (m *model) viewReview() string {
 		b.WriteString("\n" + sSection.Render("Client") + "  " + verb(installer.Client) + "\n")
 		row("Folder", installer.Tilde(pl.ClientDir))
 		row("Command", "concord")
+		switch pl.ClientTor {
+		case installer.TorAlso:
+			row("Tor", "for .onion servers (tor gets installed)")
+		case installer.TorOnly:
+			row("Tor", "everything through Tor (tor gets installed)")
+		}
 	}
 	if pl.Has(installer.Server) {
 		b.WriteString("\n" + sSection.Render("Server") + "  " + verb(installer.Server) + "\n")

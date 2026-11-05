@@ -100,24 +100,24 @@ type App struct {
 	// bannerShuffled: Ctrl+R picked the banner, so it may be any size
 	// (otherwise it keeps clear of a scene's object; scenes_site.go).
 	bannerShuffled bool
-	toastRects []toastRect // where the toasts were last drawn, for clicks (toasts.go)
+	toastRects     []toastRect // where the toasts were last drawn, for clicks (toasts.go)
 	// The main window's side panels as last drawn (renderMainView): the
 	// server and channel columns, and the members panel. Toasts stay inside
 	// one of them (toastArea).
 	toastLeftW, toastRightW int
-	leaderboards map[string]*leaderboardState // by server and plugin (plugin_records.go)
-	loading    *loadingState // the launch's loading screen while it plays
+	leaderboards            map[string]*leaderboardState // by server and plugin (plugin_records.go)
+	loading                 *loadingState                // the launch's loading screen while it plays
 
 	// Easter eggs and screensavers (eggs.go, screensaver.go).
 	egg         *eggState
-	eggKeys     []string    // the last few keys, for typed eggs
-	grapeClicks []time.Time // recent clicks on the grapes
-	discoNow    bool        // this launch is the disco party (armed by typing "disco" on About)
-	nameBanner  string      // this launch's banner is the profile's name (banner_name.go), or ""
-	fortune     string      // this launch's fortune (vintage.go)
+	eggKeys     []string     // the last few keys, for typed eggs
+	grapeClicks []time.Time  // recent clicks on the grapes
+	discoNow    bool         // this launch is the disco party (armed by typing "disco" on About)
+	nameBanner  string       // this launch's banner is the profile's name (banner_name.go), or ""
+	fortune     string       // this launch's fortune (vintage.go)
 	updates     *updateState // the Updates page (updates.go)
-	photoCache  image.Image // the picture grapes (logo_photo.go)
-	photoKey    string      // the theme colour they were drawn in
+	photoCache  image.Image  // the picture grapes (logo_photo.go)
+	photoKey    string       // the theme colour they were drawn in
 	saver       *saverState
 	lastInput   time.Time
 	grapeReact  *grapeReaction   // the grapes reacting to a problem or a success (stage.go)
@@ -139,7 +139,7 @@ type App struct {
 	pendingVerify map[uuid.UUID]string
 	// pendingJoin holds servers that didn't let this profile in yet, with
 	// why (invites.go: invite_required, approval_pending, ...).
-	pendingJoin map[uuid.UUID]*joinState
+	pendingJoin   map[uuid.UUID]*joinState
 	addingProfile bool // the identity form is adding a profile, not the first one
 	formHintRows  int  // rows of shortcut hints under the login/register form (layoutBannerScreen)
 	stageStable   int  // the last stage page's reserved height (stage.go), for currentLockup
@@ -199,13 +199,15 @@ type App struct {
 	identityError           string
 
 	// Add Server form
-	addServerName    textinput.Model
-	addServerAddress textinput.Model
-	addServerPort    textinput.Model
-	addServerUseTLS  bool
-	addServerInvite  string // an invite code pasted with the address (invites.go)
-	addServerFocus   int
-	addServerError   string
+	addServerName     textinput.Model
+	addServerAddress  textinput.Model
+	addServerPort     textinput.Model
+	addServerUseTLS   bool
+	addServerInvite   string // an invite code pasted with the address (invites.go)
+	addServerOnionKey string // a Tor invite's access key (tor_client.go)
+	network           *networkState // Settings › Network (network_settings.go)
+	addServerFocus    int
+	addServerError    string
 
 	// Manage Servers (Settings sub-page)
 	pingResults           map[uuid.UUID]*PingResult
@@ -270,11 +272,11 @@ type App struct {
 	mentionCounts map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → @mention count
 	// Read positions kept by the server (reads.go): the open channel's
 	// "new" divider, and when each channel was last marked read.
-	divider     *newDivider
-	readSentAt  map[uuid.UUID]time.Time
-	readPending map[uuid.UUID]bool
-	mutedChannels map[uuid.UUID]bool              // channelID → muted
-	mutedServers  map[uuid.UUID]bool              // clientServerID → muted
+	divider       *newDivider
+	readSentAt    map[uuid.UUID]time.Time
+	readPending   map[uuid.UUID]bool
+	mutedChannels map[uuid.UUID]bool // channelID → muted
+	mutedServers  map[uuid.UUID]bool // clientServerID → muted
 
 	// Notification settings (mirrors UIConfig.Notifications, kept in sync)
 	notifConfig NotificationConfig
@@ -286,7 +288,7 @@ type App struct {
 	voiceEngine   *VoiceEngine
 	voiceSigOut   chan VoiceSignalOut     // engine → server: WebRTC signals
 	voiceEventOut chan interface{}        // engine → bubbletea: state events
-	voiceConn     *ServerConnection        // the server your voice is on, even while another is on screen (voice_follow.go)
+	voiceConn     *ServerConnection       // the server your voice is on, even while another is on screen (voice_follow.go)
 	voiceQuit     chan struct{}           // closed by stopVoiceEngine to unblock waiting cmds
 	voiceQuality  map[uuid.UUID]int       // userID → latest ICE RTT ms (-1 = unknown)
 	voiceLevels   map[uuid.UUID]float32   // userID → latest RMS output level (0.0–1.0)
@@ -437,7 +439,7 @@ type App struct {
 	// updateAvailable is a newer release found at startup (updates.go):
 	// the login screen's tip offers it in place of the Grapevine tip.
 	updateAvailable string
-	replyQuote  string          // Ellipsized first line for display
+	replyQuote      string // Ellipsized first line for display
 
 	// Edit message state
 	editingMessageID *uuid.UUID // Message being edited
@@ -942,6 +944,13 @@ func NewApp(clientServers []*ClientServerInfo, defaultPrefs *DefaultPreferences,
 		log.Printf("Warning: Failed to save banner index: %v", err)
 	}
 
+	// The network: Tor-only mode, bridges, and onion servers' access keys
+	// (tor_net.go).
+	configureNetwork(appConfig.Network, filepath.Dir(configMgr.configFilePath))
+	for _, info := range configMgr.GetClientServers() {
+		info.rememberKey()
+	}
+
 	// Determine startup view
 	var startView View
 
@@ -1422,6 +1431,9 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.updateChatContent()
 		return a, tea.ShowCursor
+
+	case networkTickMsg:
+		return a, a.handleNetworkTick()
 
 	case typingTickMsg:
 		// Advance animation frame and prune expired typing entries
@@ -1977,6 +1989,8 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Type:         msg.Type,
 				SDP:          msg.SDP,
 				Candidate:    msg.Candidate,
+				Seq:          msg.Seq,
+				Data:         msg.Data,
 			}
 			if wsMsg, err := protocol.NewMessage(protocol.OpFileTransferSignal, payload); err == nil {
 				_ = a.activeConn.Connection.Send(wsMsg)
@@ -2761,6 +2775,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				} else {
 					// Join voice (leaving a call on another server first:
 					// you're only ever in one).
+					if why := voiceOffOverTor(a.activeConn); why != "" {
+						a.statusMessage = why
+						return nil
+					}
 					a.leaveVoiceElsewhere()
 					chID := a.currentChannel.ID
 					payload := &protocol.VoiceStateUpdatePayload{
@@ -2898,8 +2916,8 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				a.messageNavMode = true
 				a.inMessageEditMode = false // Start in Level 1 (message selection)
 				a.focus = FocusMessageNav
-				a.messageNavIndex = last // the newest message (system lines are skipped)
-				a.messageSelectionStart = nil         // Clear any previous selection
+				a.messageNavIndex = last      // the newest message (system lines are skipped)
+				a.messageSelectionStart = nil // Clear any previous selection
 				a.messageSelectionEnd = nil
 				a.input.Blur()
 
@@ -6637,6 +6655,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 		// Store channels in server connection
 		sc.SetChannels(payload.Server.ID, payload.Channels)
+		a.takeOnionAccess(sc, payload.Onion)
 
 		// Build lookup maps for roles and users
 		roleMap := make(map[uuid.UUID]*models.Role, len(payload.Roles))
@@ -7793,6 +7812,12 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		sc.PluginBoards = payload.PluginBoards
 		sc.mu.Unlock()
 
+	case protocol.EventOnionAccess:
+		var oa protocol.OnionAccess
+		if json.Unmarshal(msg.Data, &oa) == nil {
+			a.takeOnionAccess(sc, &oa)
+		}
+
 	case protocol.EventServerStatus, protocol.EventServerAdminResult:
 		a.handleServerAdminEvent(sc, msg)
 
@@ -7969,6 +7994,10 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			return nil
 		}
 		if engine, cmd := a.ensureFileTransferEngine(); engine != nil {
+			if isRelaySignal(sigPayload.Type) {
+				engine.HandleRelaySignal(sigPayload, fileSignalSender(sc))
+				return cmd
+			}
 			engine.HandleSignal(sigPayload.SourceUserID, sigPayload.AttachmentID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
 			return cmd
 		}
@@ -7997,7 +8026,7 @@ func (a *App) startVoiceEngine(sc *ServerConnection, payload *protocol.VoiceServ
 	}
 
 	a.stopVoiceEngine() // tear down any existing engine first
-	a.voiceConn = sc // voice stays with this server until you leave it
+	a.voiceConn = sc    // voice stays with this server until you leave it
 
 	if sc.User == nil {
 		return nil
@@ -8141,6 +8170,9 @@ func (a *App) ensureFileTransferEngine() (*FileTransferEngine, tea.Cmd) {
 	a.fileTransferEventOut = make(chan interface{}, 32)
 
 	engine := NewFileTransferEngine(a.activeConn.User.ID, downloadDir, sharedFiles, a.fileTransferSigOut, a.fileTransferEventOut)
+	// On Tor, files go through the server (file_relay.go). Asked from the
+	// update loop, so reading activeConn is safe.
+	engine.SetRelayOnly(func() bool { return a.activeConn != nil && a.activeConn.ServerInfo != nil && a.activeConn.ServerInfo.overTor() })
 	a.fileTransferEngine = engine
 
 	cmd := tea.Batch(a.waitForFileTransferEvent(), a.waitForFileTransferSignal())

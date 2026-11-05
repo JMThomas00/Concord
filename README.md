@@ -15,6 +15,7 @@ A chat app for your terminal: servers, channels, voice, games and plugins, all k
 - **Voice channels:** peer-to-peer WebRTC with Opus at 48 kHz, RNNoise noise suppression, echo cancellation, automatic levelling and per-person volume.
 - **File sharing** peer-to-peer (`/attach`, `/download`): nothing is stored on the server.
 - **Plugins:** chess, checkers, Tak, tic-tac-toe, Four in a Row and dominoes channels, a typing race and a quick-draw game, a kanban board (Tukan) and AI personas (Mynah), with achievements and leaderboards. Install them from inside Concord, or build your own with the SDK.
+- **Tor:** give a server a private `.onion` address only invited people can find, and connect through Tor yourself, with bridges where Tor is blocked.
 - **The Grapevine:** an optional, federated directory of public servers, browsable and joinable from the client.
 - **40+ themes**, switchable live, plus your own.
 - **Accounts done properly:** several profiles per computer, optional email verification and password reset, sign-in on every server at once.
@@ -168,6 +169,16 @@ Voice goes directly between the people in a call (WebRTC), so a server only intr
 
 Everyone in a call needs a current client: older ones can't play the newer audio packets.
 
+## Tor
+
+Concord can use [Tor](https://www.torproject.org) to hide where a server is and who is connecting to it. It runs the `tor` program installed on your computer; the installer offers to install it.
+
+- **A server on Tor:** `[tor] enabled = true` in `concord-server.toml` (or the installer's "Reach it over Tor too?") gives it a `.onion` address, shown in **Server Settings → About**. Only people with an **access key** can find it there: invites carry it (`abc….onion:8080/CODE#KEY`), and members get it when they sign in. If an invite leaks, **T** (twice) on About makes a new key; the old one works for another week. `only = true` makes the server reachable through Tor and nothing else. An onion server isn't listed on the Grapevine unless you ask.
+- **Joining one:** paste the whole invite into **Add Server**.
+- **You on Tor:** **Settings → Network**. *Where needed* uses Tor for `.onion` servers and servers you switch to it (**O** in Manage Servers); *Everything* sends every connection through Tor.
+- **Bridges** for places that block Tor: Snowflake or obfs4 (built in; they need the `snowflake-client` or `lyrebird`/`obfs4proxy` program) or lines you paste from [bridges.torproject.org](https://bridges.torproject.org).
+- **Over Tor, voice is off and files go through the server**, since both would otherwise connect you straight to other people and show them your address. The server passes files along without keeping them.
+
 ## The Grapevine
 
 The Grapevine is Concord's opt-in server directory. A **hub** lists the servers that register with it, and hubs can connect to share their listings. Anyone can run one; the official hub is `https://grapevine.concordchat.cc`.
@@ -210,6 +221,10 @@ public_port = 8080                # 443 means it's reached over https
 description = "Board games and bad puns"
 category = "Gaming"
 tags = ["Gaming", "Tabletop"]
+
+[tor]                             # optional: a .onion address (needs tor installed)
+enabled = false
+# only = false                    # true: reachable through Tor alone
 
 [mail]                            # optional: email verification and password reset
 smtp_host = "smtp.example.com"

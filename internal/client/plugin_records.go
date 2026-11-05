@@ -225,7 +225,7 @@ func getAPI(serverAddr, path, token string, out interface{}) error {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := httpClientFor(target, 15*time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}

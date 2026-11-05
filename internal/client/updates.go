@@ -95,7 +95,7 @@ func (a *App) checkForUpdates() tea.Cmd {
 // fetchLatestRelease asks GitHub for the latest published release.
 func fetchLatestRelease() tea.Msg {
 	{
-		client := &http.Client{Timeout: 8 * time.Second}
+		client := httpClientFor(releasesURL, 8*time.Second)
 		req, _ := http.NewRequest("GET", releasesURL, nil)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		resp, err := client.Do(req)
@@ -142,6 +142,7 @@ func (a *App) fetchInstaller(action string) tea.Cmd {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
+		installer.UseHTTPClient(httpClientFor("https://github.com", 10*time.Minute)) // through Tor in Tor-only mode
 		rel, err := installer.FetchRelease(ctx, "")
 		if err != nil {
 			return installerReadyMsg{action: action, err: err}
@@ -182,7 +183,20 @@ func (a *App) runInstaller(m installerReadyMsg) tea.Cmd {
 		args = append(args, "--from", from)
 	}
 	action := m.action
-	return tea.ExecProcess(exec.Command(m.path, args...), func(err error) tea.Msg {
+	cmd := exec.Command(m.path, args...)
+	if torOnly() {
+		// The installer downloads too: through the same tor (Go programs
+		// read a socks5 proxy from HTTPS_PROXY).
+		ctx, cancel := context.WithTimeout(context.Background(), torWait)
+		socks, err := clientNet.ensureTor(ctx)
+		cancel()
+		if err != nil {
+			u.notice, u.noticeE = "Everything goes through Tor, and it isn't connected: "+err.Error(), true
+			return nil
+		}
+		cmd.Env = append(os.Environ(), "HTTPS_PROXY=socks5://"+socks, "HTTP_PROXY=socks5://"+socks, "NO_PROXY=")
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return installerDoneMsg{action: action, err: err}
 	})
 }

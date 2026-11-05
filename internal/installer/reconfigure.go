@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/concord-chat/concord/internal/official"
+	"github.com/concord-chat/concord/internal/tor"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -19,6 +20,14 @@ import (
 // LoadSettings fills the plan's questions from an installed server's and
 // hub's settings files.
 func (pl *Plan) LoadSettings() {
+	switch {
+	case ClientNetwork(ConfigDir(pl.Platform.Home)) == "tor":
+		pl.ClientTor = TorOnly
+	default:
+		if _, err := tor.Find(""); err == nil {
+			pl.ClientTor = TorAlso
+		}
+	}
 	if m := readTOML(filepath.Join(pl.ServerDir, ServerConfigFile)); m != nil {
 		pl.ServerName = str(m["server_name"], pl.ServerName)
 		if p := num(m["port"]); p > 0 {

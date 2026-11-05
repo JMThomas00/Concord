@@ -37,6 +37,11 @@ type Asset struct {
 
 var httpClient = &http.Client{Timeout: 10 * time.Minute}
 
+// UseHTTPClient sets the client releases are fetched with (the Concord
+// client passes one that goes through Tor in Tor-only mode). Call it before
+// fetching, not while a fetch runs.
+func UseHTTPClient(c *http.Client) { httpClient = c }
+
 // FetchRelease looks up a release on GitHub: tag "" is the latest.
 func FetchRelease(ctx context.Context, tag string) (*Release, error) {
 	url := "https://api.github.com/repos/" + Repo + "/releases/latest"

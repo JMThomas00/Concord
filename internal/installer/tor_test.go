@@ -69,3 +69,28 @@ func TestTorInstallCommand(t *testing.T) {
 		t.Errorf("windows: %v", err)
 	}
 }
+
+func TestClientNetworkSetting(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"version":1,"ui":{"theme":"nord"}}`), 0o600)
+	if err := SetClientNetwork(dir, "tor"); err != nil {
+		t.Fatal(err)
+	}
+	if ClientNetwork(dir) != "tor" {
+		t.Fatal("not saved")
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "config.json"))
+	if !strings.Contains(string(b), `"nord"`) {
+		t.Fatalf("other settings lost: %s", b)
+	}
+	SetClientNetwork(dir, "")
+	if ClientNetwork(dir) != "" {
+		t.Fatal("not cleared")
+	}
+	pl := NewPlan(Platform{OS: Linux, Home: t.TempDir()})
+	SetClientNetwork(ConfigDir(pl.Platform.Home), "tor")
+	pl.LoadSettings()
+	if pl.ClientTor != TorOnly {
+		t.Fatalf("read back %q", pl.ClientTor)
+	}
+}

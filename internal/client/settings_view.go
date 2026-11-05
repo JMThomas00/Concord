@@ -330,7 +330,7 @@ func (a *App) openSettings(returnTo View) tea.Cmd {
 		}
 	}
 
-	categories := []string{"Theme", "Notifications", "Display", "Audio", "Manage Servers", "About", "Help & Guide"}
+	categories := []string{"Theme", "Notifications", "Display", "Audio", "Manage Servers", "About", "Network", "Help & Guide"}
 
 	a.settingsState = &SettingsState{
 		Categories:       categories,
@@ -355,6 +355,14 @@ func (a *App) openSettings(returnTo View) tea.Cmd {
 
 // handleSettingsKey processes key events when in ViewSettings
 func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
+	cmd := a.handleSettingsKey0(msg)
+	if s := a.settingsState; s != nil && a.view == ViewSettings && s.SelectedCategory == settingsCatNetwork {
+		return tea.Batch(cmd, a.startNetworkTick()) // network_settings.go: tor's progress
+	}
+	return cmd
+}
+
+func (a *App) handleSettingsKey0(msg tea.KeyMsg) tea.Cmd {
 	s := a.settingsState
 	if s == nil {
 		a.view = ViewMain
@@ -369,6 +377,13 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 	// Route server sound override sub-page
 	if s.ServerSoundPageOpen {
 		return a.handleServerSoundPageKey(msg)
+	}
+
+	// Network (network_settings.go) takes its own keys once focused.
+	if s.SelectedCategory == settingsCatNetwork && s.FocusOnForm {
+		if handled, cmd := a.handleNetworkKey(msg); handled {
+			return cmd
+		}
 	}
 
 	// About: scrolling (in the page), L/N for the mood, C/U for the cellar
@@ -742,6 +757,11 @@ func (a *App) handleSettingsKey(msg tea.KeyMsg) tea.Cmd {
 				s.ServerSoundPickerOpen = false
 				s.ServerSoundPageOpen = true
 			}
+		}
+
+	case "o", "O":
+		if s.FocusOnForm && s.SelectedCategory == settingsCatManageServers && s.SelectedServer >= 0 && s.SelectedServer < len(a.clientServers) {
+			a.toggleOverTor(a.clientServers[s.SelectedServer]) // tor_client.go
 		}
 
 	case "b", "B":
@@ -1238,6 +1258,8 @@ func (a *App) renderSettingsView() string {
 		}
 	case settingsCatAbout:
 		contentBuf.WriteString(a.renderAboutContent(contentWidth, contentHeight))
+	case settingsCatNetwork:
+		contentBuf.WriteString(a.renderNetworkContent(contentWidth, contentHeight))
 	case len(s.Categories) - 1: // Help & Guide
 		contentBuf.WriteString(a.renderHelpContent(contentWidth, contentHeight))
 	default:
@@ -1652,6 +1674,11 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 		}
 
 		address := fmt.Sprintf("%s:%d", cs.Address, cs.Port)
+		if cs.overTor() {
+			address = "Tor · " + shortOnion(cs.dialHostPort()) // tor_client.go
+		} else if cs.Onion != "" {
+			address += " (Tor available: O)"
+		}
 
 		// Ping status
 		var pingStatus string
@@ -1736,7 +1763,7 @@ func (a *App) renderManageServersContent(s *SettingsState, width, height int) st
 	navStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(a.theme.Colors.Comment))
 	bottom.writeLine(navStyle.Render("Navigation: ↑↓ select · Shift+↑↓ reorder · Esc close"))
-	bottom.writeLine(navStyle.Render("Actions: Ctrl+N add · E edit · D delete · P ping · S sounds · B browse hub"))
+	bottom.writeLine(navStyle.Render("Actions: Ctrl+N add · E edit · D delete · P ping · S sounds · O over Tor · B browse hub"))
 
 	// Fill remaining bottom section space
 	bottom.pad()
