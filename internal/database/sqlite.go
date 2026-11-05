@@ -1503,11 +1503,15 @@ func (db *DB) CreateMessage(msg *models.Message) error {
 		threadID.Valid = true
 	}
 
-	_, err := db.Exec(`
-		INSERT INTO messages (id, channel_id, author_id, content, type, created_at, is_pinned, is_whisper, recipient_id, reply_to_id, thread_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	// seq numbers messages in the order they arrive (read positions,
+	// reads.go); with one connection in the pool, nothing can slip between
+	// reading MAX(seq) and the insert.
+	err := db.QueryRow(`
+		INSERT INTO messages (id, channel_id, author_id, content, type, created_at, is_pinned, is_whisper, recipient_id, reply_to_id, thread_id, mention_everyone, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages))
+		RETURNING seq`,
 		msg.ID.String(), msg.ChannelID.String(), msg.AuthorID.String(),
-		msg.Content, msg.Type, msg.CreatedAt, msg.IsPinned, msg.IsWhisper, recipientID, replyToID, threadID)
+		msg.Content, msg.Type, msg.CreatedAt, msg.IsPinned, msg.IsWhisper, recipientID, replyToID, threadID, msg.MentionEveryone).Scan(&msg.Seq)
 	if err != nil {
 		return err
 	}
@@ -1638,7 +1642,7 @@ func (db *DB) GetPinnedMessages(channelID uuid.UUID) ([]*models.Message, error) 
 		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, reply_to_id, thread_id
 		FROM messages
 		WHERE channel_id = ? AND is_pinned = 1
-		ORDER BY created_at DESC`
+		ORDER BY seq DESC`
 
 	rows, err := db.Query(query, channelID.String())
 	if err != nil {
@@ -1712,14 +1716,14 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 	// an empty "deleted" header for its thread.
 	whisperFilter := "(m.is_whisper = 0 OR m.author_id = ? OR m.recipient_id = ?)"
 	deletedFilter := "(m.is_deleted = 0 OR m.is_deleted IS NULL OR EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND (r.is_deleted = 0 OR r.is_deleted IS NULL)))"
-	const columns = `m.id, m.channel_id, m.author_id, m.content, m.type, m.created_at, m.edited_at, m.is_pinned, m.is_whisper, m.recipient_id, m.reply_to_id, COALESCE(m.is_deleted, 0)`
+	const columns = `m.id, m.channel_id, m.author_id, m.content, m.type, m.created_at, m.edited_at, m.is_pinned, m.is_whisper, m.recipient_id, m.reply_to_id, COALESCE(m.is_deleted, 0), COALESCE(m.seq, 0)`
 
 	if before != nil {
 		query = `
 			SELECT ` + columns + `
 			FROM messages m
-			WHERE m.channel_id = ? AND m.thread_id IS NULL AND m.created_at < (SELECT created_at FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY m.created_at DESC
+			WHERE m.channel_id = ? AND m.thread_id IS NULL AND m.seq < (SELECT seq FROM messages WHERE id = ?) AND ` + whisperFilter + ` AND ` + deletedFilter + `
+			ORDER BY m.seq DESC
 			LIMIT ?`
 		args = []interface{}{channelID.String(), before.String(), userID.String(), userID.String(), limit}
 	} else {
@@ -1727,7 +1731,7 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 			SELECT ` + columns + `
 			FROM messages m
 			WHERE m.channel_id = ? AND m.thread_id IS NULL AND ` + whisperFilter + ` AND ` + deletedFilter + `
-			ORDER BY m.created_at DESC
+			ORDER BY m.seq DESC
 			LIMIT ?`
 		args = []interface{}{channelID.String(), userID.String(), userID.String(), limit}
 	}
@@ -1747,7 +1751,7 @@ func (db *DB) GetChannelMessages(channelID uuid.UUID, limit int, before *uuid.UU
 		var replyToID sql.NullString
 
 		err := rows.Scan(&idStr, &channelIDStr, &authorIDStr, &msg.Content,
-			&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &msg.IsWhisper, &recipientID, &replyToID, &msg.Deleted)
+			&msg.Type, &msg.CreatedAt, &editedAt, &msg.IsPinned, &msg.IsWhisper, &recipientID, &replyToID, &msg.Deleted, &msg.Seq)
 		if err != nil {
 			return nil, err
 		}
@@ -2284,7 +2288,12 @@ func (db *DB) AddServerMember(member *models.ServerMember) error {
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		member.UserID.String(), member.ServerID.String(), member.Nickname,
 		member.JoinedAt, member.IsMuted, member.IsDeafened)
-	return err
+	if err != nil {
+		return err
+	}
+	// A new member starts with everything read: what was said before they
+	// joined isn't new to them (reads.go).
+	return db.markServerRead(member.UserID, member.ServerID)
 }
 
 // RemoveServerMember removes a user from a server
@@ -3652,6 +3661,41 @@ func (db *DB) MigratePluginPlatform() error {
 			PRIMARY KEY (user_id, thread_id)
 		)`); err != nil {
 		return fmt.Errorf("failed to create thread tables: %w", err)
+	}
+
+	// Read positions (2026-11-04, reads.go): seq numbers messages in the
+	// order they arrived (rowid order, for the ones already there), and
+	// channel_reads keeps how far each member has read each channel.
+	// mention_everyone keeps @everyone, which wasn't stored.
+	if err := addColumnIfMissing(db, "messages", "seq", "INTEGER"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "messages", "mention_everyone", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`
+		UPDATE messages SET seq = rowid WHERE seq IS NULL AND NOT EXISTS (SELECT 1 FROM messages WHERE seq IS NOT NULL);
+		CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq);
+		CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq);
+		CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq);
+		CREATE INDEX IF NOT EXISTS idx_message_mentions_user ON message_mentions(user_id);
+		CREATE TABLE IF NOT EXISTS channel_reads (
+			user_id    TEXT NOT NULL,
+			channel_id TEXT NOT NULL,
+			read_seq   INTEGER NOT NULL,
+			PRIMARY KEY (user_id, channel_id)
+		)`); err != nil {
+		return fmt.Errorf("failed to create read positions: %w", err)
+	}
+	// Everyone starts with everything read, so nobody opens to a flood.
+	if err := runOnce(db, "2026-11-04-everything-read", func() error {
+		_, err := db.Exec(`
+			INSERT OR IGNORE INTO channel_reads (user_id, channel_id, read_seq)
+			SELECT sm.user_id, c.id, (SELECT COALESCE(MAX(seq), 0) FROM messages)
+			FROM server_members sm JOIN channels c ON c.server_id = sm.server_id`)
+		return err
+	}); err != nil {
+		return err
 	}
 
 	// Voice permissions (2026-10-09): Connect and Speak were never checked,

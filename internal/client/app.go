@@ -264,6 +264,11 @@ type App struct {
 	// Unread tracking (client-side only)
 	unreadCounts  map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → count
 	mentionCounts map[uuid.UUID]map[uuid.UUID]int // clientServerID → channelID → @mention count
+	// Read positions kept by the server (reads.go): the open channel's
+	// "new" divider, and when each channel was last marked read.
+	divider     *newDivider
+	readSentAt  map[uuid.UUID]time.Time
+	readPending map[uuid.UUID]bool
 	mutedChannels map[uuid.UUID]bool              // channelID → muted
 	mutedServers  map[uuid.UUID]bool              // clientServerID → muted
 
@@ -779,16 +784,22 @@ func (a *App) saveAudioConfig() {
 	_ = a.configMgr.SaveAppConfig(cfg)
 }
 
+// localDay is midnight of t's day here (Truncate would cut at UTC midnight).
+func localDay(t time.Time) time.Time {
+	t = t.Local()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+}
+
 // formatTimestamp formats a message timestamp according to the current display config.
 func (a *App) formatTimestamp(t time.Time) string {
+	t = t.Local() // times arrive in the server's zone
 	if a.uiConfig == nil {
 		return t.Format("01/02/06 15:04")
 	}
 	cfg := a.uiConfig.Display
 	if cfg.TimestampStyle == "relative" {
-		now := time.Now()
-		today := now.Truncate(24 * time.Hour)
-		msgDay := t.Truncate(24 * time.Hour)
+		today := localDay(time.Now())
+		msgDay := localDay(t)
 		var timePart string
 		if cfg.TimestampFormat == "12h" {
 			timePart = t.Format("3:04 PM")
@@ -798,7 +809,7 @@ func (a *App) formatTimestamp(t time.Time) string {
 		switch {
 		case msgDay.Equal(today):
 			return "Today at " + timePart
-		case msgDay.Equal(today.Add(-24 * time.Hour)):
+		case msgDay.Equal(today.AddDate(0, 0, -1)):
 			return "Yesterday at " + timePart
 		default:
 			return t.Format("Jan 2") + " at " + timePart
@@ -1073,6 +1084,9 @@ func (a *App) Init() tea.Cmd {
 	a.fx.stageAt = time.Now()
 	a.startLoading()
 	a.lastInput = time.Now()
+	if a.audioConfig.KeepOutputOpen && sfxAvailable {
+		a.soundOut()
+	}
 	if cal := a.calendar(); cal != "" {
 		a.findEgg(cal)
 	}
@@ -1292,6 +1306,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case serverReleaseMsg:
 		a.handleServerRelease(m)
+		return a, nil
+	case channelReadFlushMsg:
+		a.flushChannelRead(m)
 		return a, nil
 	case installerReadyMsg:
 		return a, a.runInstaller(m)
@@ -2271,6 +2288,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	}
 	if a.view == ViewMain && msg.String() == "alt+t" {
 		a.openThreadList()
+		return nil
+	}
+	if a.view == ViewMain && msg.String() == "alt+u" && a.currentChannel != nil && !a.isRemotePaneChannel(a.currentChannel) {
+		a.jumpToUnread() // reads.go
 		return nil
 	}
 
@@ -4963,9 +4984,13 @@ func (a *App) selectChannel(index int) {
 	// Clear typing indicators from the previous channel
 	a.clearTypingState()
 
-	// Clear unread counts for this channel
+	// Clear unread counts for this channel, after placing its "new"
+	// divider and telling the server it's read (reads.go).
 	if a.currentClientServer != nil && a.currentChannel != nil {
 		serverID := a.currentClientServer.ID
+		if a.currentChannel.Type != models.ChannelTypeCategory && a.activeConn != nil {
+			a.openedChannel(serverID, a.activeConn, a.currentChannel.ID)
+		}
 		if a.unreadCounts[serverID] != nil {
 			delete(a.unreadCounts[serverID], a.currentChannel.ID)
 		}
@@ -5078,6 +5103,9 @@ func (a *App) updateChatContent() {
 
 	// Get messages for current channel, with expanded threads' replies (threads.go)
 	messages := a.visibleMessages()
+	if a.divider != nil {
+		a.divider.line = -1 // found again below
+	}
 	a.threadBorderLines = make(map[int]uuid.UUID)
 
 	// Get viewport width for full-width backgrounds
@@ -5152,11 +5180,10 @@ func (a *App) updateChatContent() {
 		// Date separator: render a ──── Day ──── divider between days when enabled
 		// (not between a thread's replies, which sit inside its box)
 		if a.uiConfig != nil && a.uiConfig.Display.ShowDateSeps && !isSystemMsg && msg.ThreadID == nil {
-			msgDate := msg.CreatedAt.Truncate(24 * time.Hour)
+			msgDate := localDay(msg.CreatedAt)
 			if !lastRenderedDate.IsZero() && !msgDate.Equal(lastRenderedDate) {
-				now := time.Now()
-				today := now.Truncate(24 * time.Hour)
-				yesterday := today.Add(-24 * time.Hour)
+				today := localDay(time.Now())
+				yesterday := today.AddDate(0, 0, -1)
 				var dateLabel string
 				switch {
 				case msgDate.Equal(today):
@@ -5164,7 +5191,7 @@ func (a *App) updateChatContent() {
 				case msgDate.Equal(yesterday):
 					dateLabel = "Yesterday"
 				default:
-					dateLabel = msg.CreatedAt.Format("January 2, 2006")
+					dateLabel = msg.CreatedAt.Local().Format("January 2, 2006")
 				}
 				barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Comment))
 				barLen := (viewportWidth - len([]rune(dateLabel)) - 4) / 2
@@ -5177,6 +5204,14 @@ func (a *App) updateChatContent() {
 				content.WriteString("\n")
 			}
 			lastRenderedDate = msgDate
+		}
+
+		// The "new" divider above the first message that was unread when
+		// the channel opened (reads.go).
+		if msg.ThreadID == nil && a.dividerAbove(messages, i) {
+			a.divider.line = runningLines + strings.Count(content.String()[msgStartLen:], "\n")
+			content.WriteString(a.dividerLine(viewportWidth) + "\n")
+			showHeader = true
 		}
 
 		// A message in a thread box is drawn 4 columns narrower, then boxed
@@ -6572,6 +6607,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		for _, vs := range payload.VoiceStates {
 			a.onVoiceJoin(vs.UserID, "", false) // already in voice: noted quietly
 		}
+		a.seedUnreads(serverID, sc, payload.Unreads) // reads.go
 
 		log.Printf("Received SERVER_CREATE for %s: %d channels, %d members, %d roles",
 			payload.Server.Name, len(payload.Channels), len(displays), len(payload.Roles))
@@ -6658,6 +6694,13 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 		}
 		if payload.Message.MentionEveryone {
 			hasMention = true
+		}
+		if sc.User != nil {
+			for _, id := range payload.Message.Mentions { // the server resolves "@name" (v0.1.9+)
+				if id == sc.User.ID {
+					hasMention = true
+				}
+			}
 		}
 		if isThreadReply && !display.IsOwn {
 			a.noteThreadReply(sc, display, followsThread || hasMention) // the optional in-channel line (threads_find.go)
@@ -6747,6 +6790,9 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 				// whole window for a frame on every message (a black flash
 				// each time anyone posted); repaintAll rewrites every line
 				// in place instead.
+				if !display.IsOwn {
+					return tea.Batch(repaintAll, a.markRead(serverID, sc, payload.Message.ChannelID)) // seen as it arrives (reads.go)
+				}
 				return repaintAll
 			} else if a.currentChannel != nil {
 				log.Printf("Message not for current channel: msg=%s, current=%s",
@@ -7675,6 +7721,12 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 
 	case protocol.EventServerStatus, protocol.EventServerAdminResult:
 		a.handleServerAdminEvent(sc, msg)
+
+	case protocol.EventChannelRead:
+		var p protocol.ChannelReadPayload
+		if err := json.Unmarshal(msg.Data, &p); err == nil {
+			a.channelReadElsewhere(serverID, sc, p)
+		}
 
 	case protocol.EventPluginManageResult:
 		var result protocol.PluginManageResult

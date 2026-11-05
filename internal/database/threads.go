@@ -66,7 +66,7 @@ func (db *DB) GetThreadStats(threadIDs []uuid.UUID, userID uuid.UUID) (map[uuid.
 		SELECT thread_id, author_id, COUNT(*)
 		FROM messages WHERE thread_id IN (%s) AND %s
 		GROUP BY thread_id, author_id
-		ORDER BY MIN(created_at)`, in, visible), args...)
+		ORDER BY MIN(seq)`, in, visible), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (db *DB) GetThreadStats(threadIDs []uuid.UUID, userID uuid.UUID) (map[uuid.
 	rows, err = db.Query(fmt.Sprintf(`
 		SELECT thread_id, id, created_at FROM messages m
 		WHERE thread_id IN (%s) AND %s
-		ORDER BY created_at DESC`, in, visible), args...)
+		ORDER BY seq DESC`, in, visible), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +129,7 @@ func (db *DB) GetThreadMessages(threadID uuid.UUID, limit int, userID uuid.UUID)
 		SELECT id, channel_id, author_id, content, type, created_at, edited_at, is_pinned, is_whisper, recipient_id, reply_to_id
 		FROM messages
 		WHERE thread_id = ? AND `+liveMessage+` AND (is_whisper = 0 OR author_id = ? OR recipient_id = ?)
-		ORDER BY created_at DESC
+		ORDER BY seq DESC
 		LIMIT ?`, threadID.String(), userID.String(), userID.String(), limit)
 	if err != nil {
 		return nil, err

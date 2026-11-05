@@ -71,6 +71,10 @@ Pick a message with **↑**/**↓**, then:
 
 A thread keeps a side conversation in one box where it started. **Alt+M**, pick a message, **T**, and type; **Esc** stops replying in it. **Alt+T** (or ` + "`/threads`" + `) lists the channel's threads.
 
+### What's new
+
+Unread counts are kept by the server, so they're right after a restart and on every device you sign in on. A channel you open with new messages shows a **── new ──** line above the first one until you leave it; **Alt+U** jumps back to it.
+
 ### Whispers and files
 
 - ` + "`/w @user <message>`" + ` — a private message that isn't stored

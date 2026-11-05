@@ -436,6 +436,11 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 			c.handlers.HandleServerAdmin(c, msg)
 		})
 
+	case protocol.OpChannelRead:
+		c.requireAuth(func() {
+			c.handlers.HandleChannelRead(c, msg)
+		})
+
 	case protocol.OpUpdateChannelOverwrite:
 		c.requireAuth(func() {
 			c.handlers.HandleUpdateChannelOverwrite(c, msg)
@@ -565,6 +570,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 			Roles:       roles,
 			Users:       users,
 			VoiceStates: voiceStates,
+			Unreads:     c.handlers.unreadsFor(c.UserID, server.ID),
 		}
 
 		// Use sequence number starting from 1

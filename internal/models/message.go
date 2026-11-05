@@ -43,6 +43,10 @@ type Message struct {
 	// Deleted marks a thread's first message that was deleted while its
 	// replies remain: it's kept in history, empty, to head the thread.
 	Deleted bool `json:"deleted,omitempty"`
+	// Seq numbers messages in the order the server received them (across
+	// every channel); a read position is the last Seq read. 0 from servers
+	// before v0.1.9.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // Attachment represents a file shared peer-to-peer alongside a message. The

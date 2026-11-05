@@ -462,6 +462,11 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		}
 	}
 
+	// Who it mentions by "@name", for their unread mention counts (reads.go).
+	if err == nil {
+		h.resolveMentions(newMsg, channel.ServerID)
+	}
+
 	// Save to database
 	if err := h.db.CreateMessage(newMsg); err != nil {
 		MsgLog.Error("Failed to save message", "message_id", newMsg.ID, "channel_id", payload.ChannelID, "error", err)

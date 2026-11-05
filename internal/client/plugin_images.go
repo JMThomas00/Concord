@@ -755,10 +755,7 @@ func (a *App) playPluginSound(sc *ServerConnection, pluginID string, p protocol.
 		gain = 1
 	}
 	gain *= a.audioConfig.PluginSoundVolume
-	if a.sfx == nil {
-		a.sfx = newSFXPlayer(a.audioConfig.OutputDevice)
-	}
-	store, player := a.assets(), a.sfx
+	store, player := a.assets(), a.soundOut()
 	go func() {
 		store.mu.Lock()
 		pcm, failed := store.sounds[f.SHA256], store.failed[f.SHA256]

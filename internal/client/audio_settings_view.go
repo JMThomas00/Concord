@@ -188,16 +188,18 @@ func (a *App) renderAudioContent(width, height int) string {
 	// Field 11: automatic levelling (autoLevel, voice_dsp.go)
 	writeToggle(11, "Automatic Levelling (evens out quiet and loud talkers)", !cfg.AutoLevelOff)
 
-	// Plugin sounds: games and other plugins can play short sounds (moves,
-	// chimes) on this computer. Voice isn't affected.
+	// Sounds: games and other plugins can play short sounds (moves,
+	// chimes) on this computer, and notification sounds play through the
+	// same output. Voice isn't affected.
 	middle.writeLine(a.renderSeparator(layout.interiorWidth))
-	middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).Render("  Plugin Sounds"))
+	middle.writeLine(lipgloss.NewStyle().Foreground(lipgloss.Color(a.theme.Colors.Cyan)).Bold(true).Render("  Sounds"))
 	if !sfxAvailable {
 		middle.writeLine(dimStyle.Render("  This build has no audio, so plugins can't play sounds."))
 	}
 	middle.writeBlank()
 	writeToggle(12, "Play Plugin Sounds", !cfg.PluginSoundsMuted)
 	writeField(13, "Plugin Sound Volume", progressBar(13, cfg.PluginSoundVolume, 1.0, 20))
+	writeToggle(14, "Keep Sound Output Open (stays listed in mixers)", cfg.KeepOutputOpen)
 
 	middle.pad()
 
@@ -255,7 +257,7 @@ func vadThresholdFromSensitivity(sens float64) float64 {
 }
 
 // audioFieldCount is the number of fields on the Audio page.
-const audioFieldCount = 14
+const audioFieldCount = 15
 
 // isAudioSliderField reports whether field idx is a continuous-value field
 // that uses the ←/→ slider mode (as opposed to a toggle or device picker).
@@ -344,6 +346,11 @@ func (a *App) handleAudioFieldActivate(s *SettingsState) {
 		cfg.AutoLevelOff = !cfg.AutoLevelOff
 	case 12: // Plugin Sounds toggle
 		cfg.PluginSoundsMuted = !cfg.PluginSoundsMuted
+	case 14: // Keep Sound Output Open
+		cfg.KeepOutputOpen = !cfg.KeepOutputOpen
+		if err := a.soundOut().SetKeepOpen(cfg.KeepOutputOpen); err != nil {
+			a.statusMessage = "Couldn't open the sound output: " + err.Error()
+		}
 	case 10: // Codec Preset: cycle low → medium → high → ultra → low
 		switch cfg.CodecPreset {
 		case "low":
@@ -440,6 +447,12 @@ func (a *App) handleAudioPickerSelect(s *SettingsState) {
 	} else {
 		a.audioConfig.OutputDevice = chosen.ID
 		a.audioConfig.OutputDeviceName = chosen.Name
+		if a.sfx != nil { // sounds move to the new device; the old one closes when idle
+			old := a.sfx
+			a.sfx = nil
+			go old.SetKeepOpen(false)
+			a.soundOut()
+		}
 	}
 	a.saveAudioConfig()
 	// Apply new device to a running engine if present.

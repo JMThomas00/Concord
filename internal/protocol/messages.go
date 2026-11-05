@@ -117,6 +117,12 @@ const (
 	// before v0.1.8 don't know it.
 	OpServerAdmin OpCode = 66
 
+	// OpChannelRead (67): C→S. "I've read this channel" (ChannelReadRequest):
+	// the server moves the read position to the channel's newest message
+	// and sends CHANNEL_READ (ChannelReadPayload) to every connection of
+	// that account. Servers before v0.1.9 don't know it.
+	OpChannelRead OpCode = 67
+
 	// Server -> Client operations
 	OpDispatch       OpCode = 10 // Event dispatch (most messages)
 	OpHeartbeatAck   OpCode = 11 // Heartbeat acknowledgment
@@ -211,6 +217,7 @@ const (
 	EventThreadUpdate         EventType = "THREAD_UPDATE"          // S→C: a thread's summary changed (a reply, a deletion, a read)
 	EventServerStatus         EventType = "SERVER_STATUS"          // S→C: health and how the server runs, answering OpServerAdmin
 	EventServerAdminResult    EventType = "SERVER_ADMIN_RESULT"    // S→C: how a backup or restart went
+	EventChannelRead          EventType = "CHANNEL_READ"           // S→C: your read position in a channel moved (any of your devices)
 )
 
 // Message represents a WebSocket message envelope
@@ -563,6 +570,28 @@ type ServerCreatePayload struct {
 	Roles       []*models.Role         `json:"roles"`
 	Users       []*models.User         `json:"users"`
 	VoiceStates []*models.VoiceState   `json:"voice_states"`
+	// Unreads: the receiver's read position and unread counts per channel
+	// (servers v0.1.9+; reads.go).
+	Unreads []ChannelUnread `json:"unreads,omitempty"`
+}
+
+// ChannelUnread is one channel's unread state for the receiver.
+type ChannelUnread struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ReadSeq   int64     `json:"read_seq"` // the Seq of the last message read
+	Unread    int       `json:"unread,omitempty"`
+	Mentions  int       `json:"mentions,omitempty"`
+}
+
+// ChannelReadRequest marks a channel read (OpChannelRead).
+type ChannelReadRequest struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+}
+
+// ChannelReadPayload is CHANNEL_READ: where your read position is now.
+type ChannelReadPayload struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	ReadSeq   int64     `json:"read_seq"`
 }
 
 // --- Event Payloads ---
