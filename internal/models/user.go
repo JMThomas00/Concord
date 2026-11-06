@@ -23,7 +23,7 @@ type User struct {
 	Username     string     `json:"username"`
 	Discriminator string    `json:"discriminator"` // 4-digit number that tells apart users with the same name
 	DisplayName  string     `json:"display_name,omitempty"`
-	Email        string     `json:"email,omitempty"`
+	Email        string     `json:"-"` // never sent: other members would see it (security audit 2026-11-05, finding 19)
 	PasswordHash string     `json:"-"` // Never serialize
 	AvatarHash   string     `json:"avatar_hash,omitempty"`
 	Status       UserStatus `json:"status"`
