@@ -17,7 +17,7 @@ If your safety depends on this, read all of it. Concord hasn't had an independen
 |---|---|---|
 | **The server's admin** | Your messages, your account's email, when you're online, your IP address | Your messages, your email, when you're online; **not** your IP address |
 | **Someone watching the network** (your ISP, the café's Wi-Fi, a government) | On a normal server without https: your messages. Always: that you connect to that server | That you use Tor (with a bridge, not even that). Not which server, not your messages |
-| **Other members** | What you post, your name, when you're online. In a call or a file transfer: your IP address | What you post, your name, when you're online. Not your IP address: over Tor, voice is off and files go through the server |
+| **Other members** | What you post, your name, when you're online; never your email address. The people in a call with you, and anyone who downloads a file you shared: your IP address | What you post, your name, when you're online. Not your IP address: over Tor, voice is off and files go through the server |
 | **Someone who learns the server's .onion address** | — | Nothing, without the access key from an invite |
 | **Someone who takes the server's disk or a backup** | With database encryption: nothing from the database, unless the key was taken too (below) | The same |
 
@@ -61,12 +61,12 @@ If your safety depends on this, read all of it. Concord hasn't had an independen
 ## Things nothing in Concord protects
 
 - **What people do with what you send.** Members can copy, screenshot or forward anything.
-- **Your own computer.** `~/.concord` holds your sign-in tokens and the access keys for Tor servers, unencrypted. Anyone who can open it can sign in as you and find those servers. Lock your computer and use disk encryption.
+- **Your own computer.** `~/.concord` holds your sign-in tokens and the access keys for Tor servers, unencrypted. Concord keeps that folder private to your account, so other accounts on the computer can't open it, but anyone who uses your account, or has administrator access, can sign in as you and find those servers. Lock your computer and use disk encryption.
 - **Plugins.** A plugin is a program the server runs. It sees what's posted in its channels, and some send it elsewhere: an AI plugin sends messages to its AI provider.
 - **Email.** Verification codes and emailed invites go through the email providers on both ends. An emailed Tor invite carries the server's access key.
 - **The Grapevine.** A listed server is public by choice, and a hub sees the IP address of anyone who browses it or joins from a listing (unless they use Tor for everything).
 - **Normal servers without https.** On a plain `address:port`, messages cross the network unencrypted. A server reached through https (like the official one, behind Cloudflare) is encrypted to that service, which can read the traffic at its end.
-- **Voice and file transfers without Tor** are encrypted, but connect your computer to the other person's, so each sees the other's IP address. A STUN server (Google's by default) also sees your address when a call starts.
+- **Voice and file transfers without Tor** are encrypted, but connect your computer to the other person's, so each sees the other's IP address. Only people in the same call can connect to you for voice, and only members who can see the channel can ask for a file you shared. A STUN server (Google's by default) also sees your address when a call starts.
 - **Messages after they're deleted.** Deleting hides a message from members; the server keeps it until its message retention (Server Settings › Messages) removes it, and a backup taken earlier still has it.
 
 ## Still to come
