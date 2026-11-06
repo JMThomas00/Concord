@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -115,7 +114,7 @@ func fetchLatestRelease() tea.Msg {
 			PublishedAt time.Time `json:"published_at"`
 			Body        string    `json:"body"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		if err := decodeClean(resp.Body, &rel); err != nil {
 			return updateCheckedMsg{err: "Couldn't read GitHub's answer"}
 		}
 		return updateCheckedMsg{latest: rel.TagName, url: rel.HTMLURL, date: rel.PublishedAt, notes: rel.Body}

@@ -124,6 +124,8 @@ func (c *Client) ReadPump() {
 			c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid message format")
 			continue
 		}
+		// Nothing people type keeps terminal escapes (security audit 3).
+		msg.StripControl()
 
 		c.handleMessage(&msg)
 	}

@@ -670,6 +670,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Username must be 2-32 characters", http.StatusBadRequest)
 		return
 	}
+	if protocol.HasControl(req.Username) || strings.ContainsAny(req.Username, "\n\t") {
+		http.Error(w, "Usernames can't contain control characters", http.StatusBadRequest)
+		return
+	}
 
 	if len(req.Password) < 8 {
 		http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)

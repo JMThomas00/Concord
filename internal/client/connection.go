@@ -324,6 +324,9 @@ func (c *Connection) readPump() {
 			log.Printf("Failed to parse message: %v", err)
 			continue
 		}
+		// No terminal escapes from other people, whatever the server sends
+		// (security audit 3).
+		msg.StripControl()
 		
 		c.handleMessage(&msg)
 	}
