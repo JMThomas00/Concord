@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -473,7 +474,7 @@ func (h *Hub) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	}
 	auth := r.Header.Get("Authorization")
 	token, ok := strings.CutPrefix(auth, "Bearer ")
-	if !ok || token != h.config.AdminToken {
+	if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(h.config.AdminToken)) != 1 { // constant time (security audit 14)
 		writeError(w, http.StatusUnauthorized, "invalid admin token")
 		return false
 	}
