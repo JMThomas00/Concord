@@ -147,12 +147,27 @@ func TestConvertDatabase(t *testing.T) {
 		t.Error("not unencrypted after decrypting")
 	}
 
-	// A key file already where a new one would go: refused, not mixed up.
+	// A restored backup: the database is unencrypted again, and the
+	// server's key is still beside it. Encrypting reuses that key (finding
+	// 11: this used to refuse until the key was moved away).
+	keyPath := filepath.Join(filepath.Dir(cfg), DefaultDatabaseKeyName)
+	keyBefore, _ := os.ReadFile(keyPath)
+	if _, err := ConvertDatabase(c, cfg, true, nil); err != nil {
+		t.Fatalf("encrypting a restored database with its key in place: %v", err)
+	}
+	if keyAfter, _ := os.ReadFile(keyPath); !bytes.Equal(keyBefore, keyAfter) {
+		t.Error("the key file changed")
+	}
+	if _, info, err := ResolveDatabaseKey(c, cfg, nil); err != nil || !info.Encrypted {
+		t.Fatalf("doesn't open with the same key: %v", err)
+	}
+
+	// Something that isn't a key where the key would go: refused.
 	e, ecfg := dbKeyConfig(t)
 	pdb, _ := database.New(e.DatabasePath)
 	pdb.Close()
 	os.WriteFile(filepath.Join(filepath.Dir(ecfg), DefaultDatabaseKeyName), []byte("old"), 0o600)
-	if _, err := ConvertDatabase(e, ecfg, true, nil); err == nil || !strings.Contains(err.Error(), "already") {
-		t.Errorf("over an old key: %v", err)
+	if _, err := ConvertDatabase(e, ecfg, true, nil); err == nil {
+		t.Error("encrypted with a file that isn't a key")
 	}
 }

@@ -107,6 +107,13 @@ func ResolveDatabaseKey(config *Config, configPath string, ask func(prompt strin
 		return database.Key{}, DatabaseKeyInfo{}, err
 	}
 	if plain {
+		if config.Database.encryptNew() {
+			// Encryption is on, but this database isn't: made before it, or
+			// a restored backup (finding 11).
+			if Logger != nil {
+				Logger.Warn("The database isn't encrypted. To encrypt it, stop the server and run concord-server --encrypt-database.", "file", config.DatabasePath)
+			}
+		}
 		return database.Key{}, DatabaseKeyInfo{}, nil
 	}
 	if !exists && !config.Database.encryptNew() {
@@ -216,17 +223,26 @@ func ConvertDatabase(config *Config, configPath string, encrypt bool, ask func(p
 	if encrypt {
 		c := *config
 		c.Database.Encrypt = nil
-		if !c.Database.AskPassphrase {
-			if _, err := os.Stat(databaseKeyPath(&c, configPath)); err == nil {
-				return "", fmt.Errorf("a key file is already at %s: move it away, or set [database] key_file, so a new key isn't mixed up with an old one", databaseKeyPath(&c, configPath))
+		keyPath := databaseKeyPath(&c, configPath)
+		if _, statErr := os.Stat(keyPath); statErr == nil && !c.Database.AskPassphrase {
+			// The server's own key is already there: a backup restored
+			// over an encrypted database comes back unencrypted (backups
+			// hold a plain snapshot, encrypted as a whole), and this used to
+			// refuse until the key was moved (security audit 2026-11-05,
+			// finding 11). Encrypt with it, so it stays the one key.
+			raw, err := readDatabaseKey(keyPath)
+			if err != nil {
+				return "", err
 			}
-		}
-		// Resolve as if the database were new: makes the key (or asks for
-		// the passphrase twice).
-		c.DatabasePath = path + ".not-there"
-		to, info, err = ResolveDatabaseKey(&c, configPath, ask)
-		if err != nil {
-			return "", err
+			to, info = database.Key{Raw: raw}, DatabaseKeyInfo{Encrypted: true, KeyFile: keyPath}
+		} else {
+			// Resolve as if the database were new: makes the key (or asks
+			// for the passphrase twice).
+			c.DatabasePath = path + ".not-there"
+			to, info, err = ResolveDatabaseKey(&c, configPath, ask)
+			if err != nil {
+				return "", err
+			}
 		}
 	} else if from, _, err = ResolveDatabaseKey(config, configPath, ask); err != nil {
 		return "", err
