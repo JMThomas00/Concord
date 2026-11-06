@@ -21,7 +21,6 @@ var testOnionHost = strings.Repeat("a", 54) + "id.onion"
 func fakeOnion(t *testing.T, srv *Server, cfg TorConfig) *onionService {
 	t.Helper()
 	cfg.Enabled = true
-	srv.config.Tor = cfg
 	o := &onionService{cfg: cfg, port: 8090, dir: filepath.Join(t.TempDir(), "tor")}
 	if err := os.MkdirAll(o.hsDir(), 0o700); err != nil {
 		t.Fatal(err)

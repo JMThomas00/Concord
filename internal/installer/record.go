@@ -53,10 +53,10 @@ func (r *Record) Save(home string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(RecordPath(home)), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(RecordPath(home)), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(RecordPath(home), b, 0o644)
+	return os.WriteFile(RecordPath(home), b, 0o600)
 }
 
 // Installed lists the recorded components, in install order.

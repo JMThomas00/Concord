@@ -288,6 +288,10 @@ func extractZip(archivePath, destDir string) error {
 		return fmt.Errorf("failed to create plugin folder: %w", err)
 	}
 
+	if len(r.File) > maxArchiveFiles {
+		return fmt.Errorf("the archive holds %d files; a plugin may have at most %d", len(r.File), maxArchiveFiles)
+	}
+	budget := maxUnpackedBytes
 	for _, f := range r.File {
 		targetPath := filepath.Join(destDir, f.Name)
 		if !strings.HasPrefix(targetPath, filepath.Clean(destDir)+string(os.PathSeparator)) && targetPath != filepath.Clean(destDir) {
@@ -305,31 +309,47 @@ func extractZip(archivePath, destDir string) error {
 			return fmt.Errorf("failed to create parent folder for %q: %w", f.Name, err)
 		}
 
-		if err := extractZipFile(f, targetPath); err != nil {
+		n, err := extractZipFile(f, targetPath, budget)
+		if err != nil {
 			return err
 		}
+		budget -= n
 	}
 
 	return nil
 }
 
-func extractZipFile(f *zip.File, targetPath string) error {
+// Limits on what an archive unpacks to (security audit 2026-11-05, finding
+// 15): a small zip can expand to fill the disk. Counted as written, not
+// from the archive's own headers.
+var (
+	maxUnpackedBytes int64 = 1 << 30 // 1 GiB (a variable for tests)
+	maxArchiveFiles        = 10000
+)
+
+// extractZipFile writes one entry, at most budget bytes, and returns how
+// many it wrote.
+func extractZipFile(f *zip.File, targetPath string, budget int64) (int64, error) {
 	src, err := f.Open()
 	if err != nil {
-		return fmt.Errorf("failed to open archive entry %q: %w", f.Name, err)
+		return 0, fmt.Errorf("failed to open archive entry %q: %w", f.Name, err)
 	}
 	defer src.Close()
 
 	dst, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode().Perm()|0o600)
 	if err != nil {
-		return fmt.Errorf("failed to write %q: %w", f.Name, err)
+		return 0, fmt.Errorf("failed to write %q: %w", f.Name, err)
 	}
 	defer dst.Close()
 
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("failed to write %q: %w", f.Name, err)
+	n, err := io.Copy(dst, io.LimitReader(src, budget+1))
+	if err != nil {
+		return n, fmt.Errorf("failed to write %q: %w", f.Name, err)
 	}
-	return nil
+	if n > budget {
+		return n, fmt.Errorf("the archive unpacks to more than %d MB; a plugin may be at most that", maxUnpackedBytes>>20)
+	}
+	return n, nil
 }
 
 // unwrapSingleFolder handles the common archive layout where everything

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -349,4 +350,36 @@ func (tc *testFileClient) reply(sig FileTransferSignalOut) {
 	if wsMsg, err := protocol.NewMessage(protocol.OpFileTransferSignal, payload); err == nil {
 		_ = tc.conn.Send(wsMsg)
 	}
+}
+
+// share posts a message in channelID carrying one attachment, as /attach
+// does, waits for the server to accept it, and registers the file. The
+// server checks download requests against the stored attachment (security
+// audit 16), so a test can't just make up an ID.
+func (tc *testFileClient) share(channelID uuid.UUID, path string) uuid.UUID {
+	tc.t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		tc.t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	att := uuid.New()
+	msg, _ := protocol.NewMessage(protocol.OpSendMessage, &protocol.SendMessagePayload{
+		ChannelID: channelID, Content: "a file", Nonce: uuid.New().String(),
+		Attachments: []models.Attachment{{ID: att, Filename: filepath.Base(path), Size: int64(len(content)), ContentHash: hex.EncodeToString(sum[:]), SenderID: tc.userID}},
+	})
+	if len(content) == 0 { // the server wants a size; an empty file is shared as one byte's manifest
+		msg, _ = protocol.NewMessage(protocol.OpSendMessage, &protocol.SendMessagePayload{
+			ChannelID: channelID, Content: "a file", Nonce: uuid.New().String(),
+			Attachments: []models.Attachment{{ID: att, Filename: filepath.Base(path), Size: 1, ContentHash: hex.EncodeToString(sum[:]), SenderID: tc.userID}},
+		})
+	}
+	if err := tc.conn.Send(msg); err != nil {
+		tc.t.Fatal(err)
+	}
+	tc.waitForDispatch(5*time.Second, func(m *protocol.Message) bool {
+		return m.Type == protocol.EventMessageCreate && strings.Contains(string(m.Data), att.String())
+	})
+	tc.engine.RegisterSharedFile(att, path)
+	return att
 }

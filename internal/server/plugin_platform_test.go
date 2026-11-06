@@ -531,7 +531,7 @@ func TestChannelDeleteReachesOwningPlugin(t *testing.T) {
 				t.Fatalf("bad delete payload: %v", err)
 			}
 			if p.Type != models.ChannelTypePlugin {
-				t.Errorf("delete for %s reported type %q, want plugin", p.ChannelID, p.Type)
+				t.Errorf("delete for %s reported type %v, want plugin", p.ChannelID, p.Type)
 			}
 			delete(want, p.ChannelID)
 		case <-deadline:

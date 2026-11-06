@@ -206,7 +206,7 @@ func AddClientServers(dir string, servers []ClientServer) (int, error) {
 	if _, ok := doc["version"]; !ok {
 		doc["version"] = 1
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return 0, err
 	}
 	b, err := json.MarshalIndent(doc, "", "  ")
@@ -214,7 +214,7 @@ func AddClientServers(dir string, servers []ClientServer) (int, error) {
 		return 0, err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return 0, err
 	}
 	return added, os.Rename(tmp, path)
@@ -273,7 +273,7 @@ func SetClientNetwork(dir, mode string) error {
 	if _, ok := doc["version"]; !ok {
 		doc["version"] = 1
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(doc, "", "  ")

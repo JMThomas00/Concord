@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/concord-chat/concord/internal/protocol"
 )
 
 // GrapevineHTTPClient makes calls to a Grapevine hub's REST API.
@@ -48,7 +51,7 @@ func (g *GrapevineHTTPClient) ListServers(category, query string) ([]HubServerEn
 	}
 
 	var servers []HubServerEntry
-	if err := json.NewDecoder(resp.Body).Decode(&servers); err != nil {
+	if err := decodeClean(resp.Body, &servers); err != nil {
 		return nil, fmt.Errorf("invalid response: %w", err)
 	}
 	return servers, nil
@@ -63,7 +66,7 @@ func (g *GrapevineHTTPClient) ListHubs() ([]HubEntry, error) {
 	defer resp.Body.Close()
 
 	var hubs []HubEntry
-	if err := json.NewDecoder(resp.Body).Decode(&hubs); err != nil {
+	if err := decodeClean(resp.Body, &hubs); err != nil {
 		return nil, err
 	}
 	return hubs, nil
@@ -82,7 +85,7 @@ func (g *GrapevineHTTPClient) CheckHealth() (string, error) {
 	var body struct {
 		HubName string `json:"hub_name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := decodeClean(resp.Body, &body); err != nil {
 		return "", fmt.Errorf("not a Grapevine hub")
 	}
 	return body.HubName, nil
@@ -109,7 +112,7 @@ func (g *GrapevineHTTPClient) RequestJoin(serverID string) (*HubJoinResponse, er
 	}
 
 	var jr HubJoinResponse
-	if err := json.NewDecoder(resp.Body).Decode(&jr); err != nil {
+	if err := decodeClean(resp.Body, &jr); err != nil {
 		return nil, fmt.Errorf("invalid response: %w", err)
 	}
 	return &jr, nil
@@ -179,4 +182,14 @@ func grapevineScheme(port int) string {
 		return "https"
 	}
 	return "http"
+}
+
+// decodeClean reads a JSON answer from a hub, server or GitHub without the
+// control characters a listing or note could carry (security audit 3).
+func decodeClean(r io.Reader, out interface{}) error {
+	raw, err := io.ReadAll(io.LimitReader(r, 8<<20))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(protocol.StripControlJSON(raw), out)
 }

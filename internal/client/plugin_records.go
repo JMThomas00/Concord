@@ -237,7 +237,7 @@ func getAPI(serverAddr, path, token string, out interface{}) error {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return apiErrorFrom(resp.StatusCode, raw)
 	}
-	return json.Unmarshal(raw, out)
+	return json.Unmarshal(protocol.StripControlJSON(raw), out)
 }
 
 // --- the tabs on Settings > About > Achievements -------------------------

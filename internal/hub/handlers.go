@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -403,7 +404,13 @@ func (h *Hub) signalServer(srv *RegisteredServer, token string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Grapevine-Sig", sig)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	// Only public addresses, unless this hub serves a private network: the
+	// host and port are whatever the registrant said (security audit
+	// 2026-11-05, finding 6).
+	client := publicClient(5 * time.Second)
+	if h.config.AllowPrivateServers {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -467,7 +474,7 @@ func (h *Hub) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	}
 	auth := r.Header.Get("Authorization")
 	token, ok := strings.CutPrefix(auth, "Bearer ")
-	if !ok || token != h.config.AdminToken {
+	if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(h.config.AdminToken)) != 1 { // constant time (security audit 14)
 		writeError(w, http.StatusUnauthorized, "invalid admin token")
 		return false
 	}

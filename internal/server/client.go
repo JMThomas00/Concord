@@ -59,6 +59,12 @@ type Client struct {
 	IsPlugin bool
 	PluginID string
 
+	// identified is set once READY is sent; a connection that hasn't
+	// identified within identifyWithin is closed (ws_limits.go).
+	identified atomic.Bool
+	// limiter is this connection's rate of operations (ws_limits.go).
+	limiter opLimiter
+
 	// Server memberships
 	ServerIDs []uuid.UUID
 
@@ -104,6 +110,12 @@ func (c *Client) ReadPump() {
 
 	c.conn.SetReadLimit(maxMessageSize)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	idle := time.AfterFunc(identifyWithin, func() {
+		if !c.identified.Load() {
+			c.conn.Close()
+		}
+	})
+	defer idle.Stop()
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
@@ -122,6 +134,21 @@ func (c *Client) ReadPump() {
 		if err := json.Unmarshal(data, &msg); err != nil {
 			ClientLog.Error("Failed to parse message", "user_id", c.UserID, "error", err)
 			c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid message format")
+			continue
+		}
+		// Nothing people type keeps terminal escapes (security audit 3).
+		msg.StripControl()
+		// Too fast: drop it, and say so at most once a second (security
+		// audit 7).
+		rate := personRate
+		if c.IsPlugin {
+			rate = pluginRate
+		}
+		if now := time.Now(); !c.limiter.allow(msg.Op, rate, now) {
+			if now.Sub(c.limiter.warnedAt) >= time.Second {
+				c.limiter.warnedAt = now
+				c.sendError(protocol.ErrorCodeRateLimited, "You're sending too fast; slow down")
+			}
 			continue
 		}
 
@@ -549,6 +576,7 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 		ServerBuildTime:    c.handlers.buildTime,
 	}
 
+	c.identified.Store(true)
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
 	if err != nil {
 		ClientLog.Error("Failed to create ready message", "user_id", user.ID, "error", err)
@@ -665,6 +693,7 @@ func (c *Client) identifyAsPlugin(token string) {
 		ServerGitCommit: c.handlers.gitCommit,
 		ServerBuildTime: c.handlers.buildTime,
 	}
+	c.identified.Store(true)
 	readyMsg, err := protocol.NewMessage(protocol.OpReady, readyPayload)
 	if err != nil {
 		ClientLog.Error("Failed to create ready message for plugin", "plugin_id", pluginID, "error", err)

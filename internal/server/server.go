@@ -34,6 +34,9 @@ type Config struct {
 	ServerName     string               `toml:"server_name"`
 	DatabasePath   string               `toml:"database_path"`
 	MaxConnections int                  `toml:"max_connections"`
+	// MaxConnectionsPerIP caps connections from one address (0: 20; -1: no
+	// limit). Loopback is never capped (Tor, local proxies).
+	MaxConnectionsPerIP int `toml:"max_connections_per_ip,omitempty"`
 	Debug          bool                 `toml:"debug"`
 	MessagePruning MessagePruningConfig `toml:"message_pruning"`
 	TermsAccepted  bool                 `toml:"terms_accepted"` // Whether ToS has been accepted
@@ -115,6 +118,7 @@ type Server struct {
 	handlers   *Handlers
 	db         *database.DB
 	upgrader   websocket.Upgrader
+	conns      *connLimits // open WebSocket connections (ws_limits.go)
 	httpMu     sync.Mutex // guards httpServer: Run sets it, Shutdown (any goroutine) reads it
 	httpServer *http.Server
 
@@ -218,6 +222,7 @@ func New(config *Config) (*Server, error) {
 		stats:           stats,
 		grapevineTokens: newTokenStore(),
 		accountLimits:   newAccountLimiter(20, 20),
+		conns:           newConnLimits(config.MaxConnections, perIPLimit(config.MaxConnectionsPerIP)),
 		plugins:         pluginManager,
 		admin:           newAdminState(),
 		upgrader: websocket.Upgrader{
@@ -629,9 +634,20 @@ func (s *Server) performAutomaticPruning() {
 
 // handleWebSocket handles WebSocket upgrade requests
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	ip := remoteIP(r)
+	if s.conns != nil {
+		if !s.conns.acquire(ip) {
+			ClientLog.Warn("Too many connections", "remote_addr", ip)
+			http.Error(w, "Too many connections", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		ClientLog.Error("WebSocket upgrade failed", "error", err, "remote_addr", remoteIP(r))
+		ClientLog.Error("WebSocket upgrade failed", "error", err, "remote_addr", ip)
+		if s.conns != nil {
+			s.conns.release(ip)
+		}
 		return
 	}
 
@@ -642,7 +658,24 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Start client pumps
 	go client.WritePump()
-	go client.ReadPump()
+	go func() {
+		client.ReadPump()
+		if s.conns != nil {
+			s.conns.release(ip)
+		}
+	}()
+}
+
+// perIPLimit turns max_connections_per_ip into a limit: 0 is the default,
+// negative is none.
+func perIPLimit(n int) int {
+	switch {
+	case n == 0:
+		return defaultMaxPerIP
+	case n < 0:
+		return 0
+	}
+	return n
 }
 
 // handleRegister handles user registration
@@ -668,6 +701,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Validate input
 	if len(req.Username) < 2 || len(req.Username) > 32 {
 		http.Error(w, "Username must be 2-32 characters", http.StatusBadRequest)
+		return
+	}
+	if protocol.HasControl(req.Username) || strings.ContainsAny(req.Username, "\n\t") {
+		http.Error(w, "Usernames can't contain control characters", http.StatusBadRequest)
 		return
 	}
 

@@ -2,9 +2,11 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"log"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -4584,31 +4586,59 @@ func resolveLinkBrowserRowIndex(scrollOffset int, digit string, totalLinks int) 
 	return idx, true
 }
 
-// openURL opens a URL in the default browser
-func (a *App) openURL(url string) tea.Cmd {
+// openURL opens a link in the default browser. Only http and https, and
+// never through a shell: Windows used to run "cmd /c start <url>", so a link
+// like https://example.com/&calc ran calc (security audit 2026-11-05,
+// finding 2).
+func (a *App) openURL(raw string) tea.Cmd {
 	return func() tea.Msg {
-		var cmd *exec.Cmd
-
-		// Determine the command based on the OS
-		switch runtime.GOOS {
-		case "windows":
-			cmd = exec.Command("cmd", "/c", "start", url)
-		case "darwin":
-			cmd = exec.Command("open", url)
-		default: // linux, bsd, etc.
-			cmd = exec.Command("xdg-open", url)
+		link, err := safeLink(raw)
+		if err == nil {
+			argv := browserCommand(runtime.GOOS, link)
+			err = exec.Command(argv[0], argv[1:]...).Start()
 		}
-
-		// Execute the command (non-blocking)
-		if err := cmd.Start(); err != nil {
+		if err != nil {
 			a.statusMessage = fmt.Sprintf("Failed to open URL: %v", err)
 			a.statusError = true
 			return nil
 		}
-
 		a.statusMessage = "Opened link in browser"
 		a.statusError = false
 		return nil
+	}
+}
+
+// safeLink checks a link before handing it to the system: http or https
+// with a host, no control characters, re-encoded by net/url.
+func safeLink(raw string) (string, error) {
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return "", errors.New("the link has control characters in it")
+		}
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return "", errors.New("that isn't a valid link")
+	}
+	if s := strings.ToLower(u.Scheme); s != "http" && s != "https" {
+		return "", errors.New("only http and https links open")
+	}
+	if u.Host == "" || u.User != nil {
+		return "", errors.New("that isn't a valid link")
+	}
+	return u.String(), nil
+}
+
+// browserCommand is the program and arguments that open link on goos. None
+// goes through a shell.
+func browserCommand(goos, link string) []string {
+	switch goos {
+	case "windows":
+		return []string{"rundll32", "url.dll,FileProtocolHandler", link}
+	case "darwin":
+		return []string{"open", link}
+	default:
+		return []string{"xdg-open", link}
 	}
 }
 
@@ -7983,7 +8013,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("voice: VOICE_SIGNAL parse error: %v", err)
 			return nil
 		}
-		if a.voiceEngine != nil && sc == a.voiceConn {
+		if a.voiceEngine != nil && sc == a.voiceConn && voiceSignalAllowed(sc, sigPayload) {
 			a.voiceEngine.HandleSignal(sigPayload.SourceUserID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
 		}
 

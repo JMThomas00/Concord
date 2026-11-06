@@ -394,6 +394,10 @@ func (s *Server) handleFixRegistration(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "bad_username", "Username must be 2-32 characters")
 			return
 		}
+		if protocol.HasControl(name) || strings.ContainsAny(name, "\n\t") {
+			writeAPIError(w, http.StatusBadRequest, "bad_username", "Usernames can't contain control characters")
+			return
+		}
 		disc, err := s.db.RenameUser(user.ID, name)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "internal", "Couldn't change the username")
@@ -573,6 +577,10 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if name := strings.TrimSpace(req.Username); name != "" && name != user.Username {
 		if len(name) < 2 || len(name) > 32 {
 			writeAPIError(w, http.StatusBadRequest, "bad_username", "Username must be 2-32 characters")
+			return
+		}
+		if protocol.HasControl(name) || strings.ContainsAny(name, "\n\t") {
+			writeAPIError(w, http.StatusBadRequest, "bad_username", "Usernames can't contain control characters")
 			return
 		}
 		disc, err := s.db.RenameUser(user.ID, name)

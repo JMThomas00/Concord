@@ -292,9 +292,10 @@ func NewConfigManager() (*ConfigManager, error) {
 	concordDir := filepath.Join(homeDir, ".concord")
 
 	// Create ~/.concord directory if it doesn't exist
-	if err := os.MkdirAll(concordDir, 0755); err != nil {
+	if err := os.MkdirAll(concordDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create .concord directory: %w", err)
 	}
+	lockDown(concordDir)
 
 	return &ConfigManager{
 		serversFilePath:     filepath.Join(concordDir, "servers.json"),
@@ -358,7 +359,7 @@ func (cm *ConfigManager) SaveServers(config *ServersConfig) error {
 
 	// Write to temp file first (atomic write)
 	tempFile := cm.serversFilePath + ".tmp"
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+	if err := os.WriteFile(tempFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write servers config: %w", err)
 	}
 
@@ -407,7 +408,7 @@ func (cm *ConfigManager) SaveSharedFiles(config *SharedFilesConfig) error {
 	}
 
 	tempFile := cm.sharedFilesFilePath + ".tmp"
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+	if err := os.WriteFile(tempFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write shared files config: %w", err)
 	}
 
@@ -586,7 +587,7 @@ func (cm *ConfigManager) SaveAppConfig(config *AppConfig) error {
 
 	// Write to temp file first (atomic write)
 	tempFile := cm.configFilePath + ".tmp"
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+	if err := os.WriteFile(tempFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write app config: %w", err)
 	}
 
@@ -776,4 +777,28 @@ func (cm *ConfigManager) SaveServerSignIn(serverID uuid.UUID, profileID, email, 
 		}
 	}
 	return fmt.Errorf("server %s not found", serverID)
+}
+
+// lockDown makes ~/.concord private to this account: the folder 0700 and
+// the files directly in it 0600. It holds sign-in tokens and Tor access
+// keys, and used to be 0755 with 0644 files, readable by every account on
+// the computer (security audit 2026-11-05, finding 9). MkdirAll leaves an
+// existing folder as it was, so older installs are fixed here, on every
+// start. Errors are ignored: Windows has no such bits.
+func lockDown(dir string) {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return
+	}
+	_ = os.Chmod(dir, 0o700)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			if info, err := e.Info(); err == nil && info.Mode().Perm()&0o077 != 0 {
+				_ = os.Chmod(filepath.Join(dir, e.Name()), info.Mode().Perm()&0o700)
+			}
+		}
+	}
 }

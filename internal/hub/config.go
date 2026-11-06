@@ -35,6 +35,12 @@ type Config struct {
 	// (POST /v1/hubs/announce) once they answer a health check at a public
 	// address. On by default; an admin can block one with DELETE /v1/hubs/{id}.
 	AcceptPeerAnnouncements bool `toml:"accept_peer_announcements"`
+	// AllowPrivateServers lets Concord servers on a private network (LAN,
+	// loopback, CGNAT) be listed and joined. Off by default: anyone can
+	// register a "server", and the hub contacts it when someone joins, so
+	// without this a listing could aim the hub at its own network. Turn it on
+	// for a hub that serves a home or office network.
+	AllowPrivateServers bool `toml:"allow_private_servers,omitempty"`
 }
 
 func DefaultConfig() *Config {

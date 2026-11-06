@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.27"
 
       # Mirrors build-windows's own local toolchain exactly: clang (not
       # gcc -- see the Makefile's own comment on the miniaudio.c
@@ -96,7 +96,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.27"
 
       # A native build, not a cross-toolchain -- gets real Cocoa (for
       # sqweek/dialog's Save As picker) and opus/malgo linking for free.
@@ -160,7 +160,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.27"
 
       # malgo's #cgo linux LDFLAGS only pull in -ldl -lpthread -lm (no
       # separate ALSA/PulseAudio dev package needed beyond libopus-dev/
@@ -217,7 +217,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.27"
 
       - name: Build
         env:

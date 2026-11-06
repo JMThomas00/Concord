@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/concord-chat/concord/internal/models"
+	"github.com/concord-chat/concord/internal/protocol"
 )
 
 // Calls to a server's account API (verification, password reset, account
@@ -91,7 +92,7 @@ func postAPI(serverAddr, path, token string, body, out interface{}) (int, error)
 		return resp.StatusCode, apiErrorFrom(resp.StatusCode, raw)
 	}
 	if out != nil && len(raw) > 0 {
-		if err := json.Unmarshal(raw, out); err != nil {
+		if err := json.Unmarshal(protocol.StripControlJSON(raw), out); err != nil {
 			return resp.StatusCode, fmt.Errorf("failed to parse response: %w", err)
 		}
 	}
@@ -104,7 +105,7 @@ func apiErrorFrom(status int, raw []byte) *APIError {
 	var body struct {
 		Error, Code, Email string
 	}
-	if json.Unmarshal(raw, &body) == nil && body.Error != "" {
+	if json.Unmarshal(protocol.StripControlJSON(raw), &body) == nil && body.Error != "" {
 		return &APIError{Status: status, Code: body.Code, Message: body.Error, Email: body.Email}
 	}
 	msg := strings.TrimSpace(string(raw))

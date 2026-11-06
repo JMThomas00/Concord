@@ -137,3 +137,11 @@ func TestEncryptedDatabase(t *testing.T) {
 	}
 	_ = uuid.Nil
 }
+
+func TestQuoteIdent(t *testing.T) {
+	for in, want := range map[string]string{`messages`: `"messages"`, `we"ird`: `"we""ird"`, `a\b`: `"a\b"`} {
+		if got := quoteIdent(in); got != want {
+			t.Errorf("quoteIdent(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
