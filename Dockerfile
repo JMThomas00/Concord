@@ -19,7 +19,7 @@
 # needed once this pattern was confirmed to already work with zero code
 # changes on Concord's side.
 
-FROM golang:1.24-alpine AS build
+FROM golang:1.27-alpine AS build
 
 WORKDIR /src
 
@@ -44,7 +44,7 @@ RUN go build -ldflags "-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT
 # alpine (not scratch) for ca-certificates -- the hub's federation sync and
 # a server's Grapevine registration both make outbound HTTP(S) calls to
 # other hubs, and a scratch image has no CA trust store for the https:// case.
-FROM alpine:3.20
+FROM alpine:3.24
 
 # /app/data is created owned by the runtime user so a named volume mounted
 # there inherits writable ownership. A host bind mount does NOT -- the host

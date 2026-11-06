@@ -1,6 +1,6 @@
 // Peer-to-peer file attachment transfer.
 //
-// Transport: github.com/pion/webrtc/v3 (already a dependency of voice_engine.go;
+// Transport: github.com/pion/webrtc/v4 (already a dependency of voice_engine.go;
 // pure-Go, no CGO). Unlike voice's audio DataChannel (Ordered:false, unreliable
 // -- UDP-like, fine for dropped audio packets), file transfer uses a reliable,
 // ordered channel so bytes arrive complete and in sequence.
@@ -32,7 +32,7 @@ import (
 
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/google/uuid"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 )
 
 const (

@@ -4,7 +4,7 @@
 //
 // Audio I/O:  github.com/gen2brain/malgo  (CGO wrapper for miniaudio)
 // Codec:      github.com/hraban/opus      (CGO wrapper for libopus)
-// Transport:  github.com/pion/webrtc/v3   (pure-Go WebRTC, no CGO)
+// Transport:  github.com/pion/webrtc/v4   (pure-Go WebRTC, no CGO)
 //
 // Audio format: 16-bit mono PCM at 48 kHz (voiceSampleRate). Each 20 ms frame
 // goes through the processing chain in sendFrame (echo cancellation, low-cut,
@@ -37,7 +37,7 @@ import (
 
 	"github.com/concord-chat/concord/internal/protocol"
 	"github.com/hraban/opus"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/concord-chat/concord/internal/rnnoise"
 )
