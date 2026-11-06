@@ -1888,6 +1888,30 @@ func (h *Handlers) HandleWhisper(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	// The same rules as a message in that channel, and both people members
+	// of its server: whispers used to skip mutes, timeouts and channel
+	// permissions, and could name any channel (security audit 2026-11-05,
+	// finding 10). A timeout removes membership, so it's covered here too.
+	channel, err := h.db.GetChannelByID(payload.ChannelID)
+	if err != nil || channel.ServerID == uuid.Nil || channel.Type == models.ChannelTypeCategory {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Whisper from a channel on this server")
+		return
+	}
+	if !c.IsPlugin {
+		if permErr := h.hasChannelPermission(c.UserID, channel, models.PermissionSendMessages); permErr != nil {
+			c.sendError(protocol.ErrorCodeForbidden, "You don't have permission to send messages in this channel")
+			return
+		}
+	}
+	if me, err := h.db.GetServerMember(channel.ServerID, c.UserID); err == nil && (me.IsMuted || me.IsBanned) {
+		c.sendError(protocol.ErrorCodeForbidden, "You are muted on this server")
+		return
+	}
+	if them, err := h.db.GetServerMember(channel.ServerID, payload.TargetUserID); err != nil || them.IsBanned {
+		c.sendError(protocol.ErrorCodeNotFound, "They aren't a member of this server")
+		return
+	}
+
 	// Check if recipient is online
 	if !h.hub.IsUserOnline(payload.TargetUserID) {
 		c.sendError(protocol.ErrorCodeNotFound, "User is not online")
