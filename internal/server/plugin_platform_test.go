@@ -261,10 +261,19 @@ func (c *testWSClient) readUntil(timeout time.Duration, match func(*protocol.Mes
 	}
 }
 
-// identify sends OpIdentify with token and waits for OpReady.
+// identify sends OpIdentify with token and waits for OpReady, then for a
+// SERVER_CREATE per server READY lists: the server subscribes the connection
+// to a server's channels just before that server's SERVER_CREATE, so a test
+// that stopped at READY could miss a broadcast on a slow runner (CI,
+// 2026-11-05).
 func (c *testWSClient) identify(token string) {
 	c.send(protocol.OpIdentify, protocol.IdentifyPayload{Token: token})
-	c.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Op == protocol.OpReady })
+	ready := c.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Op == protocol.OpReady })
+	var p protocol.ReadyPayload
+	_ = json.Unmarshal(ready.Data, &p)
+	for range p.Servers {
+		c.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventServerCreate })
+	}
 }
 
 // createTestUserAndToken provisions a real human user + session token, the

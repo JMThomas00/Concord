@@ -43,11 +43,7 @@ func (r *paneTestRig) member(t *testing.T, username string) (*models.User, *test
 	user, token := createTestUserAndToken(t, r.srv, username)
 	joinWithEveryoneRole(t, r.srv, r.server.ID, user.ID)
 	c := newTestWSClient(t, r.wsURL)
-	c.identify(token)
-	// READY comes before the server subscribes the connection to its
-	// channels; SERVER_CREATE comes after. Waiting only for READY let a
-	// broadcast slip past a slow runner (CI, 2026-11-05).
-	c.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventServerCreate })
+	c.identify(token) // waits for SERVER_CREATE too
 	return user, c
 }
 

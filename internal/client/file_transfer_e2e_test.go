@@ -155,6 +155,12 @@ func newTestFileClient(t *testing.T, httpAddr, username, downloadDir string) *te
 	case <-time.After(5 * time.Second):
 		t.Fatalf("%s: timed out waiting for READY", username)
 	}
+	// The server subscribes a connection to a server's channels just before
+	// that server's SERVER_CREATE, after READY: wait for them, or a
+	// broadcast can slip past on a slow runner (CI, 2026-11-05).
+	for range tc.readyPayload.Servers {
+		tc.waitForDispatch(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventServerCreate })
+	}
 
 	// Forward outbound file transfer signals over the real WebSocket
 	// connection, exactly as app.go's FileTransferSignalOut case does.
