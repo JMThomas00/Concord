@@ -183,8 +183,17 @@ func qp(s string) string {
 	return b.String()
 }
 
-// encodeHeader encodes a header value that isn't plain ASCII.
+// encodeHeader encodes a header value that isn't plain ASCII. Line breaks
+// and other control characters become spaces first: a subject carries a
+// member's name, and "\r\nBcc: ..." in it added recipients (security audit
+// 2026-11-05, finding 8).
 func encodeHeader(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return ' '
+		}
+		return r
+	}, s)
 	for _, r := range s {
 		if r > 126 {
 			return "=?utf-8?q?" + qEncode(s) + "?="
