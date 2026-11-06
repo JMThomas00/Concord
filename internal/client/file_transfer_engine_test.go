@@ -166,3 +166,19 @@ func TestUniqueDownloadPath(t *testing.T) {
 		t.Errorf("expected deduped path %q, got %q", want3, p3)
 	}
 }
+
+// Finding 4 (security audit 2026-11-05): with no save dialog, a sender's
+// file name like "../.bashrc" was joined onto Downloads and landed outside.
+func TestDownloadNamesStayInDownloads(t *testing.T) {
+	dir := t.TempDir()
+	downloads := filepath.Join(dir, "Downloads")
+	for _, name := range []string{"../.bashrc", "../../x", `..\..\evil.bat`, "/etc/cron.d/x", ".."} {
+		got, err := resolveDownloadPath("", downloads, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Dir(got) != downloads {
+			t.Errorf("%q would be saved at %q, outside %q", name, got, downloads)
+		}
+	}
+}

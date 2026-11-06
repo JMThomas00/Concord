@@ -30,14 +30,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/concord-chat/concord/internal/models"
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v3"
 )
 
 const (
-	fileChunkSize                  = 16 * 1024        // bytes per DataChannel message
-	fileBufferedAmountLowThreshold = 512 * 1024        // resume sending below this
-	fileBufferedAmountPauseAt      = 4 * 1024 * 1024   // pause sending above this
+	fileChunkSize                  = 16 * 1024       // bytes per DataChannel message
+	fileBufferedAmountLowThreshold = 512 * 1024      // resume sending below this
+	fileBufferedAmountPauseAt      = 4 * 1024 * 1024 // pause sending above this
 )
 
 // FileTransferDirection distinguishes which side of a transfer this client is on.
@@ -635,7 +636,9 @@ func resolveDownloadPath(destPath, downloadDir, filename string) (string, error)
 	if err := os.MkdirAll(downloadDir, 0755); err != nil {
 		return "", err
 	}
-	return uniqueDownloadPath(downloadDir, filename), nil
+	// The name comes from the sender: never let it leave downloadDir
+	// (security audit 4).
+	return uniqueDownloadPath(downloadDir, models.SafeFilename(filename)), nil
 }
 
 // uniqueDownloadPath returns dir/filename, or dir/filename (2), dir/filename (3)...

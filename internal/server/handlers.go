@@ -439,6 +439,7 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 			att.ID = uuid.New()
 		}
 		att.SenderID = c.UserID // never trust the client to claim another sender
+		att.Filename = models.SafeFilename(att.Filename) // no folders (security audit 4)
 		attachments = []models.Attachment{att}
 	}
 

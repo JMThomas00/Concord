@@ -1234,7 +1234,7 @@ func (ch *CommandHandler) handleDownload(args []string) (string, error) {
 	// Ask where to save via the OS's native Save As dialog rather than
 	// silently dropping it into ~/Downloads -- this blocks the TUI while
 	// open, same as any other modal file picker.
-	destPath, dlgErr := promptSavePath(found.Filename)
+	destPath, dlgErr := promptSavePath(models.SafeFilename(found.Filename))
 	switch {
 	case dlgErr == nil:
 		// proceed with the chosen path
