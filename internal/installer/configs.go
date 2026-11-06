@@ -45,6 +45,20 @@ type serverConfig struct {
 		Tags        []string `toml:"tags,omitempty"`
 	} `toml:"grapevine"`
 	PluginsDir string `toml:"plugins_dir"`
+	Database   struct {
+		KeyFile string `toml:"key_file,omitempty"`
+	} `toml:"database"`
+	Tor struct {
+		Enabled bool `toml:"enabled"`
+		Only    bool `toml:"only,omitempty"`
+	} `toml:"tor"`
+}
+
+// DatabaseKeyFile is where an installed server's database key goes: in
+// Concord's settings folder (~/.concord/keys), outside the server's own
+// folder, so a copy of that folder doesn't carry the key with it.
+func DatabaseKeyFile(home string) string {
+	return filepath.Join(ConfigDir(home), "keys", "concord-database.key")
 }
 
 // hubConfig mirrors internal/hub's Config.
@@ -77,7 +91,8 @@ func (pl *Plan) ServerConfigTOML(hubURL string) ([]byte, error) {
 	c.MessagePruning.IntervalHours = 24
 	c.TermsAccepted = pl.TermsAccepted
 	c.AdminEmail = strings.ToLower(pl.AdminEmail)
-	if pl.ServerOnHub {
+	c.Tor.Enabled, c.Tor.Only = pl.ServerTor != TorOff, pl.ServerTor == TorOnly
+	if pl.ServerOnHub && pl.ServerTor == TorOff {
 		c.Grapevine.Enabled = true
 		c.Grapevine.HubURL = hubURL
 		c.Grapevine.PublicHost = pl.PublicHost
@@ -91,6 +106,7 @@ func (pl *Plan) ServerConfigTOML(hubURL string) ([]byte, error) {
 		c.Grapevine.Tags = tags
 	}
 	c.PluginsDir = "Plugins"
+	c.Database.KeyFile = DatabaseKeyFile(pl.Platform.Home)
 	return toml.Marshal(c)
 }
 
@@ -231,4 +247,53 @@ func newUUID() string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// SetClientNetwork sets how the client connects ("" normally, "tor" for
+// everything through Tor) in its config.json in dir, keeping everything
+// else there.
+func SetClientNetwork(dir, mode string) error {
+	path := filepath.Join(dir, "config.json")
+	doc := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(b, &doc); err != nil {
+			return fmt.Errorf("%s isn't valid JSON, so it was left alone: %w", path, err)
+		}
+	}
+	nw, _ := doc["network"].(map[string]any)
+	if nw == nil {
+		nw = map[string]any{}
+	}
+	if mode == "" {
+		delete(nw, "mode")
+	} else {
+		nw["mode"] = mode
+	}
+	doc["network"] = nw
+	if _, ok := doc["version"]; !ok {
+		doc["version"] = 1
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
+}
+
+// ClientNetwork reads the client's network mode back ("" or "tor").
+func ClientNetwork(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		Network struct {
+			Mode string `json:"mode"`
+		} `json:"network"`
+	}
+	_ = json.Unmarshal(b, &doc)
+	return doc.Network.Mode
 }

@@ -596,6 +596,9 @@ type ServerCreatePayload struct {
 	// Unreads: the receiver's read position and unread counts per channel
 	// (servers v0.1.9+; reads.go).
 	Unreads []ChannelUnread `json:"unreads,omitempty"`
+	// Onion: how to reach the server over Tor, when it has an onion
+	// address (tor.go).
+	Onion *OnionAccess `json:"onion,omitempty"`
 }
 
 // ChannelUnread is one channel's unread state for the receiver.
@@ -1191,7 +1194,16 @@ type FileTransferSignalPayload struct {
 	Type         string          `json:"type"` // "request", "accept", "reject", "offer", "answer", "candidate"
 	SDP          string          `json:"sdp,omitempty"`
 	Candidate    json.RawMessage `json:"candidate,omitempty"` // RTCIceCandidateInit JSON
+	// Relayed transfers (since v0.2.0, Tor mode): "relay_request",
+	// "relay_chunk" (Seq, Data), "relay_ack" (Seq), "relay_end",
+	// "relay_error" (SDP carries the reason). The server passes the file
+	// through without keeping it; a chunk is at most RelayChunkMax bytes.
+	Seq  int64  `json:"seq,omitempty"`
+	Data []byte `json:"data,omitempty"`
 }
+
+// RelayChunkMax is the largest file chunk the server relays.
+const RelayChunkMax = 64 * 1024
 
 // FileTransferSignalRelayPayload is dispatched S→C when the server relays a
 // file transfer signal. SourceUserID identifies who sent the original signal.
@@ -1201,6 +1213,8 @@ type FileTransferSignalRelayPayload struct {
 	Type         string          `json:"type"`
 	SDP          string          `json:"sdp,omitempty"`
 	Candidate    json.RawMessage `json:"candidate,omitempty"`
+	Seq          int64           `json:"seq,omitempty"`
+	Data         []byte          `json:"data,omitempty"`
 }
 
 // VoiceSpeakingPayload is sent C→S when the client's speaking state changes.

@@ -51,7 +51,9 @@ FROM alpine:3.20
 # directory must be chowned to 10001 first (see docker-compose.yml), or SQLite
 # fails with "unable to open database file: out of memory (14)" (code 14 is
 # SQLITE_CANTOPEN; the "out of memory" text is misleading).
-RUN apk add --no-cache ca-certificates && \
+# tor: only run when concord-server.toml has [tor] enabled = true (an
+# onion address); a few MB otherwise unused.
+RUN apk add --no-cache ca-certificates tor && \
     adduser -D -u 10001 concord && \
     mkdir -p /app/data && chown concord:concord /app/data
 

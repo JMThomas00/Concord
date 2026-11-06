@@ -1,9 +1,9 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"strconv"
 	"time"
 
@@ -45,7 +45,12 @@ func PingServer(address string, port int, useTLS bool, timeout time.Duration) *P
 		start := time.Now()
 
 		// Try TCP connection
-		conn, err := net.DialTimeout("tcp", addr, attemptTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		if viaTor(addr) {
+			ctx, cancel = context.WithTimeout(context.Background(), torWait+attemptTimeout)
+		}
+		conn, err := netDial(ctx, "tcp", addr)
+		cancel()
 		if err != nil {
 			lastError = err
 			if attempt < maxAttempts {
@@ -59,7 +64,7 @@ func PingServer(address string, port int, useTLS bool, timeout time.Duration) *P
 
 		// Try HTTP health check
 		healthURL := fmt.Sprintf("%s://%s/api/health", protocol, addr)
-		client := &http.Client{Timeout: attemptTimeout}
+		client := httpClientFor(addr, attemptTimeout)
 
 		resp, err := client.Get(healthURL)
 		if err != nil {

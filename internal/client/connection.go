@@ -94,6 +94,11 @@ func (c *Connection) Connect() error {
 	dialer := &websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		Proxy:            http.ProxyFromEnvironment,
+		NetDialContext:   netDial, // tor_net.go: through Tor when it should be
+	}
+	if viaTor(u.Host) {
+		dialer.Proxy = nil // never past Tor to a proxy from the environment
+		dialer.HandshakeTimeout = torWait + 30*time.Second
 	}
 
 	// Connect with timeout

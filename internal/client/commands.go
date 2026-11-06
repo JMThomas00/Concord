@@ -1248,6 +1248,11 @@ func (ch *CommandHandler) handleDownload(args []string) (string, error) {
 		destPath = ""
 	}
 
+	if a.activeConn != nil && a.activeConn.ServerInfo != nil && a.activeConn.ServerInfo.overTor() {
+		// Tor mode: through the server, never a direct connection (file_relay.go).
+		engine.RequestRelayDownload(found.ID, found.SenderID, found.Filename, found.Size, found.ContentHash, destPath)
+		return fmt.Sprintf("Requesting %s from the sender, through the server (Tor)...", found.Filename), nil
+	}
 	engine.RequestDownload(found.ID, found.SenderID, found.Filename, found.Size, found.ContentHash, destPath)
 
 	return fmt.Sprintf("Requesting %s from the sender...", found.Filename), nil
@@ -1396,6 +1401,9 @@ func (ch *CommandHandler) handleJoinVoice(args []string) (string, error) {
 		return "", errors.New("usage: /join-voice [#channel-name] (or select a voice channel first)")
 	}
 
+	if why := voiceOffOverTor(a.activeConn); why != "" {
+		return "", errors.New(why)
+	}
 	a.leaveVoiceElsewhere() // only ever in one call
 	channelID := target.ID
 	payload := &protocol.VoiceStateUpdatePayload{

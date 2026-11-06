@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -443,6 +444,11 @@ func (cm *ConnectionManager) SendVoiceStateUpdate(serverID uuid.UUID, payload *p
 
 	if conn == nil || sc.GetState() != StateReady {
 		return fmt.Errorf("server %s not ready", serverID)
+	}
+	if payload.ChannelID != nil {
+		if why := voiceOffOverTor(sc); why != "" {
+			return errors.New(why) // tor_client.go
+		}
 	}
 
 	data, err := json.Marshal(payload)

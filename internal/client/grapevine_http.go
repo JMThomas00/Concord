@@ -18,7 +18,7 @@ type GrapevineHTTPClient struct {
 func newGrapevineHTTPClient(baseURL string) *GrapevineHTTPClient {
 	return &GrapevineHTTPClient{
 		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: httpClientFor(baseURL, 10*time.Second),
 	}
 }
 
@@ -120,7 +120,7 @@ func (g *GrapevineHTTPClient) RequestJoin(serverID string) (*HubJoinResponse, er
 // earlier, which verifies the address we got from the hub is genuine.
 func RedeemJoinToken(host string, port int, token string) error {
 	payload, _ := json.Marshal(map[string]string{"join_token": token})
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := httpClientFor(host, 10*time.Second)
 	resp, err := httpClient.Post(
 		fmt.Sprintf("%s://%s:%d/v1/grapevine/join", grapevineScheme(port), host, port),
 		"application/json", bytes.NewReader(payload))

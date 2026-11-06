@@ -207,7 +207,7 @@ func download(addr, token, pluginID string, f protocol.PluginClientFile) ([]byte
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	resp, err := httpClientFor(target, 60*time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}

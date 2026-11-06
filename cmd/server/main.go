@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"golang.org/x/term"
 	"os"
+	"strings"
 
 	charmlog "github.com/charmbracelet/log"
 	"github.com/concord-chat/concord/internal/database"
@@ -37,7 +39,19 @@ func main() {
 	reconfigure := flag.Bool("reconfigure", false, "Re-run setup wizard to reconfigure server")
 	testMail := flag.String("test-mail", "", "Send a test email to this address with the [mail] settings, then exit")
 	resetPassword := flag.String("reset-password", "", "Give the account with this email a new temporary password, then exit")
+	showBackupKey := flag.Bool("backup-key", false, "Print the key that opens this server's encrypted backups, then exit")
+	openBackup := flag.String("open-backup", "", "Decrypt and unpack an encrypted backup (concord-backup-….tar.gz.age), then exit")
+	openTo := flag.String("to", "", "With --open-backup: the new folder to unpack into (default: the backup's name)")
+	keyFile := flag.String("key", "", "With --open-backup: the backup key file, or the key itself (default: this server's backup.key)")
+	encryptDB := flag.Bool("encrypt-database", false, "Encrypt an unencrypted database (stop the server first), then exit")
+	decryptDB := flag.Bool("decrypt-database", false, "Turn an encrypted database back into an unencrypted one (stop the server first), then exit")
 	flag.Parse()
+
+	// Opening a backup needs no server settings when the key is given (a
+	// restore on a new machine), so it comes before the setup wizard.
+	if *openBackup != "" && *keyFile != "" {
+		os.Exit(runOpenBackup(*openBackup, *openTo, *keyFile))
+	}
 
 	// Parse and initialize logger early
 	if *debugMode {
@@ -122,6 +136,47 @@ func main() {
 		config.DatabasePath = *dbPath
 	}
 
+	// The settings file's path (the database key's default home is beside it).
+	effectiveConfigPath := configFilename
+	if *configPath != "" {
+		effectiveConfigPath = *configPath
+	}
+
+	// Encrypting or decrypting the database: the server must be stopped.
+	if *encryptDB || *decryptDB {
+		text, err := server.ConvertDatabase(config, effectiveConfigPath, *encryptDB, askPassphrase)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(text)
+		return
+	}
+	// Everything below that opens the database needs its key (dbkey.go).
+	if key, info, err := server.ResolveDatabaseKey(config, effectiveConfigPath, askPassphrase); err != nil {
+		fmt.Fprintf(os.Stderr, "The database: %v\n", err)
+		os.Exit(1)
+	} else {
+		config.DatabaseKey, config.DatabaseKeyInfo = key, info
+	}
+
+	// Backup key tools that exit without starting the server.
+	if *showBackupKey {
+		key, err := server.BackupKeyText(config.DatabasePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("This key opens this server's backups. Keep a copy somewhere safe (a password manager);")
+		fmt.Println("without it the backups can't be read. Never share it.")
+		fmt.Println()
+		fmt.Println(key)
+		return
+	}
+	if *openBackup != "" {
+		os.Exit(runOpenBackup(*openBackup, *openTo, server.BackupKeyPath(config.DatabasePath)))
+	}
+
 	// One-off account tools that exit without starting the server.
 	if *testMail != "" {
 		if err := server.SendTestMail(config.Mail, config.ServerName, *testMail); err != nil {
@@ -132,7 +187,7 @@ func main() {
 		return
 	}
 	if *resetPassword != "" {
-		db, err := database.New(config.DatabasePath)
+		db, err := database.Open(config.DatabasePath, config.DatabaseKey)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open database: %v\n", err)
 			os.Exit(1)
@@ -160,7 +215,7 @@ func main() {
 
 	// Handle --admin-email: open DB, grant role, close, then start normally
 	if *adminEmail != "" {
-		db, err := database.New(config.DatabasePath)
+		db, err := database.Open(config.DatabasePath, config.DatabaseKey)
 		if err != nil {
 			server.Logger.Fatal("Failed to open database for admin-email", "error", err)
 		}
@@ -173,7 +228,7 @@ func main() {
 
 	// Handle --fix-admin: repair broken Admin role
 	if *fixAdmin {
-		db, err := database.New(config.DatabasePath)
+		db, err := database.Open(config.DatabasePath, config.DatabaseKey)
 		if err != nil {
 			server.Logger.Fatal("Failed to open database for fix-admin", "error", err)
 		}
@@ -191,7 +246,7 @@ func main() {
 
 	// Handle --cleanup-duplicates: merge and remove duplicate roles
 	if *cleanupDuplicates {
-		db, err := database.New(config.DatabasePath)
+		db, err := database.Open(config.DatabasePath, config.DatabaseKey)
 		if err != nil {
 			server.Logger.Fatal("Failed to open database for cleanup-duplicates", "error", err)
 		}
@@ -221,10 +276,6 @@ func main() {
 	}
 
 	// Tell the server where its config lives so Grapevine can persist credentials.
-	effectiveConfigPath := configFilename
-	if *configPath != "" {
-		effectiveConfigPath = *configPath
-	}
 	srv.SetConfigPath(effectiveConfigPath)
 	srv.SetBuildInfo(Version, GitCommit, BuildTime)
 
@@ -263,3 +314,61 @@ func loadConfig(path string, config *server.Config) error {
 }
 
 // Old printBanner removed - now using server.PrintBanner() with beautiful ASCII art
+
+// runOpenBackup unpacks an encrypted backup with key (a key file, or the
+// key itself) into to (default: beside it, named after it).
+func runOpenBackup(file, to, key string) int {
+	keyText := key
+	if data, err := os.ReadFile(key); err == nil {
+		keyText = string(data)
+	} else if !strings.HasPrefix(strings.TrimSpace(key), "AGE-SECRET-KEY-") {
+		fmt.Fprintf(os.Stderr, "Can't read the backup key %s: %v\n", key, err)
+		return 1
+	}
+	if to == "" {
+		to = strings.TrimSuffix(file, ".tar.gz.age")
+		if to == file {
+			to = file + ".opened"
+		}
+	}
+	wrote, err := server.OpenBackup(file, keyText, to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Couldn't open the backup: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Unpacked %d files into %s:\n", len(wrote), to)
+	for _, w := range wrote {
+		if !strings.Contains(w, "/") {
+			fmt.Println("  " + w)
+		}
+	}
+	fmt.Println("To restore, stop the server and put concord.db (and the other files) back where they came from.")
+	return 0
+}
+
+// askPassphrase reads a passphrase at the terminal without showing it
+// ([database] ask_passphrase); confirm asks twice.
+func askPassphrase(prompt string, confirm bool) (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return "", fmt.Errorf("the database needs its passphrase, and there's no terminal to type it in (run the server in a terminal, or use a key file: [database] ask_passphrase = false)")
+	}
+	read := func(p string) (string, error) {
+		fmt.Fprint(os.Stderr, p)
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		return string(b), err
+	}
+	pass, err := read(prompt)
+	if err != nil || !confirm {
+		return pass, err
+	}
+	again, err := read("Again, to be sure: ")
+	if err != nil {
+		return "", err
+	}
+	if again != pass {
+		return "", fmt.Errorf("the two passphrases don't match")
+	}
+	return pass, nil
+}

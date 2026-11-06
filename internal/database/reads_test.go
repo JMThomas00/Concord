@@ -202,6 +202,10 @@ func TestHistoryIsInArrivalOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Stored like that by the old driver; opening converts them to UTC.
+	if err := convertTimes(f.db); err != nil {
+		t.Fatal(err)
+	}
 	got, err := f.db.GetChannelMessages(f.ch.ID, 10, nil, f.alice.ID)
 	if err != nil {
 		t.Fatal(err)

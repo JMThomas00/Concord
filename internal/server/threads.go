@@ -63,7 +63,8 @@ func (h *Handlers) threadSummary(threadID, channelID uuid.UUID, st *database.Thr
 	if follow != nil {
 		sum.Following = true
 		lastFromOther := sum.LastReply != nil && sum.LastReply.AuthorID != userID
-		sum.Unread = lastFromOther && (follow.LastReadAt == nil || st.LastReplyAt.After(*follow.LastReadAt))
+		// Positions, not times: times are kept to the second.
+		sum.Unread = lastFromOther && st.LastReplySeq > follow.ReadSeq
 	}
 	return sum
 }
@@ -204,6 +205,11 @@ func (h *Handlers) HandleThreadRead(c *Client, msg *protocol.Message) {
 	if ch, err := h.db.GetChannelByID(req.ChannelID); err == nil {
 		serverID = ch.ServerID
 	}
-	sum := h.threadSummary(req.ThreadID, req.ChannelID, stats[req.ThreadID], &database.ThreadFollow{LastReadAt: &read}, c.UserID, serverID)
+	st := stats[req.ThreadID]
+	f := &database.ThreadFollow{LastReadAt: &read}
+	if st != nil {
+		f.ReadSeq = st.LastReplySeq
+	}
+	sum := h.threadSummary(req.ThreadID, req.ChannelID, st, f, c.UserID, serverID)
 	_ = h.hub.SendToUser(c.UserID, protocol.EventThreadUpdate, sum)
 }

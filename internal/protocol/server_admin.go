@@ -14,6 +14,12 @@ const (
 	ServerAdminBackup  = "backup"  // take a backup now (Administrator)
 	ServerAdminRestart = "restart" // stop and start again (Administrator)
 	ServerAdminUpdate  = "update"  // install a release and restart (Administrator)
+	// ServerAdminBackupKey shows the backup key (Administrator), in the
+	// result's BackupKey.
+	ServerAdminBackupKey = "backup_key"
+	// ServerAdminTorKey makes a new Tor access key (Administrator); the
+	// old one keeps working for a week.
+	ServerAdminTorKey = "tor_key"
 )
 
 // ServerAdminRequest asks the server for its status or to act.
@@ -34,6 +40,8 @@ type ServerAdminResult struct {
 	Busy bool `json:"busy,omitempty"`
 	// Restarting: the server is about to stop and start again.
 	Restarting bool `json:"restarting,omitempty"`
+	// BackupKey, for "backup_key": the key that opens this server's backups.
+	BackupKey string `json:"backup_key,omitempty"`
 }
 
 // How a server can be updated (ServerStatusPayload.UpdateHow).
@@ -67,6 +75,22 @@ type ServerStatusPayload struct {
 	Messages int `json:"messages"`
 
 	DatabaseBytes int64 `json:"database_bytes"` // the database plus its write-ahead log
+	// Encryption at rest (since v0.2.0): the key file's path (administrators
+	// only), or a passphrase typed at start.
+	DatabaseEncrypted  bool   `json:"database_encrypted,omitempty"`
+	DatabaseKeyFile    string `json:"database_key_file,omitempty"`
+	DatabasePassphrase bool   `json:"database_passphrase,omitempty"`
+
+	// Tor (since v0.2.0): the onion address, whether tor is connected, and
+	// whether an access key is needed to find it (tor.go).
+	TorEnabled      bool      `json:"tor_enabled,omitempty"`
+	TorOnly         bool      `json:"tor_only,omitempty"`
+	TorClientAuth   bool      `json:"tor_client_auth,omitempty"`
+	TorAddress      string    `json:"tor_address,omitempty"`
+	TorRunning      bool      `json:"tor_running,omitempty"`
+	TorBootstrapped int       `json:"tor_bootstrapped,omitempty"`
+	TorError        string    `json:"tor_error,omitempty"`
+	TorOldKeyUntil  time.Time `json:"tor_old_key_until,omitempty"` // a replaced access key still works until then
 
 	PluginsInstalled int `json:"plugins_installed"`
 	PluginsRunning   int `json:"plugins_running"`
@@ -78,7 +102,12 @@ type ServerStatusPayload struct {
 	BackupCount     int       `json:"backup_count"`
 	LastBackupAt    time.Time `json:"last_backup_at,omitempty"`
 	LastBackupBytes int64     `json:"last_backup_bytes,omitempty"`
-	BackingUp       bool      `json:"backing_up,omitempty"`
+	// Since v0.2.0 backups are encrypted with the server's backup key.
+	LastBackupEncrypted bool      `json:"last_backup_encrypted,omitempty"`
+	BackupKeyMade       bool      `json:"backup_key_made,omitempty"` // the key exists (it's made with the first backup)
+	BackupEvery         string    `json:"backup_every,omitempty"`    // scheduled backups ("0s": off)
+	NextBackupAt        time.Time `json:"next_backup_at,omitempty"`
+	BackingUp           bool      `json:"backing_up,omitempty"`
 
 	RunsAs     string `json:"runs_as"`
 	CanRestart bool   `json:"can_restart"`

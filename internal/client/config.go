@@ -46,6 +46,8 @@ type AppConfig struct {
 	Identities     []*LocalIdentity `json:"identities,omitempty"`
 	ActiveIdentity string           `json:"active_identity,omitempty"`
 	TermsAccepted  bool             `json:"terms_accepted"` // Whether user has accepted Terms of Service
+	// Network: Tor-only mode and bridges (tor_net.go).
+	Network NetworkConfig `json:"network,omitempty"`
 }
 
 // profiles returns the config's profiles and the active one's ID, folding

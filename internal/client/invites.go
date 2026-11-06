@@ -306,9 +306,12 @@ func (a *App) renderJoinScreen(st *AccountCodeState, b *strings.Builder) (label,
 // (host:port/CODE) into the address, port and the code to sign up with.
 // A name is filled in from the host if none was typed.
 func (a *App) takePastedInvite() {
-	v := a.addServerAddress.Value()
+	v, key := splitTorInvite(a.addServerAddress.Value())
 	if !strings.Contains(v, "/") {
 		return
+	}
+	if key != "" {
+		a.addServerOnionKey = key
 	}
 	addr, code := splitInvite(v)
 	if code == "" {

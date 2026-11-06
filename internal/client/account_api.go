@@ -78,7 +78,7 @@ func postAPI(serverAddr, path, token string, body, out interface{}) (int, error)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := httpClientFor(target, 30*time.Second).Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("failed to connect to server: %w", err)
 	}

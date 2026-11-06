@@ -32,6 +32,12 @@ func TestServerConfigReadsBack(t *testing.T) {
 		c.DatabasePath != "concord.db" || c.PluginsDir != "Plugins" || !c.MessagePruning.Enabled ||
 		!g.Enabled || g.HubURL != "https://hub.example" || g.PublicHost != "chat.example.com" || g.PublicPort != 9090 || g.Category != "Gaming" || strings.Join(g.Tags, "/") != "Gaming/AI/AI Research" {
 		t.Fatalf("server read %+v", c)
+	}	// The database key goes outside the server's folder, and new databases are encrypted.
+	if want := installer.DatabaseKeyFile(installer.TestPlan().Platform.Home); c.Database.KeyFile != want || want == "" {
+		t.Errorf("key_file %q, want %q", c.Database.KeyFile, want)
+	}
+	if c.Database.Encrypt != nil && !*c.Database.Encrypt {
+		t.Error("the installer turned encryption off")
 	}
 }
 

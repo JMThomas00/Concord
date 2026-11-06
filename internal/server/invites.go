@@ -24,6 +24,7 @@ import (
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/protocol"
+	"github.com/concord-chat/concord/internal/tor"
 )
 
 const (
@@ -60,6 +61,9 @@ func newInviteCode() (string, error) {
 // string host:port/CODE (or a concord:// link ending in the code).
 func inviteCodeFrom(s string) string {
 	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "#"); i >= 0 { // an onion invite's access key
+		s = s[:i]
+	}
 	if i := strings.LastIndex(s, "/"); i >= 0 {
 		s = s[i+1:]
 	}
@@ -503,7 +507,14 @@ func (h *Handlers) emailInvite(inviter uuid.UUID, req protocol.InvitesRequest) (
 	if u, err := h.db.GetUserByID(inviter); err == nil {
 		from = u.Username
 	}
-	e := inviteEmail(h.join.displayName(), from, strings.TrimSpace(req.Address), in.Code, strings.TrimSpace(req.Note), in.ExpiresAt)
+	address, onion := strings.TrimSpace(req.Address), ""
+	if a := h.onionFor(req.ServerID); a != nil {
+		onion = onionInvite(a, in.Code)
+		if a.Only || tor.IsOnion(hostOnly(address)) {
+			address = "" // the onion invite is the one to paste
+		}
+	}
+	e := inviteEmail(h.join.displayName(), from, address, onion, in.Code, strings.TrimSpace(req.Note), in.ExpiresAt)
 	e.To = email
 	if err := h.join.sendMail(e); err != nil {
 		_ = h.db.RevokeInvite(in.Code)
@@ -524,6 +535,9 @@ func (h *Handlers) sendInvites(c *Client, serverID uuid.UUID, canInvite, canMana
 	}
 	if !canSettings {
 		p.MailFrom = ""
+	}
+	if a := h.onionFor(serverID); a != nil && canInvite {
+		p.Onion, p.OnionKey, p.TorOnly = a.Address, a.Key, a.Only
 	}
 	who := c.UserID
 	if canManage {

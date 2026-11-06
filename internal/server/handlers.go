@@ -51,6 +51,9 @@ type Handlers struct {
 	// tests that build Handlers alone.
 	admin serverAdmin
 	join  joinHost // invites.go: mail and the verification switch
+	// onion is how members reach the server over Tor (tor.go); nil or
+	// returning nil without an onion address.
+	onion func() *protocol.OnionAccess
 }
 
 // SetPluginsDir records the resolved plugins directory, called once at
@@ -746,6 +749,7 @@ func (h *Handlers) HandleRequestGuild(c *Client, msg *protocol.Message) {
 		Roles:       roles,
 		Users:       users,
 		VoiceStates: voiceStates,
+		Onion:       h.onionFor(server.ID),
 	}
 
 	c.SendDispatch(protocol.EventServerCreate, guildPayload)
@@ -2720,12 +2724,32 @@ func (h *Handlers) HandleFileTransferSignal(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	if len(req.Data) > protocol.RelayChunkMax {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "File chunk too large")
+		return
+	}
+	// File bytes go only between people who share a server.
+	if len(req.Data) > 0 || req.Type == "relay_request" {
+		if !h.shareAServer(c.UserID, req.TargetUserID) {
+			c.sendError(protocol.ErrorCodeForbidden, "You don't share a server with them")
+			return
+		}
+	}
+	// A relayed transfer (Tor mode) needs both people online throughout.
+	if req.Type == "relay_request" && !h.hub.IsUserOnline(req.TargetUserID) {
+		h.hub.SendToUser(c.UserID, protocol.EventFileTransferSignal, &protocol.FileTransferSignalRelayPayload{
+			SourceUserID: req.TargetUserID, AttachmentID: req.AttachmentID, Type: "offline"})
+		return
+	}
+
 	relay := &protocol.FileTransferSignalRelayPayload{
 		SourceUserID: c.UserID,
 		AttachmentID: req.AttachmentID,
 		Type:         req.Type,
 		SDP:          req.SDP,
 		Candidate:    req.Candidate,
+		Seq:          req.Seq,
+		Data:         req.Data,
 	}
 	h.hub.SendToUser(req.TargetUserID, protocol.EventFileTransferSignal, relay)
 }
@@ -2916,3 +2940,17 @@ func (h *Handlers) HandleGetPluginConfig(c *Client, msg *protocol.Message) {
 }
 
 
+
+// shareAServer reports whether two users are members of a common server.
+func (h *Handlers) shareAServer(a, b uuid.UUID) bool {
+	mine, err := h.db.GetUserServers(a)
+	if err != nil {
+		return false
+	}
+	for _, srv := range mine {
+		if _, err := h.db.GetServerMember(srv.ID, b); err == nil {
+			return true
+		}
+	}
+	return false
+}

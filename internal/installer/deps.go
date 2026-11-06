@@ -121,3 +121,28 @@ func InstallCommand(p Platform, missing []string) ([]string, error) {
 	}
 	return append([]string{"zypper", "--non-interactive", "install"}, pkgs...), nil
 }
+
+// TorInstallCommand installs tor with the platform's package manager, or
+// says how to get it by hand.
+func TorInstallCommand(p Platform) ([]string, error) {
+	switch {
+	case p.OS == Windows:
+		return nil, fmt.Errorf("install the Tor Expert Bundle from https://www.torproject.org/download/tor/ and set tor_path in the server's settings to its tor.exe")
+	case p.OS == MacOS:
+		if _, err := exec.LookPath("brew"); err != nil {
+			return nil, fmt.Errorf("install Homebrew (https://brew.sh), then run: brew install tor")
+		}
+		return []string{"brew", "install", "tor"}, nil
+	}
+	switch p.PkgManager {
+	case "apt":
+		return []string{"apt-get", "install", "-y", "--no-install-recommends", "tor"}, nil
+	case "dnf":
+		return []string{"dnf", "install", "-y", "tor"}, nil
+	case "pacman":
+		return []string{"pacman", "-S", "--needed", "--noconfirm", "tor"}, nil
+	case "zypper":
+		return []string{"zypper", "--non-interactive", "install", "tor"}, nil
+	}
+	return nil, fmt.Errorf("install tor with your package manager")
+}

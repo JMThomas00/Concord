@@ -103,6 +103,15 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 
 	// The client.
 	groups = append(groups, b.group(dirInput(installer.Client, "Where should the client live?", &pl.ClientDir)).WithHideFunc(notChosen(installer.Client)))
+	groups = append(groups, b.group(
+		huh.NewSelect[string]().Title("How should Concord connect?").
+			Description("Tor hides your address from the servers you use. It's slower, and over\nTor voice is off and files go through the server. Tor gets installed.").
+			Options(
+				huh.NewOption("Normally", installer.TorOff),
+				huh.NewOption("Normally, and through Tor for .onion servers", installer.TorAlso),
+				huh.NewOption("Everything through Tor", installer.TorOnly),
+			).Value(&pl.ClientTor),
+	).WithHideFunc(fresh(installer.Client)))
 
 	// The server.
 	groups = append(groups,
@@ -120,16 +129,25 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 		).WithHideFunc(fresh(installer.Server)),
 		b.group(startQuestion(p, "server", &pl.ServerStart)).WithHideFunc(notChosen(installer.Server)),
 		b.group(
+			huh.NewSelect[string]().Title("Reach it over Tor too?").
+				Description("Tor gives the server a private .onion address that hides where it is.\nOnly people with an invite can find it there. Needs tor, which we'll install.").
+				Options(
+					huh.NewOption("No, just the normal address", installer.TorOff),
+					huh.NewOption("Both: Tor and the normal address", installer.TorAlso),
+					huh.NewOption("Tor only: nothing else can reach it", installer.TorOnly),
+				).Value(&pl.ServerTor),
+		).WithHideFunc(fresh(installer.Server)),
+		b.group(
 			huh.NewConfirm().Title("Connect your server to the Concord hub?").
 				Description("Grapevine is Concord's server directory: anyone browsing it can find and\njoin a listed server. Private ones are reached by sharing your address.").
 				Affirmative("List it").Negative("Keep it private").Value(&pl.ServerOnHub),
-		).WithHideFunc(fresh(installer.Server)),
+		).WithHideFunc(func() bool { return fresh(installer.Server)() || pl.ServerTor != installer.TorOff }),
 		b.group(
 			huh.NewInput().Title("The address people use to reach your server").
 				Description("A domain name or your public IP, not localhost.").
 				Placeholder("chat.example.com").Value(&pl.PublicHost).Validate(check(required("the hub needs an address to give people"))),
 			huh.NewInput().Title("One line about it").Placeholder("A cozy corner for board games and bad puns").Value(&pl.Description),
-		).WithHideFunc(func() bool { return fresh(installer.Server)() || !pl.ServerOnHub }),
+		).WithHideFunc(func() bool { return fresh(installer.Server)() || !pl.ServerOnHub || pl.ServerTor != installer.TorOff }),
 		b.group(
 			huh.NewMultiSelect[string]().Title("What's it about?").
 				Description("Pick as many as fit. People search the Grapevine by these.").
@@ -137,7 +155,7 @@ func questions(pl *installer.Plan, back *bool) *formBuilder {
 				Value(&pl.Tags),
 			huh.NewInput().Title("Anything else?").Description("Your own tags, separated by commas.").
 				Placeholder("AI, AI Research").Value(&pl.OtherTags),
-		).WithHideFunc(func() bool { return fresh(installer.Server)() || !pl.ServerOnHub }),
+		).WithHideFunc(func() bool { return fresh(installer.Server)() || !pl.ServerOnHub || pl.ServerTor != installer.TorOff }),
 	)
 
 	// The hub.
@@ -413,6 +431,12 @@ func (m *model) viewReview() string {
 		b.WriteString("\n" + sSection.Render("Client") + "  " + verb(installer.Client) + "\n")
 		row("Folder", installer.Tilde(pl.ClientDir))
 		row("Command", "concord")
+		switch pl.ClientTor {
+		case installer.TorAlso:
+			row("Tor", "for .onion servers (tor gets installed)")
+		case installer.TorOnly:
+			row("Tor", "everything through Tor (tor gets installed)")
+		}
 	}
 	if pl.Has(installer.Server) {
 		b.WriteString("\n" + sSection.Render("Server") + "  " + verb(installer.Server) + "\n")
@@ -423,7 +447,13 @@ func (m *model) viewReview() string {
 			if pl.AdminEmail != "" {
 				row("Admin", pl.AdminEmail)
 			}
-			if pl.ServerOnHub {
+			switch pl.ServerTor {
+			case installer.TorAlso:
+				row("Tor", "an onion address too (invites carry its key)")
+			case installer.TorOnly:
+				row("Tor", "only through Tor (invites carry the key)")
+			}
+			if pl.ServerOnHub && pl.ServerTor == installer.TorOff {
 				row("Grapevine", "listed as "+pl.PublicHost)
 				if tags := pl.AllTags(); len(tags) > 0 {
 					row("Tags", strings.Join(tags, ", "))
@@ -585,14 +615,19 @@ func (m *model) summary() string {
 		line("")
 		line(sSection.Render("Server") + sDim.Render("  "+pl.ServerDir))
 		port := portOf(m, installer.Server)
-		if res.Running[installer.Server] {
+		if res.Running[installer.Server] && pl.ServerTor == installer.TorOnly {
+			line("   " + sGood.Render("Running,") + " reachable only through Tor. On this computer, connect to " + cmd("127.0.0.1:"+fmt.Sprint(port)) + ".")
+		} else if res.Running[installer.Server] {
 			line("   " + sGood.Render("Running.") + " Friends on your network connect to " + cmd(addr(port)) + ".")
 		} else if pl.ServerStart == installer.StartNever {
 			line("   Start it with " + cmd(pl.StartCommand(installer.Server)))
 		}
 		if !res.Updated[installer.Server] {
 			line("   The first person to sign up becomes its owner: make it you!")
-			if pl.ServerOnHub {
+			if pl.ServerTor != installer.TorOff {
+				line("   Its " + sText.Bold(true).Render(".onion address") + " shows in Server Settings › About once tor connects; invites carry it, with the key.")
+			}
+			if pl.ServerOnHub && pl.ServerTor == installer.TorOff {
 				line("   Listed on the Grapevine as " + cmd(pl.PublicHost) + ". Forward port " + fmt.Sprint(port) + " on your router so people can reach it.")
 			}
 		}

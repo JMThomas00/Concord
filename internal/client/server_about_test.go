@@ -56,7 +56,7 @@ func TestServerAboutShowsHealthAndAdminKeys(t *testing.T) {
 	a.handleServerRelease(serverReleaseMsg{latest: "v0.1.8"})
 	out := ansi.Strip(a.renderServerAboutContent(120, 40))
 	for _, want := range []string{"Up to date", "2 days 2 h", "systemd service", "1,204 members", "7 online", "12 channels", "34,567 messages", "3.0 MB",
-		"5 installed · 4 running", "Listed on https://grapevine.example", "/srv/concord/backups", "B back up now · R restart"} {
+		"5 installed · 4 running", "Listed on https://grapevine.example", "/srv/concord/backups", "B back up now · K backup key · R restart"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)
 		}
@@ -65,6 +65,26 @@ func TestServerAboutShowsHealthAndAdminKeys(t *testing.T) {
 		if w := ansi.StringWidth(line); w > 122 { // every settings page's border sits outside its width
 			t.Errorf("line %d is %d wide: %q", i, w, line)
 		}
+	}
+
+	// Encrypted backups: scheduled, and K shows the key, C copies, K hides.
+	st := sampleStatus(true)
+	st.LastBackupEncrypted, st.BackupKeyMade, st.BackupEvery, st.NextBackupAt = true, true, "24h0m0s", time.Now().Add(5*time.Hour)
+	giveStatus(t, a, st)
+	out = ansi.Strip(a.renderServerAboutContent(120, 40))
+	for _, want := range []string{"· encrypted", "every 24h · next", "K shows the key"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+	res, _ := protocol.NewDispatch(protocol.EventServerAdminResult, 2, protocol.ServerAdminResult{Action: protocol.ServerAdminBackupKey, OK: true, BackupKey: "AGE-SECRET-KEY-1TEST"})
+	a.handleServerAdminEvent(a.activeConn, res)
+	if out := ansi.Strip(a.renderServerAboutContent(120, 40)); !strings.Contains(out, "AGE-SECRET-KEY-1TEST") {
+		t.Errorf("the key isn't shown\n%s", out)
+	}
+	a.handleServerAboutKey("k")
+	if out := ansi.Strip(a.renderServerAboutContent(120, 40)); strings.Contains(out, "AGE-SECRET-KEY-1TEST") {
+		t.Error("K didn't hide the key")
 	}
 
 	// Without Administrator: the health, but no actions.

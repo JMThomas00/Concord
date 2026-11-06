@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/concord-chat/concord/internal/official"
+	"github.com/concord-chat/concord/internal/tor"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -67,8 +68,12 @@ func (r *Runner) Steps() []Step {
 		case Client:
 			steps = append(steps,
 				Step{"Gathering what the client needs", r.clientDeps},
+				Step{"Choosing how Concord connects", r.clientNetwork},
 				Step{"Putting concord on your PATH", r.clientPath})
 		case Server, Hub:
+			if c == Server && pl.ServerTor != TorOff {
+				steps = append(steps, Step{"Fetching tor, for the onion address", r.serverTor})
+			}
 			steps = append(steps,
 				Step{"Writing the " + c + "'s settings", func(ctx context.Context) error { return r.configure(c) }},
 				Step{"Waking the " + c, func(ctx context.Context) error { return r.autostart(ctx, c) }})
@@ -763,4 +768,62 @@ func (r *Runner) elevated(script string) error {
 		return fmt.Errorf("Windows didn't get permission, so it can't run in the background. Run the installer again and choose Yes, or pick \"While I'm signed in\"")
 	}
 	return err
+}
+
+// serverTor makes sure tor is installed for the server's onion address.
+// The server runs it itself; a system tor service isn't needed (and is
+// left as it is).
+func (r *Runner) serverTor(ctx context.Context) error { return r.installTor(false) }
+
+// clientNetwork installs tor for a client that uses it (and, where the
+// package manager has them, the bridge programs), and saves the choice in
+// the client's settings.
+func (r *Runner) clientNetwork(ctx context.Context) error {
+	pl := r.Plan
+	if pl.ClientTor != TorOff {
+		if err := r.installTor(true); err != nil {
+			return err
+		}
+	}
+	mode := ""
+	if pl.ClientTor == TorOnly {
+		mode = "tor"
+	}
+	dir := ConfigDir(pl.Platform.Home)
+	return r.change("set how Concord connects in "+filepath.Join(dir, "config.json"), func() error { return SetClientNetwork(dir, mode) })
+}
+
+// installTor installs tor if it isn't here, and with bridges the programs
+// for obfs4 and Snowflake (best effort: not every package manager has them).
+func (r *Runner) installTor(bridges bool) error {
+	pl := r.Plan
+	if bridges && pl.Platform.PkgManager == "apt" && pl.Platform.OS == Linux {
+		defer func() {
+			if _, err := tor.FindTransport(tor.BridgesSnowflake, ""); err != nil {
+				if err := r.root("apt-get", "install", "-y", "--no-install-recommends", "obfs4proxy", "snowflake-client"); err != nil {
+					r.log("the bridge programs (obfs4proxy, snowflake-client) didn't install: %v", err)
+				}
+			}
+		}()
+	}
+	if path, err := tor.Find(""); err == nil {
+		r.log("tor is already here: %s", path)
+		return nil
+	}
+	cmd, err := TorInstallCommand(pl.Platform)
+	if err != nil {
+		// Not fatal: Concord says why when something needs Tor.
+		r.log("%s", err.Error())
+		return nil
+	}
+	r.progress(.3, strings.Join(cmd, " "))
+	if pl.Platform.OS == MacOS {
+		return r.run(cmd[0], cmd[1:]...)
+	}
+	if pl.Platform.PkgManager == "apt" {
+		if err := r.root("apt-get", "update", "-qq"); err != nil {
+			return err
+		}
+	}
+	return r.root(cmd[0], cmd[1:]...)
 }

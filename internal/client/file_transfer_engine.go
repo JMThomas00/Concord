@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v3"
@@ -56,6 +57,8 @@ type FileTransferSignalOut struct {
 	Type         string // "request", "accept", "reject", "offer", "answer", "candidate"
 	SDP          string
 	Candidate    json.RawMessage
+	Seq          int64  // relayed transfers (file_relay.go)
+	Data         []byte // relayed transfers
 }
 
 // FileTransferProgressMsg reports incremental progress for the bubbletea Update loop.
@@ -137,6 +140,10 @@ type activeReceive struct {
 	expectSize int64
 	expectHash string
 	received   int64
+
+	relay   bool        // through the server (file_relay.go)
+	nextSeq int64       // the last chunk written
+	stall   *time.Timer // fails a relayed download that stops arriving
 }
 
 // FileTransferEngine manages peer-to-peer WebRTC connections for sending and
@@ -161,6 +168,10 @@ type FileTransferEngine struct {
 
 	receives   map[string]*activeReceive
 	receivesMu sync.Mutex
+
+	relaySends map[string]*relaySend // file_relay.go
+	relayMu    sync.Mutex
+	relayOnly  func() bool // this client is on Tor: never connect directly
 
 	quit    chan struct{}
 	mu      sync.Mutex
@@ -194,6 +205,7 @@ func NewFileTransferEngine(
 		eventOut:    eventOut,
 		peers:       make(map[string]*filePeer),
 		receives:    make(map[string]*activeReceive),
+		relaySends:  make(map[string]*relaySend),
 		quit:        make(chan struct{}),
 	}
 }
@@ -260,6 +272,10 @@ func (e *FileTransferEngine) RequestDownload(attachmentID, senderUserID uuid.UUI
 func (e *FileTransferEngine) HandleSignal(fromUserID, attachmentID uuid.UUID, sigType, sdp string, candidateJSON []byte) {
 	switch sigType {
 	case "request":
+		if e.mustRelay() { // on Tor: a direct connection would show our address
+			e.sigOut <- FileTransferSignalOut{TargetUserID: fromUserID, AttachmentID: attachmentID, Type: "use_relay"}
+			return
+		}
 		go e.handleRequest(fromUserID, attachmentID)
 	case "offline":
 		select {

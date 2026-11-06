@@ -23,9 +23,9 @@ require (
 	github.com/pion/webrtc/v3 v3.3.6
 	github.com/sqweek/dialog v0.0.0-20260123140253-64c163d53aac
 	github.com/yuin/goldmark v1.7.4
-	golang.org/x/crypto v0.47.0
+	golang.org/x/crypto v0.48.0
 	golang.org/x/net v0.49.0
-	golang.org/x/sys v0.40.0
+	golang.org/x/sys v0.41.0
 	modernc.org/sqlite v1.34.4
 )
 
@@ -58,6 +58,7 @@ require (
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
+	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/pion/datachannel v1.5.8 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
@@ -86,8 +87,9 @@ require (
 	github.com/yuin/goldmark-emoji v1.0.3 // indirect
 	golang.org/x/exp v0.0.0-20231108232855-2478ac86f678 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	lukechampine.com/adiantum v1.1.1 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
@@ -97,13 +99,15 @@ require (
 )
 
 require (
+	filippo.io/age v1.2.1
 	github.com/JMThomas00/Concord/sdk v0.0.0
 	github.com/charmbracelet/huh v0.6.0
 	github.com/charmbracelet/x/ansi v0.8.0
 	github.com/mattn/go-sixel v0.0.5
+	github.com/ncruces/go-sqlite3 v0.31.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/tetratelabs/wazero v1.11.0
-	golang.org/x/term v0.39.0
+	golang.org/x/term v0.40.0
 )
 
 // The plugin SDK lives in ./sdk as its own module (so plugins can import it);

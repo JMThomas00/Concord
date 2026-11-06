@@ -42,6 +42,14 @@ type Config struct {
 	PluginsDir     string               `toml:"plugins_dir"` // Folder scanned for plugin.toml subfolders at startup
 	Mail           MailConfig           `toml:"mail"`        // Outgoing email for verification and password reset (optional)
 	Voice          VoiceConfig          `toml:"voice"`       // STUN/TURN servers for voice calls (voice_ice.go; optional)
+	Backups        BackupsConfig        `toml:"backups"`     // scheduled encrypted backups (backup_crypt.go)
+	Database       DatabaseConfig       `toml:"database"`    // encryption at rest (dbkey.go)
+	Tor            TorConfig            `toml:"tor"`         // an onion address (tor.go)
+
+	// DatabaseKey opens an encrypted database (ResolveDatabaseKey); zero
+	// for an unencrypted one. DatabaseKeyInfo says how, for About.
+	DatabaseKey     database.Key    `toml:"-"`
+	DatabaseKeyInfo DatabaseKeyInfo `toml:"-"`
 	// RealIPHeader: the header a trusted proxy sets to each visitor's
 	// address ("CF-Connecting-IP" behind a Cloudflare Tunnel). Leave it
 	// empty unless the server is reachable only through that proxy.
@@ -67,6 +75,7 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			IntervalHours: 24,
 		},
+		Backups:    BackupsConfig{EveryHours: 24},
 		PluginsDir: "Plugins",
 	}
 }
@@ -119,6 +128,8 @@ type Server struct {
 	grapevine       *GrapevineClient
 	grapevineTokens *tokenStore
 
+	onion *onionService // tor.go: nil without [tor]
+
 	// Plugin platform
 	plugins *plugins.Manager
 
@@ -135,10 +146,11 @@ type Server struct {
 func New(config *Config) (*Server, error) {
 	realIPHeader = strings.TrimSpace(config.RealIPHeader)
 	// Open database
-	db, err := database.New(config.DatabasePath)
+	db, err := database.Open(config.DatabasePath, config.DatabaseKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	privateFiles(config.DatabasePath) // dbkey.go
 
 	// Ensure default server exists
 	defaultServer, _, err := db.EnsureDefaultServer(config.ServerName)
@@ -218,6 +230,7 @@ func New(config *Config) (*Server, error) {
 	}
 	handlers.admin = s
 	handlers.join = s
+	handlers.onion = s.onionAccess
 	if config.Mail.Enabled() {
 		s.mailer = &smtpMailer{cfg: config.Mail}
 		AuthLog.Info("Outgoing mail configured", "smtp_host", config.Mail.SMTPHost, "verification_required", config.Mail.VerificationRequired())
@@ -331,6 +344,7 @@ func (s *Server) Run() error {
 
 	// Start cleanup tasks for expired timeouts and mutes
 	go s.runCleanupTasks()
+	go s.runScheduledBackups() // backup_crypt.go
 
 	// Start message pruning task
 	if s.config.MessagePruning.Enabled {
@@ -340,12 +354,15 @@ func (s *Server) Run() error {
 	// Set up HTTP routes
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
-	if s.config.Grapevine.Enabled {
+	if s.config.Grapevine.Enabled && s.grapevineAllowed() {
 		s.startGrapevine(mux)
+	} else if s.config.Grapevine.Enabled {
+		Logger.Info("Not listed on Grapevine: the server has an onion address (set [tor] grapevine = true to list its normal address)")
 	}
 
 	// Create HTTP server
-	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.startTor() // tor.go
+	addr := fmt.Sprintf("%s:%d", s.listenHost(), s.config.Port)
 	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -421,6 +438,10 @@ func (s *Server) shutdown() {
 	// Deregister from Grapevine hub before closing
 	if s.grapevine != nil {
 		s.grapevine.Stop()
+	}
+
+	if s.onion != nil {
+		s.onion.stop() // a restart starts it again; the same tor would hold its folder
 	}
 
 	// Stop all supervised plugin processes before closing the database they
@@ -908,6 +929,7 @@ func (s *Server) runWithDashboard() error {
 
 	// Start cleanup tasks
 	go s.runCleanupTasks()
+	go s.runScheduledBackups() // backup_crypt.go
 
 	// Start message pruning task
 	if s.config.MessagePruning.Enabled {
@@ -917,12 +939,15 @@ func (s *Server) runWithDashboard() error {
 	// Set up HTTP routes
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
-	if s.config.Grapevine.Enabled {
+	if s.config.Grapevine.Enabled && s.grapevineAllowed() {
 		s.startGrapevine(mux)
+	} else if s.config.Grapevine.Enabled {
+		Logger.Info("Not listed on Grapevine: the server has an onion address (set [tor] grapevine = true to list its normal address)")
 	}
 
 	// Create HTTP server
-	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.startTor() // tor.go
+	addr := fmt.Sprintf("%s:%d", s.listenHost(), s.config.Port)
 	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -1107,11 +1132,14 @@ func (s *Server) runWithHybridDashboard() error {
 	// Set up HTTP routes (needed for startup info)
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
-	if s.config.Grapevine.Enabled {
+	if s.config.Grapevine.Enabled && s.grapevineAllowed() {
 		s.startGrapevine(mux)
+	} else if s.config.Grapevine.Enabled {
+		Logger.Info("Not listed on Grapevine: the server has an onion address (set [tor] grapevine = true to list its normal address)")
 	}
 
-	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	s.startTor() // tor.go
+	addr := fmt.Sprintf("%s:%d", s.listenHost(), s.config.Port)
 	hs := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -1136,6 +1164,7 @@ func (s *Server) runWithHybridDashboard() error {
 
 	// Start cleanup tasks
 	go s.runCleanupTasks()
+	go s.runScheduledBackups() // backup_crypt.go
 
 	// Start message pruning
 	if s.config.MessagePruning.Enabled {
