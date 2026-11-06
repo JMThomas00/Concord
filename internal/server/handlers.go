@@ -10,12 +10,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/google/uuid"
 	"github.com/concord-chat/concord/internal/database"
 	"github.com/concord-chat/concord/internal/models"
 	"github.com/concord-chat/concord/internal/plugins"
 	"github.com/concord-chat/concord/internal/protocol"
+	"github.com/google/uuid"
 )
 
 // Handlers contains methods for handling client messages
@@ -438,7 +439,7 @@ func (h *Handlers) HandleSendMessage(c *Client, msg *protocol.Message) {
 		if att.ID == uuid.Nil {
 			att.ID = uuid.New()
 		}
-		att.SenderID = c.UserID // never trust the client to claim another sender
+		att.SenderID = c.UserID                          // never trust the client to claim another sender
 		att.Filename = models.SafeFilename(att.Filename) // no folders (security audit 4)
 		attachments = []models.Attachment{att}
 	}
@@ -662,6 +663,24 @@ func (h *Handlers) HandlePresenceUpdate(c *Client, msg *protocol.Message) {
 	var payload protocol.PresenceUpdatePayload
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid presence payload")
+		return
+	}
+
+	// A known status, and status text one line of at most 100 characters,
+	// as /status allows: it's broadcast to everyone who shares a server
+	// (security audit 2026-11-05, finding 12).
+	switch payload.Status {
+	case models.StatusOnline, models.StatusIdle, models.StatusDND, models.StatusOffline, "":
+	default:
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Unknown status")
+		return
+	}
+	if payload.Status == "" {
+		payload.Status = c.User.Status
+	}
+	payload.StatusText = strings.Join(strings.Fields(payload.StatusText), " ")
+	if utf8.RuneCountInString(payload.StatusText) > 100 {
+		c.sendError(protocol.ErrorCodeInvalidPayload, "Status text can be at most 100 characters")
 		return
 	}
 
@@ -2689,11 +2708,11 @@ func (h *Handlers) HandleVoiceStateUpdate(c *Client, msg *protocol.Message) {
 
 	// Send the joining client their WebRTC connection info
 	voiceServerPayload := &protocol.VoiceServerUpdatePayload{
-		ServerID:  req.ServerID,
-		ChannelID: *req.ChannelID,
-		Token:     uuid.New().String(), // ephemeral session token
-		Endpoint:  "", // Phase 4: WebRTC endpoint from server config
-		STUNUrls:  []string{"stun:stun.l.google.com:19302"},
+		ServerID:   req.ServerID,
+		ChannelID:  *req.ChannelID,
+		Token:      uuid.New().String(), // ephemeral session token
+		Endpoint:   "",                  // Phase 4: WebRTC endpoint from server config
+		STUNUrls:   []string{"stun:stun.l.google.com:19302"},
 		ICEServers: h.iceServers(c.UserID),
 	}
 	h.hub.SendToUser(c.UserID, protocol.EventVoiceServerUpdate, voiceServerPayload)
@@ -2748,6 +2767,28 @@ func (h *Handlers) HandleFileTransferSignal(c *Client, msg *protocol.Message) {
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		c.sendError(protocol.ErrorCodeInvalidPayload, "Invalid file transfer signal payload")
 		return
+	}
+
+	// Asking for a file: only someone who can see the channel it was
+	// shared in, and only from the person who shared it. Before, anyone who
+	// learned an attachment ID could ask, and outside Tor learn the
+	// sender's IP address from the connection (security audit 2026-11-05,
+	// finding 16).
+	if req.Type == "request" || req.Type == "relay_request" {
+		channelID, senderID, err := h.db.AttachmentSource(req.AttachmentID)
+		var channel *models.Channel
+		if err == nil {
+			channel, err = h.db.GetChannelByID(channelID)
+		}
+		if err != nil || senderID != req.TargetUserID ||
+			(!c.IsPlugin && h.hasChannelPermission(c.UserID, channel, models.PermissionViewChannels) != nil) {
+			// relay_error is what every client already understands as "this
+			// download failed, here's why", for direct and relayed requests.
+			h.hub.SendToUser(c.UserID, protocol.EventFileTransferSignal, &protocol.FileTransferSignalRelayPayload{
+				SourceUserID: req.TargetUserID, AttachmentID: req.AttachmentID,
+				Type: "relay_error", SDP: "you can't download that file (it was deleted, or isn't in a channel you can see)"})
+			return
+		}
 	}
 
 	// A "request" starts a new transfer and needs the target (the file's
@@ -2924,11 +2965,11 @@ func (h *Handlers) HandleMoveVoice(c *Client, msg *protocol.Message) {
 
 	// Send the moved user a new VoiceServerUpdate so their client reconnects.
 	voiceServerPayload := &protocol.VoiceServerUpdatePayload{
-		ServerID:  req.ServerID,
-		ChannelID: req.ChannelID,
-		Token:     uuid.New().String(),
-		Endpoint:  "",
-		STUNUrls:  []string{"stun:stun.l.google.com:19302"},
+		ServerID:   req.ServerID,
+		ChannelID:  req.ChannelID,
+		Token:      uuid.New().String(),
+		Endpoint:   "",
+		STUNUrls:   []string{"stun:stun.l.google.com:19302"},
 		ICEServers: h.iceServers(req.UserID),
 	}
 	h.hub.SendToUser(req.UserID, protocol.EventVoiceServerUpdate, voiceServerPayload)
@@ -2982,8 +3023,6 @@ func (h *Handlers) HandleGetPluginConfig(c *Client, msg *protocol.Message) {
 		c.send <- reply
 	}
 }
-
-
 
 // shareAServer reports whether two users are members of a common server.
 func (h *Handlers) shareAServer(a, b uuid.UUID) bool {

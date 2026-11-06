@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,11 +137,11 @@ func TestFileTransferSignalOfflineThenRelay(t *testing.T) {
 	}
 
 	srv, wsURL := startPlainTestServer(t)
-	testServer, _, everyone := setupFileTransferTestServer(t, srv)
+	testServer, channel, everyone := setupFileTransferTestServer(t, srv)
 	_, requesterToken := addMemberWithEveryone(t, srv, testServer, everyone, "downloader")
 	sender, senderToken := addMemberWithEveryone(t, srv, testServer, everyone, "sharer")
 
-	attachmentID := uuid.New()
+	attachmentID := shareTestAttachment(t, srv, channel, sender)
 
 	requester := newTestWSClient(t, wsURL)
 	requester.identify(requesterToken)
@@ -199,5 +200,63 @@ func TestFileTransferSignalOfflineThenRelay(t *testing.T) {
 	}
 	if offerPayload.Type != "offer" || offerPayload.SDP != "v=0 fake-sdp-body" || offerPayload.SourceUserID != sender.ID {
 		t.Fatalf("expected untouched offer relay from sender, got %+v", offerPayload)
+	}
+}
+
+// shareTestAttachment posts a message from sender in channel with one
+// attachment, as /attach would, and returns the attachment's ID. Download
+// requests are checked against it (security audit 16).
+func shareTestAttachment(t *testing.T, srv *Server, channel *models.Channel, sender *models.User) uuid.UUID {
+	t.Helper()
+	msg := models.NewMessage(channel.ID, sender.ID, "a file")
+	att := models.Attachment{ID: uuid.New(), Filename: "f.txt", Size: 1, ContentHash: "00", SenderID: sender.ID}
+	msg.Attachments = []models.Attachment{att}
+	if err := srv.db.CreateMessage(msg); err != nil {
+		t.Fatal(err)
+	}
+	return att.ID
+}
+
+// Finding 16 (security audit 2026-11-05): a download request wasn't checked
+// against the channel, so anyone who learned an attachment ID could ask the
+// sender for the file (and, outside Tor, learn their address).
+func TestDownloadRequestsNeedTheChannel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wire-level integration test")
+	}
+	srv, wsURL := startPlainTestServer(t)
+	s, channel, everyone := setupFileTransferTestServer(t, srv)
+	sender, senderTok := addMemberWithEveryone(t, srv, s, everyone, "sharer")
+	_, memberTok := addMemberWithEveryone(t, srv, s, everyone, "member")
+	_, strangerTok := createTestUserAndToken(t, srv, "stranger")
+	att := shareTestAttachment(t, srv, channel, sender)
+
+	sc, mc, xc := newTestWSClient(t, wsURL), newTestWSClient(t, wsURL), newTestWSClient(t, wsURL)
+	sc.identify(senderTok)
+	mc.identify(memberTok)
+	xc.identify(strangerTok)
+
+	ask := func(c *testWSClient, typ string) {
+		c.send(protocol.OpFileTransferSignal, protocol.FileTransferSignalPayload{TargetUserID: sender.ID, AttachmentID: att, Type: typ})
+	}
+	for _, typ := range []string{"request", "relay_request"} {
+		ask(xc, typ)
+		m := xc.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventFileTransferSignal })
+		var p protocol.FileTransferSignalRelayPayload
+		json.Unmarshal(m.Data, &p)
+		if p.Type != "relay_error" {
+			t.Fatalf("a stranger's %s wasn't refused: %+v", typ, p)
+		}
+	}
+	// The member's request is the first the sender sees.
+	ask(mc, "request")
+	m := sc.readUntil(5*time.Second, func(m *protocol.Message) bool { return m.Type == protocol.EventFileTransferSignal })
+	var p protocol.FileTransferSignalRelayPayload
+	json.Unmarshal(m.Data, &p)
+	if p.Type != "request" || p.SourceUserID == uuid.Nil {
+		t.Fatalf("the member's request: %+v", p)
+	}
+	if strings.Contains(string(m.Data), "stranger") {
+		t.Fatal("a stranger's request reached the sender")
 	}
 }

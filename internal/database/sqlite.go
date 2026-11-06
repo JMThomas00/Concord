@@ -4135,3 +4135,22 @@ func (db *DB) SetPluginChannelConfig(channelID uuid.UUID, fields map[string]stri
 	}
 	return tx.Commit()
 }
+
+// AttachmentSource returns the channel an attachment was shared in and who
+// shared it, for a message that hasn't been deleted. The server checks a
+// download request against it (security audit 2026-11-05, finding 16).
+func (db *DB) AttachmentSource(attachmentID uuid.UUID) (channelID, senderID uuid.UUID, err error) {
+	var ch, sender string
+	err = db.QueryRow(`
+		SELECT m.channel_id, a.sender_id FROM attachments a
+		JOIN messages m ON m.id = a.message_id
+		WHERE a.id = ? AND COALESCE(m.is_deleted, 0) = 0`, attachmentID.String()).Scan(&ch, &sender)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	if channelID, err = uuid.Parse(ch); err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	senderID, err = uuid.Parse(sender)
+	return channelID, senderID, err
+}
