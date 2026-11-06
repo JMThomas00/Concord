@@ -88,7 +88,7 @@ func (c *Collection) save(path string) {
 		return
 	}
 	tmp := path + ".tmp"
-	if os.WriteFile(tmp, data, 0644) == nil {
+	if os.WriteFile(tmp, data, 0o600) == nil {
 		if os.Rename(tmp, path) != nil {
 			os.Remove(tmp)
 		}
