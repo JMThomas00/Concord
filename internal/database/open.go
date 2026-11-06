@@ -148,8 +148,8 @@ func convertTimes(db *DB) error {
 		// Only text that isn't already in the stored form (19 characters,
 		// a space after the date); one connection, so read everything before
 		// writing.
-		q := fmt.Sprintf(`SELECT rowid, CAST(%q AS TEXT) FROM %q WHERE typeof(%q) = 'text' AND NOT (length(%q) = 19 AND substr(%q, 11, 1) = ' ')`,
-			c.name, c.table, c.name, c.name, c.name)
+		q := fmt.Sprintf(`SELECT rowid, CAST(%s AS TEXT) FROM %s WHERE typeof(%s) = 'text' AND NOT (length(%s) = 19 AND substr(%s, 11, 1) = ' ')`,
+			quoteIdent(c.name), quoteIdent(c.table), quoteIdent(c.name), quoteIdent(c.name), quoteIdent(c.name))
 		rows, err := db.Query(q)
 		if err != nil {
 			return fmt.Errorf("%s.%s: %w", c.table, c.name, err)
@@ -178,7 +178,7 @@ func convertTimes(db *DB) error {
 		if err != nil {
 			return err
 		}
-		upd := fmt.Sprintf(`UPDATE %q SET %q = ? WHERE rowid = ?`, c.table, c.name)
+		upd := fmt.Sprintf(`UPDATE %s SET %s = ? WHERE rowid = ?`, quoteIdent(c.table), quoteIdent(c.name))
 		for _, f := range fixes {
 			if _, err := tx.Exec(upd, f.val, f.rowid); err != nil {
 				tx.Rollback()
@@ -239,4 +239,12 @@ func (db *DB) ConvertedCopyTo(path string, key Key) error {
 		return fmt.Errorf("copying the database: %w", err)
 	}
 	return nil
+}
+
+// quoteIdent quotes an SQL identifier the way SQLite expects: in double
+// quotes, with any double quote doubled. Go's %q escapes differently, which
+// was safe only because these names come from the schema itself (security
+// audit 2026-11-05, finding 17).
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
