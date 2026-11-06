@@ -49,9 +49,12 @@ import (
 // One instance runs per open pane, on its own goroutine; everything it
 // wants from the UI arrives as a codeMsg on codeHost.out.
 
+// codeEventBudget is how long client code may take over one event (a
+// variable only so tests under -race, many times slower, can raise it).
+var codeEventBudget = 2 * time.Second
+
 const (
 	codeMemoryPages  = 4096 // 64 KiB each: 256 MB
-	codeEventBudget  = 2 * time.Second
 	codeStartBudget  = 5 * time.Second
 	codeStopGrace    = time.Second
 	codeMaxTimers    = 16

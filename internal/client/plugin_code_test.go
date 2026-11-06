@@ -133,6 +133,11 @@ func frameText(t *testing.T, h *codeHost, want string) string {
 func key(r *codeRunner, k string) { r.push(map[string]any{"type": "key", "key": k}) }
 
 func TestClientCodeRunsSandboxed(t *testing.T) {
+	if raceEnabled { // the interpreter runs many times slower under -race (CI, 2026-11-05)
+		old := codeEventBudget
+		codeEventBudget = 30 * time.Second
+		t.Cleanup(func() { codeEventBudget = old })
+	}
 	h := newCodeHost(t.TempDir())
 	src := guestSource(t, "pane", "images", "sound", "storage", "server")
 	r := h.start(src, uuid.New(), map[string]any{"width": 40, "height": 12})

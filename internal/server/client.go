@@ -553,7 +553,10 @@ func (c *Client) handleIdentify(msg *protocol.Message) {
 	c.authenticated = true
 
 	// Register with hub
-	c.hub.register <- c
+	// Registered before READY goes out, not handed to the hub's goroutine:
+	// that left a window after READY and SERVER_CREATE where broadcasts
+	// missed this connection (CI caught it, 2026-11-05).
+	c.hub.registerClient(c)
 
 	// Record connection in stats tracker
 	c.handlers.stats.RecordConnection()
@@ -679,7 +682,10 @@ func (c *Client) identifyAsPlugin(token string) {
 	c.SessionID = uuid.New().String()
 	c.authenticated = true
 
-	c.hub.register <- c
+	// Registered before READY goes out, not handed to the hub's goroutine:
+	// that left a window after READY and SERVER_CREATE where broadcasts
+	// missed this connection (CI caught it, 2026-11-05).
+	c.hub.registerClient(c)
 	c.handlers.stats.RecordConnection()
 
 	if err := c.handlers.plugins.MarkRunning(pluginID); err != nil {
