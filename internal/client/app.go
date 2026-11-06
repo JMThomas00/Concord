@@ -7983,7 +7983,7 @@ func (a *App) handleDispatch(serverID uuid.UUID, msg *protocol.Message) tea.Cmd 
 			log.Printf("voice: VOICE_SIGNAL parse error: %v", err)
 			return nil
 		}
-		if a.voiceEngine != nil && sc == a.voiceConn {
+		if a.voiceEngine != nil && sc == a.voiceConn && voiceSignalAllowed(sc, sigPayload) {
 			a.voiceEngine.HandleSignal(sigPayload.SourceUserID, sigPayload.Type, sigPayload.SDP, sigPayload.Candidate)
 		}
 

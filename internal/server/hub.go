@@ -451,6 +451,15 @@ func (h *Hub) removeVoiceLocked(userID, channelID uuid.UUID) {
 	}
 }
 
+// VoiceChannelOf returns the voice channel userID is in and the connection
+// that joined it (nil when unknown, e.g. joined before a restart).
+func (h *Hub) VoiceChannelOf(userID uuid.UUID) (channelID uuid.UUID, conn *Client, ok bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	e, ok := h.voiceUserChannel[userID]
+	return e.channelID, e.conn, ok
+}
+
 // CountVoiceUsers returns the number of users currently in a voice channel.
 func (h *Hub) CountVoiceUsers(channelID uuid.UUID) int {
 	h.mu.RLock()

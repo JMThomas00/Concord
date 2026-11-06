@@ -2695,6 +2695,21 @@ func (h *Handlers) HandleVoiceSignal(c *Client, msg *protocol.Message) {
 		SDP:          req.SDP,
 		Candidate:    req.Candidate,
 	}
+	// Only between two people in the same voice channel, the one the signal
+	// names: anyone else could open a peer connection to someone in a call and
+	// receive their microphone (security audit 2026-11-05, finding 1).
+	from, fromConn, ok := h.hub.VoiceChannelOf(c.UserID)
+	if !ok || from != req.ChannelID || (fromConn != nil && fromConn != c) {
+		return
+	}
+	to, toConn, ok := h.hub.VoiceChannelOf(req.TargetUserID)
+	if !ok || to != req.ChannelID || req.TargetUserID == c.UserID {
+		return
+	}
+	if toConn != nil {
+		_ = h.dispatchTo(toConn, protocol.EventVoiceSignal, relay)
+		return
+	}
 	h.hub.SendToUser(req.TargetUserID, protocol.EventVoiceSignal, relay)
 }
 
@@ -2764,6 +2779,10 @@ func (h *Handlers) HandleVoiceSpeaking(c *Client, msg *protocol.Message) {
 		return
 	}
 
+	// Only for the voice channel the speaker is in (finding 13).
+	if ch, conn, ok := h.hub.VoiceChannelOf(c.UserID); !ok || ch != req.ChannelID || (conn != nil && conn != c) {
+		return
+	}
 	event := &protocol.VoiceSpeakingEventPayload{
 		UserID:     c.UserID,
 		ChannelID:  req.ChannelID,
