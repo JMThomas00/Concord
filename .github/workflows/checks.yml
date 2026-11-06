@@ -1,0 +1,64 @@
+# Checks on every pull request and push to main, plus weekly (new
+# vulnerabilities get published against code that hasn't changed). Layer 1
+# of the security routine (vault: "Concord - Security Routine"); the
+# release workflow is separate and only builds tags.
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 9 * * 1" # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.27"
+
+jobs:
+  test:
+    name: Build, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # -race needs cgo, and with cgo the save dialog links GTK.
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - run: go build -tags novoice ./...
+      - run: go vet -tags novoice ./...
+      - run: go test -tags novoice -count=1 ./...
+      - name: Race detector (connection lifecycle, plugins, the hub)
+        run: go test -race -tags novoice -count=1 ./internal/server/ ./internal/client/ ./internal/hub/ ./internal/protocol/ ./internal/plugins/
+      - name: Plugin SDK
+        working-directory: sdk
+        run: go vet ./... && go test -count=1 ./...
+      - name: Terminal passthrough module
+        working-directory: sdk/pty
+        run: go vet ./... && go test -count=1 ./...
+
+  security:
+    name: Vulnerabilities and gosec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # govulncheck loads packages with cgo on, and the save dialog links GTK.
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+      # Known vulnerabilities in code Concord actually calls.
+      - run: govulncheck -tags novoice ./...
+      - run: govulncheck ./...
+        working-directory: sdk
+      - run: govulncheck ./...
+        working-directory: sdk/pty
+      # High severity and high confidence only. Each reviewed false positive
+      # carries "#nosec Gxxx -- why" on its line; anything new fails here.
+      - run: gosec -quiet -tags novoice -severity high -confidence high ./...

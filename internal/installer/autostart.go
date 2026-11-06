@@ -144,10 +144,10 @@ func shellQuote(s string) string {
 
 // writeFile writes a file, making its folder.
 func writeFile(path, content string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { // #nosec G703 -- paths the installer chose
 		return err
 	}
-	return os.WriteFile(path, []byte(content), mode)
+	return os.WriteFile(path, []byte(content), mode) // #nosec G703 -- paths the installer chose
 }
 
 // BootTaskScript is the PowerShell that sets a component to run in the

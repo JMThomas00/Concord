@@ -69,7 +69,7 @@ func (r *Runner) unpath(ctx context.Context) error {
 		}
 		if base := os.Getenv("LOCALAPPDATA"); base != "" {
 			frag := filepath.Join(base, "Microsoft", "Windows Terminal", "Fragments", "Concord")
-			return r.change("remove the Windows Terminal profile", func() error { return os.RemoveAll(frag) })
+			return r.change("remove the Windows Terminal profile", func() error { return os.RemoveAll(frag) }) // #nosec G703 -- the installer's own Windows Terminal fragment
 		}
 		return nil
 	}
@@ -111,5 +111,5 @@ func removeRCBlock(path string) error {
 	if len(out) == len(lines) {
 		return nil
 	}
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644) // #nosec G703 -- the user's own shell profile
 }

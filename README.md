@@ -16,6 +16,7 @@ A chat app for your terminal: servers, channels, voice, games and plugins, all k
 - **File sharing** peer-to-peer (`/attach`, `/download`): nothing is stored on the server.
 - **Plugins:** chess, checkers, Tak, tic-tac-toe, Four in a Row and dominoes channels, a typing race and a quick-draw game, a kanban board (Tukan) and AI personas (Mynah), with achievements and leaderboards. Install them from inside Concord, or build your own with the SDK.
 - **Tor:** give a server a private `.onion` address only invited people can find, and connect through Tor yourself, with bridges where Tor is blocked.
+- **Encrypted at rest:** a new server's database is encrypted on disk, and its daily backups are encrypted with their own key.
 - **The Grapevine:** an optional, federated directory of public servers, browsable and joinable from the client.
 - **40+ themes**, switchable live, plus your own.
 - **Accounts done properly:** several profiles per computer, optional email verification and password reset, sign-in on every server at once.
@@ -174,10 +175,24 @@ Everyone in a call needs a current client: older ones can't play the newer audio
 Concord can use [Tor](https://www.torproject.org) to hide where a server is and who is connecting to it. It runs the `tor` program installed on your computer; the installer offers to install it.
 
 - **A server on Tor:** `[tor] enabled = true` in `concord-server.toml` (or the installer's "Reach it over Tor too?") gives it a `.onion` address, shown in **Server Settings → About**. Only people with an **access key** can find it there: invites carry it (`abc….onion:8080/CODE#KEY`), and members get it when they sign in. If an invite leaks, **T** (twice) on About makes a new key; the old one works for another week. `only = true` makes the server reachable through Tor and nothing else. An onion server isn't listed on the Grapevine unless you ask.
-- **Joining one:** paste the whole invite into **Add Server**.
 - **You on Tor:** **Settings → Network**. *Where needed* uses Tor for `.onion` servers and servers you switch to it (**O** in Manage Servers); *Everything* sends every connection through Tor.
 - **Bridges** for places that block Tor: Snowflake or obfs4 (built in; they need the `snowflake-client` or `lyrebird`/`obfs4proxy` program) or lines you paste from [bridges.torproject.org](https://bridges.torproject.org).
 - **Over Tor, voice is off and files go through the server**, since both would otherwise connect you straight to other people and show them your address. The server passes files along without keeping them.
+
+**Joining a server on Tor:** copy the invite you were given (it looks like `abc….onion:8080/CODE#KEY`) and paste it into **Add Server** (**Ctrl+N**): it fills in the address, the invite code and the access key. Concord starts tor itself the first time it's needed; the first connection can take up to a minute while tor finds its way. Your profile signs up there like anywhere else. A key that changed later reaches you the next time you sign in; if you've been away for more than a week, ask for a new invite.
+
+**Getting tor** (the installer does this for you, or by hand):
+
+| System | Install |
+|---|---|
+| Debian / Ubuntu | `sudo apt install tor obfs4proxy snowflake-client` (the last two only for bridges) |
+| Fedora | `sudo dnf install tor` |
+| Arch | `sudo pacman -S tor` |
+| macOS | `brew install tor` |
+| Windows | the [Tor Expert Bundle](https://www.torproject.org/download/tor/); unzip it, and put the folder holding `tor.exe` on your PATH (or set `network.tor_path` in `~/.concord/config.json`, and `tor_path` under `[tor]` for a server). Bridges come with it. |
+| Docker | already in the image |
+
+You don't need to run tor as a service: Concord runs its own copy, with its own settings, only while it's needed. **Settings → Network** shows whether it found tor and how far it has got connecting.
 
 **What this protects, and what it doesn't:** Tor hides where you and the server are, not what you write; the server's admin can read everything on it; encrypting the database protects copies, not a seized running server. Read [docs/what-concord-protects.md](docs/what-concord-protects.md) before relying on any of it.
 
@@ -202,7 +217,13 @@ The first run of `concord-server` walks through a setup wizard (terms, name, por
 --debug                  verbose logging
 --test-mail <address>    send a test email with the [mail] settings
 --reset-password <email> give that account a temporary password (servers without mail)
+--backup-key             print the key that opens this server's backups
+--open-backup <file>     decrypt and unpack a backup (--to <folder>, --key <file or key>)
+--encrypt-database       encrypt an unencrypted database (server stopped first)
+--decrypt-database       turn it back into an unencrypted one (server stopped first)
 ```
+
+**Restoring a backup:** stop the server, `concord-server --open-backup backups/concord-backup-….tar.gz.age`, and put the unpacked `concord.db` (and `PluginData/`, `plugin-secrets.key` if you need them) in place of the old ones. The database inside a backup isn't encrypted on its own (the backup as a whole is), so run `concord-server --encrypt-database` before starting again; it uses the server's existing key.
 
 A typical `concord-server.toml`:
 
@@ -227,6 +248,13 @@ tags = ["Gaming", "Tabletop"]
 [tor]                             # optional: a .onion address (needs tor installed)
 enabled = false
 # only = false                    # true: reachable through Tor alone
+# client_auth = true              # only people with an invite's access key can find it
+# tor_path = ""                   # where tor is, if it isn't on the PATH
+
+[database]                        # encrypted at rest; new databases by default
+# encrypt = true
+# key_file = "concord-database.key"   # keep a copy somewhere safe
+# ask_passphrase = false          # true: type a passphrase at every start instead
 
 [mail]                            # optional: email verification and password reset
 smtp_host = "smtp.example.com"

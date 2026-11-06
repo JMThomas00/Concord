@@ -115,7 +115,7 @@ func Find(path string) (string, error) {
 		places = []string{"/usr/bin/tor", "/usr/sbin/tor", "/usr/local/bin/tor"}
 	}
 	for _, p := range places {
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() { // #nosec G703 -- fixed install places and the admin's tor_path
 			return p, nil
 		}
 	}

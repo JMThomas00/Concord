@@ -127,13 +127,13 @@ func (p *iceProvider) cloudflare(now time.Time) []protocol.ICEServer {
 
 func (p *iceProvider) fetchCloudflare() ([]protocol.ICEServer, error) {
 	body, _ := json.Marshal(map[string]int{"ttl": int(iceTTL / time.Second)})
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf(p.apiURL, p.cfg.CloudflareTURNKeyID), bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf(p.apiURL, p.cfg.CloudflareTURNKeyID), bytes.NewReader(body)) // #nosec G704 -- Cloudflare's TURN API; the key ID is the admin's own setting
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.cfg.CloudflareTURNToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.client.Do(req)
+	resp, err := p.client.Do(req) // #nosec G704 -- the request above
 	if err != nil {
 		return nil, err
 	}

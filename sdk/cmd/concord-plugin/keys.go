@@ -81,7 +81,7 @@ func sign(args []string) {
 			fail("%v", err)
 		}
 		sig := codesign.Sign(priv, module)
-		if err := os.WriteFile(path+".sig", sig, 0o644); err != nil {
+		if err := os.WriteFile(path+".sig", sig, 0o644); err != nil { // #nosec G703 -- the author's own module, named on the command line
 			fail("%v", err)
 		}
 		fmt.Printf("signed %s → %s.sig\n", path, path)

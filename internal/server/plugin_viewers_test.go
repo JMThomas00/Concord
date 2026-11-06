@@ -43,7 +43,7 @@ func (r *paneTestRig) member(t *testing.T, username string) (*models.User, *test
 	user, token := createTestUserAndToken(t, r.srv, username)
 	joinWithEveryoneRole(t, r.srv, r.server.ID, user.ID)
 	c := newTestWSClient(t, r.wsURL)
-	c.identify(token)
+	c.identify(token) // waits for SERVER_CREATE too
 	return user, c
 }
 

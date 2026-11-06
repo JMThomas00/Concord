@@ -182,7 +182,7 @@ func (a *App) runInstaller(m installerReadyMsg) tea.Cmd {
 		args = append(args, "--from", from)
 	}
 	action := m.action
-	cmd := exec.Command(m.path, args...)
+	cmd := exec.Command(m.path, args...) // #nosec G702 -- the installer, checked against the release's checksum
 	if torOnly() {
 		// The installer downloads too: through the same tor (Go programs
 		// read a socks5 proxy from HTTPS_PROXY).
