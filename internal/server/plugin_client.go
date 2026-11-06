@@ -79,7 +79,7 @@ func (s *Server) handlePluginClientFile(w http.ResponseWriter, r *http.Request) 
 		writeAPIError(w, http.StatusNotFound, "not_found", "No such file")
 		return
 	}
-	f, err := os.Open(p)
+	f, err := os.Open(p) // #nosec G703 -- ClientFilePath only returns files in the plugin's index
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "not_found", "No such file")
 		return

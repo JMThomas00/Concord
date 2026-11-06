@@ -146,7 +146,7 @@ func main() {
 	// terminal, as if it had been typed again.
 	if path := app.RestartPath(); path != "" {
 		log.Printf("Restarting into %s", path)
-		cmd := exec.Command(path, os.Args[1:]...)
+		cmd := exec.Command(path, os.Args[1:]...) // #nosec G702 -- the client just installed by the Updates page
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
 			if exit, ok := err.(*exec.ExitError); ok {

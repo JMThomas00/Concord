@@ -17,5 +17,5 @@ func Relaunch() error {
 		return fmt.Errorf("can't tell where this program is")
 	}
 	Logger.Info("Starting again", "program", startedFrom)
-	return syscall.Exec(startedFrom, os.Args, os.Environ())
+	return syscall.Exec(startedFrom, os.Args, os.Environ()) // #nosec G702 -- this server's own program, read at start
 }
